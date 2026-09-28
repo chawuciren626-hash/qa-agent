@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bug",
+  "type": "object",
+  "required": ["bug_id", "title", "severity", "priority", "environment", "related_case", "steps_to_reproduce", "actual_result", "expected_result"],
+  "properties": {
+    "bug_id": { "type": "string" },
+    "title": { "type": "string" },
+    "severity": { "type": "string", "enum": ["Blocker", "Critical", "Major", "Minor", "Trivial"] },
+    "priority": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+    "environment": { "type": "string" },
+    "related_case": { "type": "string" },
+    "steps_to_reproduce": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "actual_result": { "type": "string" },
+    "expected_result": { "type": "string" },
+    "evidence": { "type": "object" },
+    "analysis": { "type": "string" }
+  }
+}
+

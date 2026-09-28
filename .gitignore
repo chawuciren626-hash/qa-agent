@@ -1,0 +1,19 @@
+# Dependencies and local tool state
+node_modules/
+.playwright-cli/
+
+# Run artifacts, browser evidence, and generated tests
+output/*
+!output/.gitkeep
+tests/generated/*
+!tests/generated/.gitkeep
+playwright-report/
+test-results/
+
+# Local environment configuration may contain private URLs or test data
+config/test-env.json
+config/test-environments.json
+
+# Local operating system files
+.DS_Store
+Thumbs.db

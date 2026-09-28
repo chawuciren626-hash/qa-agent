@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "assets": {
+    "login-sms": {
+      "description": "手机号验证码登录的可复用测试资产",
+      "environment": "local-gov-bid",
+      "test_data_policy": "手机号使用脱敏测试数据；验证码来自当前测试环境配置。",
+      "locators": {
+        "phone_input": "placeholder:请输入手机号",
+        "verification_code_input": "placeholder:请输入验证码",
+        "submit": "text:登录即注册"
+      },
+      "assertion_policy": "错误提示必须来自提交后可观察的 toast、alert 或字段校验元素，禁止仅检查页面静态文本。",
+      "last_validated": "2026-09-28"
+    }
+  }
+}

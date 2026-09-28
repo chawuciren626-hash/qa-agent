@@ -1,0 +1,20 @@
+{
+  "name": "qa-agent-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "run:create": "node scripts/create-run.mjs",
+    "run:publish": "node scripts/publish-latest.mjs",
+    "environment:check": "node scripts/preflight-test-environment.mjs",
+    "test:ui": "node scripts/run-ui-tests.mjs",
+    "results:parse": "node scripts/parse-playwright-result.mjs",
+    "test:ui:headed": "node scripts/run-ui-tests.mjs --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5",
+    "xmind": "^2.2.33"
+  }
+}

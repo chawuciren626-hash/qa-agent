@@ -1,0 +1,21 @@
+{
+  "environment": "example",
+  "base_url": "https://test.example.com",
+  "login_path": "/login",
+  "accounts": {
+    "normal_user": {
+      "login_mode": "sms_code",
+      "phone": "replace_with_test_phone",
+      "verification_code": "replace_with_test_code"
+    }
+  },
+  "execution": {
+    "enabled": false,
+    "ui_framework": "playwright",
+    "browser": "chrome",
+    "headless": true,
+    "timeout_ms": 30000,
+    "max_workers": 1,
+    "notes": "仅填写已授权的测试环境和专用测试数据。"
+  }
+}

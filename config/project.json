@@ -1,0 +1,27 @@
+{
+  "project_name": "qa-agent-mvp",
+  "description": "基于 PenguinHarness 的软件测试智能体 MVP",
+  "version": "0.1.0",
+  "default_language": "zh-CN",
+  "artifact_dir": "output",
+  "run_root": "output/runs",
+  "latest_index": "output/latest.json",
+  "artifact_retention": "keep_all_runs",
+  "default_deliverables": {
+    "test_points": ["markdown", "xmind"],
+    "test_cases": ["json", "xlsx"],
+    "test_report": ["markdown", "docx", "pdf"]
+  },
+  "confirmation_policy": {
+    "analysis": true,
+    "test_points": true,
+    "test_cases": true,
+    "execution": true,
+    "defects": false,
+    "report": false
+  },
+  "environment_registry": "config/test-environments.json",
+  "test_asset_registry": "config/test-assets.json",
+  "input_dir": "inputs",
+  "skill_dir": "skills"
+}

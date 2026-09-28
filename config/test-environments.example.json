@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "default_environment": "example",
+  "environments": {
+    "example": {
+      "name": "示例测试环境",
+      "base_url": "https://test.example.com",
+      "login_path": "/login",
+      "authorized_for_execution": false,
+      "browser": "chrome",
+      "execution_enabled": false,
+      "credential_policy": "仅使用专用测试账号，禁止提交真实账号、验证码或生产凭据。",
+      "notes": "复制后替换为已授权测试环境。"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TestCase",
+  "type": "object",
+  "required": ["case_id", "title", "priority", "type", "preconditions", "steps", "expected", "automation_feasible"],
+  "properties": {
+    "case_id": { "type": "string" },
+    "title": { "type": "string" },
+    "priority": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+    "type": { "type": "string" },
+    "preconditions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "test_data": { "type": "object" },
+    "steps": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "expected": { "type": "string" },
+    "automation_feasible": { "type": "boolean" },
+    "related_test_point": { "type": "string" }
+  }
+}
+

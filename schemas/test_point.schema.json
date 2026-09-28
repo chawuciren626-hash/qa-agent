@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TestPoint",
+  "type": "object",
+  "required": ["id", "module", "feature", "description", "risk", "coverage_type", "source"],
+  "properties": {
+    "id": { "type": "string" },
+    "module": { "type": "string" },
+    "feature": { "type": "string" },
+    "description": { "type": "string" },
+    "risk": { "type": "string", "enum": ["高", "中", "低"] },
+    "coverage_type": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "source": { "type": "string" }
+  }
+}
+
