@@ -1,17 +1,42 @@
 {
-  "version": 1,
-  "assets": {
-    "login-sms": {
-      "description": "手机号验证码登录的可复用测试资产",
-      "environment": "local-gov-bid",
-      "test_data_policy": "手机号使用脱敏测试数据；验证码来自当前测试环境配置。",
-      "locators": {
-        "phone_input": "placeholder:请输入手机号",
-        "verification_code_input": "placeholder:请输入验证码",
-        "submit": "text:登录即注册"
-      },
-      "assertion_policy": "错误提示必须来自提交后可观察的 toast、alert 或字段校验元素，禁止仅检查页面静态文本。",
-      "last_validated": "2026-09-28"
+  "catalog_version": 2,
+  "catalog_name": "QA Test Asset Catalog",
+  "assets": [
+    {
+      "id": "login-sms-ui-local-v1",
+      "kind": "ui_locator_bundle",
+      "name": "短信登录页面定位器",
+      "version": "1.0.0",
+      "status": "verified",
+      "scope": { "application": "government-bid-console", "modules": ["login"], "environments": ["local-gov-bid"] },
+      "tags": ["ui", "login", "sms"],
+      "source": { "type": "observed_ui", "reference": "测试环境页面观察", "captured_at": "2026-09-28" },
+      "validation": { "validated_at": "2026-09-28", "environment": "local-gov-bid", "evidence": "已通过页面观察确认" },
+      "data": { "locators": { "phone_input": "placeholder:请输入手机号", "verification_code_input": "placeholder:请输入验证码", "submit": "text:登录即注册" } }
+    },
+    {
+      "id": "login-sms-assertions-local-v1",
+      "kind": "assertion_bundle",
+      "name": "短信登录动态反馈断言规则",
+      "version": "1.0.0",
+      "status": "verified",
+      "scope": { "application": "government-bid-console", "modules": ["login"], "environments": ["local-gov-bid"] },
+      "tags": ["assertion", "login", "validation"],
+      "source": { "type": "test_design", "reference": "登录测试设计", "captured_at": "2026-09-28" },
+      "validation": { "validated_at": "2026-09-28", "environment": "local-gov-bid", "evidence": "测试设计评审" },
+      "data": { "rules": ["提交动作后必须断言动态反馈元素及其文本。", "不得以页面全文、placeholder 或静态标签文字证明校验结果。"] }
+    },
+    {
+      "id": "login-sms-data-policy-local-v1",
+      "kind": "test_data_profile",
+      "name": "短信登录测试数据策略",
+      "version": "1.0.0",
+      "status": "verified",
+      "scope": { "application": "government-bid-console", "modules": ["login"], "environments": ["local-gov-bid"] },
+      "tags": ["test-data", "login", "sms"],
+      "source": { "type": "environment_policy", "reference": "测试环境登记", "captured_at": "2026-09-28" },
+      "validation": { "validated_at": "2026-09-28", "environment": "local-gov-bid", "evidence": "环境授权记录" },
+      "data": { "fields": { "phone": { "classification": "sensitive", "strategy": "从已授权环境配置读取，不写入资产目录" }, "verification_code": { "classification": "secret", "strategy": "从已授权环境配置读取，不写入资产目录" } } }
     }
-  }
+  ]
 }

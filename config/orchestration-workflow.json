@@ -1,0 +1,12 @@
+{
+  "workflow_id": "qa-test-lifecycle",
+  "workflow_version": 1,
+  "stages": [
+    { "id": "analysis", "agent": "requirement_analysis_agent", "skills": ["requirement-analysis"], "depends_on": [], "confirmation": "after" },
+    { "id": "test_points", "agent": "test_point_agent", "skills": ["test-point-design"], "depends_on": ["analysis"], "confirmation": "after" },
+    { "id": "test_cases", "agent": "test_case_agent", "skills": ["test-case-writing"], "depends_on": ["test_points"], "confirmation": "after" },
+    { "id": "execution", "agent": "automation_execution_agent", "skills": ["playwright-execution"], "depends_on": ["test_cases"], "confirmation": "before" },
+    { "id": "defects", "agent": "defect_analysis_agent", "skills": ["bug-reporting"], "depends_on": ["execution"], "confirmation": "none" },
+    { "id": "report", "agent": "test_report_agent", "skills": ["test-report-writing"], "depends_on": ["defects"], "confirmation": "none" }
+  ]
+}

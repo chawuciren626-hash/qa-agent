@@ -14,17 +14,19 @@ for (const folder of folders) mkdirSync(resolve(runDir, folder), { recursive: tr
 const manifestPath = resolve(runDir, "manifest.json");
 if (!existsSync(manifestPath)) {
   writeFileSync(manifestPath, JSON.stringify({
-    manifest_version: 2,
+    manifest_version: 3,
     run_id: runId,
     created_at: new Date().toISOString(),
     status: "created",
     selected_agents: [],
     selected_skills: [],
+    asset_refs: [],
     stages: {},
     artifacts: [],
     orchestration: {
       events: [],
-      resume_from: "analysis"
+      resume_from: null,
+      plan: null
     }
   }, null, 2) + "\n");
 }

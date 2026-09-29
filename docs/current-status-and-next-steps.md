@@ -120,13 +120,7 @@ $cases.Count
 
 推荐先执行：
 
-```powershell
-npm init -y
-npm install -D @playwright/test
-npx playwright install
-```
-
-然后再让 Agent 生成脚本。
+运行前先执行环境预检。常规测试运行不得自动安装依赖或下载浏览器；缺少组件时应标记“环境未就绪”，由用户单独决定是否安装或升级环境。
 
 ### 第四步：执行测试并生成结果
 

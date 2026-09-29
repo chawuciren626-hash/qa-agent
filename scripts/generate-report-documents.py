@@ -19,16 +19,21 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-if len(sys.argv) != 6:
-    raise SystemExit("用法: python generate-report-documents.py <report.md> <results.json> <bugs.json> <report.docx> <report.pdf>")
+if len(sys.argv) not in (6, 7):
+    raise SystemExit("用法: python generate-report-documents.py <report.md> <results.json> <bugs.json> <report.docx> <report.pdf> [quality-metrics.json]")
 
-report_md, results_path, bugs_path, docx_path, pdf_path = map(os.path.abspath, sys.argv[1:])
+report_md, results_path, bugs_path, docx_path, pdf_path = map(os.path.abspath, sys.argv[1:6])
+metrics_path = os.path.abspath(sys.argv[6]) if len(sys.argv) == 7 else None
 with open(report_md, encoding="utf-8") as f:
     markdown = f.read()
 with open(results_path, encoding="utf-8") as f:
     results = json.load(f)
 with open(bugs_path, encoding="utf-8") as f:
     bugs = json.load(f)
+metrics = {}
+if metrics_path:
+    with open(metrics_path, encoding="utf-8") as f:
+        metrics = json.load(f)
 
 def markdown_lines(text):
     for raw in text.splitlines():
@@ -50,6 +55,10 @@ def clean_text(text):
 summary = results.get("summary", {})
 run_id = results.get("run_id", "未标识")
 bug_items = bugs if isinstance(bugs, list) else bugs.get("bugs", [])
+quality_gate = metrics.get("quality_gate", {})
+trust = metrics.get("trust", {}).get("evidence", {})
+gate_status = quality_gate.get("status", "not_assessed")
+gate_reasons = quality_gate.get("reasons", [])
 
 doc = Document()
 section = doc.sections[0]
@@ -62,6 +71,11 @@ title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 run = title.add_run("测试报告")
 run.font.name = "Microsoft YaHei"; run._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft YaHei")
 doc.add_paragraph(f"运行编号: {run_id}    生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+doc.add_paragraph(f"质量门状态: {gate_status}")
+if gate_reasons:
+    doc.add_paragraph("质量门原因: " + ", ".join(gate_reasons))
+if trust:
+    doc.add_paragraph(f"失败证据: 可分析 {trust.get('triage_ready', 0)}，证据不足 {trust.get('insufficient', 0)}")
 doc.add_heading("执行概览", level=1)
 table = doc.add_table(rows=2, cols=5)
 table.alignment = WD_TABLE_ALIGNMENT.CENTER; table.style = "Table Grid"
@@ -94,7 +108,12 @@ styles_pdf = getSampleStyleSheet()
 title_style = ParagraphStyle("title", parent=styles_pdf["Title"], fontName="STSong-Light", fontSize=18, leading=24, alignment=TA_CENTER)
 heading_style = ParagraphStyle("heading", parent=styles_pdf["Heading2"], fontName="STSong-Light", fontSize=13, leading=19, spaceBefore=10, spaceAfter=5)
 body_style = ParagraphStyle("body", parent=styles_pdf["BodyText"], fontName="STSong-Light", fontSize=9.5, leading=15)
-story = [Paragraph("测试报告", title_style), Spacer(1, 5 * mm), Paragraph(f"运行编号: {run_id}<br/>生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}", body_style), Spacer(1, 4 * mm), Paragraph("执行概览", heading_style)]
+gate_text = f"质量门状态: {gate_status}"
+if gate_reasons:
+    gate_text += "<br/>质量门原因: " + ", ".join(gate_reasons)
+if trust:
+    gate_text += f"<br/>失败证据: 可分析 {trust.get('triage_ready', 0)}，证据不足 {trust.get('insufficient', 0)}"
+story = [Paragraph("测试报告", title_style), Spacer(1, 5 * mm), Paragraph(f"运行编号: {run_id}<br/>生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}<br/>{gate_text}", body_style), Spacer(1, 4 * mm), Paragraph("执行概览", heading_style)]
 overview = [["总计", "通过", "失败", "跳过", "阻塞"], [str(summary.get("total", 0)), str(summary.get("passed", 0)), str(summary.get("failed", 0)), str(summary.get("skipped", 0)), str(summary.get("blocked", 0))]]
 table_pdf = Table(overview, colWidths=[34 * mm] * 5)
 table_pdf.setStyle(TableStyle([("FONTNAME", (0, 0), (-1, -1), "STSong-Light"), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#B8C6D9")), ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))

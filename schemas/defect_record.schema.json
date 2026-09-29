@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DefectRecord",
+  "type": "object",
+  "required": ["defect_id", "fingerprint", "category", "lifecycle_status", "confidence", "related_cases", "evidence_refs", "title"],
+  "properties": {
+    "defect_id": { "type": "string" },
+    "fingerprint": { "type": "string" },
+    "category": { "enum": ["product_defect", "script_issue", "environment_issue", "test_data_issue", "needs_review"] },
+    "lifecycle_status": { "enum": ["draft", "needs_review", "confirmed", "rejected", "fixed", "closed"] },
+    "confidence": { "enum": ["low", "medium", "strong"] },
+    "severity": { "enum": ["Blocker", "Critical", "Major", "Minor", "Trivial", "unknown"] },
+    "priority": { "enum": ["P0", "P1", "P2", "P3", "unknown"] },
+    "related_cases": { "type": "array", "items": { "type": "string" } },
+    "evidence_refs": { "type": "array", "items": { "type": "string" } },
+    "title": { "type": "string" },
+    "expected_result": { "type": "string" },
+    "actual_result": { "type": "string" },
+    "analysis": { "type": "string" },
+    "duplicate_of": { "type": ["string", "null"] }
+  }
+}

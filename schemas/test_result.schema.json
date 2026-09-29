@@ -10,6 +10,20 @@
     "finished_at": { "type": "string" },
     "block_reason": { "type": "string" },
     "summary": { "type": "object" },
-    "cases": { "type": "array" }
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "case_id": { "type": "string" },
+          "status": { "enum": ["passed", "failed", "skipped", "blocked"] },
+          "failure_category": { "enum": ["none", "product_defect", "script_issue", "environment_issue", "test_data_issue", "needs_review"] },
+          "evidence_paths": { "type": "array", "items": { "type": "string" } },
+          "evidence_confidence": { "enum": ["low", "medium", "strong"] },
+          "conclusion_confidence": { "enum": ["low", "medium", "strong"] }
+        }
+      }
+    },
+    "asset_refs": { "type": "array" }
   }
 }

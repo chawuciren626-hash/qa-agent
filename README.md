@@ -12,6 +12,12 @@
 
 已具备可追溯的多 Agent 测试闭环基础：运行归档、阶段确认、环境预检、测试点 XMind、用例 Excel、报告 Word/PDF。
 
+运行编排采用版本化工作流：先创建运行，再选择本次所需阶段并生成不可变运行计划。详见 `docs/orchestration-engine.md`。
+
+可复用测试规则、测试数据策略、定位器、断言和接口契约统一存放在测试资产目录中。详见 `docs/test-asset-management.md`。
+
+自动化执行以结构化执行计划为唯一入口，详见 `docs/automation-execution-framework.md`。
+
 ## 推荐推进顺序
 
 1. 总控根据任务选择并实际派发专业子 Agent。

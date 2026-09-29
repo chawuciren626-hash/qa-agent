@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExecutionPlan",
+  "type": "object",
+  "required": ["run_id", "source", "cases", "execution_policy"],
+  "properties": {
+    "run_id": { "type": "string" },
+    "source": { "type": "string" },
+    "selection": { "type": ["object", "null"] },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["case_id", "title", "execution_contract"],
+        "properties": {
+          "case_id": { "type": "string" },
+          "title": { "type": "string" },
+          "asset_refs": { "type": "array" },
+          "execution_contract": {
+            "type": "object",
+            "required": ["data_isolation", "setup", "assertion_mode", "cleanup_required"],
+            "properties": {
+              "data_isolation": { "enum": ["read_only", "isolated", "shared"] },
+              "setup": { "type": "array", "items": { "type": "string" } },
+              "assertion_mode": { "type": "array", "items": { "enum": ["dynamic_ui", "dom_state", "navigation", "api_response", "storage_state"] } },
+              "cleanup_required": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "execution_policy": { "type": "object" }
+  }
+}

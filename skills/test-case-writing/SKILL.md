@@ -28,8 +28,10 @@ version: 1.0.0
 3. 编写前置条件、测试数据、步骤和预期结果。
 4. 标记优先级和测试类型。
 5. 判断是否适合自动化。
-6. 调用 `scripts/generate-test-cases-xlsx.mjs` 导出 Excel 评审与执行版本。
-7. 不得为了导出 Excel 临时安装 npm、Python 或 Office 依赖；缺少本地工具时保留 JSON 并报告环境未就绪。
+6. 补充 `execution_metadata`：模块、标签、风险等级、执行成本、数据影响、环境依赖、自动化成熟度和预估耗时。没有可靠依据时使用保守值或标记待确认。
+7. 为可自动化用例补充 `execution_contract`：数据隔离、准备、断言方式和清理要求。
+8. 调用 `scripts/generate-test-cases-xlsx.mjs` 导出 Excel 评审与执行版本。
+9. 不得为了导出 Excel 临时安装 npm、Python 或 Office 依赖；缺少本地工具时保留 JSON 并报告环境未就绪。
 
 ## 质量标准
 

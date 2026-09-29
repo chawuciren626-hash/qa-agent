@@ -1,0 +1,14 @@
+{
+  "governance_version": 1,
+  "failure_categories": ["none", "product_defect", "script_issue", "environment_issue", "test_data_issue", "needs_review"],
+  "confidence": {
+    "strong": { "minimum_evidence_refs": 3 },
+    "medium": { "minimum_evidence_refs": 2 },
+    "low": { "minimum_evidence_refs": 1 }
+  },
+  "quality_gate": {
+    "block_on": ["blocked_execution", "insufficient_failed_evidence"],
+    "review_on": ["needs_review", "draft_product_defect"],
+    "risk_on_severity": ["Blocker", "Critical"]
+  }
+}

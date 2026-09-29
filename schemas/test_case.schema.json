@@ -19,7 +19,36 @@
     },
     "expected": { "type": "string" },
     "automation_feasible": { "type": "boolean" },
-    "related_test_point": { "type": "string" }
+    "related_test_point": { "type": "string" },
+    "asset_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "version"],
+        "properties": { "id": { "type": "string" }, "version": { "type": "string" } }
+      }
+    },
+    "execution_contract": {
+      "type": "object",
+      "properties": {
+        "data_isolation": { "enum": ["read_only", "isolated", "shared"] },
+        "setup": { "type": "array", "items": { "type": "string" } },
+        "assertion_mode": { "type": "array", "items": { "enum": ["dynamic_ui", "dom_state", "navigation", "api_response", "storage_state"] } },
+        "cleanup_required": { "type": "boolean" }
+      }
+    },
+    "execution_metadata": {
+      "type": "object",
+      "properties": {
+        "modules": { "type": "array", "items": { "type": "string" } },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "risk_level": { "enum": ["high", "medium", "low", "高", "中", "低"] },
+        "execution_cost": { "enum": ["low", "medium", "high"] },
+        "data_impact": { "enum": ["read_only", "isolated", "shared"] },
+        "environment_dependencies": { "type": "array", "items": { "type": "string" } },
+        "automation_maturity": { "enum": ["stable", "candidate", "manual_only"] },
+        "estimated_duration_ms": { "type": "number", "minimum": 1 }
+      }
+    }
   }
 }
-

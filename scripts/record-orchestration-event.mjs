@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { assertStageReady, getRunContext, recomputeRunStatus, writeJson } from "./orchestration-state.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const project = JSON.parse(readFileSync(resolve(root, "config/project.json"), "utf8"));
@@ -9,23 +10,46 @@ const options = Object.fromEntries(args.filter((arg) => arg.startsWith("--") && 
   const [key, value] = arg.slice(2).split(/=(.*)/s);
   return [key, value];
 }));
-const manifestPath = resolve(root, project.run_root, runId, "manifest.json");
-if (!existsSync(manifestPath)) throw new Error(`找不到运行清单: ${manifestPath}`);
-const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-manifest.manifest_version ??= 2;
-manifest.orchestration ??= { events: [], resume_from: "analysis" };
+const { manifestPath, manifest } = getRunContext(root, project, runId);
+manifest.manifest_version ??= 3;
+manifest.orchestration ??= { events: [], resume_from: null, plan: null };
 manifest.orchestration.events ??= [];
 manifest.stages ??= {};
 manifest.selected_agents ??= [];
 manifest.selected_skills ??= [];
 const timestamp = new Date().toISOString();
+const inferredStatus = {
+  dispatched: "in_progress",
+  completed: "completed",
+  failed: "failed",
+  blocked: "blocked"
+}[eventType];
+
+if (eventType === "dispatched" && options.stage) {
+  const plannedStage = assertStageReady(manifest, options.stage);
+  if (options.agent !== plannedStage.agent) {
+    throw new Error(`阶段 ${options.stage} 必须派发给 ${plannedStage.agent}，实际为 ${options.agent ?? "未指定"}。`);
+  }
+  const actualSkills = (options.skills ?? "").split(",").filter(Boolean).sort();
+  const plannedSkills = [...plannedStage.skills].sort();
+  if (actualSkills.join(",") !== plannedSkills.join(",")) {
+    throw new Error(`阶段 ${options.stage} 必须使用 Skill: ${plannedSkills.join(",")}。`);
+  }
+}
+if (["completed", "failed", "blocked"].includes(eventType) && options.stage) {
+  const current = manifest.stages[options.stage]?.status;
+  if (current !== "in_progress") throw new Error(`阶段 ${options.stage} 当前状态为 ${current ?? "未计划"}，不能记录 ${eventType}。`);
+}
 const event = { type: eventType, at: timestamp, ...options };
 manifest.orchestration.events.push(event);
 if (options.agent && !manifest.selected_agents.includes(options.agent)) manifest.selected_agents.push(options.agent);
 for (const skill of (options.skills ?? "").split(",").filter(Boolean)) if (!manifest.selected_skills.includes(skill)) manifest.selected_skills.push(skill);
+for (const artifact of (options.artifacts ?? "").split(",").filter(Boolean)) {
+  if (!manifest.artifacts.includes(artifact)) manifest.artifacts.push(artifact);
+}
 if (options.stage) {
   const stage = manifest.stages[options.stage] ?? {};
-  stage.status = options.status ?? stage.status ?? "in_progress";
+  stage.status = options.status ?? inferredStatus ?? stage.status ?? "in_progress";
   stage.updated_at = timestamp;
   if (options.agent) stage.agent = options.agent;
   if (options.reason) stage.reason = options.reason;
@@ -33,9 +57,7 @@ if (options.stage) {
   if (["failed", "blocked", "awaiting_confirmation"].includes(stage.status)) manifest.orchestration.resume_from = options.stage;
   if (stage.status === "completed") manifest.orchestration.resume_from = "next_stage";
 }
-if (options.status === "failed") manifest.status = "failed";
-else if (options.status === "blocked") manifest.status = "blocked";
-else if (manifest.status === "created") manifest.status = "in_progress";
+manifest.status = recomputeRunStatus(manifest);
 manifest.updated_at = timestamp;
-writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+writeJson(manifestPath, manifest);
 console.log(JSON.stringify({ run_id: runId, event, manifest: manifestPath }));

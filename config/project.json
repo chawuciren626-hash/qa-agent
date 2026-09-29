@@ -6,7 +6,7 @@
   "artifact_dir": "output",
   "run_root": "output/runs",
   "latest_index": "output/latest.json",
-  "artifact_retention": "keep_all_runs",
+  "artifact_retention": "failure_evidence_only",
   "default_deliverables": {
     "test_points": ["markdown", "xmind"],
     "test_cases": ["json", "xlsx"],
