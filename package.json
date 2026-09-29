@@ -17,6 +17,8 @@
     "quality:defect-index": "node scripts/build-defect-index.mjs",
     "quality:metrics": "node scripts/build-quality-metrics.mjs",
     "quality:trends": "node scripts/build-quality-trends.mjs",
+    "penguin:agents:check": "node scripts/sync-penguin-agents.mjs",
+    "penguin:agents:sync": "node scripts/sync-penguin-agents.mjs --apply",
     "run:publish": "node scripts/publish-latest.mjs",
     "environment:check": "node scripts/preflight-test-environment.mjs",
     "test:ui": "node scripts/run-ui-tests.mjs",

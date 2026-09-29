@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "description": "公开的 PenguinHarness 测试 Agent 配置清单；不包含模型、密钥、环境地址或测试凭据。",
+  "agents": [
+    {
+      "id": "test_agent",
+      "prompt": "penguin/agents/test_agent/AGENTS.md",
+      "skills": ["requirement-analysis", "test-point-design", "test-case-writing", "playwright-execution", "bug-reporting", "test-report-writing", "test-asset-management", "test-selection"]
+    },
+    {
+      "id": "requirement_analysis_agent",
+      "prompt": "penguin/agents/requirement_analysis_agent/AGENTS.md",
+      "skills": ["requirement-analysis"]
+    },
+    {
+      "id": "test_point_agent",
+      "prompt": "penguin/agents/test_point_agent/AGENTS.md",
+      "skills": ["test-point-design"]
+    },
+    {
+      "id": "test_case_agent",
+      "prompt": "penguin/agents/test_case_agent/AGENTS.md",
+      "skills": ["test-case-writing"]
+    },
+    {
+      "id": "automation_execution_agent",
+      "prompt": "penguin/agents/automation_execution_agent/AGENTS.md",
+      "skills": ["playwright-execution"]
+    },
+    {
+      "id": "defect_analysis_agent",
+      "prompt": "penguin/agents/defect_analysis_agent/AGENTS.md",
+      "skills": ["bug-reporting"]
+    },
+    {
+      "id": "test_report_agent",
+      "prompt": "penguin/agents/test_report_agent/AGENTS.md",
+      "skills": ["test-report-writing"]
+    }
+  ]
+}

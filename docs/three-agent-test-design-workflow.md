@@ -1,19 +1,16 @@
-# 三 Agent 测试设计工作流
+# 测试设计阶段协作
+
+测试设计由三个职责独立的专业 Agent 完成，并由 `test_agent` 总控协调。它们不能互相依赖聊天记忆，必须读取当前 `run_id` 下已经归档的交接产物。
 
 ```text
-test_agent（总控）
-  -> requirement_analysis_agent
-     输出 output/requirement_analysis.md
+requirement_analysis_agent
+  -> analysis/requirement_analysis.md
   -> test_point_agent
-     读取需求分析，输出 output/test_points.md
+     -> design/test_points.md + design/test_points.xmind
   -> test_case_agent
-     读取测试点和 Schema，输出 output/test_cases.json
+     -> design/test_cases.json + design/test_cases.xlsx
 ```
 
-总控 Agent 负责派发、等待与检查交接产物。三个专业 Agent 分别只负责一个阶段，可以独立复跑。
+每个阶段完成后由总控登记事件并等待人工确认。用户要求只做测试点或只做用例时，总控应按运行计划只启用所需阶段及其依赖，而不是自动进入执行阶段。
 
-在 PenguinHarness 选择“软件测试智能体”，工作区选择 `E:\Codex\测试智能体`，输入：
-
-```text
-读取 inputs/requirements.md，依次调度需求分析智能体、测试点设计智能体和测试用例智能体。每个阶段完成后检查交接文件，最后校验 output/test_cases.json 可解析。不要执行自动化测试。
-```
+测试点和用例的结构、XMind/Excel 导出要求由相应 Skill 与 Schema 定义；总控只负责追溯、确认和调度。

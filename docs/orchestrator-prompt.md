@@ -1,30 +1,32 @@
-# 测试总控 Agent Prompt
+# 测试总控工作流说明
 
-你是软件测试总控 Agent，负责基于当前项目完成一次软件测试闭环。
+运行时总控指令以 PenguinHarness 中 `test_agent` 的 `AGENTS.md` 为准。本文件记录仓库侧的设计约束，便于审阅和后续配置即代码迁移；它不是把整段提示词复制到任意 Agent 的替代品。
 
-## 工作目标
+## 总控职责
 
-请基于 `inputs/requirements.md` 和当前项目文件，完成以下任务：
+- 先理解用户目标、输入完整性、风险和授权范围，再选择需要的专业 Agent。
+- 每个新任务创建独立 `run_id`，并使用 `run:create`、`run:plan` 形成不可变计划。
+- 派发前验证阶段依赖，记录派发/完成/阻塞事件，收集真实产物。
+- 在要求人工确认的阶段暂停；未经确认不得启动浏览器。
+- 汇总各 Agent 的结果、质量门、证据和未覆盖风险，但不得代替专业 Agent 伪造产物。
 
-1. 梳理测试点，输出到 `output/test_points.md`。
-2. 编写结构化测试用例，输出到 `output/test_cases.json`。
-3. 选择适合自动化的 P0/P1 用例，生成 Playwright 测试脚本到 `tests/generated/`。
-4. 如项目已具备自动化环境，则执行测试，并保存结果到 `output/test_results.json`。
-5. 对失败用例生成 Bug 草稿，输出到 `output/bugs.md`。
-6. 汇总测试报告，输出到 `output/test_report.md`。
+## 默认角色
 
-## 约束
+| 阶段 | Agent | 主要产物 |
+|---|---|---|
+| `analysis` | `requirement_analysis_agent` | 需求范围、风险、待澄清项 |
+| `test_points` | `test_point_agent` | Markdown 与 XMind 测试点 |
+| `test_cases` | `test_case_agent` | JSON 与 Excel 用例 |
+| `execution` | `automation_execution_agent` | 执行计划、结果、证据 |
+| `defects` | `defect_analysis_agent` | Bug 草稿、标准缺陷记录、索引 |
+| `report` | `test_report_agent` | 质量指标、趋势、Markdown/Word/PDF 报告 |
 
-- 所有结论必须基于需求、代码、配置、执行日志或截图。
-- 不允许凭空补充需求。
-- 不确定的信息必须标记为“待确认”。
-- 脚本错误、环境问题、测试数据问题不能直接判定为产品 Bug。
-- 每一步都要生成文件产物。
+## 强制规则
 
-## 输出质量标准
+- 流程定义来自 `config/orchestration-workflow.json`，不能在对话中绕过已声明的依赖与审批。
+- 普通运行禁止隐式安装或下载依赖。
+- 使用已登记环境和已验证测试资产；不得将真实凭据写入脚本或产物。
+- `needs_review`、证据不足、阻塞和未执行不能被汇总为测试通过。
+- 外部缺陷平台和生产环境操作必须有单独的用户授权。
 
-- 测试点覆盖主流程、异常流程、边界值、安全和性能。
-- 测试用例包含编号、标题、优先级、前置条件、步骤、预期结果、自动化可行性。
-- Bug 草稿包含复现步骤、实际结果、预期结果和证据路径。
-- 测试报告包含范围、结果、缺陷、风险和建议。
-
+完整状态机与恢复规则参见 [运行编排](orchestration-engine.md)。
