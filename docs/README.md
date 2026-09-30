@@ -21,6 +21,7 @@
 
 ## 学习与演进
 
+- [零基础 Agent 开发与 AI 测试学习路线](learning/README.md)：七章详细教程、评测公式、文档 Agent 场景和离线练习。
 - [Agent 搭建开发学习文档](agent-development-learning-guide.md)
 - [一个月 MVP 完成记录与下一阶段计划](one-month-qa-agent-plan.md)
 - [PenguinHarness 多 Agent 与桌面方案](penguinharness-multi-agent-desktop-app-plan.md)
