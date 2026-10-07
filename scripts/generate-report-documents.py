@@ -2,6 +2,7 @@ import json
 import os
 import re
 import sys
+from html import escape
 from datetime import datetime
 
 from docx import Document
@@ -17,6 +18,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 if len(sys.argv) not in (6, 7):
@@ -50,9 +52,11 @@ def markdown_lines(text):
             yield "body", line
 
 def clean_text(text):
-    return re.sub(r"(`+|\*{1,3}|_{1,3})", "", text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # Keep underscores in evidence paths; XML escaping belongs to the renderer.
+    return re.sub(r"(`+|\*{1,3})", "", text)
 
 summary = results.get("summary", {})
+report_title = next((clean_text(line[2:].strip()) for line in markdown.splitlines() if line.startswith('# ')), '测试报告')
 run_id = results.get("run_id", "未标识")
 bug_items = bugs if isinstance(bugs, list) else bugs.get("bugs", [])
 quality_gate = metrics.get("quality_gate", {})
@@ -68,7 +72,8 @@ styles["Normal"].font.name = "Microsoft YaHei"; styles["Normal"]._element.rPr.rF
 styles["Normal"].font.size = Pt(10.5)
 title = doc.add_paragraph(style="Title")
 title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-run = title.add_run("测试报告")
+run = title.add_run(report_title)
+run.font.color.rgb = RGBColor(0, 0, 0)
 run.font.name = "Microsoft YaHei"; run._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft YaHei")
 doc.add_paragraph(f"运行编号: {run_id}    生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 doc.add_paragraph(f"质量门状态: {gate_status}")
@@ -86,12 +91,12 @@ for row in table.rows:
         cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
         for paragraph in cell.paragraphs: paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
 for kind, text in markdown_lines(markdown):
-    if text in ("测试报告", "执行概览"): continue
+    if text in (report_title, "测试报告", "执行概览"): continue
     if kind == "heading": doc.add_heading(clean_text(text), level=2)
     elif kind == "bullet": doc.add_paragraph(clean_text(text), style="List Bullet")
     else: doc.add_paragraph(clean_text(text))
 doc.add_heading("缺陷汇总", level=1)
-doc.add_paragraph(f"本次记录问题: {len(bug_items)}")
+doc.add_paragraph(f"缺陷草稿条目: {len(bug_items)}（工程问题另见正文）")
 if bug_items:
     bug_table = doc.add_table(rows=1, cols=4); bug_table.style = "Table Grid"
     for cell, value in zip(bug_table.rows[0].cells, ["编号", "分类", "关联用例", "结论"]): cell.text = value
@@ -103,24 +108,34 @@ doc.add_paragraph("报告依据本次运行中的测试结果和缺陷分析产�
 os.makedirs(os.path.dirname(docx_path), exist_ok=True)
 doc.save(docx_path)
 
-pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+font_path = os.environ.get('QA_REPORT_FONT')
+if not font_path and os.name == 'nt':
+    candidate = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts', 'simsun.ttc')
+    if os.path.isfile(candidate):
+        font_path = candidate
+if font_path:
+    pdf_font = 'ReportCJK'
+    pdfmetrics.registerFont(TTFont(pdf_font, font_path, subfontIndex=0))
+else:
+    pdf_font = 'STSong-Light'
+    pdfmetrics.registerFont(UnicodeCIDFont(pdf_font))
 styles_pdf = getSampleStyleSheet()
-title_style = ParagraphStyle("title", parent=styles_pdf["Title"], fontName="STSong-Light", fontSize=18, leading=24, alignment=TA_CENTER)
-heading_style = ParagraphStyle("heading", parent=styles_pdf["Heading2"], fontName="STSong-Light", fontSize=13, leading=19, spaceBefore=10, spaceAfter=5)
-body_style = ParagraphStyle("body", parent=styles_pdf["BodyText"], fontName="STSong-Light", fontSize=9.5, leading=15)
+title_style = ParagraphStyle("title", parent=styles_pdf["Title"], fontName=pdf_font, fontSize=18, leading=24, alignment=TA_CENTER)
+heading_style = ParagraphStyle("heading", parent=styles_pdf["Heading2"], fontName=pdf_font, fontSize=13, leading=19, spaceBefore=10, spaceAfter=5, keepWithNext=True)
+body_style = ParagraphStyle("body", parent=styles_pdf["BodyText"], fontName=pdf_font, fontSize=9.5, leading=15)
 gate_text = f"质量门状态: {gate_status}"
 if gate_reasons:
     gate_text += "<br/>质量门原因: " + ", ".join(gate_reasons)
 if trust:
     gate_text += f"<br/>失败证据: 可分析 {trust.get('triage_ready', 0)}，证据不足 {trust.get('insufficient', 0)}"
-story = [Paragraph("测试报告", title_style), Spacer(1, 5 * mm), Paragraph(f"运行编号: {run_id}<br/>生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}<br/>{gate_text}", body_style), Spacer(1, 4 * mm), Paragraph("执行概览", heading_style)]
+story = [Paragraph(escape(report_title), title_style), Spacer(1, 5 * mm), Paragraph(f"运行编号: {run_id}<br/>生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}<br/>{gate_text}", body_style), Spacer(1, 4 * mm), Paragraph("执行概览", heading_style)]
 overview = [["总计", "通过", "失败", "跳过", "阻塞"], [str(summary.get("total", 0)), str(summary.get("passed", 0)), str(summary.get("failed", 0)), str(summary.get("skipped", 0)), str(summary.get("blocked", 0))]]
 table_pdf = Table(overview, colWidths=[34 * mm] * 5)
-table_pdf.setStyle(TableStyle([("FONTNAME", (0, 0), (-1, -1), "STSong-Light"), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#B8C6D9")), ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
+table_pdf.setStyle(TableStyle([("FONTNAME", (0, 0), (-1, -1), pdf_font), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#B8C6D9")), ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
 story.append(table_pdf)
 for kind, text in markdown_lines(markdown):
-    if text in ("测试报告", "执行概览"): continue
-    story.append(Paragraph(clean_text(text), heading_style if kind == "heading" else body_style))
-story.extend([Paragraph("缺陷汇总", heading_style), Paragraph(f"本次记录问题: {len(bug_items)}", body_style)])
+    if text in (report_title, "测试报告", "执行概览"): continue
+    story.append(Paragraph(escape(clean_text(text)), heading_style if kind == "heading" else body_style))
+story.extend([Paragraph("缺陷汇总", heading_style), Paragraph(f"缺陷草稿条目: {len(bug_items)}（工程问题另见正文）", body_style)])
 SimpleDocTemplate(pdf_path, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=16*mm, bottomMargin=16*mm).build(story)
 print(f"已生成: {docx_path}\n已生成: {pdf_path}")

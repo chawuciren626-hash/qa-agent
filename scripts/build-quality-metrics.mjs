@@ -24,6 +24,13 @@ const summary = results.summary ?? {};
 const totalExecuted = summary.total ?? 0;
 const blocked = results.status === "blocked" || (summary.blocked ?? 0) > 0;
 const reasons = [];
+const required = ['execution/test_results.json', 'quality/evidence-assessment.json', 'defects/defect-records.json'];
+const missingInputs = required.filter(path => !existsSync(resolve(runDir, path)));
+if (missingInputs.length) reasons.push('missing_quality_inputs');
+if (!totalExecuted) reasons.push('no_executed_cases');
+const failedCases = (results.cases ?? []).filter(item => item.status === 'failed');
+if (failedCases.some(item => !(evidence.assessments ?? []).some(assessment => assessment.case_id === item.case_id))) reasons.push('incomplete_evidence_assessment');
+if (failedCases.some(item => !records.some(record => record.related_cases?.includes(item.case_id)))) reasons.push('untriaged_failures');
 if (blocked) reasons.push("blocked_execution");
 if ((evidence.summary?.insufficient ?? 0) > 0) reasons.push("insufficient_failed_evidence");
 if (records.some((record) => record.lifecycle_status === "needs_review")) reasons.push("needs_review");
@@ -31,7 +38,8 @@ if (records.some((record) => record.category === "product_defect" && record.life
 if (records.some((record) => (governance.quality_gate?.risk_on_severity ?? []).includes(record.severity))) reasons.push("high_severity_defect");
 const blockReasons = governance.quality_gate?.block_on ?? [];
 const reviewReasons = governance.quality_gate?.review_on ?? [];
-const gateStatus = reasons.some((reason) => blockReasons.includes(reason)) ? "blocked" : reasons.some((reason) => reviewReasons.includes(reason)) ? "review_required" : reasons.includes("high_severity_defect") ? "risk_present" : "informational";
+const integrityBlocked = reasons.some(reason => ['missing_quality_inputs', 'no_executed_cases', 'incomplete_evidence_assessment'].includes(reason));
+const gateStatus = integrityBlocked || reasons.some((reason) => blockReasons.includes(reason)) ? "blocked" : reasons.includes('untriaged_failures') || reasons.some((reason) => reviewReasons.includes(reason)) ? "review_required" : reasons.includes("high_severity_defect") ? "risk_present" : "informational";
 const metrics = {
   run_id: runId,
   generated_at: new Date().toISOString(),
@@ -54,6 +62,7 @@ const metrics = {
     failure_categories: by((results.cases ?? []).filter((testCase) => testCase.status === "failed"), (testCase) => testCase.failure_category ?? "needs_review")
   },
   trust: {
+    missing_inputs: missingInputs,
     evidence: evidence.summary ?? {},
     unclassified_failures: (results.cases ?? []).filter((testCase) => testCase.status === "failed" && !testCase.failure_category).length
   },

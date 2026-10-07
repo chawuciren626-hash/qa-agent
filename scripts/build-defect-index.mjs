@@ -6,6 +6,7 @@ const runsDir = resolve(root, "output/runs");
 const index = new Map();
 for (const entry of existsSync(runsDir) ? readdirSync(runsDir, { withFileTypes: true }) : []) {
   if (!entry.isDirectory()) continue;
+  if (existsSync(resolve(runsDir, entry.name, 'inputs/fixture-origin.json')) || existsSync(resolve(runsDir, entry.name, 'inputs/acceptance.json'))) continue;
   const path = resolve(runsDir, entry.name, "defects/defect-records.json");
   if (!existsSync(path)) continue;
   const data = JSON.parse(readFileSync(path, "utf8"));

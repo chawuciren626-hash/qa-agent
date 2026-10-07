@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
@@ -11,8 +11,10 @@ const resultsPath = resolve(runDir, "execution/test_results.json");
 if (!existsSync(resultsPath)) throw new Error(`缺少执行结果: ${resultsPath}`);
 const results = JSON.parse(readFileSync(resultsPath, "utf8"));
 const assessments = (results.cases ?? []).filter((testCase) => testCase.status === "failed").map((testCase) => {
-  const refs = testCase.evidence_paths ?? [];
-  const existing = refs.filter((item) => existsSync(isAbsolute(item) ? item : resolve(runDir, item)));
+  const refs = [...new Set((testCase.evidence_paths ?? []).map(item => isAbsolute(item) ? resolve(item) : resolve(runDir, item)))];
+  const existing = refs.filter(item => {
+    try { const stat = statSync(item); return stat.isFile() && stat.size > 0; } catch { return false; }
+  });
   const hasError = Boolean(testCase.error_message?.trim());
   const confidence = hasError && existing.length >= (minimumEvidence.strong?.minimum_evidence_refs ?? 3)
     ? "strong"

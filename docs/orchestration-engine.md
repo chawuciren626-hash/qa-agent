@@ -35,9 +35,12 @@ node scripts/assert-stage-ready.mjs run-example analysis
 - `in_progress -> completed|failed|blocked`：仅允许子 Agent 实际返回后记录事件。
 - 产出后确认：`completed -> awaiting_confirmation -> completed`。
 - 执行前确认：`planned -> awaiting_confirmation -> planned -> in_progress`。
+- 执行前计划返修：`awaiting_confirmation -> revision_requested -> awaiting_confirmation`，修改计划后可再次申请审批；这一分支不派发执行、不自动批准。产出后确认阶段仍须返修完成后才能重新申请。
 - 返工：`awaiting_confirmation -> revision_requested -> in_progress`。
 
 所有状态改变必须使用运行管理脚本。`update-run-manifest.mjs` 已废弃，避免绕过状态机直接改写清单。
+
+通用事件入口只接受 `dispatched`、`completed`、`failed`、`blocked`，拒绝自定义事件和 `--status`、`--type` 等覆盖参数。返修必须通过确认解析脚本处理旧请求，再重新检查就绪、记录派发并实际调用子 Agent。技术审查要求返修应明确记录审查来源，不能写成人工已批准。
 
 派发事件会校验计划中的 Agent 与 Skill 是否一致。完成事件可通过 `--artifacts=路径1,路径2` 登记真实产物，供报告、恢复和审计使用。
 

@@ -13,7 +13,8 @@ mkdirSync(resolve(output, "playwright"), { recursive: true });
 const planPath = resolve(output, "execution-plan.json");
 const plan = existsSync(planPath) ? readJson(planPath) : null;
 
-const config = JSON.parse(readFileSync(resolve(root, "config/test-env.json"), "utf8"));
+const configPath = resolve(root, plan?.environment_config ?? 'config/test-env.json');
+const config = existsSync(configPath) ? readJson(configPath) : {};
 const account = config.accounts?.normal_user ?? {};
 const placeholder = /example\.com|change_me|test_user/i.test([config.base_url, account.username, account.password, account.phone, account.verification_code].join(" "));
 
@@ -48,9 +49,7 @@ if (!plan) {
   blocked("缺少项目已安装的 @playwright/test；环境未就绪，未执行任何下载或安装。");
   process.exitCode = 2;
 } else {
-  const playwright = process.platform === "win32"
-    ? resolve(root, "node_modules/.bin/playwright.cmd")
-    : resolve(root, "node_modules/.bin/playwright");
+  const playwright = resolve(root, 'node_modules/@playwright/test/cli.js');
   if (!existsSync(playwright)) {
     blocked("缺少项目本地 Playwright 可执行文件；环境未就绪，未执行任何下载或安装。");
     process.exitCode = 2;
@@ -62,25 +61,32 @@ if (!plan) {
     process.exitCode = 2;
     process.exit();
   }
-  const preflight = spawnSync(process.execPath, ["scripts/preflight-test-environment.mjs", `--environment=${environmentId}`, `--run-id=${runId}`], { cwd: root, stdio: "inherit" });
+  const preflightArgs = ['scripts/preflight-test-environment.mjs', `--environment=${environmentId}`, `--run-id=${runId}`];
+  if (config.environment_registry) preflightArgs.push(`--registry=${config.environment_registry}`);
+  const preflight = spawnSync(process.execPath, preflightArgs, { cwd: root, stdio: "inherit" });
   if (preflight.status !== 0) {
     blocked("环境预检未通过；未启动浏览器。请查看 environment/preflight.json。");
     process.exitCode = 2;
     process.exit();
   }
   const escapedIds = plan.cases.map((testCase) => testCase.case_id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const args = ["test", "--grep", `(${escapedIds.join("|")})`, `--workers=${plan.execution_policy.workers}`];
-  const test = spawnSync(playwright, args, {
+  const args = [playwright, "test", "--grep", `(?:^|\\s)(${escapedIds.join("|")})(?=\\s|$)`, `--workers=${plan.execution_policy.workers}`];
+  const test = spawnSync(process.execPath, args, {
     cwd: root, stdio: "inherit",
     env: {
       ...process.env,
       QA_BASE_URL: config.base_url,
+      QA_TEST_DIR: resolve(root, plan.execution_policy.test_dir ?? 'tests/generated'),
       QA_RUN_DIR: output.replace(/\\/g, "/"),
       QA_HEADED: process.argv.includes("--headed") ? "true" : "false",
       QA_TIMEOUT_MS: String(config.execution.timeout_ms ?? 30_000),
       QA_WORKERS: String(plan.execution_policy.workers)
     }
   });
+  if (test.error || test.status === null || !existsSync(resolve(output, 'playwright/playwright-results.json'))) {
+    blocked('Playwright 未产生可解析结果；执行器启动失败或中断。');
+    process.exit(2);
+  }
   const parse = spawnSync(process.execPath, ["scripts/parse-playwright-result.mjs", `--run-id=${runId}`], { cwd: root, stdio: "inherit" });
   process.exitCode = test.status || parse.status || 0;
 }

@@ -6,10 +6,12 @@ const root = resolve(import.meta.dirname, "..");
 const runId = process.argv.find((arg) => arg.startsWith("--run-id="))?.slice(9);
 const sourceArg = process.argv.find((arg) => arg.startsWith("--cases="))?.slice(8);
 const selectionArg = process.argv.find((arg) => arg.startsWith("--selection="))?.slice(12);
+const environmentConfig = process.argv.find(arg => arg.startsWith('--environment-config='))?.slice(21) ?? 'config/test-env.json';
+const testDir = process.argv.find(arg => arg.startsWith('--test-dir='))?.slice(11) ?? 'tests/generated';
 if (!runId || !sourceArg) throw new Error("用法: node scripts/create-execution-plan.mjs --run-id=<run_id> --cases=<test_cases.json>");
 const sourcePath = resolve(root, sourceArg);
 if (!existsSync(sourcePath)) throw new Error(`找不到测试用例文件: ${sourcePath}`);
-const environment = JSON.parse(readFileSync(resolve(root, "config/test-env.json"), "utf8"));
+const environment = JSON.parse(readFileSync(resolve(root, environmentConfig), "utf8"));
 const allCases = extractCases(readJson(sourcePath));
 const selection = selectionArg ? readJson(resolve(root, selectionArg)) : null;
 if (selection && selection.run_id !== runId) throw new Error("选择结果的 run_id 与执行计划不一致。");
@@ -21,9 +23,11 @@ const plan = {
   run_id: runId,
   generated_at: new Date().toISOString(),
   source: sourceArg.replace(/\\/g, "/"),
+  environment_config: environmentConfig,
   selection: selection ? { profile: selection.profile, source: selectionArg.replace(/\\/g, "/"), summary: selection.summary } : null,
   cases,
   execution_policy: {
+    test_dir: testDir,
     workers: allParallelSafe ? configuredWorkers : 1,
     requires_environment_preflight: true,
     evidence: { screenshot: "only-on-failure", trace: "retain-on-failure", video: "off" }

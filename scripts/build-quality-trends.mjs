@@ -7,6 +7,7 @@ const runsDir = resolve(root, "output/runs");
 const points = [];
 for (const entry of existsSync(runsDir) ? readdirSync(runsDir, { withFileTypes: true }) : []) {
   if (!entry.isDirectory()) continue;
+  if (existsSync(resolve(runsDir, entry.name, 'inputs/fixture-origin.json')) || existsSync(resolve(runsDir, entry.name, 'inputs/acceptance.json'))) continue;
   const path = resolve(runsDir, entry.name, "report/quality-metrics.json");
   if (!existsSync(path)) continue;
   const metrics = JSON.parse(readFileSync(path, "utf8"));

@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "acceptance:serve": "node acceptance/server.mjs",
+    "acceptance:run": "node scripts/run-acceptance.mjs",
+    "acceptance:prepare": "node scripts/prepare-acceptance.mjs",
+    "acceptance:verify": "node scripts/verify-acceptance.mjs",
+    "acceptance:contracts": "node --test tests/acceptance/server.test.mjs tests/acceptance/quality.test.mjs tests/acceptance/orchestration.test.mjs tests/acceptance/xmind.test.mjs",
     "run:create": "node scripts/create-run.mjs",
     "run:plan": "node scripts/plan-run.mjs",
     "run:plan:show": "node scripts/show-run-plan.mjs",

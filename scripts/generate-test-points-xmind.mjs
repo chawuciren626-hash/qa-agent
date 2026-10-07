@@ -9,43 +9,39 @@ const [input, output] = process.argv.slice(2);
 if (!input || !output) throw new Error("用法: node scripts/generate-test-points-xmind.mjs <test_points.md> <test_points.xmind>");
 
 const markdown = readFileSync(resolve(input), "utf8");
-const sections = [];
-let current;
-for (const line of markdown.split(/\r?\n/)) {
-  const heading = line.match(/^##+\s+(?:[一二三四五六七八九十]+、)?(.+)/);
-  if (heading) { current = { title: heading[1].trim(), cases: [] }; sections.push(current); continue; }
-  if (!line.startsWith("| TP-")) continue;
-  const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
-  if (cells.length < 7) continue;
-  const [id, moduleName, feature, description, risk, coverage] = cells;
-  if (!current) { current = { title: "测试点", cases: [] }; sections.push(current); }
-  current.cases.push({ id, moduleName, feature, description, risk, coverage });
-}
-
-const rootTitle = markdown.match(/^#\s+(.+?)测试点设计/)?.[1]?.trim() || "测试点";
-const normal = sections.find((section) => /正常|主流程/.test(section.title));
-const exception = sections.find((section) => /异常/.test(section.title));
-const boundary = sections.find((section) => /边界/.test(section.title));
-const security = sections.find((section) => /安全/.test(section.title));
-const performance = sections.find((section) => /性能/.test(section.title));
-const compatibility = sections.find((section) => /兼容|体验/.test(section.title));
-
-const leaf = (item) => ({ title: item.feature });
 const branches = [];
-const loginChildren = [];
-if (normal?.cases.length) loginChildren.push({ title: "登录成功", children: normal.cases.map(leaf) });
-if (exception?.cases.length) loginChildren.push({ title: "登录失败与校验", children: exception.cases.map(leaf) });
-if (loginChildren.length) branches.push({ title: "登录", children: loginChildren });
-if (boundary?.cases.length) branches.push({ title: "输入与次数边界", children: boundary.cases.map(leaf) });
-if (security?.cases.length) branches.push({ title: "安全与会话", children: security.cases.map(leaf) });
-if (performance?.cases.length) branches.push({ title: "性能", children: performance.cases.map(leaf) });
-if (compatibility?.cases.length) branches.push({ title: "兼容性与体验", children: compatibility.cases.map(leaf) });
-
-for (const section of sections) {
-  if (![normal, exception, boundary, security, performance, compatibility].includes(section) && section.cases.length) {
-    branches.push({ title: section.title, children: section.cases.map(leaf) });
+const modules = new Map();
+const ids = new Set();
+let headers;
+for (const line of markdown.split(/\r?\n/)) {
+  if (/^\s*#/.test(line)) headers = undefined;
+  if (!line.trim().startsWith('|')) continue;
+  const cells = line.trim().split(/(?<!\\)\|/).slice(1, -1).map(cell => cell.trim().replace(/\\\|/g, '|'));
+  if (cells.includes('模块') && (cells.includes('描述') || cells.includes('测试点'))) { headers = cells; continue; }
+  if (!/^TP-/.test(cells[0] ?? '')) continue;
+  if (!headers || cells.length !== headers.length) throw new Error(`测试点表格格式错误: ${cells[0]}`);
+  const row = Object.fromEntries(headers.map((header, i) => [header, cells[i]]));
+  const [id] = cells;
+  const moduleName = row['模块'];
+  const scenario = row['场景'] || row['功能'] || row['功能（或场景）'];
+  const description = row['描述'] || row['测试点'];
+  if (!moduleName || !scenario || !description || ids.has(id)) throw new Error(`测试点字段缺失或编号重复: ${id}`);
+  ids.add(id);
+  if (!modules.has(moduleName)) {
+    const branch = { title: moduleName, children: [], scenarios: new Map() };
+    modules.set(moduleName, branch);
+    branches.push(branch);
   }
+  const branch = modules.get(moduleName);
+  if (!branch.scenarios.has(scenario)) {
+    const child = { title: scenario, children: [] };
+    branch.scenarios.set(scenario, child);
+    branch.children.push(child);
+  }
+  branch.scenarios.get(scenario).children.push({ title: description.replace(/^TP-[\w-]+\s*[:：、.\-]?\s*/, '') });
 }
+if (!ids.size) throw new Error('没有可导出的测试点，拒绝生成空脑图。');
+const rootTitle = markdown.match(/^#\s+(.+)$/m)?.[1]?.replace(/\s*测试点(?:设计)?\s*$/, '').trim() || '测试点';
 
 const target = resolve(output);
 mkdirSync(dirname(target), { recursive: true });

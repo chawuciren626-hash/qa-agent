@@ -14,6 +14,7 @@
 
 ## 工程能力
 
+- [通用验收基座](acceptance-baseline.md)：可重置站点、固定回归用例、异常场景及执行方法。
 - [测试资产管理](test-asset-management.md)
 - [测试选择与效率](test-selection-and-efficiency.md)
 - [结果可信度与质量度量](result-trust-and-quality-metrics.md)

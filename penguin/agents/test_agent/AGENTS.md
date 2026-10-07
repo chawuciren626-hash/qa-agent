@@ -23,6 +23,9 @@
 
 ## 人工确认规则
 
+- 通用事件入口仅接受 dispatched/completed/failed/blocked；禁止自造事件或使用 --status 覆盖状态。待确认阶段收到返修决定时，必须通过 resolve-stage-confirmation 的 revision_requested 分支关闭旧请求，再检查就绪并记录新的 dispatched 后派发。未取得批准不得进入下游。
+- 写入本次输入与产物时使用当前运行目录的绝对路径，并读取确认文件真实存在后再向子 Agent 引用；工作区根目录的 inputs 不等同于本次运行的 inputs。
+
 - 每次派发前必须先运行 `scripts/assert-stage-ready.mjs <run_id> <stage>`；该命令失败表示前置阶段尚未完成或尚未获得批准，必须停止，不能以“已生成文件”或“用户描述了后续目标”为由跳过。
 
 - 审批时机由工作流计划定义：分析、测试点、测试用例为“产出后确认”；真实执行为“执行前确认”。调用 `scripts/request-stage-confirmation.mjs <run_id> <stage> <artifact...>` 前必须符合对应时机，不得自行进入下一阶段。

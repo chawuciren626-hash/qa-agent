@@ -17,7 +17,8 @@ manifest.orchestration ??= { events: [] };
 const stagePlan = getPlanStage(manifest, stage);
 if (!stagePlan?.selected || stagePlan.confirmation === "none") throw new Error(`${stage} 阶段未配置人工确认。`);
 const expectedStatus = stagePlan.confirmation === "before" ? "planned" : "completed";
-if (manifest.stages[stage]?.status !== expectedStatus) {
+const revisingBeforeExecution = stagePlan.confirmation === "before" && manifest.stages[stage]?.status === "revision_requested";
+if (manifest.stages[stage]?.status !== expectedStatus && !revisingBeforeExecution) {
   throw new Error(`${stage} 阶段当前状态为 ${manifest.stages[stage]?.status ?? "未计划"}，不能在 ${stagePlan.confirmation} 时请求确认。`);
 }
 const confirmation = {

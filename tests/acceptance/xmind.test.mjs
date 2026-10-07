@@ -1,0 +1,50 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const JSZip = createRequire(require.resolve('xmind'))('jszip');
+const root = resolve(import.meta.dirname, '../..');
+test('XMind groups by business module and scenario, preserves all point descriptions', async () => {
+  const dir = resolve(root, 'output/acceptance', `xmind-${randomUUID()}`);
+  mkdirSync(dir, { recursive: true });
+  const input = resolve(dir, 'points.md');
+  const output = resolve(dir, 'points.xmind');
+  writeFileSync(input, '# 文档草稿测试点设计\n\n## 主流程\n| ID | 模块 | 功能 | 描述 | 风险 | 覆盖类型 | 来源 |\n| --- | --- | --- | --- | --- | --- | --- |\n| TP-01 | 草稿 | 创建 | 合法输入成功 | 高 | 主流程 | R1 |\n| TP-02 | 草稿 | 创建 | 标题含分隔符 A\\|B | 中 | 边界 | R1 |\n\n## 异常\n| ID | 模块 | 场景 | 描述 | 来源 |\n| --- | --- | --- | --- | --- |\n| TP-03 | 预算 | 输入校验 | 负数不能保存 | R2 |\n');
+  const result = spawnSync(process.execPath, ['scripts/generate-test-points-xmind.mjs', input, output], { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const zip = await JSZip.loadAsync(readFileSync(output), { checkCRC32: true });
+  assert.ok(zip.file('manifest.json'));
+  const sheets = JSON.parse(await zip.file('content.json').async('string'));
+  const topic = sheets[0].rootTopic;
+  assert.equal(topic.title, '文档草稿');
+  const modules = topic.children.attached;
+  assert.deepEqual(modules.map(item => item.title), ['草稿', '预算']);
+  const scenario = modules[0].children.attached[0];
+  assert.equal(scenario.title, '创建');
+  assert.deepEqual(scenario.children.attached.map(item => item.title), ['合法输入成功', '标题含分隔符 A|B']);
+  assert.equal(modules[1].children.attached[0].children.attached[0].title, '负数不能保存');
+  assert.ok(!JSON.stringify(topic).includes('TP-'));
+  writeFileSync(input, readFileSync(input, 'utf8').replace('| 功能 |', '| 功能（或场景） |'));
+  const alias = spawnSync(process.execPath, ['scripts/generate-test-points-xmind.mjs', input, resolve(dir, 'alias.xmind')], { cwd: root, encoding: 'utf8' });
+  assert.equal(alias.status, 0, alias.stderr);
+  writeFileSync(input, readFileSync(input, 'utf8').replaceAll('| 描述 |', '| 测试点 |'));
+  const pointAliasPath = resolve(dir, 'point-alias.xmind');
+  const pointAlias = spawnSync(process.execPath, ['scripts/generate-test-points-xmind.mjs', input, pointAliasPath], { cwd: root, encoding: 'utf8' });
+  assert.equal(pointAlias.status, 0, pointAlias.stderr);
+  const pointZip = await JSZip.loadAsync(readFileSync(pointAliasPath), { checkCRC32: true });
+  const pointTopic = JSON.parse(await pointZip.file('content.json').async('string'))[0].rootTopic;
+  assert.equal(pointTopic.children.attached[0].children.attached[0].children.attached[1].title, '标题含分隔符 A|B');
+  for (const [name, markdown] of [['empty', '# Empty'], ['bad', '| TP-1 | missing headers |']]) {
+    const source = resolve(dir, `${name}.md`);
+    const target = resolve(dir, `${name}.xmind`);
+    writeFileSync(source, markdown);
+    const invalid = spawnSync(process.execPath, ['scripts/generate-test-points-xmind.mjs', source, target], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(invalid.status, 0);
+    assert.equal(existsSync(target), false);
+  }
+});

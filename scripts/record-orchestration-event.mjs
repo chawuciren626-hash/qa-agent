@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { resolve, relative, isAbsolute, dirname } from "node:path";
 import { assertStageReady, getRunContext, recomputeRunStatus, writeJson } from "./orchestration-state.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -10,7 +10,23 @@ const options = Object.fromEntries(args.filter((arg) => arg.startsWith("--") && 
   const [key, value] = arg.slice(2).split(/=(.*)/s);
   return [key, value];
 }));
+const allowedEvents = new Set(['dispatched', 'completed', 'failed', 'blocked']);
+if (!allowedEvents.has(eventType)) throw new Error('Unsupported stage event; use confirmation scripts for approval and revision.');
+if (!options.stage) throw new Error('Stage is required.');
+const allowedOptions = new Set(['stage', 'agent', 'skills', 'artifacts', 'reason']);
+for (const key of Object.keys(options)) {
+  if (!allowedOptions.has(key)) throw new Error(`Unsupported event option: ${key}`);
+}
 const { manifestPath, manifest } = getRunContext(root, project, runId);
+for (const artifact of (options.artifacts ?? '').split(',').filter(Boolean)) {
+  const runDir = dirname(manifestPath);
+  const target = resolve(runDir, artifact);
+  const rel = relative(runDir, target);
+  if (isAbsolute(artifact) || rel === '..' || rel.startsWith('..\\') || rel.startsWith('../') || isAbsolute(rel)) {
+    throw new Error(`Artifact must be a run-relative file: ${artifact}`);
+  }
+  if (!statSync(target).isFile()) throw new Error(`Artifact is not a file: ${artifact}`);
+}
 manifest.manifest_version ??= 3;
 manifest.orchestration ??= { events: [], resume_from: null, plan: null };
 manifest.orchestration.events ??= [];
@@ -49,7 +65,7 @@ for (const artifact of (options.artifacts ?? "").split(",").filter(Boolean)) {
 }
 if (options.stage) {
   const stage = manifest.stages[options.stage] ?? {};
-  stage.status = options.status ?? inferredStatus ?? stage.status ?? "in_progress";
+  stage.status = inferredStatus;
   stage.updated_at = timestamp;
   if (options.agent) stage.agent = options.agent;
   if (options.reason) stage.reason = options.reason;
