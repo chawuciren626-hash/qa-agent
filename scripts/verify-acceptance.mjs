@@ -1,5 +1,6 @@
 import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { loadLatestExecution } from './execution-attempts.mjs';
 const root = resolve(import.meta.dirname, '..');
 const runId = process.argv.find(arg => arg.startsWith('--run-id='))?.slice(9);
 if (!/^run-[A-Za-z0-9-]+$/.test(runId ?? '')) throw new Error('Valid --run-id required');
@@ -7,7 +8,7 @@ const dir = resolve(root, 'output/runs', runId);
 const read = file => JSON.parse(readFileSync(resolve(dir, file), 'utf8'));
 const fixture = read('inputs/acceptance.json');
 const oracle = JSON.parse(readFileSync(resolve(root, 'acceptance/oracle.json'), 'utf8')).scenarios[fixture.scenario];
-const result = read('execution/test_results.json');
+const result = loadLatestExecution(root, runId).results;
 const failed = result.cases.filter(item => item.status === 'failed').map(item => item.case_id).sort();
 const ids = result.cases.map(item => item.case_id).sort();
 const expectedIds = Array.from({length:6}, (_, i) => `TC-BASE-0${i+1}`);

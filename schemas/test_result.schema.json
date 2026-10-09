@@ -2,18 +2,22 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "TestExecutionResult",
   "type": "object",
-  "required": ["run_id", "status", "started_at", "finished_at", "summary", "cases"],
+  "required": ["run_id", "invocation_id", "status", "started_at", "finished_at", "summary", "cases"],
   "properties": {
     "run_id": { "type": "string" },
+    "invocation_id": { "type": "string", "minLength": 1 },
     "status": { "enum": ["completed", "blocked", "failed"] },
     "started_at": { "type": "string" },
     "finished_at": { "type": "string" },
     "block_reason": { "type": "string" },
-    "summary": { "type": "object" },
+    "summary": { "type": "object", "required": ["total", "passed", "failed", "skipped", "blocked"], "properties": {
+      "total": { "type": "integer", "minimum": 0 }, "passed": { "type": "integer", "minimum": 0 }, "failed": { "type": "integer", "minimum": 0 }, "skipped": { "type": "integer", "minimum": 0 }, "blocked": { "type": "integer", "minimum": 0 }
+    } },
     "cases": {
       "type": "array",
       "items": {
         "type": "object",
+        "required": ["case_id", "status", "evidence_paths"],
         "properties": {
           "case_id": { "type": "string" },
           "status": { "enum": ["passed", "failed", "skipped", "blocked"] },

@@ -45,16 +45,22 @@ export function readJson(path) {
 
 export function validateExecutionPlan(plan) {
   const errors = [];
+  if (!plan || typeof plan !== 'object') return ['执行计划必须是对象。'];
   if (!plan?.run_id) errors.push("缺少 run_id。");
   if (!Array.isArray(plan?.cases)) errors.push("cases 必须为数组。");
   if (!plan?.execution_policy) errors.push("缺少 execution_policy。");
   const ids = new Set();
-  for (const testCase of plan?.cases ?? []) {
+  for (const testCase of Array.isArray(plan.cases) ? plan.cases : []) {
+    if (!testCase || typeof testCase !== 'object') { errors.push('执行用例必须是对象。'); continue; }
     if (!testCase.case_id || !testCase.title) errors.push("执行用例缺少 case_id 或 title。");
     if (ids.has(testCase.case_id)) errors.push(`执行用例 ID 重复: ${testCase.case_id}`);
     ids.add(testCase.case_id);
     try { normalizeContract(testCase); } catch (error) { errors.push(error.message); }
   }
-  if ((plan?.execution_policy?.workers ?? 0) < 1) errors.push("execution_policy.workers 必须大于 0。");
+  if (!Number.isSafeInteger(plan.execution_policy?.workers) || plan.execution_policy.workers < 1) errors.push("execution_policy.workers 必须是正整数。");
+  for (const [key, fallback, min, max] of [['global_timeout_ms', 900000, 1000, 86400000], ['preflight_timeout_ms', 60000, 1000, 300000]]) {
+    const value = plan.execution_policy?.[key] ?? fallback;
+    if (!Number.isSafeInteger(value) || value < min || value > max) errors.push(`${key} must be an integer between ${min} and ${max}`);
+  }
   return errors;
 }

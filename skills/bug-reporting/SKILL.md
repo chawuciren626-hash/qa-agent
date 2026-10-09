@@ -6,6 +6,12 @@ version: 1.2.0
 
 # Bug 记录 Skill
 
+## 统一产物交付契约
+
+新版执行批次的bugs.json必须为`{run_id, invocation_id, bugs: [...]}`，invocation_id引用真实最新批次；normalize-defects会拒绝旧批次分析，并在标准记录中保留批次ID。先重建当前证据评估。最新批次阻塞时，不沿用上轮失败或成功结论。细则见`docs/execution-attempts.md`。
+
+交付前运行`npm run artifacts:validate -- <run_id> defects`，详见`docs/artifact-contracts.md`。标准defect-records包含本run_id、records与分类summary；无问题时records可为空，但每个实际失败用例必须有分类记录（不能确定时needs_review）。related_cases引用本次实际失败ID，evidence_refs引用本run文件，重复问题使用有效duplicate_of，置信度不得超过关联证据评估。校验失败交回来源阶段修复，不改写真实执行结果。
+
 ## 适用场景
 
 当测试执行结果中存在失败、阻塞或异常时，用于生成 Bug 草稿或失败分析。
@@ -46,6 +52,9 @@ version: 1.2.0
 
 ## 处理规则
 
+- 原始观察与 `defects/lifecycle.json` 处置台账分离。规范化只能创建 draft/needs_review；已确认/已修复/已关闭以台账重放为准，不以模型文字为准。通过 `npm run quality:lifecycle -- show <run_id>` 查询最新 revision，取得明确分类/修复依据后使用 confirm/reject/fixed/retest 命令登记 actor、reason、evidence，详见 `docs/quality-governance-lifecycle.md`。
+- fixed 不等于 closed。真实复测交总控按授权派发，关联用例需在同批准设计与环境依据下的独立新批次全部通过。旧复测、跳过、漏测不得关闭；失败重新打开。不得改写原始观察、冒充人工审阅人或自动删除锁。
+- 指纹索引仅是同 scope_id 重复候选，默认本次 run；跨运行需明确共享范围且不自动合并。报告已完成后治理变化会请求报告重制，通知总控恢复报告阶段。
 - 仅为 failure_category=product_defect 或有充分证据的 needs_review 生成 Bug 草稿。
 - 每条草稿同时写入当前运行的 bugs.json 和 bugs.md；若没有产品缺陷，两个文件明确记录“本次无产品缺陷草稿”。
 - Bug 需包含 related_case、复现步骤、预期/实际结果、环境、证据路径和分类理由。

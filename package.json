@@ -7,7 +7,17 @@
     "acceptance:run": "node scripts/run-acceptance.mjs",
     "acceptance:prepare": "node scripts/prepare-acceptance.mjs",
     "acceptance:verify": "node scripts/verify-acceptance.mjs",
-    "acceptance:contracts": "node --test tests/acceptance/server.test.mjs tests/acceptance/quality.test.mjs tests/acceptance/orchestration.test.mjs tests/acceptance/xmind.test.mjs",
+    "acceptance:contracts": "node --test tests/acceptance/server.test.mjs tests/acceptance/quality.test.mjs tests/acceptance/orchestration.test.mjs tests/acceptance/xmind.test.mjs tests/acceptance/benchmark.test.mjs tests/acceptance/design-quality.test.mjs tests/acceptance/execution-safety.test.mjs tests/acceptance/stage-evidence.test.mjs tests/acceptance/artifact-contracts.test.mjs tests/acceptance/execution-attempts.test.mjs",
+    "engineering:contracts": "node --test tests/acceptance/structured-actions.test.mjs tests/acceptance/controller-command-session.test.mjs tests/acceptance/run-status-summary.test.mjs tests/acceptance/server.test.mjs tests/acceptance/quality.test.mjs tests/acceptance/orchestration.test.mjs tests/acceptance/xmind.test.mjs tests/acceptance/design-quality.test.mjs tests/acceptance/execution-safety.test.mjs tests/acceptance/stage-evidence.test.mjs tests/acceptance/artifact-contracts.test.mjs tests/acceptance/execution-attempts.test.mjs tests/acceptance/defect-lifecycle.test.mjs tests/acceptance/quality-index.test.mjs tests/acceptance/stage-recovery.test.mjs tests/acceptance/command-runtime.test.mjs tests/acceptance/requirement-provenance.test.mjs",
+    "status:contracts": "node --test tests/acceptance/run-status-summary.test.mjs",
+    "run:status": "node scripts/show-run-status.mjs",
+    "runtime:doctor": "node scripts/project-command.mjs doctor",
+    "stage:recover": "node scripts/recover-stage.mjs",
+    "quality:lifecycle": "node scripts/manage-defect-lifecycle.mjs",
+    "execution:attempts": "node scripts/manage-execution-attempts.mjs",
+    "artifacts:validate": "node scripts/validate-artifacts.mjs",
+    "design:validate": "node scripts/validate-design.mjs",
+    "benchmark:check": "node scripts/check-benchmark-record.mjs",
     "run:create": "node scripts/create-run.mjs",
     "run:plan": "node scripts/plan-run.mjs",
     "run:plan:show": "node scripts/show-run-plan.mjs",
@@ -35,6 +45,7 @@
     "@playwright/test": "^1.63.0"
   },
   "dependencies": {
+    "ajv": "^8.18.0",
     "xlsx": "^0.18.5",
     "xmind": "^2.2.33"
   }

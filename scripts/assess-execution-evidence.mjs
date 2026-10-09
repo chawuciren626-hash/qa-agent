@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { loadLatestExecution } from './execution-attempts.mjs';
 
 const root = resolve(import.meta.dirname, "..");
 const runId = process.argv.find((arg) => arg.startsWith("--run-id="))?.slice(9);
@@ -9,7 +10,7 @@ const minimumEvidence = policy.confidence ?? {};
 const runDir = resolve(root, "output/runs", runId);
 const resultsPath = resolve(runDir, "execution/test_results.json");
 if (!existsSync(resultsPath)) throw new Error(`缺少执行结果: ${resultsPath}`);
-const results = JSON.parse(readFileSync(resultsPath, "utf8"));
+const { results } = loadLatestExecution(root, runId);
 const assessments = (results.cases ?? []).filter((testCase) => testCase.status === "failed").map((testCase) => {
   const refs = [...new Set((testCase.evidence_paths ?? []).map(item => isAbsolute(item) ? resolve(item) : resolve(runDir, item)))];
   const existing = refs.filter(item => {
@@ -36,7 +37,7 @@ const summary = {
   insufficient: assessments.filter((item) => !item.triage_ready).length,
   confidence: Object.fromEntries(["low", "medium", "strong"].map((level) => [level, assessments.filter((item) => item.evidence_confidence === level).length]))
 };
-const output = { run_id: runId, generated_at: new Date().toISOString(), raw_result: "execution/test_results.json", assessments, summary };
+const output = { run_id: runId, invocation_id: results.invocation_id, generated_at: new Date().toISOString(), raw_result: "execution/test_results.json", assessments, summary };
 const targetDir = resolve(runDir, "quality");
 mkdirSync(targetDir, { recursive: true });
 const target = resolve(targetDir, "evidence-assessment.json");

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { getRunContext, recomputeRunStatus, writeJson } from "./orchestration-state.mjs";
+import { getRunContext, recomputeRunStatus, writeJson, withRunLock } from "./orchestration-state.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const project = JSON.parse(readFileSync(resolve(root, "config/project.json"), "utf8"));
@@ -20,6 +20,7 @@ function selectWithDependencies(stageId) {
 }
 requested.forEach(selectWithDependencies);
 
+withRunLock(root, project, runId, () => {
 const { manifestPath, manifest } = getRunContext(root, project, runId);
 if (manifest.orchestration?.plan?.stages?.length) throw new Error("运行计划已存在，不能覆盖。请创建新的 run_id。 ");
 const now = new Date().toISOString();
@@ -47,3 +48,4 @@ manifest.status = recomputeRunStatus(manifest);
 manifest.updated_at = now;
 writeJson(manifestPath, manifest);
 console.log(JSON.stringify({ run_id: runId, workflow: workflow.workflow_id, selected_stages: [...selected], status: manifest.status }, null, 2));
+});

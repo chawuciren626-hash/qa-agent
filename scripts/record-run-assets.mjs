@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { catalogPath, readCatalog } from "./test-asset-catalog.mjs";
-import { getRunContext } from "./orchestration-state.mjs";
+import { getRunContext, withRunLock, writeJson } from "./orchestration-state.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const project = JSON.parse(readFileSync(resolve(root, "config/project.json"), "utf8"));
@@ -9,6 +9,7 @@ const runId = process.argv.find((arg) => arg.startsWith("--run-id="))?.slice(9);
 const ids = process.argv.find((arg) => arg.startsWith("--assets="))?.slice(9)?.split(",").filter(Boolean) ?? [];
 if (!runId || !ids.length) throw new Error("用法: node scripts/record-run-assets.mjs --run-id=<run_id> --assets=<asset_id,asset_id>");
 const catalog = readCatalog(catalogPath(root));
+withRunLock(root, project, runId, () => {
 const { manifestPath, manifest } = getRunContext(root, project, runId);
 manifest.asset_refs ??= [];
 for (const id of ids) {
@@ -20,5 +21,6 @@ for (const id of ids) {
   }
 }
 manifest.updated_at = new Date().toISOString();
-writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+writeJson(manifestPath, manifest);
 console.log(JSON.stringify({ run_id: runId, asset_refs: manifest.asset_refs }, null, 2));
+});

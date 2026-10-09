@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, resolve, extname } from "node:path";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -8,24 +8,12 @@ const { Workbook, Topic, Zipper } = require("xmind");
 const [input, output] = process.argv.slice(2);
 if (!input || !output) throw new Error("用法: node scripts/generate-test-points-xmind.mjs <test_points.md> <test_points.xmind>");
 
-const markdown = readFileSync(resolve(input), "utf8");
+const source = readFileSync(resolve(input), "utf8");
 const branches = [];
 const modules = new Map();
 const ids = new Set();
-let headers;
-for (const line of markdown.split(/\r?\n/)) {
-  if (/^\s*#/.test(line)) headers = undefined;
-  if (!line.trim().startsWith('|')) continue;
-  const cells = line.trim().split(/(?<!\\)\|/).slice(1, -1).map(cell => cell.trim().replace(/\\\|/g, '|'));
-  if (cells.includes('模块') && (cells.includes('描述') || cells.includes('测试点'))) { headers = cells; continue; }
-  if (!/^TP-/.test(cells[0] ?? '')) continue;
-  if (!headers || cells.length !== headers.length) throw new Error(`测试点表格格式错误: ${cells[0]}`);
-  const row = Object.fromEntries(headers.map((header, i) => [header, cells[i]]));
-  const [id] = cells;
-  const moduleName = row['模块'];
-  const scenario = row['场景'] || row['功能'] || row['功能（或场景）'];
-  const description = row['描述'] || row['测试点'];
-  if (!moduleName || !scenario || !description || ids.has(id)) throw new Error(`测试点字段缺失或编号重复: ${id}`);
+function addPoint(id, moduleName, scenario, description) {
+  if (![id, moduleName, scenario, description].every(value => typeof value === 'string' && value.trim()) || ids.has(id)) throw new Error(`测试点字段缺失或编号重复: ${id}`);
   ids.add(id);
   if (!modules.has(moduleName)) {
     const branch = { title: moduleName, children: [], scenarios: new Map() };
@@ -40,8 +28,28 @@ for (const line of markdown.split(/\r?\n/)) {
   }
   branch.scenarios.get(scenario).children.push({ title: description.replace(/^TP-[\w-]+\s*[:：、.\-]?\s*/, '') });
 }
+let rootTitle;
+if (extname(input).toLowerCase() === '.json') {
+  const data = JSON.parse(source);
+  const points = Array.isArray(data) ? data : data.points ?? data.test_points;
+  if (!Array.isArray(points)) throw new Error('Expected test point array or points/test_points envelope');
+  for (const point of points) addPoint(point.id, point.module, point.feature, point.description);
+  rootTitle = data.title || '测试点';
+} else {
+  let headers;
+  for (const line of source.split(/\r?\n/)) {
+    if (/^\s*#/.test(line)) headers = undefined;
+    if (!line.trim().startsWith('|')) continue;
+    const cells = line.trim().split(/(?<!\\)\|/).slice(1, -1).map(cell => cell.trim().replace(/\\\|/g, '|'));
+    if (cells.includes('模块') && (cells.includes('描述') || cells.includes('测试点'))) { headers = cells; continue; }
+    if (!/^TP-/.test(cells[0] ?? '')) continue;
+    if (!headers || cells.length !== headers.length) throw new Error(`测试点表格格式错误: ${cells[0]}`);
+    const row = Object.fromEntries(headers.map((header, i) => [header, cells[i]]));
+    addPoint(cells[0], row['模块'], row['场景'] || row['功能'] || row['功能（或场景）'], row['描述'] || row['测试点']);
+  }
+  rootTitle = source.match(/^#\s+(.+)$/m)?.[1]?.replace(/\s*测试点(?:设计)?\s*$/, '').trim() || '测试点';
+}
 if (!ids.size) throw new Error('没有可导出的测试点，拒绝生成空脑图。');
-const rootTitle = markdown.match(/^#\s+(.+)$/m)?.[1]?.replace(/\s*测试点(?:设计)?\s*$/, '').trim() || '测试点';
 
 const target = resolve(output);
 mkdirSync(dirname(target), { recursive: true });

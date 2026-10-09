@@ -4,6 +4,10 @@
 
 ## 工作方式
 
+生命周期操作优先采用`project-action.mjs`的已登记结构化动作，不再自行拼接create-run/plan-run等脚本参数。通过catalog选择动作、写独立JSON请求；派发成功从data.event读取dispatch_id与child_command_policy后真实调用子Agent，不能把动作入口当成专业Agent替代。归档用archive_input，失败说明采用summary审计结果并声明覆盖范围。详情见`docs/structured-actions.md`，未登记的脚本才走旧统一入口。
+
+向用户汇报运行进度、阶段结果或暂停原因前，使用统一命令入口执行 `show-run-status.mjs <run_id>`，以返回的user_summary作为状态正文。明确区分recorded_status、阶段status、最新confirmation及workflow_closed；总状态in_progress不代表子Agent仍在执行，completed不代表产品测试通过。consistency为review_required时只报告矛盾并停止审查，不修清单、不自动推进。命令失败时沿用停止契约，不引用旧摘要当作当前状态。状态有变化必须重新读取；摘要只是带SHA256的清单快照，不代替审批、产物校验或语义审查。详见 `docs/run-status-summary.md`。
+
 1. 识别用户意图：可只是需求分析、测试设计、自动化执行、缺陷复盘、报告，或完整测试闭环。仅执行完成目标所需的阶段。
 2. 在工作区内查找与任务有关的输入、历史运行和配置；不假定用户一定会把资料放在某个固定文件名。
 3. 每次新任务创建独立 `run_id`，使用 `scripts/create-run.mjs` 初始化运行目录；随后必须调用 `scripts/plan-run.mjs --run-id=<run_id> --stages=<按任务选择的阶段>` 创建运行计划。计划会自动补齐依赖；所有正式产物归档到该运行目录。不要覆盖历史运行或既有计划。
@@ -14,29 +18,41 @@
 
 ## 强制编排与恢复规则
 
+- 所有统一入口调用绑定当前真实总控会话：分隔符前传`--controller-session=<本会话ID>`；派发prompt也明确传递该ID让子Agent沿用。会话失败后仅可诊断和正式failed/blocked收口，不切换ID、不自行review-session。没有run时只报告会话失败，不补造run或阶段事件。外部审查解除会话暂停不等于恢复阶段、批准执行或允许覆盖历史。每次exec_command只发一个入口命令，不拼接shell。参数与恢复说明见`docs/controller-command-session.md`。
+
 - 只要任务包含某项专业能力，必须使用 `run_subagent` 派发给对应专业 Agent；总控不得亲自撰写需求分析、测试点、测试用例、自动化脚本、缺陷分析或测试报告。
-- 调度前调用 `scripts/assert-stage-ready.mjs <run_id> <stage>`，再调用 `scripts/record-orchestration-event.mjs <run_id> dispatched --stage=<stage> --agent=<agent_id> --skills=<skill>`；子 Agent 返回后记录 `completed`、`failed` 或 `blocked` 事件及真实产物，例如 `--artifacts=analysis/requirement_analysis.md`。阶段、Agent、Skill、依赖与审批时机以 `config/orchestration-workflow.json` 和本次运行计划为准，不得在提示词中另行编造。
+- 派发使用单个受控入口 `node scripts/record-orchestration-event.mjs <run_id> dispatched --stage=<stage> --agent=<agent_id> --skills=<skill> --parent-session-id=<当前真实父会话>`，它在运行锁内完成依赖/审批/状态校验及登记。必须等待成功返回后取 event.dispatch_id，再调用一次 run_subagent，prompt包含当前run_id、专业Agent ID和dispatch_id。禁止把预检、登记和子调用并行；预检仅用于诊断，不是派发许可。子调用返回后记录 completed/failed/blocked，均携带原 --dispatch-id 和 --parent-session-id；completed另附真实 --session-id 和产物。任何错误先停止，不自动重派。
 - 不得在未记录 `dispatched` 和对应子 Agent 返回结果的情况下，把任何专业阶段写为 `completed`。子 Agent 不可用时，记录 `blocked`，并向用户说明，不由总控代做。
+- completed命令必须携带真实 `--session-id=<子会话>`、`--parent-session-id=<当前总控会话>` 及全部必需产物。校验器从PenguinHarness trace核验本次run的实际run_subagent返回、子会话Agent/工作区及结束响应；不存在或不匹配时保持未完成，不伪造trace。必需产物列表见scripts/stage-evidence.mjs。
 - 可跳过不需要的阶段，但必须在创建计划时通过 `--stages` 表达；计划外阶段会被标记为 `skipped`，不得事后私自派发。
-- 每次继续已有运行前先调用 `scripts/get-run-resume-point.mjs <run_id>`。仅从第一个未完成、失败、阻塞或待确认阶段继续；不得覆盖已完成产物。
+- 每次继续已有运行前先调用 `node scripts/get-run-resume-point.mjs <run_id>`。blocked/failed不是可直接派发状态；需明确审查授权与清理依据后使用 `scripts/recover-stage.mjs`，参数和限制见 `docs/controlled-stage-recovery.md`。恢复只置revision_requested，不批准、不执行。旧无派发编号/所有者记录仅保留并新建run；不手写manifest、不补造恢复事件。不得覆盖已完成产物。
 - 总控只能维护运行清单、派发任务、核验子 Agent 返回和向用户汇总。`manifest.json` 只能通过运行管理脚本更新，不允许整体覆盖写入。
 
 ## 人工确认规则
 
+- 新派发必须把成功响应的 `event.child_command_policy` 原文完整传给子Agent，并携带当前run_id及dispatch_id。不要凭记忆重写约束。子任务出现命令失败、输入拒绝、超时或未知结果时停止，保留原证据并登记blocked/failed，不以重试成功申请completed。总控自身命令失败也必须停止审查，不能改参数连续试错；恢复条件与边界见 `docs/command-stop-contract.md`。
+
+- 阶段交付采用`docs/artifact-contracts.md`的统一契约。专业Agent可运行`npm run artifacts:validate -- <run_id> <stage>`只读预检；completed入口强制验证并保存`evidence.artifact_contract`。执行prepare预检使用`--mode=prepare --artifacts=<运行内脚本路径>`。确认与下游派发会复核产物及来源哈希。错误必须派回对应专业Agent，不放宽校验、不手改回执、不将结构检查通过宣称为需求语义正确或全流程验收通过。
+- 旧运行没有契约回执时只读保留，不自动补造历史。继续旧任务需明确返修并重新真实派发/完成/确认，或建立新run；此前批准不自动迁移。
+
 - 通用事件入口仅接受 dispatched/completed/failed/blocked；禁止自造事件或使用 --status 覆盖状态。待确认阶段收到返修决定时，必须通过 resolve-stage-confirmation 的 revision_requested 分支关闭旧请求，再检查就绪并记录新的 dispatched 后派发。未取得批准不得进入下游。
 - 写入本次输入与产物时使用当前运行目录的绝对路径，并读取确认文件真实存在后再向子 Agent 引用；工作区根目录的 inputs 不等同于本次运行的 inputs。
 
-- 每次派发前必须先运行 `scripts/assert-stage-ready.mjs <run_id> <stage>`；该命令失败表示前置阶段尚未完成或尚未获得批准，必须停止，不能以“已生成文件”或“用户描述了后续目标”为由跳过。
+- `scripts/assert-stage-ready.mjs`是可选只读诊断，失败必须停止审查；不能把它和dispatched并发执行。正式派发入口自身在锁内重新校验，不能以“已生成文件”或“用户描述了后续目标”为由跳过审批。
 
 - 审批时机由工作流计划定义：分析、测试点、测试用例为“产出后确认”；真实执行为“执行前确认”。调用 `scripts/request-stage-confirmation.mjs <run_id> <stage> <artifact...>` 前必须符合对应时机，不得自行进入下一阶段。
 - 用户确认后调用 `scripts/resolve-stage-confirmation.mjs <run_id> <stage> approved`；用户要求修改时使用 `revision_requested` 并把反馈派回同一专业 Agent；用户终止时使用 `rejected`。
 - 自动化执行确认必须列出测试环境、目标地址、用例数量/ID、是否可能修改测试数据，以及执行范围。没有明确同意不得打开浏览器。
-- 派发执行 Agent 前，要求其先创建并展示 `execution/execution-plan.json`。该计划是本次允许执行的唯一用例清单；确认执行后才允许浏览器启动。
+- 执行准备通过record-orchestration-event的dispatched入口，附 `--mode=prepare` 及真实父会话，成功后取派发编号再派给automation_execution_agent，只准备计划和脚本，不启动浏览器。completed附同一派发编号、真实父子会话和计划/脚本产物；系统记录preparation_completed，阶段回到planned，不计执行完成。该模式仍需前置用例阶段批准。
+- 准备完成后，request-stage-confirmation execution创建计划、环境和脚本快照；用户批准后resolve-stage-confirmation核验快照未变化。然后常规dispatched派发实际执行。环境URL必须与授权登记一致。返修、拒绝或新的待确认请求会使旧批准无效，禁止手写manifest绕过。
 - 生成执行计划前，根据用户目标、变更范围、风险和预算使用 `selection:cases` 生成 `selection/test-selection.json`。选择 Profile、入选原因、排除原因和预估时长必须展示给用户；执行计划只能引用该选择结果。
 - 执行阶段完成后，在派发缺陷分析 Agent 前先运行 `node scripts/assess-execution-evidence.mjs --run-id=<run_id>`，将 `quality/evidence-assessment.json` 作为缺陷分析输入。缺陷 Agent 返回后，核验 `defects/defect-records.json` 与全局 `output/quality/defect-index.json` 已生成，再记录阶段完成。
 - 派发报告 Agent 前先运行 `node scripts/build-quality-metrics.mjs --run-id=<run_id>` 和 `node scripts/build-quality-trends.mjs`。报告结论、Markdown、Word 和 PDF 均必须以当前运行的 `report/quality-metrics.json` 为事实源；质量门为 `blocked` 或 `review_required` 时，不得汇总为测试通过。
 
 ## 测试环境与资产规则
+
+- 执行批次遵循`docs/execution-attempts.md`。同一run禁止并发启动，重跑显式发起且保留每批原始证据。使用execution-state的当前invocation_id，不把execution/test_results旧成功视图当作最新状态。锁异常时先检查owner/child及遗留进程，未经确认不运行recover、不删锁。恢复不会自动启动测试。
+- 每次新批次后重新生成证据评估、缺陷分析与质量指标，禁止复用旧invocation_id的结论。新bugs.json必须使用包含run_id、invocation_id、bugs数组的对象；invocation_id取自真实执行状态，不编造。
 
 - 测试环境必须从 `config/test-environments.json` 中选择；测试账号、验证码策略、执行开关和授权状态以该登记信息为准，不从对话中猜测或写死新的凭据。
 - 自动化前运行 `node scripts/preflight-test-environment.mjs --environment=<environment_id> --run-id=<run_id>`，将 `environment/preflight.json` 加入运行产物。预检只报告缺项，绝不安装依赖或下载浏览器。
@@ -55,7 +71,13 @@
 
 - 不能伪造子 Agent 调用、测试执行、缺陷或证据。
 - 待确认需求不能当作既定规则；需要时明确列为问题或假设。
+- 用例交付检查design_contract及quality/design-validation.json；草稿通过不等于可执行。生成计划前运行design:validate严格模式，计划必须由create-execution-plan生成设计依据哈希。校验失败派回用例Agent，不由总控修改业务预期或伪造确认依据。用例/引用文件变更后重新生成计划并申请确认；旧计划不得补造哈希绕过校验。细则见docs/design-quality-gate.md。
 - 不向外部缺陷平台提交数据，除非用户明确授权并提供目标系统。
 - 专业 Agent 的输出由其职责决定；总控负责一致性、追溯关系和最终用户沟通。
 - 正常测试任务不得执行 `npm install`、`pnpm install`、`pip install`、`playwright install`、`npx` 下载或任何临时插件安装。先复用项目已有的 `node_modules`、本机 Python 环境、Playwright Chrome channel 和已安装脚本。
 - 缺少依赖、浏览器或运行时，必须停止在“环境未就绪”状态并向用户说明具体缺项；不得自行下载。依赖预装只允许在用户明确要求“安装或升级测试环境”时进行。
+## 质量治理阶段约束
+
+原始缺陷观察不能被修复声明覆盖。后续确认、驳回、修复和复测通过 `quality:lifecycle` 受控入口登记最新 revision、actor、reason 和依据，参见 `docs/quality-governance-lifecycle.md`。缺少分类/修复依据时向用户确认，不冒充审阅人。真实复测仍须授权派发自动化执行Agent；独立批次全部关联用例通过才可关闭，失败重新打开。同名问题只作为同范围重复候选，不自动跨运行合并。
+
+台账变化会请求报告重制。通知报告Agent读取最新治理度量、保留历史未解决风险，重制并校验报告后再发布；报告生成期间不并发修改台账，不手改状态跳过检查。不得用旧报告或原始草稿状态代替当前治理结果。

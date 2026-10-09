@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { getPlanStage, getRunContext, recomputeRunStatus, writeJson } from "./orchestration-state.mjs";
+import { getPlanStage, getRunContext, recomputeRunStatus, writeJson, withRunLock } from "./orchestration-state.mjs";
+import { executionSnapshot } from './execution-authorization.mjs';
+import { assertCompletedArtifacts } from './artifact-contracts.mjs';
+import { isDeepStrictEqual } from 'node:util';
 
 const root = resolve(import.meta.dirname, "..");
 const project = JSON.parse(readFileSync(resolve(root, "config/project.json"), "utf8"));
@@ -8,10 +11,18 @@ const [runId, stage, decision, ...reasonParts] = process.argv.slice(2);
 if (!runId || !stage || !["approved", "revision_requested", "rejected"].includes(decision)) {
   throw new Error("用法: node scripts/resolve-stage-confirmation.mjs <run_id> <stage> <approved|revision_requested|rejected> [reason]");
 }
+withRunLock(root, project, runId, () => {
 const { manifestPath, manifest } = getRunContext(root, project, runId);
 const timestamp = new Date().toISOString();
 const confirmation = [...(manifest.confirmations ?? [])].reverse().find((item) => item.stage === stage && item.status === "pending");
 if (!confirmation) throw new Error(`找不到 ${stage} 阶段待处理的确认请求。`);
+if (decision === 'approved' && stage !== 'execution') {
+  const receipt = assertCompletedArtifacts(root, runId, manifest, stage);
+  if (!isDeepStrictEqual(receipt, confirmation.artifact_contract)) throw new Error('Artifact receipt changed since confirmation request');
+}
+if (stage === 'execution' && decision === 'approved' && confirmation.execution_snapshot?.sha256 !== executionSnapshot(root, runId).sha256) {
+  throw new Error('Execution inputs changed after confirmation request; request revision and approval again.');
+}
 confirmation.status = decision;
 confirmation.resolved_at = timestamp;
 if (reasonParts.length) confirmation.reason = reasonParts.join(" ");
@@ -33,3 +44,4 @@ manifest.status = recomputeRunStatus(manifest);
 manifest.updated_at = timestamp;
 writeJson(manifestPath, manifest);
 console.log(JSON.stringify({ run_id: runId, stage, decision, resume_from: manifest.orchestration.resume_from }, null, 2));
+});

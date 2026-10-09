@@ -52,6 +52,7 @@ for (const candidate of eligible) {
   budgetUsed += candidate.metadata.estimated_duration_ms;
   selected.push({
     case_id: candidate.testCase.case_id,
+    execution_mode: candidate.testCase.automation_feasible === true ? 'automated' : 'manual',
     title: candidate.testCase.title,
     score: candidate.score,
     estimated_duration_ms: candidate.metadata.estimated_duration_ms,
@@ -67,6 +68,7 @@ const result = {
   source: sourceArg.replace(/\\/g, "/"),
   selected,
   excluded,
+  manual_pending: selected.filter(item => item.execution_mode === 'manual').map(item => ({ case_id: item.case_id, title: item.title, status: 'pending_manual' })),
   summary: { total_cases: candidates.length, selected: selected.length, excluded: excluded.length, estimated_duration_ms: budgetUsed, budget_exceeded: budget !== null && budgetUsed > budget }
 };
 const targetDir = resolve(root, "output/runs", runId, "selection");

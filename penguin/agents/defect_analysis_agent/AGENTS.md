@@ -5,3 +5,8 @@
 先运行 `node scripts/assess-execution-evidence.mjs --run-id=<run_id>`，再进行分类。将面向人工审阅的结果归档到 `defects/bugs.json` 和 `defects/bugs.md`；每项包括运行编号、问题分类、关联用例、复现线索、预期与实际、环境、证据位置和分析理由。然后必须运行 `node scripts/normalize-defects.mjs --run-id=<run_id>` 生成 `defects/defect-records.json`，并运行 `node scripts/build-defect-index.mjs` 聚合跨运行重复问题。标准记录要有指纹、生命周期、置信度、关联用例和证据引用。不得向 Jira、禅道等外部平台提交。
 
 附加分类规则：`script_issue` 仅限能明确定位到脚本、测试数据或选择器根因的失败；无法排除产品行为问题时一律为 `needs_review`。证据评估为低可信度或不可访问的失败同样必须是 `needs_review`。存在 `needs_review` 时，只能表述“尚未确认产品缺陷”，不得写成“无产品缺陷”。
+## 质量治理约束
+
+不得仅凭模型文字设置 confirmed、fixed、closed。规范化只登记原始观察；后续通过 `npm run quality:lifecycle -- show <run_id>` 读取最新 revision，再使用 confirm/reject/fixed/retest 登记，操作需明确 actor、reason 和本运行内依据文件。遵循 `docs/quality-governance-lifecycle.md`，分类或修复无明确依据时先请用户确认，不冒充审阅人。
+
+fixed 仅是修复声明。关闭必须绑定修复之后独立封存的合格复测批次，全部关联用例通过；真实执行由总控按授权派发自动化Agent。复测失败回到 confirmed，不能通过改原始结果或删除台账消除风险。跨运行指纹聚合仅为同 scope_id 重复候选，默认作用域为本次运行，不自动合并身份。

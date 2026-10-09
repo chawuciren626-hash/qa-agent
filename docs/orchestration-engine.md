@@ -47,3 +47,6 @@ node scripts/assert-stage-ready.mjs run-example analysis
 ## 恢复与审计
 
 使用 `node scripts/get-run-resume-point.mjs <run_id>` 获取首个未完成计划阶段。`manifest.json` 的 `orchestration.plan` 保存本次选定阶段，`orchestration.events` 保存派发、完成、阻塞和审批记录，可用于审计 Agent 是否真实调用了专业角色。
+## 2026-10-09 派发与恢复协议更新
+
+最新入口见[受控阶段恢复与派发](controlled-stage-recovery.md)。以下旧命令示例若未包含父会话与派发编号，不适用于新派发：dispatched必须带真实parent-session-id，成功取得dispatch_id后才实际调用子Agent；后续completed/failed/blocked使用原编号与父会话。blocked/failed不能直接重派，须审查后使用recover-stage；旧无编号记录保留并新建run，不手改清单。

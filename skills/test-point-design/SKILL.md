@@ -1,7 +1,7 @@
 ---
 name: test-point-design
 description: 基于需求分析设计正常、异常和边界场景的测试点。
-version: 1.0.0
+version: 1.1.0
 ---
 
 # 测试点设计 Skill
@@ -18,6 +18,7 @@ version: 1.0.0
 ## 输出
 
 - 当前 `run_id` 的 `design/test_points.md`
+- 当前 `run_id` 的 `design/test_points.json`，作为脑图和关联用例的结构化事实源。
 - 当前 `run_id` 的 `design/test_points.xmind`
 
 ## 工作步骤
@@ -27,7 +28,11 @@ version: 1.0.0
 3. 补充异常流程、边界值、权限、安全、性能和兼容性测试点。
 4. 为每个测试点标记风险等级。
 5. 标记来源和待确认项。
-6. 使用 `scripts/generate-test-points-xmind.mjs` 将 Markdown 测试点导出为 XMind 脑图。
+6. 先输出符合 `schemas/test_point.schema.json` 的 JSON，再使用 `scripts/generate-test-points-xmind.mjs <test_points.json> <test_points.xmind>` 导出脑图。Markdown展示与JSON保持一致。旧Markdown导出仍可读，但新流程优先从JSON导出。
+
+JSON支持数组或含`run_id`、`title`、`points`数组的对象。每项包含唯一`id`、`module`、`feature`、`description`、`risk`、`coverage_type`、`source`及非空唯一`rule_ids`。`source`必须是本run内真实来源文件路径（例如`analysis/requirement_analysis.md`），不要只写R1或外部URL；rule_ids引用`analysis/requirement-ledger.json`的范围内需求或假设。范围内未驳回需求不得漏覆盖，语义审查和台账格式见`docs/requirement-provenance.md`。
+
+交付前运行`npm run artifacts:validate -- <run_id> test_points`。校验将脑图的模块、场景、描述与JSON逐项比较；失败应修复源数据并重新导出，不能删掉校验或伪造回执。完整契约见`docs/artifact-contracts.md`。
 
 正式表格使用“编号、模块、场景（或功能）、描述、风险等级、覆盖类型、来源”等明确表头，每个测试点占一行。场景用于归组，描述写具体检查目标；同一模块、同一场景下的测试点会合并为同一脑图分支。
 

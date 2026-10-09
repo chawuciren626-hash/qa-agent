@@ -6,6 +6,7 @@
   "properties": {
     "defect_id": { "type": "string" },
     "fingerprint": { "type": "string" },
+    "scope_id": { "type": "string", "minLength": 1 },
     "category": { "enum": ["product_defect", "script_issue", "environment_issue", "test_data_issue", "needs_review"] },
     "lifecycle_status": { "enum": ["draft", "needs_review", "confirmed", "rejected", "fixed", "closed"] },
     "confidence": { "enum": ["low", "medium", "strong"] },

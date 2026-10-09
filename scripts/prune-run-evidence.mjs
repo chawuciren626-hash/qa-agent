@@ -5,6 +5,7 @@ const root = resolve(import.meta.dirname, "..");
 const runId = process.argv.find((arg) => arg.startsWith("--run-id="))?.slice(9);
 const apply = process.argv.includes("--apply");
 if (!runId) throw new Error("用法: node scripts/prune-run-evidence.mjs --run-id=<run_id> [--apply]");
+if (apply && existsSync(resolve(root, 'output/runs', runId, 'execution/attempts'))) throw new Error('Attempt archives exist; automatic evidence pruning is disabled to preserve historical references.');
 
 // Historical runs created before the single-root convention may contain a copied
 // top-level playwright directory. The canonical location is execution/playwright.

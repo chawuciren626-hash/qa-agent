@@ -8,7 +8,7 @@
   },
   "quality_gate": {
     "block_on": ["blocked_execution", "insufficient_failed_evidence"],
-    "review_on": ["needs_review", "draft_product_defect"],
+    "review_on": ["needs_review", "draft_product_defect", "unverified_fix", "unresolved_historical_defects"],
     "risk_on_severity": ["Blocker", "Critical"]
   }
 }

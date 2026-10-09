@@ -1,0 +1,4 @@
+title = "QA evidence review V2"
+description = "Artifact-quality regression draft; not orchestration or autonomous acceptance."
+runs = 1
+status = "draft"

@@ -8,12 +8,14 @@
 
 1. `quality/evidence-assessment.json`：验证失败项是否有可访问的证据，并计算低、中、强证据可信度。
 2. `defects/defect-records.json`：将缺陷草稿规范为带指纹、生命周期和证据引用的记录。
-3. `output/quality/defect-index.json`：按指纹聚合不同运行中的重复问题。
+3. `output/quality/defect-index.json`：按 scope_id 和指纹聚合重复候选，默认 scope 为 run_id；不自动跨业务合并。
 4. `report/quality-metrics.json`：汇总设计、选择、执行、可信度、缺陷与质量门。
 5. `output/quality/quality-trends.json`：按运行时间保留通过率、失败数、缺陷数和质量门的趋势点。
 
 ## 使用原则
 
+- 治理状态以 `defects/lifecycle.json` 重放结果为准，不能直接把原始观察改为已关闭。修复声明必须经过独立、同设计和环境依据的复测验证；历史未解决问题继续影响质量门。详见[质量治理闭环](quality-governance-lifecycle.md)。
+- 台账或依据变化会使旧报告不再有效；重新生成度量和报告并通过阶段契约后再发布。趋势排除台账或执行状态过期的指标，输出跳过原因，不能用旧通过率替代当前状态。
 - 证据引用必须真实存在。没有错误信息或足够证据的失败不能提升为确认的产品结论。
 - `needs_review` 表示还不能排除产品、脚本、环境或数据因素，报告必须显式保留此状态。
 - 指纹用于发现相同问题在同次或不同次运行中的重复出现；它不自动合并或关闭任何外部缺陷。

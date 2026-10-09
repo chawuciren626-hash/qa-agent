@@ -2,6 +2,7 @@ import json
 import os
 import re
 import sys
+import hashlib
 from html import escape
 from datetime import datetime
 
@@ -32,10 +33,49 @@ with open(results_path, encoding="utf-8") as f:
     results = json.load(f)
 with open(bugs_path, encoding="utf-8") as f:
     bugs = json.load(f)
+def validate_report_results(metrics, results):
+    execution = metrics.get("execution", {})
+    if execution and (execution.get("status") != results.get("status") or any(
+        execution.get(key, 0) != results.get("summary", {}).get(key, 0)
+        for key in ("total", "passed", "failed", "skipped", "blocked")
+    )):
+        raise SystemExit("Results conflict with current metrics; use report/reportable-results.json.")
+    state = metrics.get("trust", {}).get("execution_state")
+    if state and state.get("invocation_id") != results.get("invocation_id"):
+        raise SystemExit("Report results belong to another execution invocation.")
+
+def validate_report_lifecycle(metrics, ledger_bytes):
+    governance = metrics.get('governance')
+    if not governance:
+        raise SystemExit('Lifecycle metrics are required; rebuild quality metrics.')
+    if governance.get('integrity_error'):
+        raise SystemExit('Lifecycle evidence is invalid; formal report export blocked.')
+    actual = hashlib.sha256(ledger_bytes).hexdigest() if ledger_bytes is not None else None
+    if actual != governance.get('ledger_sha256'):
+        raise SystemExit('Lifecycle changed; rebuild quality metrics before export.')
+
+
 metrics = {}
 if metrics_path:
     with open(metrics_path, encoding="utf-8") as f:
         metrics = json.load(f)
+    current_state_path = os.path.join(os.path.dirname(metrics_path), '..', 'execution', 'execution-state.json')
+    if os.path.isfile(current_state_path):
+        with open(current_state_path, encoding='utf-8') as f:
+            current_state = json.load(f)
+        if current_state != metrics.get('trust', {}).get('execution_state'):
+            raise SystemExit('Execution state changed; rebuild quality metrics before exporting.')
+    validate_report_results(metrics, results)
+    ledger_path = os.path.join(os.path.dirname(metrics_path), '..', 'defects', 'lifecycle.json')
+    ledger_bytes = None
+    if os.path.isfile(ledger_path):
+        with open(ledger_path, 'rb') as ledger:
+            ledger_bytes = ledger.read()
+    validate_report_lifecycle(metrics, ledger_bytes)
+else:
+    current_state_path = os.path.join(os.path.dirname(results_path), '..', 'execution', 'execution-state.json')
+    if os.path.isfile(current_state_path):
+        raise SystemExit('Current execution state requires quality metrics for report export.')
 
 def markdown_lines(text):
     for raw in text.splitlines():
@@ -59,6 +99,10 @@ summary = results.get("summary", {})
 report_title = next((clean_text(line[2:].strip()) for line in markdown.splitlines() if line.startswith('# ')), '测试报告')
 run_id = results.get("run_id", "未标识")
 bug_items = bugs if isinstance(bugs, list) else bugs.get("bugs", [])
+governance = metrics.get('governance', {})
+if governance:
+    bug_items = governance.get('current', [])
+lifecycle_items = governance.get('current', []) + governance.get('history', [])
 quality_gate = metrics.get("quality_gate", {})
 trust = metrics.get("trust", {}).get("evidence", {})
 gate_status = quality_gate.get("status", "not_assessed")
@@ -102,9 +146,13 @@ if bug_items:
     for cell, value in zip(bug_table.rows[0].cells, ["编号", "分类", "关联用例", "结论"]): cell.text = value
     for index, item in enumerate(bug_items, 1):
         cells = bug_table.add_row().cells
-        values = [item.get("bug_id", f"BUG-{index:03d}"), item.get("category", item.get("classification", "needs_review")), item.get("related_case", item.get("case_id", "")), item.get("summary", item.get("title", "待确认问题"))]
+        values = [item.get("defect_id", item.get("bug_id", f"BUG-{index:03d}")), item.get("category", item.get("classification", "needs_review")), ", ".join(item.get('related_cases', [])) or item.get("related_case", item.get("case_id", "")), item.get("summary", item.get("title", "待确认问题"))]
         for cell, value in zip(cells, values): cell.text = str(value)
 doc.add_paragraph("报告依据本次运行中的测试结果和缺陷分析产物。")
+doc.add_heading('问题生命周期', level=1)
+doc.add_paragraph(f"历史未关闭问题: {len(governance.get('open_historical', []))}；fixed仅表示修复声明，不等于复测通过。")
+for item in lifecycle_items:
+    doc.add_paragraph(f"{item.get('defect_id', '')}: {item.get('lifecycle_status', '')}; origin={item.get('origin_invocation_id', results.get('invocation_id', ''))}")
 os.makedirs(os.path.dirname(docx_path), exist_ok=True)
 doc.save(docx_path)
 
@@ -137,5 +185,8 @@ for kind, text in markdown_lines(markdown):
     if text in (report_title, "测试报告", "执行概览"): continue
     story.append(Paragraph(escape(clean_text(text)), heading_style if kind == "heading" else body_style))
 story.extend([Paragraph("缺陷汇总", heading_style), Paragraph(f"缺陷草稿条目: {len(bug_items)}（工程问题另见正文）", body_style)])
+story.extend([Paragraph('问题生命周期', heading_style), Paragraph(f"历史未关闭问题: {len(governance.get('open_historical', []))}；fixed仅表示修复声明，不等于复测通过。", body_style)])
+for item in lifecycle_items:
+    story.append(Paragraph(escape(f"{item.get('defect_id', '')}: {item.get('lifecycle_status', '')}; origin={item.get('origin_invocation_id', results.get('invocation_id', ''))}"), body_style))
 SimpleDocTemplate(pdf_path, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=16*mm, bottomMargin=16*mm).build(story)
 print(f"已生成: {docx_path}\n已生成: {pdf_path}")

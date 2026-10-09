@@ -6,6 +6,7 @@
 
 - `penguin/agents.json`：七个 Agent 的 ID、指令源和 Skill 映射。
 - `penguin/agents/<agent_id>/AGENTS.md`：总控与专业 Agent 的公开角色指令。
+- `penguin/command-runtime.md`：七个角色共同的项目命令入口规则，由清单的`shared_instructions`声明。
 - `skills/<skill>/SKILL.md`：项目 Skill 的维护源。
 - `scripts/sync-penguin-agents.mjs`：检查和同步脚本。
 
@@ -35,6 +36,10 @@ node scripts/sync-penguin-agents.mjs --apply --target-root='D:\PenguinData\agent
 ```
 
 同步只覆盖清单中声明的 `AGENTS.md` 和项目 Skill；不会删除 Agent 自带的其他 Skill，也不会创建缺失 Agent。同步后需在 PenguinHarness 中新开对话，确保新会话读取最新指令。
+
+安装后的`AGENTS.md`由角色指令源和共同命令规则组合生成，检查时也比较组合内容，不能再用角色源文件单独与安装文件逐字对比。Skill仍单独同步。
+
+以上npm命令供维护者在正常终端使用。PenguinHarness内部统一先执行`node scripts/project-command.mjs doctor --controller-session=<真实总控会话ID>`，再经带相同身份的原生入口运行项目脚本；不使用npm/npx或嵌套cmd/bash补救环境故障。同步检查由维护者直接运行`node scripts/sync-penguin-agents.mjs`；具体约束见[项目命令运行时](command-runtime.md)及[总控会话闸门](controller-command-session.md)。
 
 ## 验收
 

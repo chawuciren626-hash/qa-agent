@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
@@ -11,7 +11,8 @@ const apply = process.argv.includes("--apply");
 const targetRoot = resolve(args["target-root"] ?? process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(), ".penguin/data/default_project/agents"));
 const manifest = JSON.parse(readFileSync(resolve(root, "penguin/agents.json"), "utf8"));
 const normalize = (value) => value.replace(/\r\n/g, "\n");
-const sameFile = (source, target) => existsSync(target) && normalize(readFileSync(source, "utf8")) === normalize(readFileSync(target, "utf8"));
+const sameFile = (content, target) => existsSync(target) && normalize(content) === normalize(readFileSync(target, "utf8"));
+const shared = manifest.shared_instructions ? readFileSync(resolve(root, manifest.shared_instructions), 'utf8') : '';
 const changes = [];
 
 for (const agent of manifest.agents ?? []) {
@@ -20,7 +21,7 @@ for (const agent of manifest.agents ?? []) {
     throw new Error(`目标 Agent 不存在: ${stateDir}。请先在 PenguinHarness 创建 ${agent.id}。`);
   }
   const sources = [
-    { source: resolve(root, agent.prompt), target: resolve(stateDir, "AGENTS.md") },
+    { source: resolve(root, agent.prompt), target: resolve(stateDir, "AGENTS.md"), shared: true },
     ...(agent.skills ?? []).map((skill) => ({
       source: resolve(root, "skills", skill, "SKILL.md"),
       target: resolve(stateDir, "skills", skill, "SKILL.md")
@@ -28,11 +29,12 @@ for (const agent of manifest.agents ?? []) {
   ];
   for (const item of sources) {
     if (!existsSync(item.source)) throw new Error(`缺少仓库源文件: ${item.source}`);
-    if (sameFile(item.source, item.target)) continue;
+    const content = readFileSync(item.source, 'utf8') + (item.shared && shared ? '\n' + shared : '');
+    if (sameFile(content, item.target)) continue;
     changes.push({ agent: agent.id, source: item.source, target: item.target });
     if (apply) {
       mkdirSync(resolve(item.target, ".."), { recursive: true });
-      copyFileSync(item.source, item.target);
+      writeFileSync(item.target, content);
     }
   }
 }

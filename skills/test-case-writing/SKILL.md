@@ -1,10 +1,14 @@
 ---
 name: test-case-writing
 description: 根据测试点生成符合项目 JSON Schema 的结构化测试用例。
-version: 1.0.0
+version: 1.1.0
 ---
 
 # 测试用例编写 Skill
+
+## 统一产物交付契约
+
+交付前运行`npm run artifacts:validate -- <run_id> test_cases`，详见`docs/artifact-contracts.md`。每条用例必须符合Schema，包含`design_contract`及真实存在于本run测试点JSON中的`related_test_point`。JSON支持数组或cases/test_cases封装，Excel使用现有导出器生成，不能独立修改表格导致与JSON不一致。待确认规则可作为草稿保留，但不得进入执行计划。
 
 ## 适用场景
 
@@ -32,6 +36,8 @@ version: 1.0.0
 7. 为可自动化用例补充 `execution_contract`：数据隔离、准备、断言方式和清理要求。
 8. 调用 `scripts/generate-test-cases-xlsx.mjs` 导出 Excel 评审与执行版本。
 9. 不得为了导出 Excel 临时安装 npm、Python 或 Office 依赖；缺少本地工具时保留 JSON 并报告环境未就绪。
+10. 每条用例补充 `design_contract`：`basis`记录rule_id、来源文件、具体规则及confirmed/pending/conflicted，必须与需求台账一致，rule_id包含在关联测试点rule_ids中；`assumptions`显式列出假设，已确认假设必须引用台账rule_id和真实user_confirmation来源；`data_checks`声明所有适用的长度与金额计算。结构见 `docs/design-quality-gate.md`和`docs/requirement-provenance.md`，不得只写“已校验”。每个测试点至少有对应用例，不以实现观察替代业务预期。
+11. 交付前运行 `npm run design:validate -- --run-id=<run_id> --draft`。草稿可保留明确标记的未决规则，但校验失败的数据需修正；报告路径为 `quality/design-validation.json`。进入执行计划前去掉 `--draft` 再验证；未决规则不能因 `automation_feasible=true` 而绕过限制。
 
 ## 质量标准
 
@@ -56,3 +62,4 @@ version: 1.0.0
 - 禁止使用“检查是否正常”等模糊预期。
 - 禁止把多个无关目标塞进一条用例。
 - 禁止输出不可解析的 JSON。
+- 禁止为了通过校验伪造确认记录、将pending直接改为confirmed、漏填适用的数据检查或把建议写成已确认需求。来源存在不代表语义正确，总控仍须复核。

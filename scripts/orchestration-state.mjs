@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
+import { randomUUID } from 'node:crypto';
 import { resolve } from "node:path";
 
 export const stageStatuses = new Set([
@@ -11,7 +12,18 @@ export function readJson(path) {
 }
 
 export function writeJson(path, value) {
-  writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: 'wx' });
+    renameSync(temporary, path);
+  } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+}
+
+export function withRunLock(root, project, runId, operation) {
+  if (!/^run-[A-Za-z0-9-]+$/.test(runId ?? '')) throw new Error('Invalid run ID');
+  const lock = resolve(root, project.run_root, runId, 'manifest.json.lock');
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx' });
+  try { return operation(); } finally { unlinkSync(lock); }
 }
 
 export function getRunContext(root, project, runId) {
@@ -29,7 +41,7 @@ export function selectedPlanStages(manifest) {
 }
 
 export function hasApprovedConfirmation(manifest, stageId) {
-  return (manifest.confirmations ?? []).some((item) => item.stage === stageId && item.status === "approved");
+  return (manifest.confirmations ?? []).filter((item) => item.stage === stageId).at(-1)?.status === 'approved';
 }
 
 export function hasPendingConfirmation(manifest, stageId) {
@@ -48,6 +60,7 @@ export function recomputeRunStatus(manifest) {
 }
 
 export function assertStageReady(manifest, stageId) {
+  assertStageHistory(manifest, stageId);
   const stage = getPlanStage(manifest, stageId);
   if (!stage?.selected) throw new Error(`阶段未在本次运行计划中启用: ${stageId}`);
   const state = manifest.stages?.[stageId]?.status ?? "planned";
@@ -68,4 +81,12 @@ export function assertStageReady(manifest, stageId) {
     throw new Error(`阶段 ${stageId} 需要执行前人工批准。`);
   }
   return stage;
+}
+
+export function assertStageHistory(manifest, stageId) {
+  const last = (manifest.orchestration?.events ?? []).filter(event => event.stage === stageId).at(-1);
+  if (!last) return;
+  const expected = { dispatched: 'in_progress', completed: 'completed', preparation_completed: 'planned', failed: 'failed', blocked: 'blocked', stage_recovered: 'revision_requested', quality_revision_required: 'revision_requested', confirmation_requested: 'awaiting_confirmation' }[last.type]
+    ?? (last.type === 'confirmation_resolved' ? (last.decision === 'approved' ? (getPlanStage(manifest, stageId)?.confirmation === 'before' ? 'planned' : 'completed') : last.decision === 'rejected' ? 'blocked' : 'revision_requested') : null);
+  if (expected && manifest.stages?.[stageId]?.status !== expected) throw new Error('Stage status differs from its latest audit event; refusing manual state override');
 }

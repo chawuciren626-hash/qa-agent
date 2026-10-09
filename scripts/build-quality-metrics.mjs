@@ -1,6 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { extractCases } from "./execution-plan.mjs";
+import { verifyCurrentAttempt } from './execution-attempts.mjs';
+import { governedDefects } from './defect-lifecycle.mjs';
+import { defectGateReasons, qualityGateStatus } from './quality-gate.mjs';
 
 const root = resolve(import.meta.dirname, "..");
 const runId = process.argv.find((arg) => arg.startsWith("--run-id="))?.slice(9);
@@ -13,17 +16,34 @@ const readOptional = (relative, fallback) => {
 };
 const testCaseData = readOptional("design/test_cases.json", []);
 const testCases = extractCases(testCaseData);
-const results = readOptional("execution/test_results.json", { status: "not_executed", summary: {}, cases: [] });
+const historicalResults = readOptional("execution/test_results.json", { status: "not_executed", summary: {}, cases: [] });
+const executionState = readOptional('execution/execution-state.json', null);
+const blockedRecord = readOptional('execution/execution-blocked.json', null);
+let attemptError = null;
+if (executionState?.version === 2 && ['completed', 'failed'].includes(executionState.status)) {
+  try { verifyCurrentAttempt(root, runId, executionState, historicalResults); } catch (error) { attemptError = error.message; }
+}
+const staleResult = attemptError || executionState && (executionState.run_id !== runId || !['completed', 'failed'].includes(executionState.status) || historicalResults.invocation_id !== executionState.invocation_id || (executionState.status === 'failed' && historicalResults.status !== 'failed'));
+// Legacy blocked files have no invocation binding: fail closed until a new invocation is recorded.
+const unresolvedLegacyBlock = !executionState && blockedRecord;
+const results = staleResult || unresolvedLegacyBlock ? { status: 'blocked', summary: {}, cases: [] } : historicalResults;
 const evidence = readOptional("quality/evidence-assessment.json", { summary: { failed_cases: 0, triage_ready: 0, insufficient: 0, confidence: {} } });
 const defectData = readOptional("defects/defect-records.json", { records: [] });
 const selection = readOptional("selection/test-selection.json", null);
 const executionPlan = readOptional("execution/execution-plan.json", null);
-const records = defectData.records ?? [];
+const staleDerived = executionState?.version === 2 && (evidence.invocation_id !== executionState.invocation_id || defectData.invocation_id !== executionState.invocation_id);
+let lifecycleError = null;
+let lifecycle = { version: 1, ledger_sha256: null, current: [], history: [], open_historical: [] };
+try { lifecycle = governedDefects(root, runId, defectData); } catch (error) { lifecycleError = error.message; }
+const records = staleDerived ? [] : lifecycleError ? defectData.records ?? [] : lifecycle.current;
 const by = (items, key) => Object.fromEntries([...new Set(items.map(key))].map((value) => [value, items.filter((item) => key(item) === value).length]));
 const summary = results.summary ?? {};
 const totalExecuted = summary.total ?? 0;
 const blocked = results.status === "blocked" || (summary.blocked ?? 0) > 0;
 const reasons = [];
+if (staleResult || unresolvedLegacyBlock) reasons.push('latest_execution_not_reportable');
+if (staleDerived) reasons.push('stale_derived_artifacts');
+if (lifecycleError) reasons.push('lifecycle_integrity_error');
 const required = ['execution/test_results.json', 'quality/evidence-assessment.json', 'defects/defect-records.json'];
 const missingInputs = required.filter(path => !existsSync(resolve(runDir, path)));
 if (missingInputs.length) reasons.push('missing_quality_inputs');
@@ -33,13 +53,9 @@ if (failedCases.some(item => !(evidence.assessments ?? []).some(assessment => as
 if (failedCases.some(item => !records.some(record => record.related_cases?.includes(item.case_id)))) reasons.push('untriaged_failures');
 if (blocked) reasons.push("blocked_execution");
 if ((evidence.summary?.insufficient ?? 0) > 0) reasons.push("insufficient_failed_evidence");
-if (records.some((record) => record.lifecycle_status === "needs_review")) reasons.push("needs_review");
-if (records.some((record) => record.category === "product_defect" && record.lifecycle_status === "draft")) reasons.push("draft_product_defect");
-if (records.some((record) => (governance.quality_gate?.risk_on_severity ?? []).includes(record.severity))) reasons.push("high_severity_defect");
-const blockReasons = governance.quality_gate?.block_on ?? [];
-const reviewReasons = governance.quality_gate?.review_on ?? [];
-const integrityBlocked = reasons.some(reason => ['missing_quality_inputs', 'no_executed_cases', 'incomplete_evidence_assessment'].includes(reason));
-const gateStatus = integrityBlocked || reasons.some((reason) => blockReasons.includes(reason)) ? "blocked" : reasons.includes('untriaged_failures') || reasons.some((reason) => reviewReasons.includes(reason)) ? "review_required" : reasons.includes("high_severity_defect") ? "risk_present" : "informational";
+reasons.push(...defectGateReasons(records, lifecycle.history));
+if ([...records, ...lifecycle.history].some(record => !['closed', 'rejected'].includes(record.lifecycle_status) && (governance.quality_gate?.risk_on_severity ?? []).includes(record.severity))) reasons.push('high_severity_defect');
+const gateStatus = qualityGateStatus(governance.quality_gate, reasons);
 const metrics = {
   run_id: runId,
   generated_at: new Date().toISOString(),
@@ -63,7 +79,11 @@ const metrics = {
   },
   trust: {
     missing_inputs: missingInputs,
-    evidence: evidence.summary ?? {},
+    execution_state: executionState,
+    historical_result_preserved: Boolean(staleResult || unresolvedLegacyBlock),
+    attempt_integrity_error: attemptError,
+    stale_derived_artifacts: Boolean(staleDerived),
+    evidence: staleDerived ? {} : evidence.summary ?? {},
     unclassified_failures: (results.cases ?? []).filter((testCase) => testCase.status === "failed" && !testCase.failure_category).length
   },
   defects: {
@@ -73,10 +93,12 @@ const metrics = {
     confidence: by(records, (record) => record.confidence),
     severity: by(records, (record) => record.severity)
   },
+  governance: { ...lifecycle, integrity_error: lifecycleError },
   quality_gate: { status: gateStatus, reasons }
 };
 const targetDir = resolve(runDir, "report");
 mkdirSync(targetDir, { recursive: true });
 const target = resolve(targetDir, "quality-metrics.json");
 writeFileSync(target, JSON.stringify(metrics, null, 2) + "\n");
+writeFileSync(resolve(targetDir, 'reportable-results.json'), JSON.stringify({ ...results, run_id: runId, invocation_id: executionState?.invocation_id ?? results.invocation_id, summary: { total: 0, passed: 0, failed: 0, skipped: 0, blocked: 0, ...results.summary } }, null, 2) + '\n');
 console.log(JSON.stringify({ run_id: runId, quality_gate: metrics.quality_gate, output: target }, null, 2));

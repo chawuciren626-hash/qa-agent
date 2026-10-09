@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "shared_instructions": "penguin/command-runtime.md",
   "description": "公开的 PenguinHarness 测试 Agent 配置清单；不包含模型、密钥、环境地址或测试凭据。",
   "agents": [
     {

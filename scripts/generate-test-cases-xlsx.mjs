@@ -1,12 +1,12 @@
 import fs from "node:fs/promises";
 import { resolve } from "node:path";
 import xlsx from "xlsx";
+import { extractCases } from './execution-plan.mjs';
 
 const [input, output] = process.argv.slice(2);
 if (!input || !output) throw new Error("用法: node scripts/generate-test-cases-xlsx.mjs <test_cases.json> <test_cases.xlsx>");
 
-const cases = JSON.parse(await fs.readFile(resolve(input), "utf8"));
-if (!Array.isArray(cases)) throw new Error("测试用例 JSON 必须是数组。");
+const cases = extractCases(JSON.parse(await fs.readFile(resolve(input), "utf8")));
 
 const headers = ["用例 ID", "用例标题", "优先级", "类型", "前置条件", "测试数据", "测试步骤", "预期结果", "可自动化", "关联测试点"];
 const rows = cases.map((item) => [

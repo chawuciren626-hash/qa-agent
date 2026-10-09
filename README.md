@@ -12,8 +12,23 @@
 - 资产目录、执行合同、环境预检和本地 Playwright 执行。
 - 测试选择 Profile、预算与变更定向选择。
 - 失败证据评估、标准缺陷记录、质量门和跨运行趋势。
+- 统一产物契约：Schema、跨文件引用、结果统计、导出一致性及阶段交接哈希复核。
+- 独立执行批次、原始证据归档、执行锁、整批超时与显式中断恢复。
+- [统一命令入口](docs/command-runtime.md)：原生Node/Python、依赖预检、参数数组、命令超时与独立日志，正常运行不下载依赖。
+- [需求来源与语义治理](docs/requirement-provenance.md)：规则台账、原文引用、需求/观察/假设区分、测试点与用例追溯及确认边界。
+- [结构化分析单一来源](docs/analysis-single-source.md)：从台账生成正文，拦截Markdown与结构化内容不一致，保留历史与审批边界。
+- [受控阶段恢复与派发](docs/controlled-stage-recovery.md)：清单锁、派发编号、父子会话绑定、恢复审计及旧批准失效；不等同于操作系统权限隔离。
+- 缺陷审计台账、独立复测关闭、历史未解决问题质量门及报告失效管理，详见[质量治理闭环](docs/quality-governance-lifecycle.md)。
 
 ## 使用边界
+
+- [结构化动作入口](docs/structured-actions.md)：优先用JSON请求创建、规划、归档与交接，减少模型拼接CLI；失败摘要明确审计覆盖范围。
+
+- [总控会话命令闸门](docs/controller-command-session.md)：生命周期帮助、run创建前失败记录、跨调用阻止继续及审查解除；Agent命令需传真实controller-session，不等同于工具隔离。
+
+- [清单状态摘要](docs/run-status-summary.md)：只读生成阶段、最新确认、范围和审查提示，区分流程记录与产品测试结论。
+
+- [命令与子任务停止契约](docs/command-stop-contract.md)：预启动参数检查、派发约束原文传递及失败后禁止登记完成；不等同于实时工具拦截。
 
 - 正常测试运行不得执行 `npm install`、`pip install`、`playwright install` 或会隐式下载的 `npx` 命令。
 - 真实浏览器执行必须先获得用户确认，并使用登记的非生产测试环境。
@@ -43,6 +58,11 @@ npm run environment:check -- --environment=<environment_id> --run-id=run-example
 
 ## 关键文档
 
+- [第1项关键问题收口](docs/engineering-step-1-2026-10-09.md)
+- [第2项统一产物契约与使用方式](docs/artifact-contracts.md)
+- [第3项执行稳定性与批次归档](docs/execution-attempts.md)
+- [用例设计质量与执行入口校验](docs/design-quality-gate.md)
+- [评测基座修正与分层验收计划](docs/benchmark-remediation-2026-10-09.md)
 - [当前状态与下一步](docs/current-status-and-next-steps.md)
 - [运行编排](docs/orchestration-engine.md)
 - [自动化执行框架](docs/automation-execution-framework.md)
