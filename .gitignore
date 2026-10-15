@@ -1,6 +1,8 @@
 # Dependencies and local tool state
 node_modules/
 .playwright-cli/
+__pycache__/
+*.pyc
 
 # Run artifacts, browser evidence, and generated tests
 output/*
@@ -9,10 +11,24 @@ tests/generated/*
 !tests/generated/.gitkeep
 playwright-report/
 test-results/
+/scratchpad/
+/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*/
+/inputs/word-fixture-*.docx
+/nul
 
 # Local environment configuration may contain private URLs or test data
 config/test-env.json
 config/test-environments.json
+
+# Credential stores and runtime connection secrets, including local backup copies
+**/.project_config.toml*
+**/.vault.toml*
+**/api-token
+**/api-token.*
+**/browser-private.json*
+.env
+.env.*
+!.env.example
 
 # Local operating system files
 .DS_Store

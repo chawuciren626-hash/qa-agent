@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { stageNames } from './stage-registry.mjs';
 import { assertStageHistory, recomputeRunStatus, stageStatuses } from './orchestration-state.mjs';
 
 export function summarizeRun(raw, runId) {
@@ -28,6 +29,7 @@ export function summarizeRun(raw, runId) {
     return { id: stage.id, selected: Boolean(stage.selected), status: state.status ?? 'unknown', mode: state.mode ?? null,
       confirmation: confirmation ? { id: confirmation.id, status: confirmation.status, reason: confirmation.reason ?? null } : null,
       dispatch_id: state.dispatch_id ?? null, latest_event: latestEvent?.type ?? null,
+      execution_outcome: state.execution_outcome ?? null,
       reason: ['blocked', 'failed', 'revision_requested'].includes(state.status) ? state.reason ?? latestEvent?.reason ?? null : null,
       next_action: next };
   });
@@ -43,6 +45,13 @@ export function summarizeRun(raw, runId) {
     focus_stage: focus?.id ?? null,
     limitations: ['Manifest snapshot only; not execution authorization', 'No artifact, process, product quality or semantic revalidation'] };
   summary.user_summary = renderSummary(summary);
+  if(manifest.orchestration?.plan?.workflow_mode==='task') {
+    summary.workflow_mode='task';
+    const names=stageNames;
+    summary.user_summary=[`已完成：${stages.filter(s=>s.selected && s.status==='completed').map(s=>names[s.id]).join('、') || '暂无已交付任务'}。`,
+      `产物：${(manifest.artifacts ?? []).filter(p=>!p.endsWith('-task.json')).join('、') || '尚未交付'}。`,
+      `当前：${summary.workflow_closed?'本次任务已结束':focus?`${names[focus.id]}${focus.status==='awaiting_confirmation'?'等待你的确认':'处理中或尚未交付'}`:'待核对状态'}。`].join('\n');
+  }
   return summary;
 }
 
@@ -50,6 +59,8 @@ function renderSummary(summary) {
   const lines = [`运行：${summary.run_id}`, `清单状态：${summary.recorded_status}；按阶段汇总：${summary.derived_status}。`,
     `一致性：${summary.consistency}；本次流程记录${summary.workflow_closed ? '已收口' : '未收口'}。`];
   for (const stage of summary.stages) lines.push(`${stage.id}：${stage.status}；${stage.selected ? '本次范围内' : '范围外'}；最新确认：${stage.confirmation?.status ?? '无'}${stage.reason ? `；原因：${JSON.stringify(stage.reason)}` : ''}。`);
+  const outcome = summary.stages.find(stage => stage.id === 'execution')?.execution_outcome;
+  if (outcome) lines.push(`执行业务结果：${outcome.status}；后续处理：${outcome.disposition}。节点完成不代表测试通过，也不授权重跑。`);
   lines.push(`下一步：${summary.next_action}${summary.focus_stage ? `（${summary.focus_stage}）` : ''}。`,
     '此摘要仅反映清单快照，不代表产品测试通过、语义审查通过或获得执行授权。', `清单SHA256：${summary.manifest_sha256}`);
   if (summary.issues.length) lines.push(`需审查：${summary.issues.join('; ')}`);

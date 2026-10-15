@@ -1,65 +1,34 @@
 ---
 name: test-case-writing
 description: 根据测试点生成符合项目 JSON Schema 的结构化测试用例。
-version: 1.1.0
+metadata:
+  version: '1.1.0'
 ---
 
 # 测试用例编写 Skill
 
-## 统一产物交付契约
+## 数据与来源表达（两种模式共用）
 
-交付前运行`npm run artifacts:validate -- <run_id> test_cases`，详见`docs/artifact-contracts.md`。每条用例必须符合Schema，包含`design_contract`及真实存在于本run测试点JSON中的`related_test_point`。JSON支持数组或cases/test_cases封装，Excel使用现有导出器生成，不能独立修改表格导致与JSON不一致。待确认规则可作为草稿保留，但不得进入执行计划。
+提交草稿前由本角色完成语义自检，不新增审批或必填文件：逐字段检查test_data怎样在前置条件或步骤中生效。空字符串需明确清空并核对为空；仅写“不清空”“保持为空”或把空值列入数据，不能保证未知初始状态为空。null、缺失字段、空白字符串是不同输入；false/0不能当作未提供。准备方式应适合当前UI/API，不凭空编造控件或接口。刷新、导航或重置后不能沿用已失效的输入状态。
 
-## 适用场景
+diagnose_test_cases.data_diagnostics中的data_usage和semantic_review是专业自检提示，不是用户确认项或新质量门。未显式引用不自动证明错误（自然语言前提也可有效），已引用也不证明语义正确；核对否定、顺序和实际准备效果，发现矛盾自行修订再导出。
 
-当需要把测试点转换成可执行测试用例时使用。
+逐个预期子句对照当前来源：原文只要求提示时，不擅加停留页面、禁止保存、不产生数据、HTTP状态码等断言；有明确来源才保留。可选建议与已要求预期分开，非必要扩展直接省略，不为自己添加的细节追问用户。真正影响既定测试目标的歧义才提出问题。没有访问产品时只描述测试设计，不声称已观察实现。
 
-## 输入
+输入样本只在test_data保存一份。steps用“输入test_data.title”这样的字段引用（字段名使用ASCII标识符），不再重复粘贴长字符串、金额或样本长度；Excel会自动在步骤下展示真实数据。诊断会检查显式引用的字段是否存在。边界目标写在data_checks，例如上限50的紧邻超限样本检查expected=51；测量不符应修正样本，不通过改成86等任意超限值冒充精确边界。
 
-- 当前任务相关的测试点、需求分析和用户资料
-- `schemas/test_case.schema.json`
-- 可选：测试环境、测试账号、接口文档
+data_checks.unit只是测量口径，不是用户确认的产品规则。原文只说“字/字符”时，优先选择普通ASCII字母作为长度样本，使码点、UTF-16、字素和UTF-8字节计数一致；不自行写“产品已确认按码点计数”。只有不同口径确实影响当前预期时才提出业务问题。不要在preconditions中添加没有来源的“已确认”条件。
 
-## 输出
+task没有真实测试点来源时省略related_test_point，也省略虚构的basis/rule_id；已有编号只能引用task.source_paths中的实际资料，不能为了关联而补造前序。lifecycle仍按真实测试点和台账引用。诊断通过只证明可机械核验的部分，交付前仍应自行核对预期与原文，不把语义审查交给用户。
 
-- 当前 `run_id` 的 `design/test_cases.json`
-- 当前 `run_id` 的 `design/test_cases.xlsx`
+## 独立任务（task）
 
-## 工作步骤
+直接从当前材料生成design/test_cases.json，条目包含case_id、title、module、priority、preconditions字符串数组、steps字符串数组、test_data、expected。已有测试点/规则引用可选，不强制related_test_point或完整design_contract，不编造前序产物。保存草稿和任务说明后调用diagnose_test_cases，它自动使用独立任务模式，不要求分析或测试点前序；修正后用export_test_cases导出Excel，再validate_artifacts。
 
-1. 读取测试点。
-2. 为每个高优先级测试点设计至少一条用例。
-3. 编写前置条件、测试数据、步骤和预期结果。
-4. 标记优先级和测试类型。
-5. 判断是否适合自动化。
-6. 补充 `execution_metadata`：模块、标签、风险等级、执行成本、数据影响、环境依赖、自动化成熟度和预估耗时。没有可靠依据时使用保守值或标记待确认。
-7. 为可自动化用例补充 `execution_contract`：数据隔离、准备、断言方式和清理要求。
-8. 调用 `scripts/generate-test-cases-xlsx.mjs` 导出 Excel 评审与执行版本。
-9. 不得为了导出 Excel 临时安装 npm、Python 或 Office 依赖；缺少本地工具时保留 JSON 并报告环境未就绪。
-10. 每条用例补充 `design_contract`：`basis`记录rule_id、来源文件、具体规则及confirmed/pending/conflicted，必须与需求台账一致，rule_id包含在关联测试点rule_ids中；`assumptions`显式列出假设，已确认假设必须引用台账rule_id和真实user_confirmation来源；`data_checks`声明所有适用的长度与金额计算。结构见 `docs/design-quality-gate.md`和`docs/requirement-provenance.md`，不得只写“已校验”。每个测试点至少有对应用例，不以实现观察替代业务预期。
-11. 交付前运行 `npm run design:validate -- --run-id=<run_id> --draft`。草稿可保留明确标记的未决规则，但校验失败的数据需修正；报告路径为 `quality/design-validation.json`。进入执行计划前去掉 `--draft` 再验证；未决规则不能因 `automation_feasible=true` 而绕过限制。
+边界数据直接写入test_data，通过diagnose_test_cases返回的data_diagnostics检查实际长度（code_points、utf16、utf8_bytes、graphemes），不启动node -e、嵌套PowerShell或临时脚本数数。需要精确长度或金额校验时，可仅补design_contract.data_checks，不添加虚构basis或前置产物。例如长度检查为{"kind":"length","key":"title","unit":"code_points","expected":51}；金额使用整数最小货币单位及minor_unit_sum，结构见docs/design-quality-gate.md。工具只测量数据，不替用户决定业务规则；计数单位确有业务歧义才提问。技术诊断结果自行消化，不把计算日志全部发给用户。
 
-## 质量标准
+按派发的独立契约填写当前阶段*-task.json。草稿用diagnose_task，交付用validate_artifacts，由父总控handoff。source_paths保留实际依据，不生成虚假前序产物；questions不放技术检查、解锁或重复批准要求。任务与确认策略由公共运行指令统一规定，本Skill不新增节点。
 
-- 用例步骤可执行。
-- 预期结果可验证。
-- 字段符合 `schemas/test_case.schema.json`。
-- 用例可以追溯到测试点。
+## 生命周期模式（lifecycle）
 
-## 交付前自检
-
-- 路由、请求方法和页面可操作元素应来自当前环境资料或只读观察，不猜测接口，不用实现行为替换业务预期。
-- 边界数据必须计算核对实际长度或数值；描述为40字符的数据必须确实是40字符。缺失字段、空字符串和null应作为独立数据变体，不在步骤中含糊写“或”。
-- UI与API步骤需可实际执行：数字框不能假定可输入任意文本，页面不存在的行不能假定有可点击按钮。使用API时记录方法、路径、请求体与回查方式。
-- 隔离测试必须设置能够揭露串扰的对照数据，并回查目标与对照；不得让对照原本就是重置状态而掩盖误清理。
-- 新生成且未经过实际回归的用例标为candidate，不标stable；预估时长不冒充实测耗时。
-- 测试数据使用运行级唯一标识，明确finally清理，包括预期拒绝但可能因缺陷成功写入的用例。
-- 逐项核对测试点覆盖，并读取导出的Excel校对行数和关键字段。JSON可解析和Schema通过不代表语义或执行可行性合格。
-- 覆盖必须匹配检查层级：页面展示、状态提示、交互反馈不能仅用API响应替代。关联到同一测试点编号不代表其全部验收目标已覆盖；必要时分为UI和API用例，明确各自边界。
-
-## 禁止事项
-
-- 禁止使用“检查是否正常”等模糊预期。
-- 禁止把多个无关目标塞进一条用例。
-- 禁止输出不可解析的 JSON。
-- 禁止为了通过校验伪造确认记录、将pending直接改为confirmed、漏填适用的数据检查或把建议写成已确认需求。来源存在不代表语义正确，总控仍须复核。
+仅在当前派发明确为lifecycle时，读取test-case-writing Skill的[生命周期参考](references/lifecycle.md)。该参考保留台账、追溯、设计与执行合同要求；task只执行上面的独立分支，不加载此参考或生命周期Schema。

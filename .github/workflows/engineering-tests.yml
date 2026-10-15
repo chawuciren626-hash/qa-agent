@@ -1,0 +1,63 @@
+name: Engineering Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engineering-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Windows / ${{ matrix.suite }}
+    runs-on: windows-2022
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [core, browser]
+    env:
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+      - name: Install locked engineering dependencies
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install -r requirements-ci.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip check
+      - name: Install test browser
+        if: matrix.suite == 'browser'
+        run: npx --no-install playwright install chromium
+      - name: Check release resources
+        run: npm run release:check
+      - name: Run engineering suite
+        run: npm run test:${{ matrix.suite }}
+      - name: Upload engineering results only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engineering-${{ matrix.suite }}-${{ github.run_attempt }}
+          path: |
+            output/engineering-tests/**/summary.json
+            output/engineering-tests/**/results.tap
+            output/engineering-tests/**/results.xml
+            output/engineering-tests/**/stderr.log
+          if-no-files-found: warn
+          retention-days: 7

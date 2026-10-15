@@ -4,6 +4,7 @@ import { appendFileSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFil
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { runDirectory } from './design-quality.mjs';
+import { dataPath } from './directory-context.mjs';
 
 const now = () => new Date().toISOString();
 const hash = data => createHash('sha256').update(data).digest('hex');
@@ -22,8 +23,8 @@ export function attemptDirectory(root, runId, invocationId) {
 function safeExecution(root, runId) {
   const dir = resolve(runDirectory(root, runId), 'execution');
   mkdirSync(dir, { recursive: true });
-  if (!inside(realpathSync(root), realpathSync(dir))) throw new Error('Execution directory outside workspace');
-  for (let path = dir; path !== resolve(root); path = dirname(path)) {
+  if (!inside(realpathSync(dataPath(root)), realpathSync(dir))) throw new Error('Execution directory outside workspace');
+  for (let path = dir; path !== dataPath(root); path = dirname(path)) {
     if (lstatSync(path).isSymbolicLink()) throw new Error('Symlink in execution directory');
   }
   return dir;

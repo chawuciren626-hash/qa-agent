@@ -1,12 +1,16 @@
+import { resourcePath } from './directory-context.mjs';
+import { dataPath, assertRunContext } from './directory-context.mjs';
 import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { createExecutionCases, extractCases } from './execution-plan.mjs';
 import { inspectRequirementLedger, referencedRule } from './requirement-provenance.mjs';
 
 export function runDirectory(root, runId) {
   if (!/^run-[A-Za-z0-9-]+$/.test(runId ?? '')) throw new Error('Invalid run_id');
-  return resolve(root, 'output/runs', runId);
+  const dir=dataPath(root, 'output/runs', runId);
+  if(existsSync(resolve(dir,'manifest.json'))) assertRunContext(root,JSON.parse(readFileSync(resolve(dir,'manifest.json'),'utf8')));
+  return dir;
 }
 
 function within(base, file) {
@@ -27,6 +31,45 @@ export function readRunFile(runDir, file) {
 
 const text = value => typeof value === 'string' && value.trim().length > 0;
 
+export function textLengths(value) {
+  return {
+    code_points: [...value].length,
+    utf16: value.length,
+    utf8_bytes: Buffer.byteLength(value, 'utf8'),
+    graphemes: [...new Intl.Segmenter('und', { granularity: 'grapheme' }).segment(value)].length
+  };
+}
+
+export function inspectCaseData(row) {
+  const measurements=Object.entries(row.test_data ?? {}).filter(([,value])=>typeof value==='string')
+    .map(([key,value])=>({key,...textLengths(value)}));
+  const checks=row.design_contract?.data_checks;
+  const preparation = [...(Array.isArray(row.preconditions) ? row.preconditions : []), ...(Array.isArray(row.steps) ? row.steps : [])]
+    .filter(value => typeof value === 'string').join('\n');
+  const referenced = new Set([...preparation.matchAll(/\btest_data\.([A-Za-z_][A-Za-z0-9_]*)/g)].map(match => match[1]));
+  // These are review cues, not a natural-language proof or a new delivery gate.
+  const dataUsage = Object.entries(row.test_data ?? {}).map(([key, value]) => ({
+    key, explicitly_referenced: referenced.has(key),
+    preparation_check: value === '' ? 'Establish an empty value explicitly; do not assume the initial field is empty.'
+      : value === null ? 'Distinguish explicit null from an omitted field and an empty string.'
+      : 'Establish this input/state in preparation or steps; a data value alone does not apply it.'
+  }));
+  return {case_id:row.case_id,measurements,errors:[...checkDataReferences(row),...(checks===undefined?[]:checkData(row))],
+    data_usage:dataUsage,
+    semantic_review:{blocking:false,approval_required:false,
+      note:'Agent review only: check preparation/steps against data, including negation and state resets. Explicit references do not prove consistency. Every expected clause needs current requirement support; omit inferred navigation, persistence, status codes or side effects unless specified. Do not ask the user to review technical fields.'}};
+}
+
+export function checkDataReferences(row) {
+  const keys = new Set();
+  for (const step of Array.isArray(row.steps) ? row.steps : []) {
+    if (typeof step !== 'string') continue;
+    for (const match of step.matchAll(/\btest_data\.([A-Za-z_][A-Za-z0-9_]*)/g)) keys.add(match[1]);
+  }
+  return [...keys].filter(key => !Object.hasOwn(row.test_data ?? {}, key))
+    .map(key => `Step references missing test_data.${key}; correct the reference or supply the actual data, without user approval`);
+}
+
 export function checkData(testCase) {
   const errors = [];
   const checks = testCase.design_contract?.data_checks;
@@ -38,15 +81,10 @@ export function checkData(testCase) {
       if (check.kind === 'length') {
         if (!text(check.key) || !Object.hasOwn(data, check.key) || typeof data[check.key] !== 'string') throw new Error('length requires a string test_data key');
         const value = data[check.key];
-        const lengths = {
-          code_points: () => [...value].length,
-          utf16: () => value.length,
-          utf8_bytes: () => Buffer.byteLength(value, 'utf8'),
-          graphemes: () => [...new Intl.Segmenter('und', { granularity: 'grapheme' }).segment(value)].length
-        };
+        const lengths = textLengths(value);
         if (!Object.hasOwn(lengths, check.unit)) throw new Error('Explicit length unit required');
         if (!Number.isSafeInteger(check.expected) || check.expected < 0) throw new Error('Invalid expected length');
-        const actual = lengths[check.unit]();
+        const actual = lengths[check.unit];
         if (actual !== check.expected) throw new Error(`${check.key}: expected length ${check.expected}, actual ${actual} (${check.unit})`);
       } else if (check.kind === 'minor_unit_sum') {
         if (!text(check.currency) || !Array.isArray(check.terms) || !check.terms.length) throw new Error('Currency and sum terms required');
@@ -62,7 +100,8 @@ export function checkData(testCase) {
           sum += integer(term.key) * BigInt(term.sign);
         }
         if (keys.has(check.total_key)) throw new Error('Total cannot also be a sum term');
-        if (sum !== integer(check.total_key)) throw new Error('Money sum does not equal declared total');
+        const declared=integer(check.total_key);
+        if (sum !== declared) throw new Error(`Money sum does not equal declared total: calculated ${sum}, declared ${declared} (${check.currency} minor units)`);
       } else throw new Error('Unsupported data check');
     } catch (error) { errors.push(error.message); }
   }
@@ -81,7 +120,7 @@ export function inspectDesign({ root, runId, source, selectedIds, execution = tr
     return value;
   };
   try {
-    const input = capture(resolve(root, source));
+    const input = capture(resourcePath(root, source));
     const sourceData = JSON.parse(input.data.toString('utf8'));
     if (!Array.isArray(sourceData) && sourceData.run_id !== undefined && sourceData.run_id !== runId) throw new Error('Source run_id mismatch');
     const cases = extractCases(sourceData);
@@ -127,6 +166,7 @@ export function inspectDesign({ root, runId, source, selectedIds, execution = tr
           } catch (error) { fail(`Assumption: ${error.message}`); }
         }
       }
+      checkDataReferences(item).forEach(fail);
       checkData(item).forEach(fail);
     }
   } catch (error) { errors.push(error.message); }

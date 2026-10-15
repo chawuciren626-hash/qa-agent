@@ -1,10 +1,19 @@
 ---
 name: test-selection
 description: 按风险、优先级、变更范围、执行成本、数据影响和预算选择测试集。
-version: 1.0.0
+metadata:
+  version: '1.1.0'
+  source: fugazi/test-automation-skills-agents
+  revision: 65a72d5e74def3c23143bef8757e72cb68e91032
+  adapted-from: playwright-regression-testing
 ---
 
 # 智能测试选择 Skill
+
+## 专业方法
+
+回归策略复核时按需读取[回归选择与不稳定用例治理](references/regression-strategy.md)。当前选择器未消费的历史信号只作建议，不声称已自动排序。
+
 
 使用 `config/test-selection-policy.json` 中的 Profile 选择测试集。支持 `smoke`、`core_regression`、`regression`、`full` 和 `targeted`；Profile 是通用规则，业务模块和标签从结构化用例元数据读取。
 

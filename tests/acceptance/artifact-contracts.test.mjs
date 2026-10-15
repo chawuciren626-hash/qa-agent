@@ -7,6 +7,9 @@ import { spawnSync } from 'node:child_process';
 import { inspectStageArtifacts, assertArtifactContract, assertCompletedArtifacts, assertDependencyArtifacts } from '../../scripts/artifact-contracts.mjs';
 import { designArtifacts, resultArtifacts, zipFixture } from './artifact-fixtures.mjs';
 import { writeJsonFile } from './safety-fixtures.mjs';
+import { diagnoseTestPoints } from '../../scripts/test-point-diagnosis.mjs';
+import { readRunFile } from '../../scripts/design-quality.mjs';
+import { renderAnalysis } from '../../scripts/analysis-markdown.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 function fixture(full = false, failed = false) {
@@ -24,10 +27,82 @@ const denied = (f, stage, pattern) => {
 };
 const save = (f, path, value) => writeJsonFile(resolve(f.dir, path), value);
 
+test('test point draft aggregates independent errors and all missing coverage without exports', () => {
+  const f = fixture();
+  const ledger = JSON.parse(readFileSync(resolve(f.dir,'analysis/requirement-ledger.json')));
+  const original = ledger.rules[0];
+  ledger.rules.push({...original,id:'RULE-SECOND'}, {...original,id:'RULE-OBS',kind:'observation',status:'observed',reason:'Synthetic observation'});
+  save(f,'analysis/requirement-ledger.json',ledger);
+  save(f,'design/test_points.json',[
+    {...f.points[0],id:'TP-A',module:'',rule_ids:['RULE-OBS','RULE-UNKNOWN']},
+    {...f.points[0],id:'TP-B',coverage_type:[],source:'../outside.md'},
+    {...f.points[0],id:'TP-B',risk:'invalid'}
+  ]);
+  const read = p => readRunFile(f.dir,p).data;
+  const before = read('design/test_points.json');
+  const result = diagnoseTestPoints(f.id,read);
+  assert.equal(result.status,'needs_correction');
+  for (const message of ['empty module','RULE-OBS','RULE-UNKNOWN','coverage_type','current run','duplicate','allowed values']) assert.ok(result.errors.some(e=>e.includes(message)),message);
+  assert.deepEqual(result.coverage.missing,[original.id,'RULE-SECOND']);
+  assert.equal(result.error_count,result.errors.length);
+  assert.equal(result.coverage_counts.missing,2);
+  assert.equal(result.exports_checked,false);
+  assert.deepEqual(read('design/test_points.json'),before);
+  const formal = inspect(f,'test_points');
+  for (const error of result.errors) assert.ok(formal.errors.join('; ').includes(error));
+});
+
+test('explicit supporting categories do not demand artificial points; behavior and confirmed answers still do', () => {
+  const f = fixture();
+  const ledger = JSON.parse(readFileSync(resolve(f.dir,'analysis/requirement-ledger.json')));
+  const original = ledger.rules[0];
+  ledger.rules.push({...original,id:'RULE-CONTEXT',category:'context'}, {...original,id:'RULE-ENV',category:'environment'});
+  save(f,'analysis/requirement-ledger.json',ledger);
+  writeFileSync(resolve(f.dir,'analysis/requirement_analysis.md'),renderAnalysis(ledger));
+  const read = p => readRunFile(f.dir,p).data;
+  const diagnosis = diagnoseTestPoints(f.id,read);
+  assert.equal(diagnosis.status,'passed',diagnosis.errors.join('; '));
+  assert.deepEqual(diagnosis.coverage.supporting,['RULE-CONTEXT','RULE-ENV']);
+  assert.deepEqual(diagnosis.coverage_counts,{required:1,supporting:2,optional:0,excluded:0,missing:0});
+  passed(f,'test_points');
+  save(f,'design/test_points.json',[...f.points,{...f.points[0],id:'TP-CONTEXT',rule_ids:['RULE-CONTEXT']}]);
+  assert.match(diagnoseTestPoints(f.id,read).errors.join('; '),/supporting information/);
+  save(f,'design/test_points.json',f.points);
+  const source = ledger.sources[0];
+  ledger.sources.push({...source,id:'USER-ANSWER',kind:'user_confirmation'});
+  ledger.rules.push({...original,id:'RULE-NF',category:'constraint'}, {...original,id:'RULE-LEGACY'},
+    {...original,id:'RULE-ANSWER',kind:'assumption',status:'confirmed',citations:[{...original.citations[0],source_id:'USER-ANSWER'}]},
+    {...original,id:'RULE-PENDING',kind:'assumption',status:'pending',reason:'Unanswered'},
+    {...original,id:'RULE-EXCLUDED',scope:'out_of_scope',reason:'Explicit synthetic exclusion'});
+  save(f,'analysis/requirement-ledger.json',ledger);
+  const missing = diagnoseTestPoints(f.id,read);
+  assert.deepEqual(missing.coverage.missing,['RULE-NF','RULE-LEGACY','RULE-ANSWER']);
+  assert.deepEqual(missing.coverage.optional,['RULE-PENDING']);
+  assert.deepEqual(missing.coverage.excluded,['RULE-EXCLUDED']);
+});
+
+test('draft diagnostics tolerate malformed collections and report unavailable ledger coverage honestly', () => {
+  const f = fixture();
+  const read = p => readRunFile(f.dir,p).data;
+  for (const value of [null,{}, {points:[],test_points:[]},[null,42,{}]]) {
+    save(f,'design/test_points.json',value);
+    assert.equal(diagnoseTestPoints(f.id,read).status,'needs_correction');
+  }
+  writeFileSync(resolve(f.dir,'analysis/requirement-ledger.json'),'{');
+  save(f,'design/test_points.json',{run_id:'run-other',points:f.points});
+  const result = diagnoseTestPoints(f.id,read);
+  assert.equal(result.coverage_evaluated,false);
+  assert.match(result.errors.join('; '),/run_id mismatch/);
+  assert.deepEqual(result.coverage.missing,[]);
+});
+
 test('all stage contracts accept explicit synthetic valid fixtures, including empty defect collection', () => {
   for (const failed of [false, true]) {
     const f = fixture(true, failed);
     for (const stage of ['analysis', 'test_points', 'test_cases', 'execution', 'defects', 'report']) passed(f, stage);
+    const plan = JSON.parse(readFileSync(resolve(f.dir,'execution/execution-plan.json')));
+    plan.execution_policy.test_dir = resolve(f.dir,'execution/scripts');
+    save(f,'execution/execution-plan.json',plan);
     passed(f, 'execution', { mode: 'prepare', artifacts: ['execution/scripts/synthetic.spec.ts'] });
   }
 });

@@ -1,3 +1,4 @@
+import { dataPath } from './directory-context.mjs';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { loadLatestExecution } from './execution-attempts.mjs';
@@ -7,9 +8,7 @@ const runId = process.argv.find((arg) => arg.startsWith("--run-id="))?.slice(9);
 if (!runId) throw new Error("用法: node scripts/assess-execution-evidence.mjs --run-id=<run_id>");
 const policy = JSON.parse(readFileSync(resolve(root, "config/quality-governance.json"), "utf8"));
 const minimumEvidence = policy.confidence ?? {};
-const runDir = resolve(root, "output/runs", runId);
-const resultsPath = resolve(runDir, "execution/test_results.json");
-if (!existsSync(resultsPath)) throw new Error(`缺少执行结果: ${resultsPath}`);
+const runDir = dataPath(root, "output/runs", runId);
 const { results } = loadLatestExecution(root, runId);
 const assessments = (results.cases ?? []).filter((testCase) => testCase.status === "failed").map((testCase) => {
   const refs = [...new Set((testCase.evidence_paths ?? []).map(item => isAbsolute(item) ? resolve(item) : resolve(runDir, item)))];

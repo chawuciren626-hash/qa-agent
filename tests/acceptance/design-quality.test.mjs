@@ -4,11 +4,34 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { checkData, inspectDesign, designReceipt, validatePlanDesign } from '../../scripts/design-quality.mjs';
+import { checkData, checkDataReferences, inspectCaseData, inspectDesign, designReceipt, validatePlanDesign } from '../../scripts/design-quality.mjs';
 import { createExecutionCases, validateExecutionPlan } from '../../scripts/execution-plan.mjs';
 import { provenanceFixture } from './provenance-fixtures.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
+
+test('data preparation hints are generic, nonblocking and never equate references with semantic correctness',()=>{
+  const row={case_id:'STATE',preconditions:['Prepare test_data.count'],steps:['Do not clear test_data.label'],test_data:{label:'',payload:null,count:0,enabled:false,other:'private sample'}};
+  const before=JSON.stringify(row), result=inspectCaseData(row);
+  assert.equal(JSON.stringify(row),before);
+  assert.deepEqual(result.errors,[]);
+  assert.equal(result.semantic_review.blocking,false);
+  assert.equal(result.semantic_review.approval_required,false);
+  assert.equal(result.data_usage.find(x=>x.key==='count').explicitly_referenced,true);
+  assert.equal(result.data_usage.find(x=>x.key==='other').explicitly_referenced,false);
+  assert.match(result.data_usage.find(x=>x.key==='label').preparation_check,/empty value explicitly/);
+  assert.match(result.data_usage.find(x=>x.key==='payload').preparation_check,/omitted field/);
+  assert.match(result.semantic_review.note,/references do not prove/);
+  assert.ok(!JSON.stringify(result).includes('private sample'));
+  assert.deepEqual(inspectCaseData({case_id:'LEGACY',steps:['Use an empty label']}).errors,[]);
+});
+test('step data references accept empty values and reject missing keys without changing legacy prose',()=>{
+  assert.deepEqual(checkDataReferences({steps:['Enter test_data.title and test_data.count'],test_data:{title:'',count:0}}),[]);
+  assert.equal(checkDataReferences({steps:['Enter test_data.missing twice: test_data.missing'],test_data:{}}).length,1);
+  assert.deepEqual(checkDataReferences({steps:['Enter a literal value'],test_data:{}}),[]);
+  const f=fixture();f.cases[0].steps=['Enter test_data.missing'];f.save();
+  assert.match(f.inspect().errors.join('\n'),/missing test_data.missing/);
+});
 function fixture() {
   const runId = `run-design-${randomUUID()}`;
   const dir = resolve(root, 'output/runs', runId);
@@ -68,6 +91,21 @@ test('pending design remains a draft but cannot enter execution; missing contrac
   assert.equal(f.inspect().status, 'blocked');
   delete f.cases[0].design_contract; f.save();
   assert.equal(f.inspect().status, 'blocked');
+});
+
+test('selection leaves unresolved cases out while continuing confirmed cases', () => {
+  const f=fixture();
+  const pending=structuredClone(f.cases[0]);
+  pending.case_id='TC-PENDING';
+  pending.design_contract.basis[0].status='pending';
+  f.cases.push(pending);
+  f.save();
+  const result=f.command('select-test-cases',[`--cases=${f.source}`,'--profile=full']);
+  assert.equal(result.status,0,result.stderr);
+  const selection=JSON.parse(readFileSync(resolve(f.dir,'selection/test-selection.json'),'utf8'));
+  assert.ok(selection.selected.some(item=>item.case_id==='TC-ONE'));
+  assert.ok(!selection.selected.some(item=>item.case_id==='TC-PENDING'));
+  assert.ok(selection.excluded.some(item=>item.case_id==='TC-PENDING' && item.reason.includes('尚未确认')));
 });
 
 test('reject cross-run sources, missing references, duplicate and silently omitted selections', () => {

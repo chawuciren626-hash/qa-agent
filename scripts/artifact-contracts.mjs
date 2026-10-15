@@ -1,5 +1,7 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { resourcePath } from './directory-context.mjs';
+import { assertExecutionTargets, executionScriptFiles } from './execution-targets.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import Ajv2020 from 'ajv/dist/2020.js';
 import xlsx from 'xlsx';
@@ -8,17 +10,25 @@ import { validateExecutionPlan } from './execution-plan.mjs';
 import { loadLatestExecution, verifyCurrentAttempt } from './execution-attempts.mjs';
 import { governedDefects, lifecycleReferences } from './defect-lifecycle.mjs';
 import { defectGateReasons, qualityGateStatus } from './quality-gate.mjs';
-import { inspectRequirementLedger, referencedRule } from './requirement-provenance.mjs';
+import { inspectRequirementLedger } from './requirement-provenance.mjs';
 import { assertAnalysisMarkdown } from './analysis-markdown.mjs';
+import { sealedExecutionOutcome } from './execution-outcome.mjs';
+import { diagnoseTestPoints } from './test-point-diagnosis.mjs';
+import { isIndependent, taskRequiredArtifacts, inspectIndependentArtifacts } from './independent-task.mjs';
 
-export const requiredArtifacts = {
-  analysis: ['analysis/requirement_analysis.md', 'analysis/requirement-ledger.json'],
-  test_points: ['design/test_points.json', 'design/test_points.xmind'],
-  test_cases: ['design/test_cases.json', 'design/test_cases.xlsx'],
-  execution: ['execution/test_results.json'],
-  defects: ['defects/defect-records.json'],
-  report: ['report/test_report.md', 'report/test_report.docx', 'report/test_report.pdf']
-};
+import { lifecycleArtifacts } from './stage-registry.mjs';
+export const requiredArtifacts = lifecycleArtifacts;
+export function stageRequiredArtifacts(root, runId, stage, mode = 'execute') {
+  if (isIndependent(root,runId)) return taskRequiredArtifacts(stage);
+  if (mode === 'prepare') return ['execution/execution-plan.json'];
+  if (stage === 'execution') {
+    try {
+      const state = JSON.parse(readRunFile(runDirectory(root,runId),'execution/execution-state.json').data);
+      if (state.version === 2 && state.status === 'blocked') return ['execution/execution-blocked.json'];
+    } catch { /* Full contract validation still rejects missing or invalid state. */ }
+  }
+  return requiredArtifacts[stage];
+}
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const validators = new Map();
 const text = value => typeof value === 'string' && value.trim().length > 0;
@@ -41,8 +51,10 @@ function zipEntry(data, name) {
 }
 
 export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', artifacts = [] } = {}) {
+  if (isIndependent(root,runId)) return inspectIndependentArtifacts(root,runId,stage,{artifacts});
   const files = new Map();
   const errors = [];
+  let executionOutcome;
   const dir = runDirectory(root, runId);
   const capture = path => {
     const value = readRunFile(dir, path);
@@ -68,18 +80,28 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
     }
     return rows;
   };
-  const points = () => {
-    const rows = records('design/test_points.json', ['points', 'test_points'], 'test_point', 'id');
-    const { rules, ledger } = inspectRequirementLedger(runId, capture);
-    assertAnalysisMarkdown(ledger, capture('analysis/requirement_analysis.md'));
-    for (const row of rows) {
-      for (const field of ['module', 'feature', 'description', 'source']) assert(text(row[field]), `${row.id}: empty ${field}`);
-      assert(row.coverage_type.length && row.coverage_type.every(text), `${row.id}: empty coverage_type`);
-      capture(row.source);
-      assert(Array.isArray(row.rule_ids) && row.rule_ids.length > 0 && new Set(row.rule_ids).size === row.rule_ids.length, `${row.id}: unique rule_ids required`);
-      row.rule_ids.forEach(id => referencedRule(rules, id));
+  const feedbackIncluded=ledger=>{
+    if(!existsSync(resolve(dir,'manifest.json'))) return;
+    const manifest=JSON.parse(readRunFile(dir,'manifest.json').data);
+    for(const event of manifest.orchestration?.events ?? []) {
+      if(event.stage==='analysis' && event.archive && ['confirmation_resolved','stage_recovered'].includes(event.type)) {
+        for(const file of event.files ?? []) {
+          const archived=readRunFile(dir,`${event.archive}/${file.path}`);
+          assert(archived.sha256===file.sha256,`Analysis revision archive changed: ${archived.path}`);
+        }
+      }
+      const input=event.feedback_input;if(!input) continue;
+      const file=readRunFile(dir,input.path);
+      assert(file.sha256===input.sha256,'Archived user feedback changed');capture(input.path);
+      const source=ledger.sources.find(s=>s.path===input.path && s.kind==='user_confirmation');
+      assert(source && ledger.rules.some(r=>r.citations.some(c=>c.source_id===source.id)),'User feedback must be registered and cited in the revised analysis, not only in approval notes');
     }
-    for (const rule of rules.values()) if (rule.kind === 'requirement' && rule.scope === 'in_scope' && rule.status !== 'rejected') assert(rows.some(row => row.rule_ids.includes(rule.id)), `${rule.id}: requirement missing test point coverage`);
+  };
+  const points = () => {
+    const { rows, ledger, errors: pointErrors } = diagnoseTestPoints(runId, capture);
+    assert(!pointErrors.length, pointErrors.join('; '));
+    feedbackIncluded(ledger);
+    assertAnalysisMarkdown(ledger, capture('analysis/requirement_analysis.md'));
     return rows;
   };
   const cases = () => {
@@ -128,6 +150,25 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
       for (const file of archived.files.filter(file => file.size > 0)) capture(`execution/attempts/${state.invocation_id}/${file.path}`);
     }
     for (const row of value.cases) for (const ref of row.evidence_paths) capture(ref);
+    return value;
+  };
+  const terminalResults = () => {
+    const state = json('execution/execution-state.json');
+    if (state.version !== 2) return results();
+    if (state.status !== 'blocked') {
+      const value = results();
+      sealedExecutionOutcome(root, runId);
+      executionOutcome = { status: state.status, invocation_id: state.invocation_id, disposition: 'analyze_results', reason: null };
+      return value;
+    }
+    const { results: value, attempt } = sealedExecutionOutcome(root,runId);
+    const blocked = json('execution/execution-blocked.json');
+    assert(isDeepStrictEqual(blocked,value), 'Blocked view differs from sealed latest attempt');
+    validateSchema('test_result',value);
+    assert(value.status === 'blocked' && value.cases.length === 0 && ['total','passed','failed','skipped','blocked'].every(key=>value.summary[key]===0), 'Blocked execution must not claim executed cases');
+    capture(`execution/attempts/${state.invocation_id}/attempt.json`);
+    for (const file of attempt.files.filter(file=>file.size>0)) capture(`execution/attempts/${state.invocation_id}/${file.path}`);
+    executionOutcome={status:'blocked',invocation_id:state.invocation_id,disposition:'report_only',reason:state.block_reason};
     return value;
   };
   const assessmentFor = result => {
@@ -182,11 +223,12 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
   try {
     assert(Object.hasOwn(requiredArtifacts, stage), 'Unknown artifact stage');
     assert(mode === 'execute' || (mode === 'prepare' && stage === 'execution'), 'Invalid artifact mode');
-    const required = mode === 'prepare' ? ['execution/execution-plan.json'] : requiredArtifacts[stage];
+    const required = stageRequiredArtifacts(root,runId,stage,mode);
     [...new Set([...required, ...artifacts])].forEach(capture);
     if (stage === 'analysis') {
       assert(text(capture(required[0]).toString('utf8')), 'Empty analysis text');
       const { ledger } = inspectRequirementLedger(runId, capture);
+      feedbackIncluded(ledger);
       assertAnalysisMarkdown(ledger, capture(required[0]));
     }
     if (stage === 'test_points') {
@@ -211,19 +253,25 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
       zipEntry(data, 'xl/workbook.xml');
       const book = xlsx.read(data, { type: 'buffer' });
       assert(book.Sheets['测试用例'], 'Missing test case worksheet');
-      const table = xlsx.utils.sheet_to_json(book.Sheets['测试用例'], { header: 1, defval: '' });
-      const expected = rows.map(row => [row.case_id, row.title, row.priority, row.type, row.preconditions.join('\n'), JSON.stringify(row.test_data ?? {}), row.steps.map((step, i) => `${i + 1}. ${step}`).join('\n'), row.expected, row.automation_feasible ? '是' : '否', row.related_test_point]);
-      assert(isDeepStrictEqual(table[0], ['用例 ID', '用例标题', '优先级', '类型', '前置条件', '测试数据', '测试步骤', '预期结果', '可自动化', '关联测试点']), 'Unexpected Excel headers');
+      const modern = book.Sheets['测试用例'].A5?.v === '编号';
+      const table = xlsx.utils.sheet_to_json(book.Sheets['测试用例'], { header: 1, defval: '', ...(modern ? { range: 4 } : {}) });
+      const plain = value => value == null ? '' : Array.isArray(value) ? value.map(plain).join('\n') : typeof value === 'object' ? Object.entries(value).map(([k,v]) => `${k}: ${plain(v)}`).join('\n') : String(value);
+      const expected = modern ? rows.map(row => [row.case_id, row.execution_metadata?.module ?? row.module ?? '未分组', row.priority, row.title, row.preconditions.join('\n'), row.steps.map((step,i)=>`${i+1}. ${step}`).join('\n') + (plain(row.test_data) ? `\n测试数据:\n${plain(row.test_data)}` : ''), row.expected, '尚未执行。', '未执行', '', '']) : rows.map(row => [row.case_id, row.title, row.priority, row.type, row.preconditions.join('\n'), JSON.stringify(row.test_data ?? {}), row.steps.map((step, i) => `${i + 1}. ${step}`).join('\n'), row.expected, row.automation_feasible ? '是' : '否', row.related_test_point]);
+      const headers = modern ? JSON.parse(readFileSync(resolve(root, 'config/test-delivery-template.json'), 'utf8')).case_headers : ['用例 ID', '用例标题', '优先级', '类型', '前置条件', '测试数据', '测试步骤', '预期结果', '可自动化', '关联测试点'];
+      assert(isDeepStrictEqual(table[0], headers), 'Unexpected Excel headers');
+      if (modern) assert(book.Sheets['问题清单'], 'Missing issue worksheet');
       assert(isDeepStrictEqual(table.slice(1), expected), 'Excel rows differ from test_cases.json');
     }
     if (stage === 'execution') {
       if (mode === 'prepare') {
-        plan();
+        const prepared = plan();
+        assert(resolve(resourcePath(root,prepared.execution_policy.test_dir)) === resolve(dir,'execution/scripts'), 'Preparation plan must use this run execution/scripts directory');
         assert(artifacts.some(path => /\.(spec|test)\.[cm]?[jt]sx?$/.test(path)), 'Preparation requires generated test scripts');
-      } else results();
+        assertExecutionTargets(root, prepared, executionScriptFiles(resourcePath(root,prepared.execution_policy.test_dir)));
+      } else terminalResults();
     }
     if (stage === 'defects' || stage === 'report') {
-      const result = stage === 'report' ? reportResults() : results();
+      const result = stage === 'report' ? reportResults() : terminalResults();
       const rows = defects(result);
       const assessment = assessmentFor(result);
       const levels = ['low', 'medium', 'strong'];
@@ -271,10 +319,19 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
         zipEntry(capture('report/test_report.docx'), '[Content_Types].xml');
         const pdf = capture('report/test_report.pdf');
         assert(pdf.subarray(0, 5).toString() === '%PDF-' && pdf.subarray(-1024).toString().includes('%%EOF'), 'Invalid PDF header/end marker');
+        // Older sealed runs did not export these formats. Capture new deliveries when present.
+        if (existsSync(resolve(dir, 'report/test_report.html'))) capture('report/test_report.html');
+        if (existsSync(resolve(dir, 'report/test_cases.xlsx'))) {
+          const book = xlsx.read(capture('report/test_cases.xlsx'), { type: 'buffer' });
+          assert(book.Sheets['测试用例'] && book.Sheets['问题清单'], 'Missing report workbook sheets');
+          const table = xlsx.utils.sheet_to_json(book.Sheets['测试用例'], { header: 1, range: 5, defval: '' });
+          const statuses = { passed: '通过', failed: '失败', skipped: '未执行', blocked: '受阻' };
+          for (const row of result.cases) assert(table.some(c => c[0] === row.case_id && c[8] === statuses[row.status]), `Report workbook result mismatch: ${row.case_id}`);
+        }
       }
     }
   } catch (error) { errors.push(error.message); }
-  return { version: 1, run_id: runId, stage, mode, status: errors.length ? 'blocked' : 'passed', files: [...files.values()].sort((a, b) => a.path.localeCompare(b.path)), errors };
+  return { version: 1, run_id: runId, stage, mode, status: errors.length ? 'blocked' : 'passed', files: [...files.values()].sort((a, b) => a.path.localeCompare(b.path)), ...(executionOutcome?{execution_outcome:executionOutcome}:{}), errors };
 }
 
 export function assertArtifactContract(root, runId, stage, options) {

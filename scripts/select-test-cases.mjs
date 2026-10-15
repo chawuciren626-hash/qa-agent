@@ -1,3 +1,5 @@
+import { resourcePath } from './directory-context.mjs';
+import { dataPath } from './directory-context.mjs';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { extractCases } from "./execution-plan.mjs";
@@ -15,7 +17,7 @@ if (!runId || !sourceArg) throw new Error("用法: node scripts/select-test-case
 const policy = JSON.parse(readFileSync(resolve(root, "config/test-selection-policy.json"), "utf8"));
 const profile = policy.profiles[profileId];
 if (!profile) throw new Error(`未知选择 Profile: ${profileId}`);
-const sourcePath = resolve(root, sourceArg);
+const sourcePath = resourcePath(root, sourceArg);
 if (!existsSync(sourcePath)) throw new Error(`找不到测试用例文件: ${sourcePath}`);
 const changedModules = (args["changed-modules"] ?? "").split(",").filter(Boolean);
 const changedTags = (args["changed-tags"] ?? "").split(",").filter(Boolean);
@@ -30,6 +32,12 @@ const selected = [];
 const excluded = [];
 const eligible = candidates.filter((candidate) => {
   const { testCase, metadata } = candidate;
+  const unresolvedBasis=(testCase.design_contract?.basis ?? []).some(item=>item.status==='pending' || item.status==='conflicted');
+  const unresolvedAssumption=(testCase.design_contract?.assumptions ?? []).some(item=>item.status==='pending');
+  if (unresolvedBasis || unresolvedAssumption) {
+    excluded.push({ case_id: testCase.case_id, reason: '依据或假设尚未确认，不纳入本次执行' });
+    return false;
+  }
   if (environment && metadata.environment_dependencies.length && !metadata.environment_dependencies.includes(environment)) {
     excluded.push({ case_id: testCase.case_id, reason: "环境依赖不匹配" });
     return false;
@@ -71,7 +79,7 @@ const result = {
   manual_pending: selected.filter(item => item.execution_mode === 'manual').map(item => ({ case_id: item.case_id, title: item.title, status: 'pending_manual' })),
   summary: { total_cases: candidates.length, selected: selected.length, excluded: excluded.length, estimated_duration_ms: budgetUsed, budget_exceeded: budget !== null && budgetUsed > budget }
 };
-const targetDir = resolve(root, "output/runs", runId, "selection");
+const targetDir = dataPath(root, "output/runs", runId, "selection");
 mkdirSync(targetDir, { recursive: true });
 const target = resolve(targetDir, "test-selection.json");
 writeFileSync(target, JSON.stringify(result, null, 2) + "\n");

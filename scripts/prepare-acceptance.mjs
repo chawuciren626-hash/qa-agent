@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { dataPath } from './directory-context.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const args = Object.fromEntries(process.argv.slice(2).map(arg => arg.replace(/^--/, '').split(/=(.*)/s)));
@@ -10,7 +11,7 @@ const port = Number(args.port ?? 4317);
 if (!/^run-[A-Za-z0-9-]+$/.test(runId ?? '') || !['healthy', 'defect', 'unavailable'].includes(scenario)) throw new Error('Use --run-id=run-... --scenario=healthy|defect|unavailable [--port=4317]');
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid port');
 const relative = `output/runs/${runId}`;
-const runDir = resolve(root, relative);
+const runDir = dataPath(root, relative);
 if (existsSync(runDir)) throw new Error('Run already exists; choose a new run ID.');
 const execute = (script, parameters) => {
   const result = spawnSync(process.execPath, [resolve(root, script), ...parameters], { cwd: root, stdio: 'inherit' });

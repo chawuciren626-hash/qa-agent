@@ -1,7 +1,8 @@
 ---
 name: test-asset-management
 description: 管理可复用测试规则、测试数据策略、定位器、断言、接口契约和缺陷模式。
-version: 1.0.0
+metadata:
+  version: '1.0.0'
 ---
 
 # 测试资产管理 Skill

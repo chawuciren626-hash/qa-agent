@@ -51,6 +51,17 @@ test('runner rejects shell commands, path escapes, recursion, missing run and in
   await assert.rejects(runProjectCommand(root, { kind: 'node', script: 'echo.mjs', runId: 'run-missing' }));
 });
 
+test('dependency probe retries only timeout, preserves explicit interpreter and distinguishes unavailable from missing',()=>{
+  const env={...process.env,QA_PYTHON:process.execPath},calls=[];
+  const found=probePython(env,(path,args,options)=>{calls.push({path,timeout:options.timeout});return calls.length===1?{status:null,error:{code:'ETIMEDOUT'}}:{status:0};});
+  assert.equal(found.status,'ready');assert.deepEqual(calls.map(c=>c.timeout),[5000,15000]);assert.equal(calls[0].path,calls[1].path);
+  const timedOut=probePython(env,()=>({status:null,error:{code:'ETIMEDOUT'}}));
+  assert.equal(timedOut.attempts.length,2);assert.match(timedOut.reason,/timed out/);
+  let missingCalls=0;
+  const missing=probePython(env,()=>{missingCalls++;return {status:1};});
+  assert.equal(missingCalls,1);assert.equal(missing.status,'not_ready');assert.match(missing.reason,/no silent fallback/);
+});
+
 test('explicit invalid Python never silently falls back to another interpreter', () => {
   const env = { ...process.env, QA_PYTHON: 'python' };
   assert.deepEqual(pythonCandidates(env), []);

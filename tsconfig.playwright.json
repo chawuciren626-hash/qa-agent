@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "baseUrl": ".",
+    "paths": {
+      "@playwright/test": ["node_modules/@playwright/test/index.js"],
+      "@playwright/test/*": ["node_modules/@playwright/test/*"]
+    }
+  }
+}

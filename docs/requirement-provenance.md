@@ -1,10 +1,16 @@
 # 需求来源与语义治理
 
+2026-10-12覆盖分类更新：明确context/environment只作为背景/准备前提，不作测试点或用例的预期依据；其他范围内未驳回需求和已确认假设必须覆盖。旧规则缺category不豁免，真实非功能验收约束不可降为背景。分类语义由需求角色审查，不能按关键词自动改写旧基线；诊断返回的分类数量及未覆盖列表见[测试点批量诊断](test-point-diagnosis.md)。
+
 后续更新：正式Markdown已改为从台账确定性生成，未知字段会拒绝；允许的可选module/category及迁移约束见[结构化分析单一来源](analysis-single-source.md)。本页以下73项测试为此前阶段记录，不代表最新真实复验已通过。
 
 日期：2026-10-09。本项为通用工程规则，不为某个登录页或验收基座硬编码判断，不运行模型评测。
 
 ## 为什么需要规则台账
+
+2026-10-10澄清：未说明的行为不等于已批准排除。与已要求功能有关的缺口登记为in_scope的assumption/pending，category=clarification，reason说明尚不确定的部分；这也不等于确认新增需求。额外建议可作为out_of_scope的assumption/pending候选，不能宣称用户已排除。只有明确排除原文才能支撑“已明确排除”的结论，需在阶段语义审查核对，不能依靠关键词或引文存在性自动判定。
+
+所有条目（包括风险、假设、排除）都需引用相关原文上下文；连续原文放quote，释义放statement/reason。引用校验失败现在返回规则ID、citation索引、来源路径及修正方法，拒绝未知source_id，不自动替换引文或修改来源。新提示与诊断不放宽原合同，也不回写历史已生成台账。
 
 过去分析只检查Markdown非空，用例只检查source文件存在和自行声明的confirmed，无法区分业务需求与实现现状。现在分析必须同时提交`analysis/requirement_analysis.md`、`analysis/requirement-ledger.json`，原始输入快照放在同run的`inputs/`。正式完成、确认、下游派发沿用产物契约和文件哈希机制。
 

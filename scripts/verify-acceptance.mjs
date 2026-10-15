@@ -1,10 +1,11 @@
+import { dataPath } from './directory-context.mjs';
 import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadLatestExecution } from './execution-attempts.mjs';
 const root = resolve(import.meta.dirname, '..');
 const runId = process.argv.find(arg => arg.startsWith('--run-id='))?.slice(9);
 if (!/^run-[A-Za-z0-9-]+$/.test(runId ?? '')) throw new Error('Valid --run-id required');
-const dir = resolve(root, 'output/runs', runId);
+const dir = dataPath(root, 'output/runs', runId);
 const read = file => JSON.parse(readFileSync(resolve(dir, file), 'utf8'));
 const fixture = read('inputs/acceptance.json');
 const oracle = JSON.parse(readFileSync(resolve(root, 'acceptance/oracle.json'), 'utf8')).scenarios[fixture.scenario];

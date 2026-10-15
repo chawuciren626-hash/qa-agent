@@ -8,6 +8,7 @@ import { requiredArtifacts } from '../../scripts/stage-evidence.mjs';
 import { executionInputs } from './safety-fixtures.mjs';
 import { designArtifacts } from './artifact-fixtures.mjs';
 import { childCommandPolicy } from '../../scripts/child-command-policy.mjs';
+import { inspectHandoff, handoffReminder } from '../../scripts/controller-handoff.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 test('missing artifact repair preserves history and refuses existing files', () => {
@@ -62,15 +63,15 @@ test('stage events cannot bypass approval or override state and audit fields', (
     };
     saveTrace(agent, childId, [
       { type: 'session_meta', payload: { session_id: childId, source: 'subagent', agent_state: resolve(agentRoot, agent, 'agent_state'), workspace: root } },
-      { type: 'model_msg', payload: { type: 'text', role: 'user', text: `${id} ${childCommandPolicy(dispatchId)}` } },
+      { type: 'model_msg', payload: { type: 'text', role: 'user', text: `run_id=${id} ${childCommandPolicy(dispatchId)}` } },
       { type: 'model_msg', payload: { type: 'text', role: 'assistant', text: 'Synthetic completion fixture' } },
       { type: 'event_msg', payload: { type: 'request_end', status: 'completed' } }
     ]);
     saveTrace('test_agent', parentId, [
       { type: 'session_meta', payload: { session_id: parentId, agent_state: resolve(agentRoot, 'test_agent/agent_state'), workspace: root } },
-      { type: 'model_msg', payload: { type: 'tool_call', name: 'run_subagent', arguments: JSON.stringify({ agent_id: agent, prompt: `${id} ${agent} ${dispatchId} ${childCommandPolicy(dispatchId)}` }), tool_call_id: 'synthetic' } },
+      { type: 'model_msg', payload: { type: 'tool_call', name: 'run_subagent', arguments: JSON.stringify({ agent_id: agent, prompt: `run_id=${id} ${agent} ${dispatchId} ${childCommandPolicy(dispatchId)}` }), tool_call_id: 'synthetic' } },
       { type: 'event_msg', payload: { type: 'subagent', session_id: childId } },
-      { type: 'model_msg', payload: { type: 'tool_call_output', tool_call_id: 'synthetic', output: 'Synthetic child response without session ID' } }
+      { type: 'model_msg', payload: { type: 'tool_call_output', tool_call_id: 'synthetic', stop_reason: 'completed', output: 'Synthetic child response without session ID' } }
     ]);
     let artifacts = requiredArtifacts[stage];
     if (stage === 'execution' && manifest.stages.execution.mode === 'prepare') {
@@ -116,7 +117,19 @@ test('stage events cannot bypass approval or override state and audit fields', (
     assert.notEqual(run('record-orchestration-event', [...completion, `--parent-session-id=${parentId}`]).status, 0);
     assert.equal(readFileSync(resolve(dir, 'manifest.json'), 'utf8'), before);
     writeFileSync(target, valid);
+    if(stage==='analysis' && !(manifest.confirmations ?? []).some(c=>c.stage===stage)) {
+      const stateDir=resolve(root,'output/controller-command-sessions',parentId);mkdirSync(stateDir,{recursive:true});
+      writeFileSync(resolve(stateDir,'state.json'),JSON.stringify({session_id:parentId,status:'ready',events:[]}));
+      const request=inspectHandoff(root,parentId,agentRoot);
+      assert.equal(request.request.action,'complete');assert.equal(request.request.child_session,undefined);
+      assert.equal(handoffReminder(root,parentId,agentRoot).decision,'continue');
+      assert.equal(handoffReminder(root,parentId,agentRoot).decision,'continue');
+      assert.equal(handoffReminder(root,parentId,agentRoot).decision,'stop');
+      assert.equal(readFileSync(resolve(dir,'manifest.json'),'utf8'),before);
+      writeFileSync(target,'invalid');assert.equal(handoffReminder(root,parentId,agentRoot).decision,'stop');writeFileSync(target,valid);
+    }
     ok('record-orchestration-event', [...completion, `--parent-session-id=${parentId}`]);
+    if(stage==='analysis' && !(manifest.confirmations ?? []).some(c=>c.stage===stage)) assert.equal(inspectHandoff(root,parentId,agentRoot).request.action,'request_confirmation');
   };
   writeFileSync(resolve(dir, 'inputs/fixture-origin.json'), JSON.stringify({ source: 'synthetic orchestration regression' }));
   ok('plan-run', [`--run-id=${id}`, '--stages=execution']);
@@ -165,7 +178,12 @@ test('stage events cannot bypass approval or override state and audit fields', (
   assert.equal(run('run-ui-tests', [`--run-id=${id}`]).status, 2);
   complete('execution');
   assert.equal(JSON.parse(manifest()).stages.execution.status, 'planned');
-  ok('request-stage-confirmation', [id, 'execution']);
+  const handoffPath=resolve(dir,'execution/synthetic-handoff-request.json');
+  writeFileSync(handoffPath,JSON.stringify({action:'handoff',run_id:id,stage:'execution',artifacts:['execution/execution-plan.json','execution/scripts/synthetic.spec.ts']}));
+  const handoffArgs=['execute',`--controller-session=${parentId}`,`--request=${handoffPath}`];
+  ok('project-action',handoffArgs);
+  assert.equal(JSON.parse(manifest()).stages.execution.status,'awaiting_confirmation');
+  const handed=manifest();ok('project-action',handoffArgs);assert.equal(manifest(),handed);
   ok('resolve-stage-confirmation', [id, 'execution', 'revision_requested', 'synthetic plan revision']);
   denied(['dispatched', '--stage=execution', '--agent=automation_execution_agent', '--skills=playwright-execution']);
   ok('request-stage-confirmation', [id, 'execution']);

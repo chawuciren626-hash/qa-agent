@@ -1,0 +1,6 @@
+{
+  "name": "qa-stage-boundary",
+  "description": "Keep each professional QA Agent inside its assigned artifact stage.",
+  "pre_tool_use": [{"command":"guard.mjs","timeout":10}],
+  "user_prompt": []
+}

@@ -6,6 +6,17 @@ function fixture(status = 'planned', confirmation = 'after') {
   return { run_id: 'run-summary', status: 'in_progress', stages: { analysis: { status } }, confirmations: [], orchestration: { plan: { stages: [{ id: 'analysis', selected: true, confirmation }] }, events: [] } };
 }
 const summary = manifest => summarizeRun(JSON.stringify(manifest), 'run-summary');
+
+test('completed workflow explicitly displays blocked execution instead of product success', () => {
+  const m = fixture('completed', 'none');
+  m.status = 'completed';
+  m.orchestration.plan.stages[0].id = 'execution';
+  m.stages = { execution: { status: 'completed', execution_outcome: { status: 'blocked', disposition: 'report_only' } } };
+  const value = summary(m);
+  assert.equal(value.workflow_closed, true);
+  assert.equal(value.stages[0].execution_outcome.status, 'blocked');
+  assert.match(value.user_summary, /blocked.*report_only/);
+});
 test('revision state and latest decision override historical completion and approval', () => {
   const m = fixture('revision_requested');
   m.confirmations = [{ stage: 'analysis', status: 'approved' }, { stage: 'analysis', status: 'revision_requested' }];

@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "enabled": true,
+  "project_id": "default_project",
+  "controller_agent": "test_agent",
+  "default_workspace": "E:/QAWorkspaces"
+}

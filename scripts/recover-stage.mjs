@@ -1,10 +1,11 @@
-import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, readFileSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { getRunContext, withRunLock, writeJson, recomputeRunStatus, assertStageHistory } from './orchestration-state.mjs';
 import { readRunFile } from './design-quality.mjs';
-import { assertParentSession, readSession } from './stage-evidence.mjs';
+import { assertParentSession, readSession, requiredArtifacts } from './stage-evidence.mjs';
+import { stageRequiredArtifacts } from './artifact-contracts.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const project = JSON.parse(readFileSync(resolve(root, 'config/project.json'), 'utf8'));
@@ -28,7 +29,9 @@ withRunLock(root, project, runId, () => {
   if ((manifest.confirmations ?? []).filter(item => item.stage === stage).at(-1)?.status === 'rejected') throw new Error('Rejected authorization cannot be recovered; create a newly approved run');
   const runDir = resolve(manifestPath, '..');
   const statePath = resolve(runDir, 'execution/execution-state.json');
-  if (existsSync(resolve(runDir, 'execution/execution.lock.json')) || (existsSync(statePath) && JSON.parse(readFileSync(statePath, 'utf8')).status === 'running')) throw new Error('Execution may still be active; reconcile it before stage recovery');
+  const browserStatePath=resolve(runDir,'execution/browser-state.json');
+  if(existsSync(browserStatePath) && !['closed','expired'].includes(JSON.parse(readFileSync(browserStatePath,'utf8')).status)) throw new Error('Interactive browser is still active; use human resume or finish, not failure recovery');
+  if (existsSync(resolve(runDir, 'execution/execution.lock.json')) || existsSync(resolve(runDir,'execution/exploration.lock')) || (existsSync(statePath) && JSON.parse(readFileSync(statePath, 'utf8')).status === 'running')) throw new Error('Execution may still be active; reconcile it before stage recovery');
   const dispatch = manifest.orchestration.events.filter(item => item.type === 'dispatched' && item.stage === stage).at(-1);
   if (!dispatch?.dispatch_id || dispatch['parent-session-id'] !== options['parent-session-id']) throw new Error('Legacy or unowned dispatch cannot be recovered; preserve it and create a new run');
   const parent = assertParentSession(root, runId, options['parent-session-id']);
@@ -51,8 +54,19 @@ withRunLock(root, project, runId, () => {
   const evidence = readRunFile(runDir, options.evidence);
   if (!evidence.data.length) throw new Error('Recovery evidence is empty');
   const at = new Date().toISOString();
-  manifest.orchestration.events.push({ type: 'stage_recovered', at, stage, from: current.status, to: 'revision_requested', previous_stage: structuredClone(current), dispatch_id: dispatch.dispatch_id, parent_session_id: options['parent-session-id'], manifest_sha256: digest, actor: options.actor, reason: options.reason, approval_ref: options['approval-ref'], evidence: { path: evidence.path, sha256: evidence.sha256 }, verified_children: children });
-  manifest.stages[stage] = { ...current, status: 'revision_requested', updated_at: at, reason: options.reason };
+  // Preserve reviewed drafts before granting a new dispatch, without altering their working copies.
+  const files=(stageRequiredArtifacts(root,runId,stage) ?? []).filter(p=>existsSync(resolve(runDir,p))).map(p=>readRunFile(runDir,p));
+  const revisionId=`${stage}-${randomUUID()}`;
+  const archive=`audit/revisions/${revisionId}`;
+  const archiveDir=resolve(runDir,archive);
+  mkdirSync(archiveDir,{recursive:true});
+  if(realpathSync(archiveDir)!==archiveDir || realpathSync(runDir)!==runDir) throw new Error('Recovery archive redirected');
+  for(const file of files) {
+    const target=resolve(archiveDir,file.path);mkdirSync(resolve(target,'..'),{recursive:true});
+    writeFileSync(target,file.data,{flag:'wx'});
+  }
+  manifest.orchestration.events.push({ type: 'stage_recovered', at, stage, from: current.status, to: 'revision_requested', previous_stage: structuredClone(current), dispatch_id: dispatch.dispatch_id, parent_session_id: options['parent-session-id'], manifest_sha256: digest, actor: options.actor, reason: options.reason, approval_ref: options['approval-ref'], evidence: { path: evidence.path, sha256: evidence.sha256 }, verified_children: children, archive, files:files.map(f=>({path:f.path,sha256:f.sha256})) });
+  manifest.stages[stage] = { ...current, status: 'revision_requested', updated_at: at, reason: options.reason, revision_id:revisionId,revision_archive:archive };
   for (const confirmation of manifest.confirmations ?? []) if (confirmation.stage === stage && confirmation.status === 'approved') {
     confirmation.status = 'superseded'; confirmation.superseded_at = at; confirmation.superseded_reason = 'stage_recovered';
   }

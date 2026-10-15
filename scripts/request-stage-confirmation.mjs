@@ -36,7 +36,7 @@ if (stagePlan.confirmation === 'after') {
   if (artifactArgs.some(path => !confirmation.artifact_contract.files.some(file => file.path === path))) throw new Error('Confirmation references an unvalidated artifact');
   if (!artifactArgs.length) confirmation.artifacts = confirmation.artifact_contract.files.map(file => file.path);
 }
-if (stage === 'execution') confirmation.execution_snapshot = executionSnapshot(root, runId);
+if (stage === 'execution' && manifest.orchestration?.plan?.workflow_mode!=='task') confirmation.execution_snapshot = executionSnapshot(root, runId);
 if (['analysis', 'test_points', 'test_cases'].includes(stage)) confirmation.semantic_review = {
   automated_scope: 'structure_references_and_hashes_only',
   checklist: ['Check original source authority and quoted context', 'Separate requirement, observation and assumption', 'Do not add precise codes, text or boundaries absent from approved requirements', 'Review pending/conflicted and excluded scope; no blanket promotion to confirmed', 'Check requirement coverage and expected behavior independently of implementation']

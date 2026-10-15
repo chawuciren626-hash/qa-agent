@@ -3,6 +3,7 @@ import { defineConfig, devices } from "@playwright/test";
 const runDir = process.env.QA_RUN_DIR ?? "output";
 
 export default defineConfig({
+  tsconfig: "./tsconfig.playwright.json",
   testDir: process.env.QA_TEST_DIR ?? "./tests/generated",
   timeout: Number(process.env.QA_TIMEOUT_MS ?? 30_000),
   workers: Number(process.env.QA_WORKERS ?? 1),

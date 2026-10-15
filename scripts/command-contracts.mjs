@@ -3,8 +3,11 @@ const requireUsage = (ok, message) => { if (!ok) throw new CommandUsageError(mes
 const run = value => /^run-[A-Za-z0-9-]+$/.test(value ?? '');
 const stages = ['analysis', 'test_points', 'test_cases', 'execution', 'defects', 'report'];
 const usages = {
+  'run-ui-tests.mjs': '--run-id=<run_id> [--headed]',
+  'extract-word-input.py': '<run_id> inputs/<archived-name>.docx',
   'create-run.mjs': '[--run-id=<new_run_id>]',
-  'plan-run.mjs': '--run-id=<run_id> [--stages=analysis,test_points,...]',
+  'plan-run.mjs': '--run-id=<run_id> [--stages=analysis,test_points,...] [--review-mode=auto|staged] [--workflow-mode=task|lifecycle]',
+  'extend-run-plan.mjs': '--run-id=<run_id> --stages=<stage,...> --reason=<user-continuation-request>',
   'record-orchestration-event.mjs': '<run_id> <dispatched|completed|failed|blocked> --stage=<stage> --parent-session-id=<session> [--agent=... --skills=... --dispatch-id=... --session-id=... --artifacts=... --reason=... --mode=prepare]',
   'request-stage-confirmation.mjs': '<run_id> <stage> [run-relative-artifact ...]',
   'resolve-stage-confirmation.mjs': '<run_id> <stage> <approved|revision_requested|rejected> [reason ...]',
@@ -22,16 +25,35 @@ export function commandHelp(script) {
 }
 export function validateCommandArguments(script, args, runId) {
   if (!Object.hasOwn(usages, script)) return;
+  if (script === 'run-ui-tests.mjs') {
+    requireUsage(args.filter(arg=>arg==='--headed').length<=1, 'Duplicate headed option');
+    const options=parseOptions(args.filter(arg=>arg!=='--headed'),['run-id']);
+    requireUsage(run(options['run-id']) && (!runId || options['run-id']===runId), 'Runner requires one matching --run-id'); return;
+  }
+  if (script === 'extend-run-plan.mjs') {
+    const options = parseOptions(args, ['run-id', 'stages', 'reason']);
+    const added = options.stages?.split(',') ?? [];
+    requireUsage(run(options['run-id']) && (!runId || options['run-id'] === runId), 'Extension requires a matching run_id');
+    requireUsage(added.length && added.every(id => stages.includes(id)) && new Set(added).size === added.length && options.reason, usages[script]);
+    return;
+  }
   if (['create-run.mjs', 'plan-run.mjs'].includes(script)) {
-    const options = parseOptions(args, script === 'create-run.mjs' ? ['run-id'] : ['run-id', 'stages']);
+    const options = parseOptions(args, script === 'create-run.mjs' ? ['run-id'] : ['run-id', 'stages', 'review-mode', 'workflow-mode', 'source-mode']);
     requireUsage(script === 'create-run.mjs' || run(options['run-id']), 'plan-run requires --run-id');
     requireUsage(!options['run-id'] || run(options['run-id']), 'Invalid run ID');
     requireUsage(!runId || options['run-id'] === runId, 'Wrapper and script run_id differ');
     requireUsage(!options.stages || options.stages.split(',').every(id => stages.includes(id)), 'Unknown or empty planned stage');
+    requireUsage(!options['review-mode'] || ['auto','staged'].includes(options['review-mode']), 'Invalid review mode');
+    requireUsage(!options['workflow-mode'] || ['task','lifecycle'].includes(options['workflow-mode']), 'Invalid workflow mode');
+    requireUsage(!options['source-mode'] || ['provided_materials','live_product'].includes(options['source-mode']), 'Invalid source mode');
+    requireUsage(!options['source-mode'] || options['workflow-mode']==='task', 'source-mode applies only to independent tasks');
     return;
   }
   requireUsage(run(args[0]), `${script}: positional run_id required AFTER --; wrapper --run-id is not a script argument`);
   requireUsage(!runId || args[0] === runId, 'Wrapper and script run_id differ');
+  if (script === 'extract-word-input.py') {
+    requireUsage(args.length === 2 && /^inputs\/[A-Za-z0-9][A-Za-z0-9._-]*\.docx$/i.test(args[1]), usages[script]); return;
+  }
   if (['generate-analysis-markdown.mjs', 'show-run-status.mjs', 'show-run-plan.mjs', 'get-run-resume-point.mjs'].includes(script)) { requireUsage(args.length === 1, usages[script]); return; }
   if (script === 'record-orchestration-event.mjs') {
     requireUsage(['dispatched', 'completed', 'failed', 'blocked'].includes(args[1]), 'Unknown stage event');
@@ -39,7 +61,7 @@ export function validateCommandArguments(script, args, runId) {
     requireUsage(stages.includes(o.stage) && session(o['parent-session-id']), 'Stage and parent session required');
     if (args[1] === 'dispatched') {
       requireUsage(o.agent && o.skills && !o['dispatch-id'], 'Dispatch requires agent/skills; dispatch ID is generated');
-      requireUsage(!o.mode || (o.mode === 'prepare' && o.stage === 'execution'), 'Invalid preparation mode');
+      requireUsage(!o.mode || (['prepare','resume_browser'].includes(o.mode) && o.stage === 'execution'), 'Invalid execution mode');
     } else {
       requireUsage(o['dispatch-id'] && !o.mode, 'Terminal event requires dispatch ID and no mode');
       requireUsage(args[1] === 'completed' ? session(o['session-id']) && o.artifacts : o.reason, 'Completion requires child session/artifacts; failure requires reason');
@@ -52,6 +74,7 @@ export function validateCommandArguments(script, args, runId) {
   }
   if (script === 'resolve-stage-confirmation.mjs') {
     requireUsage(['approved', 'revision_requested', 'rejected'].includes(args[2]), 'Invalid confirmation decision');
+    if (args[1] === 'analysis' && args[2] === 'revision_requested') requireUsage(args.slice(3).join(' ').trim(), 'Analysis revision requires the user modification request as reason');
     requireUsage(args.slice(3).every(p => !p.startsWith('--')), 'Confirmation reason is positional text, not options'); return;
   }
   const options = {};

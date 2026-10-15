@@ -2,6 +2,8 @@ import { resolve } from 'node:path';
 import { inspectRuntime, runProjectCommand } from './command-runtime.mjs';
 import { CommandUsageError, commandHelp, parseOptions, validateCommandArguments } from './command-contracts.mjs';
 import { readControllerSession, reviewControllerSession, withControllerSession } from './controller-command-session.mjs';
+import { executeAction } from './structured-actions.mjs';
+import { assertParentSession } from './stage-evidence.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const [action, ...argv] = process.argv.slice(2);
@@ -20,7 +22,7 @@ try {
     if (head.length) throw new CommandUsageError('session-status takes only --controller-session');
     result = readControllerSession(root, sessionId);
   } else if (action === 'review-session') {
-    result = reviewControllerSession(root, sessionId, parseOptions(head, ['expected-sha256','actor','reason','approval-ref','evidence']));
+    result = reviewControllerSession(root, sessionId, parseOptions(head, ['expected-sha256','actor','reason','approval-ref','evidence','correction-key']));
   } else {
     const diagnostic = ['help', '--help', 'doctor'].includes(action) || (action === 'run' && readonly.has(head[1]));
     const execute = async () => {
@@ -39,7 +41,7 @@ try {
       const options = parseOptions(flags, ['run-id', 'timeout-ms']);
       validateCommandArguments(script, args, options['run-id']);
       const declaredParent = args.find(arg => arg.startsWith('--parent-session-id='))?.slice('--parent-session-id='.length);
-      if (declaredParent && declaredParent !== sessionId) throw new CommandUsageError('Script parent session differs from controller session');
+      if (declaredParent && declaredParent !== sessionId) throw new Error('Script parent session differs from controller session');
       const controller = new AbortController();
       const interrupt = () => controller.abort();
       process.on('SIGINT', interrupt); process.on('SIGTERM', interrupt);
@@ -50,11 +52,21 @@ try {
     if (!sessionId && !diagnostic) throw new CommandUsageError('Mutating/unknown commands require --controller-session=<actual parent session> before --');
     // Failure closure is allowed while stopped, but never completion or redispatch.
     const closure = action === 'run' && head[1] === 'record-orchestration-event.mjs' && ['blocked', 'failed'].includes(args[1]);
-    result = sessionId ? await withControllerSession(root, sessionId, execute, { diagnostic: diagnostic || closure }) : await execute();
+    let adapted;
+    if (sessionId && action === 'run' && head[0] === 'node' && ['generate-analysis-markdown.mjs','validate-artifacts.mjs'].includes(head[1])) {
+      try {
+        const options=parseOptions(head.slice(2),['run-id','timeout-ms']);
+        validateCommandArguments(head[1],args,options['run-id']);
+        // Preparation validators and custom timeout requests retain their full legacy semantics.
+        if (!options['timeout-ms'] && args.length===(head[1]==='validate-artifacts.mjs'?2:1)) adapted={action:head[1]==='validate-artifacts.mjs'?'validate_artifacts':'generate_analysis',run_id:args[0],...(head[1]==='validate-artifacts.mjs'?{stage:args[1]}:{})};
+      } catch { /* The ordinary wrapper records invalid arguments below. */ }
+    }
+    if (diagnostic && sessionId) assertParentSession(root,'run-command-session',sessionId);
+    result = diagnostic ? await execute() : adapted ? await executeAction(root,sessionId,()=>JSON.stringify(adapted)) : sessionId ? await withControllerSession(root, sessionId, execute, { diagnostic: closure, recoveryContext: { action: 'legacy_command', key: 'input_correction' } }) : await execute();
   }
   console.log(JSON.stringify(result, null, 2));
   process.exitCode = result.exit_code ?? 0;
 } catch (error) {
-  console.log(JSON.stringify({ status: error instanceof CommandUsageError ? 'input_rejected' : 'runner_error', error: error.message, exit_code: 2, automatic_retries: 0, next_action: 'stop_and_request_review', help: 'node scripts/project-command.mjs help' }, null, 2));
+  console.log(JSON.stringify({ status: error instanceof CommandUsageError ? 'input_rejected' : 'runner_error', error: error.message, exit_code: 2, automatic_retries: 0, recovery: error.recovery ?? null, next_action: error.recovery?.next_action ?? 'stop_and_request_review', help: 'node scripts/project-command.mjs help', preferred_entry: 'node scripts/project-action.mjs catalog' }, null, 2));
   process.exitCode = 2;
 }

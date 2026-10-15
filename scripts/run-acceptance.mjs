@@ -1,3 +1,4 @@
+import { dataPath } from './directory-context.mjs';
 import { createAcceptanceServer } from '../acceptance/server.mjs';
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -25,14 +26,14 @@ try {
     const prepared=await execute('scripts/prepare-acceptance.mjs',[`--run-id=${runId}`,`--scenario=${scenario}`,`--port=${port}`]);
     if (prepared.code !== 0) throw new Error('Acceptance preparation failed');
     const execution=await execute('scripts/run-ui-tests.mjs',[`--run-id=${runId}`]);
-    writeFileSync(resolve(root,'output/runs',runId,'execution/runner.log'),execution.output);
+    writeFileSync(dataPath(root, 'output/runs',runId,'execution/runner.log'),execution.output);
     const verified=await execute('scripts/verify-acceptance.mjs',[`--run-id=${runId}`]);
     const evidence=await execute('scripts/assess-execution-evidence.mjs',[`--run-id=${runId}`]);
     checks.push({run_id:runId,scenario,execution_exit:execution.code,verified:verified.code===0,evidence_exit:evidence.code});
   }
 } finally { await new Promise(resolve=>server.close(resolve)); }
-mkdirSync(resolve(root,'output/acceptance'),{recursive:true});
+mkdirSync(dataPath(root, 'output/acceptance'),{recursive:true});
 const result={prefix,finished_at:new Date().toISOString(),scope:'reference browser regression, no agent-generated design or approval claims',checks,passed:checks.length===3&&checks.every(item=>item.verified&&item.evidence_exit===0)};
-writeFileSync(resolve(root,'output/acceptance',`${prefix}.json`),JSON.stringify(result,null,2)+'\n');
+writeFileSync(dataPath(root, 'output/acceptance',`${prefix}.json`),JSON.stringify(result,null,2)+'\n');
 console.log(JSON.stringify(result,null,2));
 process.exitCode=result.passed?0:1;

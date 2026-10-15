@@ -1,5 +1,8 @@
-import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
-import { randomUUID } from 'node:crypto';
+import { dataPath, directoryContext, assertRunContext } from './directory-context.mjs';
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, mkdirSync } from "node:fs";
+import { randomUUID, createHash } from 'node:crypto';
+import { hostname } from 'node:os';
+import { assertUnlinked } from './skill-resources.mjs';
 import { resolve } from "node:path";
 
 export const stageStatuses = new Set([
@@ -11,25 +14,94 @@ export function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-export function writeJson(path, value) {
+export function writeJson(path, value, { mode } = {}) {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: 'wx' });
-    renameSync(temporary, path);
+    writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: 'wx', ...(mode === undefined ? {} : { mode }) });
+    // Windows readers can briefly prevent replacement. Retry only the rename;
+    // never truncate the existing document or replay the operation producing it.
+    for (let attempt = 0; ; attempt++) {
+      try { renameSync(temporary, path); break; }
+      catch (error) {
+        if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 9) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (attempt + 1));
+      }
+    }
   } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+}
+
+function lockBusy(message) {
+  return Object.assign(new Error(message), { code: 'EEXIST' });
+}
+
+function recoverManifestLock(root, runId, lock) {
+  let raw;
+  try { raw = readFileSync(lock, 'utf8'); }
+  catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  let owner;
+  try { owner = JSON.parse(raw); } catch { throw lockBusy('Manifest lock is unreadable; preserve it for engineering diagnosis, not user approval'); }
+  if (owner?.version !== 2 || owner.host !== hostname() || owner.run_id !== runId ||
+      !Number.isSafeInteger(owner.pid) || owner.pid < 1 ||
+      !/^[a-f0-9-]{36}$/.test(owner.token ?? '') || !Number.isFinite(Date.parse(owner.at))) {
+    throw lockBusy('Manifest lock ownership cannot be verified; no automatic takeover');
+  }
+  try { process.kill(owner.pid, 0); }
+  catch (error) {
+    if (error.code !== 'ESRCH') throw lockBusy('Manifest lock owner status is unknown; no automatic takeover');
+    const runDir = resolve(lock, '..');
+    assertUnlinked(directoryContext(root).session_root, resolve(runDir, 'manifest.json'));
+    const manifest = readJson(resolve(runDir, 'manifest.json'));
+    if (manifest.run_id !== runId) throw new Error('Manifest identity mismatch during lock recovery');
+    assertRunContext(root, manifest);
+    const auditDir = resolve(runDir, 'audit/manifest-lock-recovery');
+    assertUnlinked(directoryContext(root).session_root, auditDir);
+    mkdirSync(auditDir, { recursive: true });
+    const digest = createHash('sha256').update(raw).digest('hex');
+    const claim = resolve(auditDir, `${digest}.json`);
+    assertUnlinked(directoryContext(root).session_root, claim);
+    // Exactly one contender may remove these lock bytes. Keep the claim permanently:
+    // a second contender must never remove a replacement owner's lock.
+    const record = { version: 1, run_id: runId, status: 'claimed', at: new Date().toISOString(),
+      recovery_pid: process.pid, previous_lock: raw, previous_sha256: digest, reason: 'owner_process_absent',
+      product_actions_replayed: false };
+    try { writeFileSync(claim, JSON.stringify(record, null, 2) + '\n', { flag: 'wx' }); }
+    catch (error) {
+      if (error.code === 'EEXIST') throw lockBusy('Manifest lock recovery already claimed; no competing takeover or product replay');
+      throw error;
+    }
+    assertUnlinked(directoryContext(root).session_root, lock);
+    if (readFileSync(lock, 'utf8') !== raw) throw lockBusy('Manifest lock changed during recovery; preserved current owner');
+    unlinkSync(lock);
+    writeJson(claim, { ...record, status: 'lock_removed', removed_at: new Date().toISOString() });
+    return;
+  }
+  throw lockBusy('Manifest lock owner is still running; no takeover regardless of lock age');
 }
 
 export function withRunLock(root, project, runId, operation) {
   if (!/^run-[A-Za-z0-9-]+$/.test(runId ?? '')) throw new Error('Invalid run ID');
-  const lock = resolve(root, project.run_root, runId, 'manifest.json.lock');
-  writeFileSync(lock, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx' });
-  try { return operation(); } finally { unlinkSync(lock); }
+  const lock = dataPath(root, project.run_root, runId, 'manifest.json.lock');
+  assertUnlinked(directoryContext(root).session_root, lock);
+  const raw = JSON.stringify({ version: 2, run_id: runId, host: hostname(), token: randomUUID(), pid: process.pid, at: new Date().toISOString() });
+  try { writeFileSync(lock, raw, { flag: 'wx' }); }
+  catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    recoverManifestLock(root, runId, lock);
+    writeFileSync(lock, raw, { flag: 'wx' });
+  }
+  try { return operation(); }
+  finally {
+    assertUnlinked(directoryContext(root).session_root, lock);
+    if (!existsSync(lock) || readFileSync(lock, 'utf8') !== raw) throw new Error('Manifest lock ownership changed; current lock preserved for engineering diagnosis');
+    unlinkSync(lock);
+  }
 }
 
 export function getRunContext(root, project, runId) {
-  const manifestPath = resolve(root, project.run_root, runId, "manifest.json");
+  const manifestPath = dataPath(root, project.run_root, runId, "manifest.json");
   if (!existsSync(manifestPath)) throw new Error(`找不到运行清单: ${manifestPath}`);
-  return { manifestPath, manifest: readJson(manifestPath) };
+  const manifest=readJson(manifestPath);assertRunContext(root,manifest);
+  return { manifestPath, manifest };
 }
 
 export function getPlanStage(manifest, stageId) {
@@ -83,10 +155,21 @@ export function assertStageReady(manifest, stageId) {
   return stage;
 }
 
+export function assertDispatchScheduling(manifest, stageId, { resumeBrowser = false } = {}) {
+  const active=Object.entries(manifest.stages ?? {}).filter(([,s])=>s.status==='in_progress');
+  if(resumeBrowser) return;
+  if(manifest.orchestration?.plan?.workflow_mode==='task') {
+    if(active.some(([id])=>id===stageId)) throw new Error('This task already has an active dispatch; continue it without dispatching twice');
+    return;
+  }
+  if(active.length) throw new Error('Another lifecycle stage is active; continue the existing dispatch before scheduling this stage');
+}
+
 export function assertStageHistory(manifest, stageId) {
   const last = (manifest.orchestration?.events ?? []).filter(event => event.stage === stageId).at(-1);
   if (!last) return;
-  const expected = { dispatched: 'in_progress', completed: 'completed', preparation_completed: 'planned', failed: 'failed', blocked: 'blocked', stage_recovered: 'revision_requested', quality_revision_required: 'revision_requested', confirmation_requested: 'awaiting_confirmation' }[last.type]
+  const expected = { dispatched: 'in_progress', completed: 'completed', preparation_completed: 'planned', failed: 'failed', blocked: 'blocked', stage_recovered: 'revision_requested', quality_revision_required: 'revision_requested', confirmation_requested: 'awaiting_confirmation', review_mode_continued: 'completed' }[last.type]
+    ?? (last.type === 'stage_added_to_plan' ? 'planned' : null)
     ?? (last.type === 'confirmation_resolved' ? (last.decision === 'approved' ? (getPlanStage(manifest, stageId)?.confirmation === 'before' ? 'planned' : 'completed') : last.decision === 'rejected' ? 'blocked' : 'revision_requested') : null);
   if (expected && manifest.stages?.[stageId]?.status !== expected) throw new Error('Stage status differs from its latest audit event; refusing manual state override');
 }

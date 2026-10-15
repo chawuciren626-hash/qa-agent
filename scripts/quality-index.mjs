@@ -1,3 +1,4 @@
+import { dataPath } from './directory-context.mjs';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -6,7 +7,7 @@ import { verifyCurrentAttempt } from './execution-attempts.mjs';
 
 const read = path => JSON.parse(readFileSync(path, 'utf8'));
 function runs(root) {
-  const base = resolve(root, 'output/runs');
+  const base = dataPath(root, 'output/runs');
   return (existsSync(base) ? readdirSync(base, { withFileTypes: true }) : []).filter(entry => entry.isDirectory() && /^run-[A-Za-z0-9-]+$/.test(entry.name)).map(entry => ({ id: entry.name, dir: resolve(base, entry.name) })).filter(run => !existsSync(resolve(run.dir, 'inputs/fixture-origin.json')) && !existsSync(resolve(run.dir, 'inputs/acceptance.json')));
 }
 export function buildDefectIndex(root) {

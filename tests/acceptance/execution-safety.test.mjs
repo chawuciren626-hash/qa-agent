@@ -1,15 +1,30 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { executionInputs, writeJsonFile } from './safety-fixtures.mjs';
 import { assertExecutionAuthorized, executionSnapshot } from '../../scripts/execution-authorization.mjs';
+import { assertExecutionTargets, executionScriptFiles } from '../../scripts/execution-targets.mjs';
 import { hasApprovedConfirmation, assertStageReady } from '../../scripts/orchestration-state.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
-const invoke = (script, args) => spawnSync(process.execPath, [`scripts/${script}.mjs`, ...args], { cwd: root, encoding: 'utf8' });
+test('execution preparation rejects scripts aimed at another environment origin',()=>{
+  const dir=resolve(root,'output/acceptance',`targets-${randomUUID()}`);
+  mkdirSync(dir,{recursive:true});
+  const config=resolve(dir,'environment.json');
+  const script=resolve(dir,'sample.spec.ts');
+  writeFileSync(config,JSON.stringify({base_url:'http://127.0.0.1:59601'}));
+  writeFileSync(script,"await page.goto('http://127.0.0.1:8000/docs');\n");
+  const plan={environment_config:config};
+  assert.throws(()=>assertExecutionTargets(root,plan,executionScriptFiles(dir)),/differs from selected environment/);
+  writeFileSync(config,JSON.stringify({base_url:'http://127.0.0.1:59601',allowed_test_origins:['http://127.0.0.1:8000']}));
+  assert.doesNotThrow(()=>assertExecutionTargets(root,plan,executionScriptFiles(dir)));
+});
+const invoke = (script, args, env = {}) => spawnSync(process.execPath, [`scripts/${script}.mjs`, ...args], { cwd: root, encoding: 'utf8', env:{...process.env,...env} });
+const approvalSource=()=>({QA_CONFIRMATION_SOURCE_JSON:JSON.stringify({kind:'native_user_message',session_id:'synthetic-parent',timestamp:'2026-10-14T00:00:00Z',sha256:'a'.repeat(64)})});
+const approvalRecord=()=>({kind:'native_user_message',session_id:'synthetic-parent',timestamp:'2026-10-14T00:00:00Z',sha256:'a'.repeat(64)});
 function fixture() {
   const id = `run-safety-${randomUUID()}`;
   const f = executionInputs(root, id);
@@ -18,6 +33,22 @@ function fixture() {
   writeJsonFile(path, manifest);
   return { ...f, id, manifest, path };
 }
+
+test('auto-reviewed design dependency does not require a fictitious approval before execution',()=>{
+  const f=fixture();
+  f.manifest.stages.test_cases={status:'completed'};
+  f.manifest.orchestration.plan.stages.unshift({id:'test_cases',selected:true,confirmation:'none',depends_on:[]});
+  f.manifest.orchestration.plan.stages.find(stage=>stage.id==='execution').depends_on=['test_cases'];
+  f.manifest.confirmations=[{stage:'execution',status:'approved',execution_snapshot:executionSnapshot(root,f.id),approval_source:approvalRecord()}];
+  writeJsonFile(f.path,f.manifest);
+  assert.ok(assertExecutionAuthorized(root,f.id).snapshot_sha256);
+  delete f.manifest.confirmations[0].approval_source;writeJsonFile(f.path,f.manifest);
+  assert.throws(()=>assertExecutionAuthorized(root,f.id),/approval source/);
+  f.manifest.confirmations[0].approval_source=approvalRecord();writeJsonFile(f.path,f.manifest);
+  f.manifest.orchestration.plan.stages[0].confirmation='after';
+  writeJsonFile(f.path,f.manifest);
+  assert.throws(()=>assertExecutionAuthorized(root,f.id),/dependency not approved/);
+});
 
 test('latest revision or rejection invalidates historical approvals', () => {
   const f = fixture();
@@ -37,11 +68,14 @@ test('request, approval and runner verify actual execution snapshot; no approval
   let result = invoke('request-stage-confirmation', [f.id, 'execution']);
   assert.equal(result.status, 0, result.stderr);
   writeFileSync(resolve(f.testDir, 'synthetic.spec.ts'), '// changed after request\n');
-  result = invoke('resolve-stage-confirmation', [f.id, 'execution', 'approved', 'synthetic only']);
+  result = invoke('resolve-stage-confirmation', [f.id, 'execution', 'approved', 'synthetic only'],approvalSource());
   assert.notEqual(result.status, 0);
   assert.equal(invoke('resolve-stage-confirmation', [f.id, 'execution', 'revision_requested']).status, 0);
   assert.equal(invoke('request-stage-confirmation', [f.id, 'execution']).status, 0);
-  assert.equal(invoke('resolve-stage-confirmation', [f.id, 'execution', 'approved', 'synthetic only']).status, 0);
+  assert.notEqual(invoke('resolve-stage-confirmation', [f.id, 'execution', 'approved', 'unverified']).status, 0);
+  assert.equal(invoke('resolve-stage-confirmation', [f.id, 'execution', 'approved', 'synthetic only'],approvalSource()).status, 0);
+  const approved=JSON.parse(readFileSync(f.path)).confirmations.at(-1);
+  assert.equal(approved.approval_source.kind,'native_user_message');
   assert.ok(assertExecutionAuthorized(root, f.id).snapshot_sha256);
   const originalConfig = readFileSync(f.config, 'utf8');
   writeJsonFile(f.config, { ...JSON.parse(originalConfig), base_url: 'http://127.0.0.1:4318/healthy' });

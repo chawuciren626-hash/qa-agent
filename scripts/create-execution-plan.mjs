@@ -1,3 +1,5 @@
+import { resourcePath } from './directory-context.mjs';
+import { dataPath } from './directory-context.mjs';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createExecutionCases, extractCases, validateExecutionPlan } from "./execution-plan.mjs";
@@ -11,10 +13,10 @@ const environmentConfig = process.argv.find(arg => arg.startsWith('--environment
 const testDir = process.argv.find(arg => arg.startsWith('--test-dir='))?.slice(11) ?? 'tests/generated';
 if (!runId || !sourceArg) throw new Error("用法: node scripts/create-execution-plan.mjs --run-id=<run_id> --cases=<test_cases.json>");
 const runDir = runDirectory(root, runId);
-const sourcePath = resolve(root, sourceArg);
+const sourcePath = resourcePath(root, sourceArg);
 if (!existsSync(sourcePath)) throw new Error(`找不到测试用例文件: ${sourcePath}`);
-const environment = JSON.parse(readFileSync(resolve(root, environmentConfig), "utf8"));
-const selection = selectionArg ? JSON.parse(readRunFile(runDir, resolve(root, selectionArg)).data.toString('utf8')) : null;
+const environment = JSON.parse(readFileSync(resourcePath(root, environmentConfig), "utf8"));
+const selection = selectionArg ? JSON.parse(readRunFile(runDir, resourcePath(root, selectionArg)).data.toString('utf8')) : null;
 if (selection && selection.run_id !== runId) throw new Error("选择结果的 run_id 与执行计划不一致。");
 const allCases = extractCases(JSON.parse(readRunFile(runDir, sourcePath).data.toString('utf8')));
 const requestedIds = selection ? (selection.selected ?? []).map(item => item.case_id) : allCases.map(item => item.case_id);
@@ -49,7 +51,7 @@ const plan = {
 };
 const errors = validateExecutionPlan(plan);
 if (errors.length) throw new Error(errors.join("\n"));
-const targetDir = resolve(root, "output/runs", runId, "execution");
+const targetDir = dataPath(root, "output/runs", runId, "execution");
 mkdirSync(targetDir, { recursive: true });
 const target = resolve(targetDir, "execution-plan.json");
 writeFileSync(target, JSON.stringify(plan, null, 2) + "\n");

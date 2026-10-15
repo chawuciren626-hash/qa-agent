@@ -2,11 +2,35 @@
   "workflow_id": "qa-test-lifecycle",
   "workflow_version": 1,
   "stages": [
-    { "id": "analysis", "agent": "requirement_analysis_agent", "skills": ["requirement-analysis"], "depends_on": [], "confirmation": "after" },
-    { "id": "test_points", "agent": "test_point_agent", "skills": ["test-point-design"], "depends_on": ["analysis"], "confirmation": "after" },
-    { "id": "test_cases", "agent": "test_case_agent", "skills": ["test-case-writing"], "depends_on": ["test_points"], "confirmation": "after" },
-    { "id": "execution", "agent": "automation_execution_agent", "skills": ["playwright-execution"], "depends_on": ["test_cases"], "confirmation": "before" },
-    { "id": "defects", "agent": "defect_analysis_agent", "skills": ["bug-reporting"], "depends_on": ["execution"], "confirmation": "none" },
-    { "id": "report", "agent": "test_report_agent", "skills": ["test-report-writing"], "depends_on": ["defects"], "confirmation": "none" }
+    {
+      "id": "analysis", "label": "需求分析", "agent": "requirement_analysis_agent", "skills": ["requirement-analysis"], "depends_on": [], "confirmation": "after",
+      "lifecycle_artifacts": ["analysis/requirement_analysis.md", "analysis/requirement-ledger.json"],
+      "task_artifacts": ["analysis/requirement_analysis.md"], "task_result": "analysis/analysis-task.json"
+    },
+    {
+      "id": "test_points", "label": "测试点", "agent": "test_point_agent", "skills": ["test-point-design"], "depends_on": ["analysis"], "confirmation": "after",
+      "lifecycle_artifacts": ["design/test_points.json", "design/test_points.xmind"],
+      "task_artifacts": ["design/test_points.json", "design/test_points.xmind"], "task_result": "design/test_points-task.json"
+    },
+    {
+      "id": "test_cases", "label": "测试用例", "agent": "test_case_agent", "skills": ["test-case-writing"], "depends_on": ["test_points"], "confirmation": "after",
+      "lifecycle_artifacts": ["design/test_cases.json", "design/test_cases.xlsx"],
+      "task_artifacts": ["design/test_cases.json", "design/test_cases.xlsx"], "task_result": "design/test_cases-task.json"
+    },
+    {
+      "id": "execution", "label": "测试执行", "agent": "automation_execution_agent", "skills": ["playwright-execution"], "depends_on": ["test_cases"], "confirmation": "before",
+      "lifecycle_artifacts": ["execution/test_results.json"],
+      "task_artifacts": ["execution/exploration.json", "execution/test_results.json"], "task_result": "execution/execution-task.json"
+    },
+    {
+      "id": "defects", "label": "缺陷分析", "agent": "defect_analysis_agent", "skills": ["bug-reporting"], "depends_on": ["execution"], "confirmation": "none",
+      "lifecycle_artifacts": ["defects/defect-records.json"],
+      "task_artifacts": ["defects/defect-records.json", "defects/bugs.md"], "task_result": "defects/defects-task.json"
+    },
+    {
+      "id": "report", "label": "测试报告", "agent": "test_report_agent", "skills": ["test-report-writing"], "depends_on": ["defects"], "confirmation": "none",
+      "lifecycle_artifacts": ["report/test_report.md", "report/test_report.docx", "report/test_report.pdf"],
+      "task_artifacts": ["report/test_report.md", "report/reportable-results.json", "report/issues.json", "report/test_report.docx", "report/test_report.pdf", "report/test_report.html", "report/test_cases.xlsx"], "task_result": "report/report-task.json"
+    }
   ]
 }

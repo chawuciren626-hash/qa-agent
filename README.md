@@ -1,87 +1,56 @@
 # 软件测试智能体
 
-这是一个以 PenguinHarness 为运行入口的多 Agent 软件测试工程。它将需求理解、测试设计、受控自动化执行、缺陷治理和质量报告归档到一次独立的 `run_id` 中。
+基于PenguinHarness的多Agent测试工程。总控按需派发需求分析、测试点、测试用例、自动化执行、缺陷分析和报告任务，默认模型为 `tokendance / step-3.7-flash`。
 
-当前默认模型为 `tokendance / step-3.7-flash`。PenguinHarness 负责调度 Agent；本仓库负责版本化的工作流、Skill、脚本、数据契约和文档。
+**当前仍在工程迭代和真实验收阶段，不是已稳定通过全流程验收的独立桌面产品。** 最新进度与待办见[当前状态](docs/current-status-and-next-steps.md)。
 
-## 当前能力
+## 怎么使用
 
-- 六阶段编排：需求分析、测试点、测试用例、执行、缺陷、报告。
-- XMind 测试点、JSON/Excel 测试用例、Markdown/Word/PDF 测试报告。
-- 运行计划、阶段状态机、人工确认、恢复点和审计事件。
-- 资产目录、执行合同、环境预检和本地 Playwright 执行。
-- 测试选择 Profile、预算与变更定向选择。
-- 失败证据评估、标准缺陷记录、质量门和跨运行趋势。
-- 统一产物契约：Schema、跨文件引用、结果统计、导出一致性及阶段交接哈希复核。
-- 独立执行批次、原始证据归档、执行锁、整批超时与显式中断恢复。
-- [统一命令入口](docs/command-runtime.md)：原生Node/Python、依赖预检、参数数组、命令超时与独立日志，正常运行不下载依赖。
-- [需求来源与语义治理](docs/requirement-provenance.md)：规则台账、原文引用、需求/观察/假设区分、测试点与用例追溯及确认边界。
-- [结构化分析单一来源](docs/analysis-single-source.md)：从台账生成正文，拦截Markdown与结构化内容不一致，保留历史与审批边界。
-- [受控阶段恢复与派发](docs/controlled-stage-recovery.md)：清单锁、派发编号、父子会话绑定、恢复审计及旧批准失效；不等同于操作系统权限隔离。
-- 缺陷审计台账、独立复测关闭、历史未解决问题质量门及报告失效管理，详见[质量治理闭环](docs/quality-governance-lifecycle.md)。
+1. 打开已完成本机适配的PenguinHarness，新建“软件测试总控智能体”对话。
+2. 工作空间留空使用默认任务目录，或选择工程目录之外的工作空间；不要选择源码目录作为新任务工作空间。
+3. 上传Word、输入需求文字，或提供测试URL与目标。总控按请求派发独立任务；只有明确要求“跑全流程”才运行全生命周期。
+4. 查看完成摘要及可点击交付物。仅在业务歧义、必要人工操作或缺少有效执行授权时介入；也可主动要求逐阶段确认。
 
-## 使用边界
+不需要手工创建run、编写JSON、提交解锁材料或先生成前序产物。环境配置能力仍保留，但不是URL任务的统一前置条件。实际执行只限用户授权范围，不默认为允许无关删除、支付、真实通知或生产破坏性操作。
 
-- [结构化动作入口](docs/structured-actions.md)：优先用JSON请求创建、规划、归档与交接，减少模型拼接CLI；失败摘要明确审计覆盖范围。
+示例：“根据附件写测试用例，交付Excel，不执行测试。”或“测试这个测试环境登录页的输入校验，输出实际结果和报告。”
 
-- [总控会话命令闸门](docs/controller-command-session.md)：生命周期帮助、run创建前失败记录、跨调用阻止继续及审查解除；Agent命令需传真实controller-session，不等同于工具隔离。
+详细操作、交付方式和遇阻处理见[使用指南](docs/user-guide.md)。
 
-- [清单状态摘要](docs/run-status-summary.md)：只读生成阶段、最新确认、范围和审查提示，区分流程记录与产品测试结论。
+## 主要能力
 
-- [命令与子任务停止契约](docs/command-stop-contract.md)：预启动参数检查、派发约束原文传递及失败后禁止登记完成；不等同于实时工具拦截。
+- 总控与六个专业Agent，11个项目Skill；独立派发、按需组合或显式全流程。
+- XMind测试点、JSON/Excel用例、Markdown/Word/PDF报告及交付链接。
+- 只读URL探索与交互浏览器测试分开，保留断言、截图和原始失败证据。
+- 会话目录隔离、内部产物检查、执行批次、缺陷分类及报告来源核对。
+- 公共指令、Skill、hook和维护脚本版本化；内部校验由工程处理，不交给用户做技术审查。
 
-- 正常测试运行不得执行 `npm install`、`pip install`、`playwright install` 或会隐式下载的 `npx` 命令。
-- 真实浏览器执行必须先获得用户确认，并使用登记的非生产测试环境。
-- 账号、密码、Token、真实环境地址和运行产物不提交 Git；它们由已忽略的本地配置和 `output/` 保存。
-- Agent 的公开指令、Skill 映射和同步脚本已纳入 `penguin/`；模型密钥、环境凭据和应用内部配置仍只保留在本机。详见 [PenguinHarness 配置即代码](docs/penguinharness-configuration.md)。
+“已有实现”不等于“所有真实场景验收通过”，具体边界以当前状态页为准。
 
-## 快速开始
+## 文件放在哪里
 
-1. 在 PenguinHarness 中选择工作区 `E:\Codex\测试智能体`，使用“软件测试总控智能体”。
-2. 将需求文字、文档或链接交给总控；它根据目标选择所需专业 Agent，而非强制执行全流程。
-3. 新任务必须创建独立运行并生成计划：
+| 位置 | 用途 |
+| --- | --- |
+| `E:\Codex\AITestWorker` | 本机工程源码、Skill、脚本和共享依赖，不是新任务输出目录 |
+| `E:\QAWorkspaces\<时间戳-短ID>` | 未选择工作空间时的新会话任务目录 |
+| `<指定工作空间>\<时间戳-短ID>` | 选择外部工作空间时的新会话任务目录 |
+| `<会话目录>\output\runs\<run_id>` | 本次任务产物、执行证据和报告 |
+| `E:\QAArchives\AITestWorker` | 已归档历史及维护证据，不是新任务默认目录 |
 
-```powershell
-npm run run:create -- --run-id=run-example
-npm run run:plan -- --run-id=run-example --stages=analysis,test_points,test_cases
-```
+PenguinHarness原生聊天数据库、trace与上传附件仍由宿主管理；任务文件隔离不等于聊天数据库迁移。旧会话保持既有绑定，不自动迁移或删除。
 
-4. 在分析、测试点、测试用例和真实执行节点完成人工确认。总控会将正式产物保存在 `output/runs/run-example/`。
+仓库主要目录：`config/`配置与样例、`penguin/`公开角色及宿主适配、`skills/`专业能力、`scripts/`运行与维护脚本、`schemas/`数据契约、`tests/`工程测试、`docs/`文档。工程中保留的旧inputs/output或临时业务脚本不作为新会话通用入口。
 
-真实执行前，先从样例创建本地环境配置：
+## 维护与安全
 
-```powershell
-Copy-Item config/test-env.example.json config/test-env.json
-Copy-Item config/test-environments.example.json config/test-environments.json
-npm run environment:check -- --environment=<environment_id> --run-id=run-example
-```
+新机器不能仅克隆仓库就直接运行。角色同步、运行时依赖和宿主适配是维护者的安装工作，见[配置与同步](docs/penguinharness-configuration.md)及[桌面适配](docs/delivery-interaction.md)。正常任务不得自动安装依赖。
 
-## 关键文档
+密钥、账号、私有连接文件和运行产物不应提交Git；忽略规则不是内容泄漏检测器。模型配置和vault不应当作加密存储，见[凭据安全](docs/credential-security.md)。本机工程路径被安装适配引用，移动源码前需维护检查，不直接复制到应用安装目录。
 
-- [第1项关键问题收口](docs/engineering-step-1-2026-10-09.md)
-- [第2项统一产物契约与使用方式](docs/artifact-contracts.md)
-- [第3项执行稳定性与批次归档](docs/execution-attempts.md)
-- [用例设计质量与执行入口校验](docs/design-quality-gate.md)
-- [评测基座修正与分层验收计划](docs/benchmark-remediation-2026-10-09.md)
-- [当前状态与下一步](docs/current-status-and-next-steps.md)
-- [运行编排](docs/orchestration-engine.md)
-- [自动化执行框架](docs/automation-execution-framework.md)
-- [资产管理](docs/test-asset-management.md)
-- [测试选择与效率](docs/test-selection-and-efficiency.md)
-- [结果可信度与质量度量](docs/result-trust-and-quality-metrics.md)
-- [PenguinHarness 多 Agent 与桌面方案](docs/penguinharness-multi-agent-desktop-app-plan.md)
-- [PenguinHarness 配置即代码](docs/penguinharness-configuration.md)
-- [学习指南](docs/agent-development-learning-guide.md)
+## 文档入口
 
-## 目录
+开发维护统一回归：`npm test`；查看范围：`npm run test:list`；普通/浏览器分组：`npm run test:core`、`npm run test:browser`。依赖准备、结果目录及GitHub Actions边界见[工程测试与CI](docs/engineering-tests-and-ci.md)，不要求日常用户操作。
 
-```text
-config/   工作流、资产、选择、质量治理与本地环境样例
-docs/     使用、设计、学习和演进文档
-inputs/   需求、接口描述等任务输入
-schemas/  结构化产物契约
-skills/   可复用专业测试能力
-scripts/  运行管理、预检、执行、归档和质量治理脚本
-tests/    执行框架与本地生成的测试脚本
-output/   已忽略的运行产物、证据和报告
-```
+- [当前状态与下一步](docs/current-status-and-next-steps.md)：唯一当前待办入口。
+- [使用指南](docs/user-guide.md)：日常操作，不要求用户运行工程命令。
+- [文档导航](docs/index.md)：技术参考、学习资料和历史记录。

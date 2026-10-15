@@ -1,3 +1,4 @@
+import { dataPath } from './directory-context.mjs';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { extractCases } from "./execution-plan.mjs";
@@ -9,7 +10,7 @@ const root = resolve(import.meta.dirname, "..");
 const runId = process.argv.find((arg) => arg.startsWith("--run-id="))?.slice(9);
 if (!runId) throw new Error("用法: node scripts/build-quality-metrics.mjs --run-id=<run_id>");
 const governance = JSON.parse(readFileSync(resolve(root, "config/quality-governance.json"), "utf8"));
-const runDir = resolve(root, "output/runs", runId);
+const runDir = dataPath(root, "output/runs", runId);
 const readOptional = (relative, fallback) => {
   const path = resolve(runDir, relative);
   return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : fallback;

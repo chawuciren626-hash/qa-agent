@@ -21,6 +21,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from report_delivery import markdown_body, markdown_blocks, export_browser_delivery
 
 if len(sys.argv) not in (6, 7):
     raise SystemExit("用法: python generate-report-documents.py <report.md> <results.json> <bugs.json> <report.docx> <report.pdf> [quality-metrics.json]")
@@ -28,7 +29,7 @@ if len(sys.argv) not in (6, 7):
 report_md, results_path, bugs_path, docx_path, pdf_path = map(os.path.abspath, sys.argv[1:6])
 metrics_path = os.path.abspath(sys.argv[6]) if len(sys.argv) == 7 else None
 with open(report_md, encoding="utf-8") as f:
-    markdown = f.read()
+    markdown = markdown_body(f.read())
 with open(results_path, encoding="utf-8") as f:
     results = json.load(f)
 with open(bugs_path, encoding="utf-8") as f:
@@ -105,7 +106,10 @@ if governance:
 lifecycle_items = governance.get('current', []) + governance.get('history', [])
 quality_gate = metrics.get("quality_gate", {})
 trust = metrics.get("trust", {}).get("evidence", {})
-gate_status = quality_gate.get("status", "not_assessed")
+gate_status = quality_gate.get("status")
+historical_open = governance.get('open_historical')
+history_text = (f"历史未关闭问题: {len(historical_open)}" if isinstance(historical_open, list)
+                else "历史未关闭问题: 未评估") + "；fixed仅表示修复声明，不等于复测通过。"
 gate_reasons = quality_gate.get("reasons", [])
 
 doc = Document()
@@ -120,7 +124,8 @@ run = title.add_run(report_title)
 run.font.color.rgb = RGBColor(0, 0, 0)
 run.font.name = "Microsoft YaHei"; run._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft YaHei")
 doc.add_paragraph(f"运行编号: {run_id}    生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-doc.add_paragraph(f"质量门状态: {gate_status}")
+if gate_status:
+    doc.add_paragraph(f"质量门状态: {gate_status}")
 if gate_reasons:
     doc.add_paragraph("质量门原因: " + ", ".join(gate_reasons))
 if trust:
@@ -134,7 +139,20 @@ for row in table.rows:
     for cell in row.cells:
         cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
         for paragraph in cell.paragraphs: paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-for kind, text in markdown_lines(markdown):
+for kind, text in markdown_blocks(markdown):
+    if kind == 'table':
+        width = max(len(row) for row in text)
+        body_table = doc.add_table(rows=0, cols=width)
+        body_table.style = 'Table Grid'
+        for row_index, values in enumerate(text):
+            cells = body_table.add_row().cells
+            for i, value in enumerate(values): cells[i].text = clean_text(value)
+            if row_index == 0:
+                repeat = OxmlElement('w:tblHeader'); body_table.rows[0]._tr.get_or_add_trPr().append(repeat)
+                for cell in cells:
+                    for paragraph in cell.paragraphs:
+                        for run in paragraph.runs: run.bold = True
+        continue
     if text in (report_title, "测试报告", "执行概览"): continue
     if kind == "heading": doc.add_heading(clean_text(text), level=2)
     elif kind == "bullet": doc.add_paragraph(clean_text(text), style="List Bullet")
@@ -149,8 +167,9 @@ if bug_items:
         values = [item.get("defect_id", item.get("bug_id", f"BUG-{index:03d}")), item.get("category", item.get("classification", "needs_review")), ", ".join(item.get('related_cases', [])) or item.get("related_case", item.get("case_id", "")), item.get("summary", item.get("title", "待确认问题"))]
         for cell, value in zip(cells, values): cell.text = str(value)
 doc.add_paragraph("报告依据本次运行中的测试结果和缺陷分析产物。")
-doc.add_heading('问题生命周期', level=1)
-doc.add_paragraph(f"历史未关闭问题: {len(governance.get('open_historical', []))}；fixed仅表示修复声明，不等于复测通过。")
+if governance:
+    doc.add_heading('问题生命周期', level=1)
+    doc.add_paragraph(history_text)
 for item in lifecycle_items:
     doc.add_paragraph(f"{item.get('defect_id', '')}: {item.get('lifecycle_status', '')}; origin={item.get('origin_invocation_id', results.get('invocation_id', ''))}")
 os.makedirs(os.path.dirname(docx_path), exist_ok=True)
@@ -170,8 +189,8 @@ else:
 styles_pdf = getSampleStyleSheet()
 title_style = ParagraphStyle("title", parent=styles_pdf["Title"], fontName=pdf_font, fontSize=18, leading=24, alignment=TA_CENTER)
 heading_style = ParagraphStyle("heading", parent=styles_pdf["Heading2"], fontName=pdf_font, fontSize=13, leading=19, spaceBefore=10, spaceAfter=5, keepWithNext=True)
-body_style = ParagraphStyle("body", parent=styles_pdf["BodyText"], fontName=pdf_font, fontSize=9.5, leading=15)
-gate_text = f"质量门状态: {gate_status}"
+body_style = ParagraphStyle("body", parent=styles_pdf["BodyText"], fontName=pdf_font, fontSize=9.5, leading=15, wordWrap='CJK')
+gate_text = f"质量门状态: {escape(gate_status)}" if gate_status else ''
 if gate_reasons:
     gate_text += "<br/>质量门原因: " + ", ".join(gate_reasons)
 if trust:
@@ -181,12 +200,23 @@ overview = [["总计", "通过", "失败", "跳过", "阻塞"], [str(summary.get
 table_pdf = Table(overview, colWidths=[34 * mm] * 5)
 table_pdf.setStyle(TableStyle([("FONTNAME", (0, 0), (-1, -1), pdf_font), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#B8C6D9")), ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
 story.append(table_pdf)
-for kind, text in markdown_lines(markdown):
+for kind, text in markdown_blocks(markdown):
+    if kind == 'table':
+        width = max(len(row) for row in text)
+        table_style = ParagraphStyle('table-body', parent=body_style, fontSize=8, leading=12)
+        head_style = ParagraphStyle('table-head', parent=table_style, textColor=colors.white)
+        cells = [[Paragraph(escape(clean_text(v)), head_style if i == 0 else table_style) for v in row + [''] * (width - len(row))] for i, row in enumerate(text)]
+        body_table = Table(cells, colWidths=[174 * mm / width] * width, repeatRows=1)
+        body_table.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor('#16324F')), ('VALIGN',(0,0),(-1,-1),'TOP'), ('GRID',(0,0),(-1,-1),0.3,colors.HexColor('#DCE5EF')), ('TOPPADDING',(0,0),(-1,-1),5), ('BOTTOMPADDING',(0,0),(-1,-1),5)]))
+        story.extend([body_table, Spacer(1, 3 * mm)])
+        continue
     if text in (report_title, "测试报告", "执行概览"): continue
     story.append(Paragraph(escape(clean_text(text)), heading_style if kind == "heading" else body_style))
 story.extend([Paragraph("缺陷汇总", heading_style), Paragraph(f"缺陷草稿条目: {len(bug_items)}（工程问题另见正文）", body_style)])
-story.extend([Paragraph('问题生命周期', heading_style), Paragraph(f"历史未关闭问题: {len(governance.get('open_historical', []))}；fixed仅表示修复声明，不等于复测通过。", body_style)])
+if governance:
+    story.extend([Paragraph('问题生命周期', heading_style), Paragraph(history_text, body_style)])
 for item in lifecycle_items:
     story.append(Paragraph(escape(f"{item.get('defect_id', '')}: {item.get('lifecycle_status', '')}; origin={item.get('origin_invocation_id', results.get('invocation_id', ''))}"), body_style))
 SimpleDocTemplate(pdf_path, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=16*mm, bottomMargin=16*mm).build(story)
+export_browser_delivery(os.path.dirname(docx_path), report_title, markdown, results, bug_items, metrics)
 print(f"已生成: {docx_path}\n已生成: {pdf_path}")

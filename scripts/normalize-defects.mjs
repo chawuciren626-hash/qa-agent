@@ -1,3 +1,4 @@
+import { dataPath } from './directory-context.mjs';
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -7,7 +8,7 @@ import { registerObservations } from './defect-lifecycle.mjs';
 const root = resolve(import.meta.dirname, "..");
 const runId = process.argv.find((arg) => arg.startsWith("--run-id="))?.slice(9);
 if (!runId) throw new Error("用法: node scripts/normalize-defects.mjs --run-id=<run_id>");
-const runDir = resolve(root, "output/runs", runId);
+const runDir = dataPath(root, "output/runs", runId);
 const bugsPath = resolve(runDir, "defects/bugs.json");
 if (!existsSync(bugsPath)) throw new Error(`缺少缺陷分析产物: ${bugsPath}`);
 const source = JSON.parse(readFileSync(bugsPath, "utf8"));
@@ -55,6 +56,9 @@ const records = items.map((item, index) => {
     expected_result: item.expected_result ?? "",
     actual_result: item.actual_result ?? item.failure_summary ?? "",
     analysis: item.analysis ?? item.recommended_action ?? "",
+    steps_to_reproduce: item.steps_to_reproduce ?? item.steps ?? [],
+    impact: item.impact ?? "",
+    recommendation: item.recommendation ?? item.suggestion ?? item.recommended_action ?? "",
     duplicate_of: duplicateOf
   };
 });
