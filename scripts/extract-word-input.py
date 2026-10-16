@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import unicodedata
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -89,7 +90,12 @@ def extract(data):
 
 def main():
     run_id, source = sys.argv[1:]
-    if not re.fullmatch(r'run-[A-Za-z0-9-]+', run_id) or not re.fullmatch(r'inputs/[A-Za-z0-9][A-Za-z0-9._-]*\.docx', source, re.I):
+    name = source[7:] if source.startswith('inputs/') else ''
+    safe_name = (0 < len(name) <= 180 and name == name.strip() and not name.startswith('.')
+                 and not name.endswith(('.', ' '))
+                 and not any(ch in '<>:"/\\|?*' or unicodedata.category(ch) in {'Cc', 'Cf'} for ch in name)
+                 and not re.match(r'^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])([ .]|$)', name, re.I))
+    if not re.fullmatch(r'run-[A-Za-z0-9-]+', run_id) or not safe_name or not name.lower().endswith('.docx'):
         raise ValueError('Expected run_id and archived inputs/<name>.docx; .doc is unsupported')
     root = Path(__file__).resolve().parent.parent
     context = json.loads(os.environ.get('QA_DIRECTORY_CONTEXT', 'null'))

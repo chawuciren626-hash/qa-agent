@@ -30,12 +30,24 @@ test('task and lifecycle bindings accept unchanged arguments regardless of JSON 
     assert.deepEqual(readFileSync(f.receiptPath),before);
   }
 });
-test('retaining identity tokens does not allow changed goals, role, description or extra arguments',t=>{
+test('retaining identity tokens does not allow changed goals, role or extra arguments',t=>{
   const f=fixture(t);
-  for(const change of [{prompt:f.args.prompt+' Different business goal'},{description:'Changed'},{agent_id:'test_agent'},{model:'other'}]) {
+  for(const change of [{prompt:f.args.prompt+' Different business goal'},{agent_id:'test_agent'},{model:'other'},{description:''},{description:42}]) {
     assert.throws(()=>f.verify({args:{...f.args,...change}}),/differ|complete registered/);
   }
   f.verify();
+});
+
+test('display description may change without changing authority, receipt or bound files',t=>{
+  for(const contract of [true,false]) {
+    const f=fixture(t,{contract}),before=readFileSync(f.receiptPath),file=readFileSync(f.path);
+    assert.equal(f.verify({args:{...f.args,description:'生成本次报告'}}).version,1);
+    assert.deepEqual(readFileSync(f.receiptPath),before);assert.deepEqual(readFileSync(f.path),file);
+    const missing={...f.args};delete missing.agent_id;
+    assert.throws(()=>f.verify({args:missing}),/complete registered/);
+    f.receipt.delegation.description='tampered receipt';f.save();
+    assert.throws(()=>f.verify({args:{...f.args,description:'展示文字'}}),/receipt changed/);
+  }
 });
 test('changed delegation file, contract bytes and report evidence are rejected',t=>{
   for(const file of ['path','contractPath','evidencePath']) {
@@ -44,6 +56,13 @@ test('changed delegation file, contract bytes and report evidence are rejected',
     assert.throws(()=>f.verify(),/resource changed/);
     writeFileSync(f[file],original);f.verify();
   }
+});
+
+test('wait duration is transport metadata, not permission to change scope or model',t=>{
+  const f=fixture(t);
+  for(const yield_time_ms of [250,600000]) assert.equal(f.verify({args:{...f.args,description:'Local display',yield_time_ms}}).version,1);
+  for(const yield_time_ms of [0,249,600001,'600000',null,Infinity]) assert.throws(()=>f.verify({args:{...f.args,yield_time_ms}}),/Invalid delegation/);
+  for(const change of [{model_id:'different'},{provider:'different'},{run_in_background:true},{prompt:f.args.prompt+' different scope'}]) assert.throws(()=>f.verify({args:{...f.args,yield_time_ms:600000,...change}}));
 });
 test('missing, duplicate, cross-task, unfinished and unbound legacy receipts do not authorize launch',t=>{
   const f=fixture(t);

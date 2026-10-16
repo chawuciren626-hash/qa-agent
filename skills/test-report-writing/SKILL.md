@@ -2,12 +2,18 @@
 name: test-report-writing
 description: 根据真实测试结果和缺陷记录生成测试报告与风险建议。
 metadata:
-  version: '1.3.0'
+  version: '1.6.3'
 ---
 
 # 测试报告生成 Skill
 
 ## 证据解释（所有模式）
+
+- 用户要求回归时，区分原始复现、邻近输入、合法路径和关联影响面；使用可选regression对照事实，原失败和未覆盖范围保留，不把“已修复”说明或单条通过当成缺陷关闭。材料不足照常部分交付，不要求用户技术映射或解锁。仅需历史对照时读取[独立回归交付](references/regression-delivery.md)，不增加普通报告的必填输入。
+
+- evidence_mode区分real、simulated、simulation_affected和旧记录未标注。模拟HTTP错误或中断不能列为服务端实际故障，模拟场景断言通过不代表真实后端通过。模拟未命中/不确定时保留未验证；disabled只表示不再拦截新请求，不证明在途请求已结束或页面/业务状态恢复。报告按facts[].statistics.evidence_modes分开说明，不能混成真实产品通过率。
+
+- 使用证据索引facts[].statistics区分结果记录、断言、关联用例、只读复查及框架重试。关联用例仅说明有对应断言，不证明整条用例通过或全覆盖；来源不全就写未记录，不按编号前缀猜测。复查通过不能覆盖原失败，复查不是重新执行产品动作。Playwright重试明细的retry=0是每个运行序列的首轮，不计额外重试；缺少历史不能写零重试。导入结果依旧标为用户提供，不冒充自主实测。工具读取回执、参数纠错和模型重试均不计为产品执行。导出自动附加统计口径，正文仅概述，不要求用户补技术台账。
 
 - 动作、断言、DOM快照、截图按各自时间和request_id关联；同调用assertion以匹配时记录为准，截图可能更晚。standalone_observation不能倒推先前短暂提示是否可见，历史记录缺timing时核对回执时间，不编造时序。
 - 矛盾证据保留原始统计与路径，区分产品缺陷、自动化采样问题和待核查项。没有支持证据不能宣称业务通过、明确根因或已确认产品缺陷。
@@ -15,6 +21,14 @@ metadata:
 - 工具已支持同调用click/press+assertion，应建议把动态反馈检查与动作绑定；不要建议为补证据重复结果不明的业务提交。相关网络请求须核对操作时间和业务关联，session_history_not_causal不能直接当根因。
 
 ## 独立任务（task）
+
+回归范围逐项沿用用户明确指定的类别：original=原始复现、valid_path=合法路径、impact=关联影响面、adjacent=邻近输入。adjacent不是所有复测的默认类别；用户说邻近输入未覆盖时，不得把已有检查归入adjacent。原始结果actual_result只承载实际观察，改善/回退、原因推测和结论放报告解释段，不拼进实际观察字段。无法确定分类可省略该配对并说明未分类，不为技术分类向用户索取解锁或补格式。
+
+给总控的收尾也按用户交付表达：完成内容、实际产物链接及真正待决定事项。除非用户明确要求明细，不复述整张对照表、内部JSON、动作状态、哈希或“无质量指标/台账”等实现细节；这些边界写在报告中。总控无需把子Agent长回复照搬给用户。
+
+用户明确要求初测/复测对照时，优先使用索引中已有映射；没有映射则直接在report/report-task.json增加可选regression_comparison:{version:1,comparisons:[{id,layer,baseline:{source_path,case_id},current:{source_path,case_id}}]}，来源和证据加入source_paths。只根据材料中明确对应关系选配，不能仅按相同编号配对；工具从允许的索引绑定哈希并检查可比条件。不得要求总控重派发或用户补映射文件，不写inputs。无可信对应关系时comparisons为空并说明未评估；普通报告不需要此字段。具体范围与格式见回归参考。
+
+源结果转写必须保留已提供的expected、actual_result、evidence_mode、verification_scope、时序及用例关联等字段；最小契约字段不是白名单，不要裁剪为只有编号/状态/证据。当前轮与历史轮不可仅按相同编号合并。工具导出会按编号、状态和证据路径唯一匹配已索引来源，恢复字段并记录来源；歧义不猜测，不要求用户技术解锁。来源未提供实际说明时写未记录，不能用通过状态编造执行描述。导入、合成和模拟属性必须在结果清单和报告中可见；单条模拟通过不代表产品通过。
 
 直接使用提供的有效结果，写report/test_report.md、report/reportable-results.json与report/issues.json。结果包含本run_id、cases和summary，字段与计数按派发契约；已执行结果引用实际证据，无结果就明确未执行。历史材料标为导入，不冒充本Agent执行。用export_report导出HTML、Excel、Word/PDF；不调用build_report_metrics，不补生命周期台账。
 

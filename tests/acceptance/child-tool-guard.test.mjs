@@ -65,6 +65,9 @@ test('shared design folder remains split between test point and test case roles'
   const point={agentId:'test_point_agent',agentRoot:f.agentRoot};
   const cases={agentId:'test_case_agent',agentRoot:f.agentRoot};
   assert.deepEqual(guardChildTool(f.root,f.input('write_file','output/runs/run-a/design/test_points.json',{content:'[]'}),point),{});
+  assert.deepEqual(guardChildTool(f.root,f.input('write_file','output/runs/run-a/design/test_points.md',{content:'# points'}),point),{});
+  assert.deepEqual(guardChildTool(f.root,f.input('write_file','output/runs/run-a/design/test_cases.md',{content:'# cases'}),cases),{});
+  assert.equal(guardChildTool(f.root,f.input('write_file','output/runs/run-a/design/test_cases.md',{content:'# cases'}),point).decision,'deny');
   assert.equal(guardChildTool(f.root,f.input('write_file','output/runs/run-a/design/test_cases.json',{content:'[]'}),point).decision,'deny');
   assert.deepEqual(guardChildTool(f.root,f.input('edit_file','output/runs/run-a/design/test_cases.json',{old_string:'a',new_string:'b'}),cases),{});
   assert.equal(guardChildTool(f.root,f.input('edit_file','output/runs/run-a/design/test_points.json',{old_string:'a',new_string:'b'}),cases).decision,'deny');
@@ -72,7 +75,7 @@ test('shared design folder remains split between test point and test case roles'
 
 test('execution agents cannot rewrite or rename controlled browser evidence',()=>{
   const f=fixture(), options={agentId:'automation_execution_agent',agentRoot:f.agentRoot};
-  for(const path of ['execution/test_results.json','execution/Test_Results.JSON','execution/exploration.json','execution/browser-state.json','execution/browser-private.json','execution/browser-evidence/a.json','execution/browser-network.json']) {
+  for(const path of ['execution/test_results.json','execution/Test_Results.JSON','execution/exploration.json','execution/browser-state.json','execution/browser-private.json','execution/browser-evidence/a.json','execution/browser-network.json','execution/browser-data-ledger.json']) {
     for(const tool of ['write_file','edit_file']) {
       const denied=guardChildTool(f.root,f.input(tool,`output/runs/run-a/${path}`,{content:'x',old_string:'a',new_string:'b'}),options);
       assert.equal(denied.decision,'deny');assert.match(denied.reason,/read-only/);

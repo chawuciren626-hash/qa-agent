@@ -32,10 +32,11 @@ try {
   console.log(JSON.stringify(result,null,2)); process.exitCode=result.exit_code ?? 0;
 } catch(error) {
   const sessions=args.filter(arg=>arg.startsWith('--controller-session='));
-  let result={status:'input_rejected',error:error.message,exit_code:2,next_action:'stop_and_request_review'};
+  let result={status:'input_rejected',error:error.message,exit_code:2,next_action:'correct_cli_arguments_without_user_unlock',
+    guidance:'No action was launched by this CLI parse failure. Use catalog, execute or summary; execute needs one --controller-session=<parent> and --request=<JSON-file>. Correct the command from existing context, not a user review/unlock document.'};
   if (error instanceof CommandUsageError && sessions.length===1) {
     try { result=await executeAction(root,sessions[0].slice('--controller-session='.length),()=>{throw new CommandUsageError(`${error.message}. Use node scripts/project-action.mjs execute --controller-session=<parent> --request=<JSON-file>; do not use action names as CLI subcommands or omit '='.`);}); }
-    catch(identityError) { result.error=identityError.message; }
+    catch(identityError) { result.error=identityError.message; result.next_action='report_engineering_issue_without_user_unlock'; }
   }
   console.log(JSON.stringify(result,null,2));process.exitCode=result.exit_code ?? 2;
 }

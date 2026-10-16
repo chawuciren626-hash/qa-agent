@@ -7,6 +7,10 @@ metadata:
 
 # 测试点设计 Skill
 
+## 分批保存
+
+大批量测试点使用公共运行规则中的draft_records：inspect获取当前sha256；按id分批upsert，每批1至20条完整测试点。仅修改问题ID，其他内容保持不变；冲突先读取待改条目合并，不全量重写。复用inputs中的设计可seed初始化缺失草稿，仍按当前需求检查覆盖。批次成功只代表保存，全部完成后再按对应task/lifecycle契约诊断、导出和校验；不对每批增加人工确认。
+
 ## 独立任务（task）
 
 直接从当前材料生成design/test_points.json，条目包含id、module、feature、description；rule_ids可选，不编造台账。用export_test_points导出XMind，不调用diagnose_test_points或要求analysis前置。
@@ -39,7 +43,7 @@ metadata:
 
 ### 输出
 
-- 当前 `run_id` 的 `design/test_points.md`
+- 可选的 `design/test_points.md` 阅读版；不作为交接前置条件，不为补阅读版重新派发。
 - 当前 `run_id` 的 `design/test_points.json`，作为脑图和关联用例的结构化事实源。
 - 当前 `run_id` 的 `design/test_points.xmind`
 

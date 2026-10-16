@@ -1,6 +1,12 @@
 export class CommandUsageError extends Error {}
 const requireUsage = (ok, message) => { if (!ok) throw new CommandUsageError(message); };
 const run = value => /^run-[A-Za-z0-9-]+$/.test(value ?? '');
+
+export function safeInputName(name) {
+  return typeof name==='string' && name.length>0 && name.length<=180 && name===name.trim() &&
+    !/^[.]|[. ]$|[<>:"/\\|?*\p{Cc}\p{Cf}]/u.test(name) &&
+    !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:[ .]|$)/i.test(name);
+}
 const stages = ['analysis', 'test_points', 'test_cases', 'execution', 'defects', 'report'];
 const usages = {
   'run-ui-tests.mjs': '--run-id=<run_id> [--headed]',
@@ -52,7 +58,7 @@ export function validateCommandArguments(script, args, runId) {
   requireUsage(run(args[0]), `${script}: positional run_id required AFTER --; wrapper --run-id is not a script argument`);
   requireUsage(!runId || args[0] === runId, 'Wrapper and script run_id differ');
   if (script === 'extract-word-input.py') {
-    requireUsage(args.length === 2 && /^inputs\/[A-Za-z0-9][A-Za-z0-9._-]*\.docx$/i.test(args[1]), usages[script]); return;
+    requireUsage(args.length === 2 && typeof args[1]==='string' && args[1].startsWith('inputs/') && safeInputName(args[1].slice(7)) && /\.docx$/i.test(args[1]), usages[script]); return;
   }
   if (['generate-analysis-markdown.mjs', 'show-run-status.mjs', 'show-run-plan.mjs', 'get-run-resume-point.mjs'].includes(script)) { requireUsage(args.length === 1, usages[script]); return; }
   if (script === 'record-orchestration-event.mjs') {
@@ -61,7 +67,7 @@ export function validateCommandArguments(script, args, runId) {
     requireUsage(stages.includes(o.stage) && session(o['parent-session-id']), 'Stage and parent session required');
     if (args[1] === 'dispatched') {
       requireUsage(o.agent && o.skills && !o['dispatch-id'], 'Dispatch requires agent/skills; dispatch ID is generated');
-      requireUsage(!o.mode || (['prepare','resume_browser'].includes(o.mode) && o.stage === 'execution'), 'Invalid execution mode');
+      requireUsage(!o.mode || (['prepare','browser','resume_browser'].includes(o.mode) && o.stage === 'execution'), 'Invalid execution mode');
     } else {
       requireUsage(o['dispatch-id'] && !o.mode, 'Terminal event requires dispatch ID and no mode');
       requireUsage(args[1] === 'completed' ? session(o['session-id']) && o.artifacts : o.reason, 'Completion requires child session/artifacts; failure requires reason');

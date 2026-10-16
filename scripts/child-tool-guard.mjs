@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dataPath, directoryContext } from './directory-context.mjs';
 import { isPermittedChildShell } from './child-command-policy.mjs';
 import { guardSensitiveRead } from './sensitive-file-guard.mjs';
+import { stageWriteRules, isControlledStageEvidence } from './stage-registry.mjs';
 
 const stages={
   requirement_analysis_agent:'analysis',
@@ -11,19 +12,6 @@ const stages={
   automation_execution_agent:'execution',
   defect_analysis_agent:'defects',
   test_report_agent:'report'
-};
-
-const exact={
-  test_points:new Set(['design/test_points.json','design/test_points.xmind','design/test_points-task.json']),
-  test_cases:new Set(['design/test_cases.json','design/test_cases.xlsx','design/test_cases-task.json']),
-  execution:new Set(['environment/test-env.json'])
-};
-
-const directories={
-  analysis:['analysis/'],
-  execution:['execution/'],
-  defects:['defects/'],
-  report:['report/']
 };
 
 function parse(input) {
@@ -60,8 +48,8 @@ function runRelative(root,target,runId) {
 function allowed(stage,path) {
   if(/^output\/action-requests\/[A-Za-z0-9._-]+\.json$/.test(path.workspaceRelative)) return true;
   if(!path.runRelative) return false;
-  if(exact[stage]?.has(path.runRelative)) return true;
-  return (directories[stage] ?? []).some(prefix=>path.runRelative.startsWith(prefix));
+  const rules=stageWriteRules(stage);
+  return rules.exact.includes(path.runRelative) || rules.directories.some(prefix=>path.runRelative.startsWith(prefix));
 }
 
 export function guardChildTool(root,input,{agentId,agentRoot}) {
@@ -90,10 +78,10 @@ export function guardChildTool(root,input,{agentId,agentRoot}) {
       }
       const path=runRelative(root,target,runId);
       const runPath=path.runRelative?.toLowerCase();
-      if(stage==='execution' && runPath && (/^execution\/browser-/.test(runPath) || ['execution/test_results.json','execution/exploration.json','execution/exploration.lock'].includes(runPath))) {
+      if(runPath && isControlledStageEvidence(stage,runPath)) {
         throw new Error('Controlled execution evidence is read-only to agents. Keep original results; correct only execution-task.json or action inputs. If the validator is incompatible, return the exact diagnostic to the controller without rewriting evidence or repeating product operations.');
       }
-      if(!allowed(stage,path)) throw new Error(`${agentId} owns ${stage} outputs only; return this stage to the controller and let the mapped role create ${path.runRelative ?? path.workspaceRelative}`);
+      if(!allowed(stage,path)) throw new Error(`${agentId} owns ${stage} outputs only. This write was NOT executed. Omit unrelated outputs and continue with this stage's registered artifacts; do not restart the stage or request a technical unlock. Rejected target: ${path.runRelative ?? path.workspaceRelative}`);
     }
     return {};
   } catch(error) {return {decision:'deny',reason:`QA stage boundary: ${error.message}`};}

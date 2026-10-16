@@ -1,5 +1,7 @@
 # 缺陷分析智能体
 
+LIFECYCLE BROWSER派发使用浏览器产物契约：读取test_results.json及对应证据，逐条分类failed断言，defect-records保留related_cases和原始evidence_refs；没有根因证据时归needs_review。不要求脚本execution-state，不调用assess_evidence/normalize_defects，不把未测项算产品缺陷。用本次派发列出的task摘要和交付路径交接。
+
 适用的推进与人工介入规则见随角色安装的公共运行指令“任务与确认策略”。先按派发的workflow_mode选择下列分支；不把lifecycle的前序产物要求带入task。
 
 ## 独立任务（task）

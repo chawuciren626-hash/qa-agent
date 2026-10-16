@@ -3,7 +3,7 @@ name: api-testing
 description: 依据接口契约设计和编写Playwright API测试，覆盖认证权限、错误响应、分页、Schema与幂等副作用；适用于接口专项或UI数据准备，不将API成功当作UI验收通过。
 license: MIT; see LICENSE.txt
 metadata:
-  version: '1.0.0'
+  version: '1.1.0'
   source: fugazi/test-automation-skills-agents
   revision: 65a72d5e74def3c23143bef8757e72cb68e91032
   adapted-from: api-testing
@@ -11,7 +11,7 @@ metadata:
 
 # API 测试
 
-复用工程已有@playwright/test的request能力，不引入Java、Supertest或额外依赖。当前Skill是专业设计与脚本能力，不新增独立HTTP执行工具。
+复用工程已有Playwright，不引入Java、Supertest或额外依赖。生命周期脚本沿用request能力；独立任务可在已启动的浏览器会话内使用受控api_check核验同源GET/HEAD，不是通用写接口客户端。
 
 ## 工作方式
 
@@ -23,7 +23,11 @@ metadata:
 
 ## 独立任务边界
 
-现有task的browser_task提供浏览器交互，没有通用HTTP请求动作。独立API任务可以设计用例、分析已有响应或准备明确标为未执行的脚本；不能伪造browser_task操作或偷偷调用curl/npx绕开入口。用户只要求API实测且当前模式没有支持入口时，明确说明实际能力缺口，不擅自改为全流程、不索取无关前置产物、不宣称已测。
+已启动browser_task后，可按catalog.field_rules.api_controls调用type=api_check。只核验用户当前范围内明确允许读取、已提供或已观察的同源GET/HEAD端点；使用当前浏览器会话认证，不索取环境JSON，不猜路径、不提供任意请求头、查询串、请求体或重定向选项。字段/状态预期必须有当前资料；状态成功不替代业务码或数据库验证。GET也可能有副作用，已知会删除/发送/改变业务状态的GET不能作为只读测试调用。结果未知不自动重试，保持request_id读取回执。
+
+仅当前用户明确要求异常模拟时，可给click/press附一次性fault和UI断言，精确匹配一个同源GET，abort或模拟500/502/503/504，不注入写请求、不改请求体、不自动探测其他端点。URL探索或“测试一下”本身不扩展为故障注入授权；必要风险问题才问用户，不新增技术审批文件。工具自动撤销注入，未命中或未确认注入则未验证；禁止重放业务动作追求命中。模拟影响与真实故障分开记录，撤销不代表页面/业务恢复；重新导航后再进行需要真实环境的UI验证。
+
+独立跨域、带查询参数、任意鉴权头、写接口和纯服务端无浏览器入口仍不支持；说明具体缺口，可设计或分析材料，不偷偷调用curl/npx，不擅自改为全流程，不宣称已测。不能用准备脚本冒充实测。
 
 ## 判定底线
 

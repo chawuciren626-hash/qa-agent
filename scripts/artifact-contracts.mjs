@@ -14,12 +14,13 @@ import { inspectRequirementLedger } from './requirement-provenance.mjs';
 import { assertAnalysisMarkdown } from './analysis-markdown.mjs';
 import { sealedExecutionOutcome } from './execution-outcome.mjs';
 import { diagnoseTestPoints } from './test-point-diagnosis.mjs';
-import { isIndependent, taskRequiredArtifacts, inspectIndependentArtifacts } from './independent-task.mjs';
+import { isIndependent, usesTaskArtifacts, taskRequiredArtifacts, inspectIndependentArtifacts } from './independent-task.mjs';
+import { usesBrowserArtifacts } from './browser-lifecycle.mjs';
 
 import { lifecycleArtifacts } from './stage-registry.mjs';
 export const requiredArtifacts = lifecycleArtifacts;
 export function stageRequiredArtifacts(root, runId, stage, mode = 'execute') {
-  if (isIndependent(root,runId)) return taskRequiredArtifacts(stage);
+  if (usesTaskArtifacts(root,runId,stage)) return [...taskRequiredArtifacts(stage),...(stage==='execution' && usesBrowserArtifacts(root,runId,stage)?['execution/browser-coverage.json']:[])];
   if (mode === 'prepare') return ['execution/execution-plan.json'];
   if (stage === 'execution') {
     try {
@@ -51,7 +52,7 @@ function zipEntry(data, name) {
 }
 
 export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', artifacts = [] } = {}) {
-  if (isIndependent(root,runId)) return inspectIndependentArtifacts(root,runId,stage,{artifacts});
+  if (usesTaskArtifacts(root,runId,stage)) return inspectIndependentArtifacts(root,runId,stage,{artifacts});
   const files = new Map();
   const errors = [];
   let executionOutcome;

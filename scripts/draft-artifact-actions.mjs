@@ -1,13 +1,16 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, lstatSync, writeFileSync, unlinkSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { runDirectory, readRunFile } from './design-quality.mjs';
 import { assertStageHistory, writeJson } from './orchestration-state.mjs';
 import { assertDependencyArtifacts } from './artifact-contracts.mjs';
 import { runProjectCommand } from './command-runtime.mjs';
-import { isIndependent, inspectIndependentArtifacts, taskResultPath } from './independent-task.mjs';
+import { usesTaskArtifacts, inspectIndependentArtifacts, taskResultPath } from './independent-task.mjs';
 import { CommandUsageError } from './command-contracts.mjs';
 import { buildReportEvidence, reportFactsMarkdown } from './report-evidence.mjs';
+import { preserveReportResults, resultFidelityMarkdown } from './report-result-fidelity.mjs';
+import { browserLifecycle, browserCoverageMarkdown } from './browser-lifecycle.mjs';
 
 export const draftArtifactActions = {
   export_test_points: { stage: 'test_points', script: 'generate-test-points-xmind.mjs', inputs: ['design/test_points.json'], outputs: ['design/test_points.xmind'] },
@@ -33,7 +36,7 @@ export async function runDraftArtifactAction(root, parent, action, runId, { sign
     if (manifest.run_id !== runId || !manifest.orchestration?.plan?.stages?.some(s => s.id === stage && s.selected) || manifest.stages?.[stage]?.status !== 'in_progress' || !dispatch?.dispatch_id || dispatch['parent-session-id'] !== parent) throw new Error('Artifact generation requires the owning active professional dispatch');
     if (['pending', 'approved', 'rejected'].includes(latest?.status)) throw new Error('Current confirmation forbids draft replacement');
     assertDependencyArtifacts(root, runId, manifest, stage);
-    if(isIndependent(root,runId)) {
+    if(usesTaskArtifacts(root,runId,stage)) {
       if(!['export_test_points','export_test_cases','export_report'].includes(action)) throw new CommandUsageError(`action=${action} is lifecycle-only; this run uses independent task mode. No lifecycle files are required. For report, write report/test_report.md, report/reportable-results.json, report/issues.json (top-level array; [] when empty) and report/report-task.json, then diagnose_task(stage=report), export_report and validate_artifacts(stage=report) via JSON request files. Do not create metrics or ask the user to unlock.`);
       const check=inspectIndependentArtifacts(root,runId,stage,{draft:true});
       if(check.status!=='passed') {
@@ -60,19 +63,33 @@ export async function runDraftArtifactAction(root, parent, action, runId, { sign
       writeFileSync(target, bytes, { flag: 'wx' });
       return { path, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
     });
-    const record = { action, run_id: runId, stage, dispatch_id: dispatch.dispatch_id, parent_session: parent, before: snapshot([...definition.inputs, ...definition.outputs], 'before'), status: 'started' };
+    const taskInputs = action === 'export_report' && usesTaskArtifacts(root, runId, stage) ? [taskResultPath('report')] : [];
+    const record = { action, run_id: runId, stage, dispatch_id: dispatch.dispatch_id, parent_session: parent, before: snapshot([...definition.inputs, ...definition.outputs, ...taskInputs], 'before'), status: 'started' };
     writeJson(resolve(base, 'generation.json'), record);
     let args;
     if (action === 'export_report') args = [definition.inputs[0], definition.inputs[1], definition.inputs[2], ...definition.outputs.slice(0, 2), ...(definition.inputs[3]?[definition.inputs[3]]:[])].map(p => resolve(dir, p));
     else if (action.startsWith('export_')) args = [...definition.inputs, ...definition.outputs].map(p => resolve(dir, p));
     else args = [`--run-id=${runId}`];
-    if (action === 'export_report' && isIndependent(root, runId)) {
+    if (action === 'export_report' && usesTaskArtifacts(root, runId, stage)) {
       const task = JSON.parse(readRunFile(dir, taskResultPath('report')).data);
-      const index = buildReportEvidence(dir, manifest, task.source_paths.filter(p => p.startsWith('inputs/')));
+      const index = buildReportEvidence(dir, manifest, task.source_paths.filter(p => p.startsWith('inputs/')), task.regression_comparison);
+      const draftResults = JSON.parse(readRunFile(dir,'report/reportable-results.json').data);
+      const fidelity = preserveReportResults(draftResults,index,path=>readRunFile(dir,path));
+      let coverageText='';
+      if(browserLifecycle(manifest)) {
+        const coverage=JSON.parse(readRunFile(dir,'execution/browser-coverage.json').data);
+        fidelity.results.design_coverage=coverage;
+        fidelity.results.statistics=JSON.parse(readRunFile(dir,'execution/test_results.json').data).statistics;
+        coverageText=browserCoverageMarkdown(coverage);
+      }
+      // The before snapshot retains the model draft; canonical results keep source fields for every format.
+      if (!isDeepStrictEqual(draftResults,fidelity.results)) writeJson(resolve(dir,'report/reportable-results.json'),fidelity.results);
+      writeJson(resolve(base,'result-fidelity.json'),{version:1,changes:fidelity.changes});
+      record.result_fidelity = `${archive}/result-fidelity.json`;
       writeJson(resolve(base, 'report-evidence.json'), index);
       // Render a derived snapshot; preserve the agent draft and all original execution bytes.
       const renderPath = resolve(base, 'report-with-facts.md');
-      writeFileSync(renderPath, readRunFile(dir, 'report/test_report.md').data.toString('utf8') + '\n\n' + reportFactsMarkdown(index), { flag: 'wx' });
+      writeFileSync(renderPath, readRunFile(dir, 'report/test_report.md').data.toString('utf8') + '\n\n' + reportFactsMarkdown(index) + '\n\n' + resultFidelityMarkdown(fidelity.results) + '\n\n' + coverageText, { flag: 'wx' });
       args[0] = renderPath;
       record.report_facts = `${archive}/report-evidence.json`;
     }

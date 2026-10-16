@@ -5,10 +5,35 @@ import { resolve } from 'node:path';
 import { randomUUID,createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { deliveryPresentation } from '../../scripts/delivery-presentation.mjs';
-import { localDeliveryPath,extractDeliveries,groupDeliveryItems } from '../../penguin/ui/delivery-ui.mjs';
+import { localDeliveryPath,extractDeliveries,groupDeliveryItems,normalizeDeliveryItems } from '../../penguin/ui/delivery-ui.mjs';
 import { openDeliverable,validateNativeDocument } from '../../scripts/open-deliverable.mjs';
 import { patchDeliveryBundle,patchDeliveryServer } from '../../scripts/install-penguin-delivery-ui.mjs';
 const root=resolve(import.meta.dirname,'../..');
+
+test('placeholder thinking merges split prose without mutating source events, including streaming replay',()=>{
+  const before={kind:'assistant_text',id:'a',text:'读取'};
+  for(const thinking of ['', ' ', '.', '...', '…', '。']) {
+    const items=[before,{kind:'thinking',id:'b',thinking,streaming:false},{kind:'assistant_text',id:'c',text:'编排事件脚本。',streaming:true}];
+    const snapshot=JSON.stringify(items),result=normalizeDeliveryItems(items);
+    assert.equal(result.length,1);assert.equal(result[0].text,'读取编排事件脚本。');assert.equal(result[0].id,'a');assert.equal(result[0].streaming,true);
+    assert.equal(JSON.stringify(items),snapshot);
+    assert.deepEqual(normalizeDeliveryItems(JSON.parse(snapshot)),result);
+  }
+  const streaming=[before,{kind:'thinking',id:'b',thinking:'.',streaming:true}];
+  assert.equal(normalizeDeliveryItems(streaming).length,1);
+  streaming[1]={...streaming[1],thinking:'实际推理内容'};
+  assert.equal(normalizeDeliveryItems(streaming).length,2);
+});
+test('normalization never merges across real reasoning, tools, errors or turn identity',()=>{
+  const a={kind:'assistant_text',id:'a',text:'第一句'},b={kind:'assistant_text',id:'b',text:'第二句'};
+  for(const boundary of [{kind:'thinking',thinking:'真实推理'},{kind:'thinking',thinking:'.',stopReason:'fatal'},...['tool_call','subagent','user_text','user_image','user_steering','task_stats','abort','llm_error','reconnect'].map(kind=>({kind}))]) {
+    const items=[a,{kind:'thinking',thinking:'.'},boundary,b];
+    assert.equal(normalizeDeliveryItems(items).filter(item=>item.kind==='assistant_text').length,2);
+  }
+  for(const key of ['requestId','sessionId','turnId']) assert.equal(normalizeDeliveryItems([{...a,[key]:'1'},{kind:'thinking',thinking:'.'},{...b,[key]:'2'}]).length,2);
+  assert.equal(normalizeDeliveryItems([a,b]).length,2);
+  assert.equal(normalizeDeliveryItems([{...a,stopReason:'aborted'},{kind:'thinking',thinking:'.'},b]).length,2);
+});
 
 test('file references support Chinese/spaces and reject external protocols, escapes and alternate streams',()=>{
   const workspace='E:/QAWorkspaces/测试 项目';
@@ -54,9 +79,27 @@ test('presentation derives counts from verified canonical artifacts and never ad
   const manifest={stages:{test_cases:{status:'completed'}},orchestration:{events:[{type:'completed',stage:'test_cases',evidence:{artifact_contract:{version:1,run_id:run,stage:'test_cases',status:'passed',files}}}]}};
   const p=deliveryPresentation(root,run,manifest);
   assert.equal(p.facts.test_cases,15);assert.equal(p.concise_summary,'测试用例 15 条');assert.equal(p.artifacts.length,1);
+  assert.equal(p.reply_template,`已整理：测试用例 15 条。\n\n${p.markdown}`);
+  assert.ok(!p.reply_template.includes('.json'));assert.ok(!p.reply_template.includes('completed'));
   writeFileSync(resolve(dir,'design/test_cases.xlsx'),'mutated workbook');
   const changed=deliveryPresentation(root,run,manifest);
   assert.equal(changed.artifacts.length,0);assert.equal(changed.facts.test_cases,15);assert.equal(changed.markdown,'');
+  assert.ok(!changed.reply_template.includes('.xlsx'));
+});
+
+test('delivery separates verified questions from limitations and retains saved confirmation stages',()=>{
+  const run=`run-${randomUUID()}`,dir=resolve(root,'output/runs',run),path='report/report-task.json';
+  mkdirSync(resolve(dir,'report'),{recursive:true});
+  const task={run_id:run,stage:'report',summary:'Imported results only; no product execution.',questions:[],limitations:['No real product execution evidence.']};
+  const save=()=>writeFileSync(resolve(dir,path),JSON.stringify(task));save();
+  const manifest=()=>({stages:{report:{status:'completed'}},orchestration:{events:[{type:'completed',stage:'report',evidence:{artifact_contract:{run_id:run,stage:'report',status:'passed',files:[{path,sha256:createHash('sha256').update(readFileSync(resolve(dir,path))).digest('hex')}]}}}]}});
+  let m=manifest(),p=deliveryPresentation(root,run,m);
+  assert.equal(p.reply_template,task.summary);assert.equal(p.question_status,'none_recorded');
+  assert.deepEqual(p.pending_questions,[]);assert.deepEqual(p.limitations,task.limitations);assert.ok(!p.reply_template.includes('待确认'));
+  m.stages.report.status='awaiting_confirmation';assert.deepEqual(deliveryPresentation(root,run,m).confirmation_stages,['report']);
+  task.questions=['Which scope applies?'];save();
+  assert.equal(deliveryPresentation(root,run,m).question_status,'unknown','modified files cannot clear or invent questions');
+  p=deliveryPresentation(root,run,manifest());assert.deepEqual(p.pending_questions,task.questions);assert.match(p.reply_template,/Which scope applies/);
 });
 
 test('native document opening is argument-safe, rejects executable content and propagates launcher errors',async()=>{

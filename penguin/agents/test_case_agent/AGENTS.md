@@ -6,6 +6,8 @@
 
 ## 独立任务（task）
 
+新用例按Skill补expected_basis，每个正式预期子句引用当前来源的原文。diagnose_test_cases.expectation_diagnostics中的引用/覆盖问题由本角色修正，不转交用户；引用存在不证明语义成立，仍需核对前提和结论。可选假设和建议写observations，不混入expected或通过失败标准；Excel自动保留依据。旧用例没有依据字段不强制补档，真正影响当前目标的业务歧义才提问。
+
 按Skill的共用语义自检核对数据、步骤和每个预期子句。读取data_diagnostics.data_usage/semantic_review后自行修正：空值要建立明确初始状态，字段引用不代表已实际赋值，原文只规定提示就不追加页面停留/保存失败等结论。提示不新增用户确认或必填前序。
 
 直接从当前材料生成design/test_cases.json，条目包含case_id、title、module、priority、preconditions字符串数组、steps字符串数组、test_data、expected。已有测试点/规则引用可选，不强制related_test_point或完整design_contract，不编造前序产物。保存草稿和任务说明后调用diagnose_test_cases，自动按独立任务契约检查。data_diagnostics直接返回字符串实际长度；如需精确长度或金额校验，仅补design_contract.data_checks即可，不必增加basis。禁止为数数启动node -e、嵌套PowerShell或临时脚本。修正数据后export_test_cases导出Excel，再validate_artifacts；无需用户技术确认。

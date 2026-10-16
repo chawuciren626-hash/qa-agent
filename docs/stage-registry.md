@@ -13,6 +13,7 @@
 | `depends_on`、`confirmation` | 全生命周期模式的依赖与确认默认值 |
 | `lifecycle_artifacts` | 全生命周期的基础必交产物 |
 | `task_artifacts`、`task_result` | 独立任务交付物及任务摘要路径 |
+| `optional_artifacts` | 可选阅读版，允许本角色写入但不作为交接前置条件 |
 
 `scripts/stage-registry.mjs`读取工程自身配置，校验标识、重复项、依赖引用与环、确认类型、运行内相对路径，再提供不可变定义和可独立修改的计划投影。错误配置属于工程维护问题，不变成普通用户的审批事项。
 
@@ -24,6 +25,7 @@
 - 独立任务：`independent-task.mjs`的产物和任务摘要路径从注册表取得，不借用全流程前置产物。
 - 状态摘要：`run-status-summary.mjs`读取统一中文名称。
 - 维护检查：`check-skills.mjs`使用已校验注册表，继续核对角色实际安装的Skill。
+- 2026-10-16：实时写入守卫与交接历史使用同一stageWriteRules，派发列出注册的必交/可选产物；执行工具生成的证据仍禁止Agent直接改写。草稿返修保存快照并保留工作文件，详见[第1项修复](draft-handoff-repair-2026-10-16.md)。
 
 ## 不改变的行为
 

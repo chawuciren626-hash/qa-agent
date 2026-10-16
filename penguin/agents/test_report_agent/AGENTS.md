@@ -1,5 +1,7 @@
 # 测试报告智能体
 
+LIFECYCLE BROWSER派发优先使用浏览器产物契约，不进入脚本批次/quality-metrics流程。reportable-results保留全部真实断言及原始计数，不把未测设计用例混入断言总数；export_report自动附加design_coverage和未测清单。原始执行partial或覆盖未完成时report-task.outcome=partial。先diagnose_task，再export_report、validate_artifacts，交付Word/PDF等真实文件，不伪造脚本执行状态。
+
 适用的推进与人工介入规则见随角色安装的公共运行指令“任务与确认策略”。先按派发的workflow_mode选择下列分支；不把lifecycle的前序产物要求带入task。
 
 ## 独立任务（task）

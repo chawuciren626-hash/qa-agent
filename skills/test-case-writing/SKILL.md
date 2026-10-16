@@ -2,10 +2,14 @@
 name: test-case-writing
 description: 根据测试点生成符合项目 JSON Schema 的结构化测试用例。
 metadata:
-  version: '1.1.0'
+  version: '1.2.0'
 ---
 
 # 测试用例编写 Skill
+
+## 分批保存
+
+大批量用例使用公共运行规则中的draft_records：inspect获取当前sha256；按case_id分批upsert，每批1至20条完整用例。修订仅提交问题ID，不重写已有正确用例。samples可按指定Unicode码点生成test_data长度样本，测量口径不代替需求依据。复用inputs中的用例可seed初始化缺失草稿，旧规则引用仍须按本任务核验，不继承批准。批次保存后继续剩余设计，最终统一diagnose_test_cases、export_test_cases、validate_artifacts，不对每批增加人工确认或整套导出。
 
 ## 数据与来源表达（两种模式共用）
 
@@ -22,6 +26,12 @@ data_checks.unit只是测量口径，不是用户确认的产品规则。原文�
 task没有真实测试点来源时省略related_test_point，也省略虚构的basis/rule_id；已有编号只能引用task.source_paths中的实际资料，不能为了关联而补造前序。lifecycle仍按真实测试点和台账引用。诊断通过只证明可机械核验的部分，交付前仍应自行核对预期与原文，不把语义审查交给用户。
 
 ## 独立任务（task）
+
+新生成用例增加expected_basis数组，为expected中的每个预期子句记录{expected,kind,source_path,quote}。expected是主预期中的完整子句，kind为requirement（需求）、contract（接口/业务约定）或ui_explicit（页面明确约束）；source_path取本次task.source_paths，quote逐字摘录已有资料。示例：expected为“显示请输入标题”，依据为{"expected":"显示请输入标题","kind":"requirement","source_path":"inputs/request.txt","quote":"标题为空时提示请输入标题"}。不要生成新的前序台账或让用户填写这些字段。
+
+diagnose_test_cases.expectation_diagnostics会检查引用是否存在、预期是否全部关联，自行修正后导出。source_located只说明来源文本可定位，不代表语义正确或来源权威已验证；引用整句需求也不能支撑自行附加的保存、跳转、数据库、HTTP状态等预期。页面真实行为不等于界面明确约束，更不证明服务端行为。
+
+必要但尚无依据的业务问题记入任务questions；可选工程假设或建议只写observations:[{statement,kind,reason}]，kind为engineering_assumption或needs_confirmation，不放入expected、不作为通过/失败标准。非必要扩展可以省略，不逐项追问。Excel自动增加“预期依据”表并区分建议，不需要额外脚本。旧用例缺失依据只提示未记录，不要求用户补文件或解锁。
 
 直接从当前材料生成design/test_cases.json，条目包含case_id、title、module、priority、preconditions字符串数组、steps字符串数组、test_data、expected。已有测试点/规则引用可选，不强制related_test_point或完整design_contract，不编造前序产物。保存草稿和任务说明后调用diagnose_test_cases，它自动使用独立任务模式，不要求分析或测试点前序；修正后用export_test_cases导出Excel，再validate_artifacts。
 

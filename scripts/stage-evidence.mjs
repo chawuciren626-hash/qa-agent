@@ -102,6 +102,35 @@ export function resolveDispatchedChild(root, runId, stage, parentId, agentRoot =
   return {child_session:matches[0].childId,agent:dispatch.agent,dispatch_id:dispatch.dispatch_id,binding:matches[0].binding,completion_verified:false,...(failed?{outcome:'failed',next_action:'record_failed_dispatch',failure_template:{action:'fail',run_id:runId,stage,dispatch_id:dispatch.dispatch_id,reason:'Professional child returned an explicit failure; preserve its trace. No completion or execution retry authorized.'}}:{})};
 }
 
+export function recordedChildHandle(rows, dispatch, runId) {
+  const calls = rows.filter(row => row.type === 'model_msg' && row.payload?.type === 'tool_call' && row.payload.name === 'run_subagent').filter(row => {
+    let args; try { args = typeof row.payload.arguments === 'string' ? JSON.parse(row.payload.arguments) : row.payload.arguments; } catch { return false; }
+    return args?.agent_id === dispatch.agent && typeof args.prompt === 'string' &&
+      [runId, dispatch.dispatch_id].every(id => args.prompt.split(/[^A-Za-z0-9-]+/).includes(id)) && args.prompt.includes(dispatch.child_command_policy) && Date.parse(row.timestamp) >= Date.parse(dispatch.at);
+  });
+  const absent = { status: 'unavailable', subagent_id: null, completion_verified: false,
+    next_action: '等待原工具返回；不要从dispatch_id或子会话ID推导句柄，不重复派发。正常结束的子任务使用handoff，人工登录等待使用resume_browser。' };
+  if (calls.length !== 1) return absent;
+  const call = calls[0], outputs = rows.filter(row => row.type === 'model_msg' && row.payload?.type === 'tool_call_output' && row.payload.tool_call_id === call.payload.tool_call_id && row.payload.stop_reason === 'completed' && Date.parse(row.timestamp) >= Date.parse(call.timestamp));
+  if (outputs.length !== 1) return absent;
+  // Only use the host's returned running marker, never derive a handle from IDs.
+  const matches = [...String(outputs[0].payload.output).matchAll(/(?:^|\n)\[subagent running(?: in background)? with subagent_id (subagent-[A-Za-z0-9-]+);[^\]\r\n]*\]/g)];
+  if (matches.length !== 1) return absent;
+  const subagent_id = matches[0][1];
+  const invalidated = rows.slice(rows.indexOf(outputs[0]) + 1).some(row => row.payload?.type === 'tool_call_output' && String(row.payload.output).includes(`[input_subagent error: unknown subagent_id ${subagent_id} `));
+  if (invalidated) return { ...absent, next_action: '宿主已返回此句柄不可用；不要重复input_subagent或猜新ID。保留现有结果，按真实结束状态进行交接或可恢复修订。' };
+  return { status: 'recorded', subagent_id, source_tool_call_id: call.payload.tool_call_id, completion_verified: false,
+    availability: '宿主历史返回值，不保证应用重启后的可用性', next_action: '需要补充任务信息时可使用原样句柄；后台运行无需反复轮询，未知操作不得重放。' };
+}
+
+export function resolveChildHandle(root, runId, stage, parentId, agentRoot) {
+  const rows = assertParentSession(root, runId, parentId, agentRoot);
+  const manifest = JSON.parse(readRunFile(runDirectory(root, runId), 'manifest.json').data);
+  const dispatch = manifest.orchestration?.events?.filter(event => event.type === 'dispatched' && event.stage === stage).at(-1);
+  if (!dispatch || dispatch['parent-session-id'] !== parentId) throw new CommandUsageError('没有当前父会话所属派发；不猜测子任务ID。');
+  return recordedChildHandle(rows, dispatch, runId);
+}
+
 export function verifyStageEvidence(root, runId, manifest, options, agentRoot = process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(), '.penguin/data/default_project/agents')) {
   const dispatch = manifest.orchestration.events.filter(e => e.stage === options.stage && e.type === 'dispatched').at(-1);
   if (!dispatch) throw new Error('Dispatch event required');

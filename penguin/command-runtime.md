@@ -1,6 +1,24 @@
 ## 公共运行规则
 
+### 可见内容与交付语言
+
+总控和全部专业角色对用户、对父智能体的可见说明、工具description、进度、待确认问题和最终答复统一使用中文。代码标识、字段名、路径、编号、原始引用及产品原文不翻译，不更改证据。内部推理语言不限，但不要将推理过程复制到正文。内部任务契约可能含英文技术规则，这是实现约束，不是要展示给用户的回复。
+
+完成后优先使用已校验交付结果的reply_template，保持短段落：已完成什么、文件链接、真实失败/未测限制、确需人工处理的问题。没有待确认项就省略该段。不要重复展示dispatch_id、哈希、状态机、自检步骤或“已复核所有字段”等内部记录；这些留在可展开详情和审计中。不用精简表达掩盖失败，不额外承诺尚未实测的能力。
+
+### 分批设计与资产复用
+
+测试点/用例子任务优先用 `draft_records` 保存大批量JSON：inspect返回sha256、ID及条目数，upsert按稳定ID新增或替换1至20条完整条目，其他条目保持不变；缺失文件base_sha256=missing。每批成功后使用返回的新sha256，不反复读取整个文件。冲突时inspect指定待改ids后合并；同一request_id必须保持请求内容不变，不确定落盘时可查询原批次，不能盲目整文件覆盖。保存不是完成校验，结束仍diagnose、export、validate，覆盖不足不能通过删除用例解决。
+
+用例边界字符串可由upsert.samples的case_id/key/unit/count生成，unit是单个Unicode码点，返回实际码点、UTF-16、UTF-8及字素长度；这些测量不是业务预期。具体字段见catalog.field_rules.draft_records。小型既有文件工具写法继续兼容，不增加人工确认。
+
+优先在原run修订。确需新任务复用时，总控在派发前使用reuse_design，将同一父会话中已交付且哈希一致的设计JSON原字节复制到当前inputs；不复制执行证据、权限、环境和凭据。设计子任务可用draft_records的seed从inputs初始化缺失草稿，不重抄内容；引用及需求仍按本任务诊断，旧批准和完成状态不继承。其他会话产物通过正常附件入口输入，不扫描历史目录。
+
+子任务仍运行而需要补充信息时，总控可用resolve_child_handle读取真实工具回执中的subagent_id，不能截取dispatch_id或session_id拼接。无句柄时等待原调用；句柄已返回unknown时不重复调用或猜新ID。此查询不证明完成、不恢复执行授权；人工登录等待沿用resume_browser，正常结束使用handoff。任何stalled=true都应改变方法或交付已有结果及限制，不原样循环、不要求用户技术解锁。
+
 ### 任务与确认策略
+
+全流程URL测试优先使用浏览器策略：总控dispatch execution时传mode=browser和source_text（本会话明确授权同目标/范围测试的用户原文）。不要求用户填写环境JSON、生成脚本或重复批准。已完成的设计依赖仍由工程核验；执行、缺陷和报告采用派发中列出的浏览器产物契约，不补脚本execution-state/metrics。人工登录pause后，用户确认完成，再mode=resume_browser接同一浏览器。尚未确认的业务预期不得作为通过/失败标准；未测项必须出现在覆盖说明和报告中。脚本批量执行仍可选择prepare路径，不与已启动浏览器混用。
 
 | 模式 | 推进方式 | 人工介入 |
 | --- | --- | --- |
@@ -32,7 +50,7 @@
 
 ### 父子职责与交付
 
-- 总控负责create_run、plan_run/extend_plan、archive_input、dispatch、handoff和真实确认；附件source与文字text二选一，禁止重抄附件冒充原件。Word保留原件后extract_word。
+- 总控负责create_run、plan_run/extend_plan、archive_input、dispatch、handoff和真实确认。create_run自动归档原话和消息中明确列出的本会话附件，dispatch携带input_context；先读归档记录，不重复索要URL、登录方式或其他原话已有信息。手动补导入时附件source与文字text二选一，支持中文文件名，禁止重抄附件冒充原件。Word保留原件后按返回模板extract_word；提取警告不是新授权或用户技术审批。
 - 子Agent只完成派发stage和Deliver清单。原始请求含其它交付物时也不跨阶段；Caller agent不改变自身角色。不create_run/plan_run、不替父级complete/block/fail或批准。task只用独立契约，不补requirement-ledger、前序设计、质量指标或执行计划来凑前置。
 - 专业角色按当前模式读取对应Skill分支，生成草稿及派发规定的任务元信息；task用diagnose_task（用例数据另用diagnose_test_cases），lifecycle用阶段诊断。集中修正后导出、validate_artifacts；检查内层result，不把外层completed当业务passed。必需文件以本次契约为准，修改源JSON后重导对应文件。
 - 总控真实子调用返回后用handoff_template一次交接；必要时resolve_child关联真实会话。文件存在、口头完成、已登记dispatch都不是成功交付。子任务未启动必须实际run_subagent，已运行但结果未知不得重复启动。
@@ -46,6 +64,10 @@
 未知副作用、真实执行中断、超时、进程状态不明、锁所有权不明不自动重放；不删锁、不改状态、不伪造执行/批准。正常结束且execution_outcome为failed表示测出失败用例，继续缺陷分析；blocked/report_only只交付该批次受阻证据及报告，不冒充通过。termination_confirmed未知或归档损坏不能据此收口。
 
 子任务尚在工作时自行修正自有草稿；已返回的非执行草稿由总控preview_revision，eligible后revise_stage再派原角色，保留归档。不可借返修越过真实业务决定。analysis收到用户澄清/范围改变时由总控apply_analysis_feedback归档原话并修订，不把resolve_confirmation.reason当补充原文；其它task沿用本阶段修订契约。
+
+execution的prepare派发也可由总控preview_revision/revise_stage处理，但仅限已返回、工具及命令证据能确认未操作产品的准备工作。恢复保留脚本和环境草稿，不授权产品测试；必须以mode=prepare修正，不借此重跑实际执行。资格不足由工程排查，不向用户索要技术解锁文档。浏览器人工续接需要最新真实用户明确完成/继续，系统消息不能代替。
+
+阶段产物以工程config/orchestration-workflow.json及派发中的必交/可选清单为准。可选Markdown不作为交接前置条件。普通草稿revise_stage保留原路径的工作副本并保存只读快照；优先局部修正，保留无关条目和编号，不从空白重做。工具执行前明确拒绝或宿主参数解析失败不等于产物无效；由handoff核对原生证据及最终产物，不为“清除失败记录”重新派发。实际越权写入、结果未知、业务待确认仍按原规则处理，不删除审计。
 
 无法恢复时读一次run_status及必要summary定位，如实交付完成部分和故障影响，不循环搜源码/维护文档寻找解锁办法、不让用户维护工程。未接入执行能力就明确尚未执行。
 

@@ -8,6 +8,11 @@ import { chromium, expect } from '@playwright/test';
 import { readRunFile, runDirectory } from './design-quality.mjs';
 import { writeJson } from './orchestration-state.mjs';
 import { validateExplorationTarget } from './explore-task-url.mjs';
+import { validateResponseCheck, observeBusinessResponse } from './browser-response-check.mjs';
+import { dataLedgerPath, validDataKey, prepareOwnedData, ownedDataForEffect, beginDataEffect, completeDataEffect, summarizeDataLedger } from './browser-data-ledger.mjs';
+import { validateCountMetadata, resolveCaseReference, summarizeExecutionCounts, uiCheckFingerprint } from './execution-counts.mjs';
+import { validateApiCheck, validateFault, runReadOnlyApiCheck, createOneShotFault } from './browser-api-controls.mjs';
+import { browserLifecycle, currentBrowserAuthorization, assertBrowserTarget, assertBrowserDesignCheck, browserCoverage } from './browser-lifecycle.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const uuid = value => /^[a-f0-9-]{36}$/.test(value ?? '');
@@ -16,7 +21,7 @@ const privatePath = dir => resolve(dir, 'execution/browser-private.json');
 const statePath = dir => resolve(dir, 'execution/browser-state.json');
 const load = path => JSON.parse(readFileSync(path, 'utf8'));
 const sleep = ms => new Promise(done => setTimeout(done, ms));
-export const browserOperations = ['start', 'snapshot', 'goto', 'fill', 'click', 'press', 'select', 'check', 'assert', 'pause', 'finish'];
+export const browserOperations = ['start', 'snapshot', 'goto', 'fill', 'click', 'press', 'select', 'check', 'assert', 'pause', 'finish', 'data_prepare', 'api_check'];
 
 export async function browserWorkerResponse(response, requestId) {
   if(response.ok) return response.json();
@@ -167,14 +172,31 @@ export function validateBrowserOperation(op) {
   assert(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(op.request_id ?? ''), 'operation.request_id is required: use 1-80 ASCII letters/digits/_/-, e.g. "case1-submit". No operation performed. Reuse the same ID after transport uncertainty; give a different intended operation a new ID.');
   const fields = {
     start:['url','source_path','scope','headless'], snapshot:[], goto:['url','source_path'],
-    fill:['target','value','secret'], click:['target','assertion'], press:['target','key','assertion'], select:['target','value'],
-    check:['target','checked'], assert:['target','condition','value','case_id','title','expected'],
-    pause:['kind','question'], finish:['summary','limitations']
+    fill:['target','value','secret'], click:['target','assertion','preconditions','response_check','data_effect','fault'], press:['target','key','assertion','preconditions','response_check','data_effect','fault'], select:['target','value'],
+    check:['target','checked'], assert:['target','condition','value','case_id','title','expected','case_ref','recheck_of'],
+    pause:['kind','question'], finish:['summary','limitations'], data_prepare:['key'], api_check:['check']
   };
   assert(Object.keys(op).every(k => ['type','request_id',...fields[op.type]].includes(k)), 'Unknown browser operation field');
+  if(op.type==='api_check') validateApiCheck(op.check);
+  if(op.fault!==undefined) {validateFault(op.fault);assert(op.assertion && !op.response_check && !op.data_effect,'Fault scenario requires a UI assertion; cannot mix real response/data checks');}
+  if(op.type==='data_prepare') assert(validDataKey(op.key),'data_prepare needs a short key');
+  if(op.data_effect!==undefined) {
+    const effect=op.data_effect;
+    assert(effect && Object.keys(effect).every(k=>['kind','key','record_target'].includes(k)) && ['create','cleanup'].includes(effect.kind) && validDataKey(effect.key),'Invalid data_effect');
+    validateBrowserOperation({type:'assert',request_id:op.request_id,target:effect.record_target,condition:'count',value:1,case_id:'identity',title:'Identity',expected:'Single record'});
+  }
+  if(op.response_check!==undefined) validateResponseCheck(op.response_check);
+  if(op.preconditions!==undefined) {
+    assert(Array.isArray(op.preconditions) && op.preconditions.length>0 && op.preconditions.length<=4,'Use 1-4 necessary preconditions');
+    for(const check of op.preconditions) {
+      assert(check && Object.keys(check).every(key=>['target','condition','value'].includes(key)),'Preconditions are read-only checks, not case results');
+      validateBrowserOperation({...check,type:'assert',request_id:op.request_id,case_id:'precondition',title:'Precondition',expected:'Required page state'});
+    }
+  }
   if (op.assertion!==undefined) {
     assert(op.assertion && typeof op.assertion==='object' && !Array.isArray(op.assertion),'assertion must be an assertion object');
     assert(!['type','request_id'].some(k=>k in op.assertion),'Nested assertion cannot override operation identity');
+    assert(op.assertion.recheck_of===undefined,'recheck_of is only for read-only standalone assertions, never permission to replay an action');
     validateBrowserOperation({...op.assertion,type:'assert',request_id:op.request_id});
   }
   if (['start','goto'].includes(op.type)) assert(typeof op.url==='string' && typeof op.source_path==='string', 'Supplied URL and source_path required');
@@ -192,6 +214,7 @@ export function validateBrowserOperation(op) {
     assert(Object.keys(t).every(k=>['by','value','name'].includes(k)) && (t.name===undefined || typeof t.name==='string'),'Invalid target');
   }
   if (op.type==='assert') {
+    validateCountMetadata(op);
     assert(['visible','hidden','text','value','count'].includes(op.condition),'Unsupported assertion');
     assert(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(op.case_id ?? '') && typeof op.title==='string' && op.title.trim() && typeof op.expected==='string' && op.expected.trim(),'Assertion case_id, title and expected required');
     if (op.condition==='text') assert(typeof op.value==='string' || (op.value===undefined && op.target.by==='text'),'Text assertion needs value, e.g. {condition:"text",value:"expected message"}; only exact target.by=text may reuse target.value');
@@ -205,7 +228,8 @@ export function validateBrowserOperation(op) {
 function binding(dir) {
   const manifest=load(resolve(dir,'manifest.json'));
   const dispatch=manifest.orchestration?.events?.filter(e=>e.type==='dispatched' && e.stage==='execution').at(-1);
-  assert(manifest.orchestration?.plan?.workflow_mode==='task' && manifest.stages?.execution?.status==='in_progress' && dispatch?.dispatch_id,'Requires an active independent execution dispatch');
+  assert((manifest.orchestration?.plan?.workflow_mode==='task' || browserLifecycle(manifest)) && manifest.stages?.execution?.status==='in_progress' && dispatch?.dispatch_id,'Requires an active browser execution dispatch');
+  if(browserLifecycle(manifest)) assert(readRunFile(dir,'design/test_cases.json').sha256===currentBrowserAuthorization(manifest)?.design_sha256,'Authorized design changed');
   return dispatch;
 }
 
@@ -220,7 +244,10 @@ export async function browserTaskCommand(root,runId,operation) {
     if(receipt.status==='completed') return receipt.result;
     return {status:'in_progress_or_uncertain',request_id:operation.request_id,next_action:'inspect_existing_receipt_no_replay'};
   }
-  if (['start','goto'].includes(operation.type)) validateExplorationTarget(operation.url,operation.source_path,readRunFile(dir,operation.source_path).data.toString('utf8'));
+  if (['start','goto'].includes(operation.type)) {
+    validateExplorationTarget(operation.url,operation.source_path,readRunFile(dir,operation.source_path).data.toString('utf8'));
+    assertBrowserTarget(root,runId,load(resolve(dir,'manifest.json')),operation.url);
+  }
   const request={operation,command_id:process.env.QA_TASK_COMMAND_ID,dispatch_id:dispatch.dispatch_id};
   if (!existsSync(privatePath(dir))) {
     if (operation.type!=='start') return {status:'session_unavailable',next_action:'report_preserved_results_no_automatic_replay'};
@@ -245,18 +272,24 @@ export async function browserTaskCommand(root,runId,operation) {
 async function worker(root,runId) {
   const dir=runDirectory(root,runId), token=load(privatePath(dir)).token;
   assert(realpathSync(resolve(dir,'execution'))===resolve(dir,'execution'),'Redirected browser directory');
-  let browser, page, context, busy=false, closed=false, lastActivity=Date.now(), lastAction=null;
+  let browser, page, context, busy=false, closed=false, lastActivity=Date.now(), lastAction=null, activeFault=null;
   const receipts=new Map(), secrets=new Set(), cases=[], evidence=[], network=[];
   let state={version:1,run_id:runId,invocation_id:randomUUID(),dispatch_id:null,status:'starting',started_at:new Date().toISOString(),scope:null,source_path:null,source_sha256:null,origin:null,blocked_requests:0};
+  const dataLedger={version:1,run_id:runId,invocation_id:state.invocation_id,items:[]};
+  const saveData=()=>{writeJson(resolve(dir,dataLedgerPath),dataLedger);if(!evidence.includes(dataLedgerPath)) evidence.push(dataLedgerPath);};
   const scrub = text => {let v=String(text);for(const secret of secrets) if(secret) v=v.split(secret).join('[REDACTED]');return v;};
   const save=()=>writeJson(statePath(dir),state);
   const recordNetwork=(req,details)=>{
     const u=new URL(req.url());
-    const row={at:new Date().toISOString(),origin:u.origin,path_sha256:hash(u.pathname),method:req.method(),resource_type:req.resourceType(),...details};
+    const row={at:new Date().toISOString(),origin:u.origin,path_sha256:hash(u.pathname),method:req.method(),resource_type:req.resourceType(),simulation_context:!!state.simulation_context,...details};
     network.push(row);if(network.length>500) network.shift();
     writeJson(resolve(dir,'execution/browser-network.json'),{version:1,events:network});
   };
   const locator = t => t.by==='role'?page.getByRole(t.value,{name:t.name,exact:true}):t.by==='label'?page.getByLabel(t.value,{exact:true}):t.by==='placeholder'?page.getByPlaceholder(t.value,{exact:true}):t.by==='text'?page.getByText(t.value,{exact:true}):page.locator(t.value);
+  const recordIdentity=async record=>{
+    const identity=await record.evaluate(node=>({tag:node.tagName,attributes:Object.fromEntries(['id','data-id','data-key'].filter(name=>node.hasAttribute(name)).map(name=>[name,node.getAttribute(name)]))}));
+    return {sha256:hash(JSON.stringify(identity)),basis:Object.keys(identity.attributes).length?'marker_and_dom_attributes':'marker_only'};
+  };
   const safeUrl = () => {const u=new URL(page.url());u.search='';u.hash='';return u.href;};
   async function snapshot() {
     const structure=await page.evaluate(()=>{
@@ -322,6 +355,11 @@ async function worker(root,runId) {
     const observedPath=`execution/browser-evidence/${id}.observation.json`;
     writeJson(resolve(dir,observedPath),{condition:check.condition,observed:scrub(String(observed).slice(0,2000)),matched:passed,matched_at:matchedAt,timing,...captured});evidence.push(observedPath);
     const row={case_id:check.case_id,title:scrub(check.title),expected:scrub(check.expected),status:passed?'passed':'failed',actual_result:scrub(`${check.condition}: ${String(observed).slice(0,2000)}; ${passed?'matched':'did not match within timeout'}`),timing,evidence_paths:[recordPath,observedPath,...(captured.screenshot?[captured.screenshot]:[])]};
+    row.verification_scope={layer:'ui',proves:'Specified UI condition at the recorded observation time only',does_not_prove:['backend_acceptance','persistent_storage']};
+    row.evidence_mode=state.simulation_context?'simulation_affected':'real';
+    row.check_fingerprint=uiCheckFingerprint(check);
+    if(check.case_ref) row.case_ref=resolveCaseReference(check.case_ref,path=>readRunFile(dir,path));
+    if(check.recheck_of) row.recheck_of=check.recheck_of;
     cases.push(row);return {assertion:row,...captured};
   }
   async function perform(request) {
@@ -341,6 +379,36 @@ async function worker(root,runId) {
     assert(!closed,'Browser is closed');
     if(op.type==='assert') assert(!cases.some(c=>c.case_id===op.case_id),'Use a unique case_id for each actual assertion');
     if(op.assertion) assert(!cases.some(c=>c.case_id===op.assertion.case_id),'Use a unique case_id for each actual assertion');
+    if(op.type==='api_check') assert(!cases.some(c=>c.case_id===op.check.case_id),'Use a unique case_id for each actual assertion');
+    for(const check of [op.type==='assert'?op:null,op.assertion,op.response_check,op.check].filter(Boolean)) {
+      assertBrowserDesignCheck(dir,load(resolve(dir,'manifest.json')),check);
+      if(check.case_ref) {resolveCaseReference(check.case_ref,path=>readRunFile(dir,path));if(!evidence.includes(check.case_ref.source_path)) evidence.push(check.case_ref.source_path);}
+    }
+    if(op.recheck_of) {
+      const earlier=cases.find(row=>row.case_id===op.recheck_of);
+      assert(earlier?.verification_scope?.layer==='ui' && earlier.expected===scrub(op.expected),'Recheck must refer to an earlier UI assertion with the same expectation');
+      assert(!['simulated','simulation_affected'].includes(earlier.evidence_mode) && !state.simulation_context,'Simulation observations cannot become real rechecks; retain their original evidence');
+      assert(earlier.check_fingerprint===uiCheckFingerprint(op),'Recheck must preserve target and condition; changed checks are separate assertions');
+      assert(JSON.stringify(earlier.case_ref ?? null)===JSON.stringify(resolveCaseReference(op.case_ref,path=>readRunFile(dir,path))),'Recheck must keep its original case reference');
+    }
+    let dataRow=null;
+    if(op.data_effect) {
+      assert(scrub(JSON.stringify(op.data_effect))===JSON.stringify(op.data_effect),'Do not put known credentials in tracking metadata');
+      try {dataRow=ownedDataForEffect(dataLedger,op.data_effect);}
+      catch {return {status:'data_tracking_unavailable',operation_started:false,next_action:'preserve_record_report_residuals_continue_other_work_no_retry_or_unannotated_bypass'};}
+    }
+    if(op.response_check) {
+      assert(!cases.some(c=>c.case_id===op.response_check.case_id) && op.assertion?.case_id!==op.response_check.case_id,'Use a unique case_id for each actual assertion');
+      const check=op.response_check,source=readRunFile(dir,check.source_path).data.toString('utf8'),url=new URL(check.url);
+      assert(source.includes(check.quote),'Response check needs a verbatim supplied contract excerpt');
+      assert(url.origin===state.origin && (source.includes(url.href) || network.some(e=>e.origin===url.origin && e.path_sha256===hash(url.pathname) && e.method===check.method)), 'Response endpoint must be supplied or observed and same-origin; never guess endpoints');
+    }
+    for(const check of [op.type==='api_check'?op.check:null,op.fault].filter(Boolean)) {
+      const source=readRunFile(dir,check.source_path),url=new URL(check.url);
+      assert(source.data.toString('utf8').includes(check.quote),'Current source quote required for API or simulation scope');
+      assert(url.origin===state.origin && (source.data.toString('utf8').includes(url.href) || network.some(e=>e.origin===url.origin && e.path_sha256===hash(url.pathname) && e.method===check.method)),'Use a supplied or observed same-origin endpoint, never guessed');
+      if(!evidence.includes(check.source_path)) evidence.push(check.source_path);
+    }
     if(op.type==='fill' && op.secret) secrets.add(op.value);
     const recordPath=`execution/browser-evidence/${op.request_id}.json`;
     const started={request_id:op.request_id,operation:op.type,command_id:commandId,dispatch_id:dispatchId,status:'started',at:new Date().toISOString(),request_sha256:digest};
@@ -348,7 +416,7 @@ async function worker(root,runId) {
     writeFileSync(resolve(dir,recordPath),JSON.stringify(started),{flag:'wx'});
     // A started receipt is written before side effects; lost connections must not duplicate submissions.
     receipts.set(op.request_id,{digest,result:{status:'in_progress',request_id:op.request_id}});
-    let result, actionStarted=false, actionCompleted=false, phase=op.type, feedbackHandle=null, feedbackSetupError;
+    let result, actionStarted=false, actionCompleted=false, phase=op.type, feedbackHandle=null, feedbackSetupError, responseObserver, dataStarted=false, faultSession=null, faultProof=null;
     try {
       if(op.type==='start') {
         assert(!browser && state.status==='starting','Browser already started');
@@ -363,6 +431,7 @@ async function worker(root,runId) {
           const decision=browserRequestPolicy({url:req.url(),origin:state.origin,frameOrigin,resourceType:req.resourceType(),method:req.method()});
           recordNetwork(req,{event:'request',decision});
           if(decision.startsWith('blocked_')) {state.blocked_requests++;return route.abort('blockedbyclient');}
+          if(activeFault && await activeFault.intercept(route,page)) return;
           return route.continue();
         });
         context.on('requestfailed',req=>recordNetwork(req,{event:'failed',diagnostic:browserErrorDiagnostic(req.failure()?.errorText,'network')}));
@@ -372,32 +441,68 @@ async function worker(root,runId) {
         context.on('page',popup=>{if(popup!==page) popup.close().catch(()=>{});});
         await page.goto(target.href,{waitUntil:'domcontentloaded',timeout:25000});
         result={status:'ready',navigation_observation:await waitForBrowserContent(page),snapshot:await snapshot()};
+      } else if(op.type==='api_check') {
+        const check=op.check,detail=await runReadOnlyApiCheck(page,check),path=`execution/browser-evidence/${op.request_id}.api.json`;
+        writeJson(resolve(dir,path),{...detail,mode:'real_api',method:check.method,endpoint_sha256:hash(new URL(check.url).pathname),source_path:check.source_path,source_sha256:readRunFile(dir,check.source_path).sha256,observed_at:new Date().toISOString()});evidence.push(path);
+        const row={case_id:check.case_id,title:scrub(check.title),expected:scrub(check.expected),status:detail.status,evidence_mode:'real',failure_category:detail.status==='passed'?'none':'needs_review',actual_result:detail.reason ?? `HTTP matched=${detail.http_matched}; business value matched=${detail.business_matched ?? 'not_checked'}`,verification_scope:{layer:'api_contract',does_not_prove:['ui_behavior','persistent_storage','absence_of_side_effects']},evidence_paths:[recordPath,path]};
+        if(check.case_ref) row.case_ref=resolveCaseReference(check.case_ref,p=>readRunFile(dir,p));
+        cases.push(row);result={status:state.status,response_assertion:row};
+      } else if(op.type==='data_prepare') {
+        assert(page && state.status==='ready','Start the browser task before preparing a data marker');
+        const row=prepareOwnedData(dataLedger,op.key,op.request_id);saveData();
+        result={status:state.status,data:{key:row.key,marker:row.marker,status:row.status},next_action:'Use marker only in an appropriate non-sensitive test field; preparation creates no product data and grants no cleanup permission'};
       } else if(op.type==='snapshot') result={status:state.status,snapshot:await snapshot(),...await capture(op.request_id)};
       else if(op.type==='goto') {
         const target=validateExplorationTarget(op.url,op.source_path,readRunFile(dir,op.source_path).data.toString('utf8'));
         assert(target.origin===state.origin,'Cross-origin navigation needs a separate explicitly scoped task');
         lastAction=null;
-        await page.goto(target.href,{waitUntil:'domcontentloaded',timeout:25000});result={status:'ready',navigation_observation:await waitForBrowserContent(page),snapshot:await snapshot()};
+        await page.goto(target.href,{waitUntil:'domcontentloaded',timeout:25000});state.simulation_context=false;result={status:'ready',navigation_observation:await waitForBrowserContent(page),snapshot:await snapshot()};
       } else if(op.type==='pause') {
         assert(page && !closed,'No browser available for human interaction');
         Object.assign(state,{status:'waiting_human',question:scrub(op.question),human_kind:op.kind,waiting_at:new Date().toISOString(),waiting_command_id:commandId});
         result={status:'waiting_human',kind:op.kind,question:state.question,...await capture(op.request_id),next_action:'return_to_controller_preserve_browser'};
       } else if(op.type==='finish') {
-        const incomplete=['waiting_human','needs_inspection','starting'].includes(state.status) || !cases.length;
+        const cleanup=summarizeDataLedger(dataLedger);
+        let incomplete=['waiting_human','needs_inspection','starting'].includes(state.status) || !cases.length || cases.some(row=>row.status==='blocked');
+        const currentManifest=load(resolve(dir,'manifest.json'));
+        if(browserLifecycle(currentManifest)) incomplete ||= browserCoverage(dir,currentManifest,{cases}).untested_cases.length>0;
         await browser?.close();closed=true;state.status='closed';state.finished_at=new Date().toISOString();
         const summary={total:cases.length,...Object.fromEntries(['passed','failed','blocked','skipped'].map(s=>[s,cases.filter(c=>c.status===s).length]))};
-        const results={run_id:runId,invocation_id:state.invocation_id,started_at:state.started_at,finished_at:state.finished_at,status:incomplete?'partial':'completed',summary,cases};
+        const statistics=summarizeExecutionCounts(cases,{interactive:true,readSource:path=>readRunFile(dir,path)});
+        const results={run_id:runId,invocation_id:state.invocation_id,started_at:state.started_at,finished_at:state.finished_at,status:incomplete?'partial':'completed',summary,cases,statistics};
         writeJson(resolve(dir,'execution/test_results.json'),results);
         const paths=[...evidence,'execution/test_results.json',...(existsSync(resolve(dir,'execution/browser-network.json'))?['execution/browser-network.json']:[])];
-        const observation={...state,mode:'interactive_browser',command_id:commandId,summary:scrub(op.summary),limitations:[...op.limitations.map(scrub),...(state.capture_warnings?[`Screenshots unavailable for ${state.capture_warnings} operations; use retained structured observations.`]:[]),'Application-initiated HTTP APIs supported; new cross-origin documents, popups, downloads and WebSockets are not supported.'],partial:incomplete,evidence:paths.map(p=>({path:p,sha256:readRunFile(dir,p).sha256}))};
+        const manifest=load(resolve(dir,'manifest.json'));
+        if(browserLifecycle(manifest)) {
+          writeJson(resolve(dir,'execution/browser-coverage.json'),browserCoverage(dir,manifest,results));
+          paths.push('execution/browser-coverage.json');
+        }
+        const observation={...state,mode:'interactive_browser',command_id:commandId,summary:scrub(op.summary),cleanup,limitations:[...op.limitations.map(scrub),...(cleanup.possible_residuals?[`Tracked test data may remain: ${cleanup.possible_residuals}. See ${dataLedgerPath}; do not repeat uncertain cleanup.`]:[]),...(state.capture_warnings?[`Screenshots unavailable for ${state.capture_warnings} operations; use retained structured observations.`]:[]),'Application-initiated HTTP APIs supported; new cross-origin documents, popups, downloads and WebSockets are not supported.'],partial:incomplete,evidence:paths.map(p=>({path:p,sha256:readRunFile(dir,p).sha256}))};
         writeJson(resolve(dir,'execution/exploration.json'),observation);
-        result={status:'closed',partial:incomplete,summary,artifacts:['execution/exploration.json','execution/test_results.json'],exploration_sha256:readRunFile(dir,'execution/exploration.json').sha256};
+        result={status:'closed',partial:incomplete,summary,statistics,cleanup,artifacts:['execution/exploration.json','execution/test_results.json',...(dataLedger.items.length?[dataLedgerPath]:[])],exploration_sha256:readRunFile(dir,'execution/exploration.json').sha256};
       } else {
         const target=locator(op.target);
         if(op.type==='assert') {
           result={status:state.status,...await recordAssertion(op,op.request_id,recordPath)};
         } else {
+          for(const [index,check] of (op.preconditions ?? []).entries()) {
+            try {await expectResult(check,1500);}
+            catch {throw new Error(`Precondition not satisfied: ${index}`);}
+          }
           assert(await target.count()===1,'Target not uniquely visible; inspect snapshot and correct locator without asking the user');
+          if(dataRow) {
+            const record=locator(op.data_effect.record_target);
+            if(op.data_effect.kind==='create') {
+              assert(await record.count()===0,'Data identity already exists; never adopt or overwrite it');
+              assert(op.preconditions?.some(c=>c.condition==='value' && c.value===dataRow.marker),'Check the prepared marker in the actual creation input before submitting');
+            } else {
+              assert(await record.count()===1 && await record.isVisible() && (await record.innerText()).includes(dataRow.marker),'Cleanup identity is missing, ambiguous or changed; preserve data');
+              assert(dataRow.identity?.sha256===(await recordIdentity(record)).sha256,'Record DOM identity changed; preserve data instead of guessing ownership');
+              const handle=await target.elementHandle();
+              try {assert(handle && await record.evaluate((node,control)=>node!==control && !['HTML','BODY'].includes(node.tagName) && node.contains(control),handle),'Cleanup control must be inside the recorded single-record container');}
+              finally {await handle?.dispose();}
+            }
+          }
           if(op.assertion) {
             let alreadyMatched=false;
             try { await expectResult(op.assertion,1);alreadyMatched=true; }
@@ -413,6 +518,9 @@ async function worker(root,runId) {
             try {feedbackHandle=await beginDynamicFeedback(page);}
             catch(error) {feedbackSetupError=browserErrorDiagnostic(error,'dynamic_feedback_setup');}
           }
+          if(op.response_check) responseObserver=observeBusinessResponse(page,op.response_check);
+          if(op.fault) {faultSession=createOneShotFault(op.fault);activeFault=faultSession;state.simulation_context=true;}
+          if(dataRow) {beginDataEffect(dataRow,op.data_effect,op.request_id);saveData();dataStarted=true;}
           actionStarted=!unchanged;
           if(op.type==='fill') await target.fill(op.value);
           if(op.type==='click') await target.click();
@@ -430,6 +538,42 @@ async function worker(root,runId) {
       const diagnostic={...browserErrorDiagnostic(error,phase),page_closed:page?.isClosed() ?? null,browser_connected:browser?.isConnected() ?? null};
       if(diagnostic.category==='browser_unavailable') state.status='needs_inspection';
       result={status:state.status==='needs_inspection'?'needs_inspection':actionCompleted?'observation_unavailable':'correctable_error',action_completed:actionCompleted,diagnostic,...browserRecoveryHint(diagnostic.category),...(state.status==='needs_inspection'?{next_action:'inspect_result_no_automatic_mutation_retry'}:{})};
+      if(String(error.message).startsWith('Precondition not satisfied:')) result={...result,status:'precondition_not_met',operation_started:false,next_action:'inspect_and_prepare_required_state_no_product_failure',precondition_index:Number(error.message.split(':')[1])};
+    } finally {
+      if(faultSession) {try {faultProof=await faultSession.finish(actionCompleted);} finally {activeFault=null;}}
+    }
+    if(op.fault) {
+      const path=`execution/browser-evidence/${op.request_id}.fault.json`;
+      const proof=faultProof ?? {mode:op.fault.mode,matched_requests:0,applied:false,disabled:true};
+      writeJson(resolve(dir,path),{...proof,source_path:op.fault.source_path,source_sha256:readRunFile(dir,op.fault.source_path).sha256,endpoint_sha256:hash(new URL(op.fault.url).pathname)});evidence.push(path);
+      result.simulation={...proof,evidence_path:path};
+      if(result.assertion) {
+        result.assertion.evidence_mode='simulated';result.assertion.simulation=proof;result.assertion.evidence_paths.push(path);
+        result.assertion.failure_category='needs_review';
+        if(!proof.applied) {result.assertion.status='blocked';result.assertion.actual_result='Requested simulation was not confirmed; UI observation does not validate the fault scenario';}
+      }
+    }
+    if(dataStarted) {
+      let observed=false;
+      if(actionCompleted) try {
+        const record=locator(op.data_effect.record_target);
+        await expect(record).toHaveCount(op.data_effect.kind==='create'?1:0,{timeout:3000});
+        if(op.data_effect.kind==='create') {await expect(record).toBeVisible({timeout:1000});await expect(record).toContainText(dataRow.marker,{timeout:1000});dataRow.identity=await recordIdentity(record);}
+        observed=true;
+      } catch { /* Preserve uncertain writes and cleanup; never retry them to improve evidence. */ }
+      result.test_data={...completeDataEffect(dataRow,op.data_effect,observed),...(!observed?{next_action:'preserve_record_report_uncertainty_continue_other_work_no_retry'}:{})};saveData();
+    }
+    if(responseObserver) {
+      if(actionCompleted) {
+        const detail=await responseObserver.finish(),check=op.response_check;
+        const path=`execution/browser-evidence/${op.request_id}.response.json`;
+        const proof={...detail,layer:'api_contract',observed_at:new Date().toISOString(),endpoint_sha256:hash(new URL(check.url).pathname),source_path:check.source_path,source_sha256:readRunFile(dir,check.source_path).sha256,
+          interpretation:'Matching response during this action window, not causal proof or persistent-storage verification. No raw body, headers or business values retained.'};
+        writeJson(resolve(dir,path),proof);evidence.push(path);if(!evidence.includes(check.source_path)) evidence.push(check.source_path);
+        const row={case_id:check.case_id,title:scrub(check.title),expected:scrub(check.expected),status:detail.status,evidence_mode:'real',failure_category:detail.status==='passed'?'none':'needs_review',actual_result:detail.reason ?? `HTTP matched=${detail.http_matched}; business value matched=${detail.business_matched}`,verification_scope:{layer:'api_contract',does_not_prove:['persistent_storage','absence_of_side_effects']},evidence_paths:[recordPath,path]};
+        if(check.case_ref) row.case_ref=resolveCaseReference(check.case_ref,path=>readRunFile(dir,path));
+        cases.push(row);result.response_assertion=row;
+      } else responseObserver.cancel();
     }
     if(feedbackHandle || feedbackSetupError) {
       const feedback=feedbackHandle?await endDynamicFeedback(feedbackHandle):{status:'unavailable',candidates:[],diagnostic:feedbackSetupError};

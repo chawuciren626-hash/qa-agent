@@ -125,6 +125,8 @@ export async function withControllerSession(root, id, operation, { diagnostic = 
     const category = failure && classifyRecoverable(caught, result, recoveryContext);
     if (category) {
       recovery = recordCorrection(state,category,recoveryContext,caught,result);
+      if(caught?.code==='attachment_import_required') recovery={...recovery,retry_allowed:false,next_action:'request_attachment_once',
+        user_message:'该目录尚未导入当前会话。请通过附件按钮上传本次所需文件；已有材料能完成的部分会继续处理。',scope:'same_unimported_source_only'};
     }
     if(!failure && recoveryContext?.key && state.correction_progress) delete state.correction_progress[recoveryContext.key];
     state.status = failure && !category ? 'stopped' : 'ready';

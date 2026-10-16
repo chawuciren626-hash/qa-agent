@@ -1,7 +1,8 @@
 import { isAbsolute, relative, resolve } from 'node:path';
+import { stageWriteRules, isControlledStageEvidence } from './stage-registry.mjs';
 
 export function childCommandPolicy(dispatchId, version = 3) {
-  if (version === 3) return `QA_COMMAND_POLICY_V3 ${dispatchId}: Deliver only the assigned stage. Use structured actions for validation and export. Safe input and draft errors have no fixed correction count. Follow recorded recovery: correct the cause, and on stalled=true change approach or return partial findings instead of repeating the same request unchanged. Never ask the user for technical unlocks. Preserve real evidence; unresolved errors cannot be presented as completed. Do not replay product operations with unknown outcomes, bypass credentials or expand scope. Never approve stages or edit manifest directly.`;
+  if (version === 3) return `QA_COMMAND_POLICY_V3 ${dispatchId}: 仅交付已分配阶段，校验和导出使用结构化动作。安全输入与草稿纠错不设固定次数；依据已记录的recovery修正原因，stalled=true时改变方法或返回已有结果和限制，不原样循环。不得要求用户技术解锁。保留真实证据，未解决的错误不得宣称完成。禁止重放结果未知的产品操作、绕过凭据或扩大范围，不自行批准阶段或直接编辑manifest。`;
   if (version === 2) return `QA_COMMAND_POLICY_V2 ${dispatchId}: Deliver stage results to the controller; it follows the saved review mode. Use structured actions as the only validators and exporters; do not run ad hoc node -e, npm validation scripts or direct project scripts. Inspect files with file tools. Correct safe input or draft artifact errors only when the recorded recovery.retry_allowed is true, with at most two corrections. Preserve failure evidence. Do not retry execution, unknown interruptions, credentials or scope changes. Return unresolved issues to the controller; never approve stages or alter manifest directly.`;
   return `QA_COMMAND_POLICY_V1 ${dispatchId}: On any command failure, input rejection, timeout, interruption or unknown result, stop and report the original evidence. Automatic retries=0. No downstream dispatch, installation, manifest edits or silent artifact repair. Resume only after controller review and a new authorized dispatch.`;
 }
@@ -89,19 +90,6 @@ function containedBy(parent, candidate) {
   return value==='' || (!value.startsWith('..') && !isAbsolute(value));
 }
 
-function stageWriteRules(stage) {
-  const exact={
-    analysis:['analysis/analysis-task.json'],
-    test_points:['design/test_points.json','design/test_points.xmind','design/test_points-task.json'],
-    test_cases:['design/test_cases.json','design/test_cases.xlsx','design/test_cases-task.json'],
-    execution:['environment/test-env.json'],
-    defects:['defects/defect-records.json','defects/defects-task.json','defects/bugs.md'],
-    report:['report/report-task.json','report/reportable-results.json','report/issues.json','report/test_report.md','report/test_report.html','report/test_report.docx','report/test_report.pdf','report/test_cases.xlsx']
-  };
-  const directories={analysis:['analysis/'],execution:['execution/'],defects:['defects/'],report:['report/']};
-  return {exact:exact[stage] ?? [],directories:directories[stage] ?? []};
-}
-
 function normalizeRunRelative(runDirectory, target, workspace) {
   const absolute=resolve(isAbsolute(target) ? target : resolve(workspace,target));
   if(!containedBy(runDirectory,absolute)) return null;
@@ -114,6 +102,7 @@ function assertStageWriteTarget(target,{stage,runDirectory,workspace,actionReque
   if(containedBy(actionRequestDirectory,absolute)) return;
   if(scratchpadDirectory && containedBy(scratchpadDirectory,absolute)) return;
   const path=normalizeRunRelative(runDirectory,absolute,workspace);
+  if(path && isControlledStageEvidence(stage,path)) throw new Error(`Child write bypassed controlled execution evidence: ${target}`);
   const rules=stageWriteRules(stage);
   if(path && (rules.exact.includes(path) || rules.directories.some(directory=>path.startsWith(directory)))) return;
   throw new Error(`Child write bypassed ${stage} stage ownership: ${target}`);
@@ -121,7 +110,7 @@ function assertStageWriteTarget(target,{stage,runDirectory,workspace,actionReque
 
 function patchTargets(args) {
   const patch=String(args?.patch ?? args?.input ?? args ?? '');
-  const paths=[...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/gm)].map(match=>match[1]);
+  const paths=[...patch.matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to):\s*(.+?)\s*$/gm)].map(match=>match[1]);
   if(!paths.length) throw new Error('Child apply_patch targets unreadable');
   return paths;
 }
@@ -129,12 +118,42 @@ function patchTargets(args) {
 function assertStageWrites(rows,options) {
   if(!options.stageWriteBoundary) return;
   const boundary=options.stageWriteBoundary;
-  for(const row of rows) {
+  for(const [index,row] of rows.entries()) {
     if(row.payload?.type!=='tool_call' || !['write_file','edit_file','apply_patch'].includes(row.payload.name)) continue;
+    if(options.allowRecovery && writeWasNotExecuted(rows,index)) continue;
     const args=parseToolArguments(row);
     const targets=row.payload.name==='apply_patch' ? patchTargets(args) : [args?.file_path];
     targets.forEach(target=>assertStageWriteTarget(target,boundary));
   }
+}
+
+function writeWasNotExecuted(rows,index) {
+  const call=rows[index].payload;
+  const matches=rows.filter(row=>row.payload?.type==='tool_call' && row.payload.tool_call_id===call.tool_call_id);
+  if(!call.tool_call_id || matches.length!==1) return false;
+  const following=rows.slice(index+1);
+  const outputs=following.filter(row=>row.payload?.type==='tool_call_output' && row.payload.tool_call_id===call.tool_call_id);
+  if(outputs.length===1) {
+    const output=outputs[0];
+    const decisions=rows.slice(index+1,rows.indexOf(output)).filter(row=>row.type==='event_msg' && row.payload?.type==='approval_decision' && row.payload.tool_call_id===call.tool_call_id);
+    return output.payload.stop_reason==='aborted' &&
+      String(output.payload.output).startsWith('Tool call denied by the qa-stage-boundary hook: QA stage boundary:') &&
+      decisions.length===1 && decisions[0].payload.decision==='deny';
+  }
+  if(outputs.length) return false;
+  // The host rejects malformed streamed arguments before tool dispatch. Missing
+  // output alone is NOT proof: require the exact native parsing failure event.
+  try { parseToolArguments(rows[index]); return false; } catch {}
+  const end=following.findIndex(row=>['request_begin','request_end'].includes(row.payload?.type));
+  if(end<0) return false;
+  const segment=following.slice(0,end+1);
+  if(segment.some(row=>row.payload?.type==='hook' ||
+    (row.payload?.type==='approval_decision' && row.payload.tool_call_id===call.tool_call_id))) return false;
+  const terminal=segment.at(-1);
+  return terminal.type==='event_msg' && terminal.payload.type==='request_end' &&
+    terminal.payload.status==='retryable' && terminal.payload.error_code==='malformed' &&
+    String(terminal.payload.error_message).startsWith('Invalid streamed tool call arguments from ') &&
+    String(terminal.payload.error_message).includes(`for tool "${call.name}" (tool_call_id="${call.tool_call_id}",`);
 }
 
 function inspectedPath(command) {
@@ -192,7 +211,7 @@ function terminalCommandOutput(rows, index, initial) {
 
 // Only inspect structured tool calls/results, never model reasoning or prose claims.
 export function assertChildCommands(rows, { allowRecovery = false, allowUnresolvedRecovery = false, requireControlledCommands = false, verifyRecovery = () => false, stageWriteBoundary = null } = {}) {
-  assertStageWrites(rows,{stageWriteBoundary});
+  assertStageWrites(rows,{stageWriteBoundary,allowRecovery});
   const pending = new Set();
   const pendingReads = new Map();
   let pendingInspection = null;

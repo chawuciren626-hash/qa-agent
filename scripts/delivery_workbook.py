@@ -35,12 +35,27 @@ def case_rows(cases, results=None, issues=None):
         state = STATUS.get(result.get('status'), '待确认') if result else '未执行'
         if result:
             outcome = plain(result.get('actual_result') or result.get('error_message') or result.get('reason'))
-            if not outcome: outcome = '本批次断言通过；详细观察见证据。' if state == '通过' else '本批次未提供实际结果说明。'
+            if not outcome: outcome = '来源未提供实际结果说明；状态仅按记录展示。'
+            source = result.get('report_source', {})
+            tags = []
+            if source.get('kind') == 'imported': tags.append('导入记录，非本智能体实测')
+            elif source.get('kind') == 'unresolved': tags.append('来源未唯一确认')
+            if source.get('fixture') is True or result.get('fixture') is True: tags.append('合成样例，非产品执行')
+            if source.get('retained_text_fields'): tags.append('部分文字经转写，非来源原文')
+            mode = result.get('evidence_mode')
+            if mode == 'simulated':
+                tags.append('模拟场景，不代表真实后端结果')
+                state += '（模拟）'
+            elif mode == 'simulation_affected':
+                tags.append('受模拟影响')
+                state += '（受模拟影响）'
+            elif mode != 'real': tags.append('证据模式未记录')
+            if tags: outcome = '；'.join(tags) + '\n' + outcome
         else: outcome = '本次未执行该用例。' if results is not None else '尚未执行。'
         refs = (result or {}).get('evidence_paths') or (result or {}).get('evidence_refs') or (result or {}).get('evidence') or []
         rows.append([case['case_id'], case.get('execution_metadata', {}).get('module', case.get('module', '未分组')),
                      case.get('priority', ''), case.get('title', ''), plain(case.get('preconditions', [])), steps,
-                     case.get('expected', ''), outcome, state,
+                     plain(case.get('expected', (result or {}).get('expected', ''))), outcome, state,
                      '\n'.join(i.get('defect_id', i.get('bug_id', '')) for i in related), plain(refs)])
     return rows
 
@@ -51,6 +66,19 @@ def issue_rows(issues):
              plain(i.get('expected_result', i.get('expected', ''))), plain(i.get('actual_result', i.get('actual', ''))),
              plain(i.get('impact', '')), plain(i.get('suggestion', i.get('recommendation', i.get('analysis', '')))), plain(i.get('evidence_refs', []))]
             for i in issues]
+
+
+def expectation_basis_rows(cases):
+    labels = {'requirement': '需求', 'contract': '接口/业务约定', 'ui_explicit': '界面明确约束',
+              'engineering_assumption': '工程假设', 'needs_confirmation': '待确认'}
+    rows = []
+    for case in cases:
+        for entry in case.get('expected_basis', []):
+            rows.append([case['case_id'], '验收预期', entry['expected'], labels.get(entry['kind'], '未知'),
+                         entry['source_path'], entry['quote'], '引用可核对，不代表语义已自动验证'])
+        for entry in case.get('observations', []):
+            rows.append([case['case_id'], '观察/建议（非验收断言）', entry['statement'], labels.get(entry['kind'], '未知'), '', '', entry['reason']])
+    return rows
 
 
 def column(index):
@@ -68,6 +96,10 @@ def xml(element):
 def write_workbook(path, title, subtitle, cases, issues=None, results=None):
     sheets = [('测试用例', TEMPLATE['case_headers'], TEMPLATE['case_widths'], case_rows(cases, results, issues)),
               ('问题清单', TEMPLATE['issue_headers'], TEMPLATE['issue_widths'], issue_rows(issues or []))]
+    basis_rows = expectation_basis_rows(cases)
+    if basis_rows:
+        sheets.append(('预期依据', ['用例编号', '用途', '预期或观察', '依据类型', '来源文件', '原文摘录', '说明'],
+                       [20, 28, 52, 22, 36, 60, 52], basis_rows))
     q = lambda name: f'{{{NS}}}{name}'
     files = {}
     workbook = ET.Element(q('workbook'))
@@ -99,13 +131,14 @@ def write_workbook(path, title, subtitle, cases, issues=None, results=None):
                 if r > 5 and name == '测试用例' and c == 9: style = {'通过': 5, '失败': 6, '待确认': 7, '受阻': 7, '未执行': 8}.get(value, style)
                 cell = ET.SubElement(row, q('c'), r=f'{column(c)}{r}', t='inlineStr', s=str(style))
                 ET.SubElement(ET.SubElement(cell, q('is')), q('t'), attrib={'{http://www.w3.org/XML/1998/namespace}space': 'preserve'}).text = plain(value)
-        ET.SubElement(root, q('autoFilter'), ref=f'A5:K{max(5, len(rows))}')
+        last_column = column(len(headers))
+        ET.SubElement(root, q('autoFilter'), ref=f'A5:{last_column}{max(5, len(rows))}')
         merges = ET.SubElement(root, q('mergeCells'), count='3')
-        for r in (2, 3, 4): ET.SubElement(merges, q('mergeCell'), ref=f'A{r}:K{r}')
+        for r in (2, 3, 4): ET.SubElement(merges, q('mergeCell'), ref=f'A{r}:{last_column}{r}')
         ET.SubElement(root, q('pageMargins'), left='0.25', right='0.25', top='0.4', bottom='0.4', header='0.2', footer='0.2')
         ET.SubElement(root, q('pageSetup'), paperSize='8', orientation='landscape', fitToWidth='1', fitToHeight='0')
         files[f'xl/worksheets/sheet{index}.xml'] = xml(root)
-    ET.SubElement(relations, 'Relationship', Id='rId3', Type=REL + '/styles', Target='styles.xml')
+    ET.SubElement(relations, 'Relationship', Id=f'rId{len(sheets) + 1}', Type=REL + '/styles', Target='styles.xml')
     styles = ET.Element(q('styleSheet'))
     fonts = ET.SubElement(styles, q('fonts'), count='4')
     for size, color, bold in [(10, '24364B', False), (16, '16324F', True), (10, '66758A', False), (10, 'FFFFFF', True)]:
@@ -126,7 +159,7 @@ def write_workbook(path, title, subtitle, cases, issues=None, results=None):
     cell_styles = ET.SubElement(styles, q('cellStyles'), count='1'); ET.SubElement(cell_styles, q('cellStyle'), name='Normal', xfId='0', builtinId='0')
     content = ET.Element('Types', xmlns='http://schemas.openxmlformats.org/package/2006/content-types')
     for ext, typ in [('rels', 'application/vnd.openxmlformats-package.relationships+xml'), ('xml', 'application/xml')]: ET.SubElement(content, 'Default', Extension=ext, ContentType=typ)
-    for name, typ in [('workbook.xml', 'sheet.main'), ('styles.xml', 'styles'), ('worksheets/sheet1.xml', 'worksheet'), ('worksheets/sheet2.xml', 'worksheet')]: ET.SubElement(content, 'Override', PartName='/xl/' + name, ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.' + typ + '+xml')
+    for name, typ in [('workbook.xml', 'sheet.main'), ('styles.xml', 'styles'), *[(f'worksheets/sheet{i}.xml', 'worksheet') for i in range(1, len(sheets) + 1)]]: ET.SubElement(content, 'Override', PartName='/xl/' + name, ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.' + typ + '+xml')
     package_rel = ET.Element('Relationships', xmlns='http://schemas.openxmlformats.org/package/2006/relationships')
     ET.SubElement(package_rel, 'Relationship', Id='rId1', Type=REL + '/officeDocument', Target='xl/workbook.xml')
     files.update({'[Content_Types].xml': xml(content), '_rels/.rels': xml(package_rel), 'xl/workbook.xml': xml(workbook), 'xl/_rels/workbook.xml.rels': xml(relations), 'xl/styles.xml': xml(styles)})

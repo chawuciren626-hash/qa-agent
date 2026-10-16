@@ -1,14 +1,34 @@
 # 文档导航
 
-更新日期：2026-10-15。为避免旧计划误导，当前待办只在状态页维护，不从历史文档的“下一步”恢复任务。
+更新日期：2026-10-16。为避免旧计划误导，当前待办只在状态页维护，不从历史文档的“下一步”恢复任务。
 
 ## 当前入口
+
+- [产品技术介绍与工程架构](product-technical-overview.md)：产品定位、七角色与十一Skill、任务模式、执行工具、交付物及部署边界。
 
 - [工程说明](../README.md)：定位、能力与目录。
 - [当前状态与下一步](current-status-and-next-steps.md)：已验证、待验证和优化顺序。
 - [日常使用指南](user-guide.md)：面向测试使用者，不要求手工工程操作。
 
 ## 维护与技术参考
+
+- [全流程会话审查与计划](full-lifecycle-review-2026-10-16.md)：132分钟会话的重复设计、执行阻断及六项整改顺序。
+- [草稿交接与增量修订修复](draft-handoff-repair-2026-10-16.md)：第1项，统一产物契约、执行前拒绝分类、保留工作草稿与验证边界。
+- [任务输入与中文附件修复](task-input-context-repair-2026-10-16.md)：第2项，原话/附件自动归档、后续补充与跨任务隔离、中文Word输入。
+- [准备恢复与人工续接](execution-preparation-recovery-2026-10-16.md)：第3项前半段，准备失败分类、保留草稿恢复及原生人工续接；后续适配见下一篇。
+- [全流程浏览器执行与报告交接](browser-lifecycle-execution-2026-10-16.md)：第3项后半段，浏览器策略、设计覆盖、失败分类和Word/PDF交接。
+- [分批设计与资产复用](incremental-design-and-reuse-2026-10-16.md)：第4项，稳定ID批次保存、原字节导入、边界样本生成、原生句柄查询及无进展恢复反馈。
+- [中文任务与连续消息展示](chinese-conversation-delivery-2026-10-16.md)：第5项，中文派发与答复、标点思考过滤、消息拼接边界及安装验证。
+
+- [派发接口与交付回复修复](delegation-interface-repair.md)：目标角色必填、展示与等待元信息边界、真实复验及剩余展示/范围语义问题。
+
+- [总控工具调用根因修复](controller-tool-transport-repair.md)：CWD参数、请求先执行后写入、只读目录误拦截的代码修复与待安装验收边界。
+
+- [独立用例预期依据](expectation-basis.md)：实践融合第1项，预期逐项引文、假设分离、兼容旧用例与Excel依据表。
+- [业务成功证据与条件验证](business-verification.md)：实践融合第2项，可选前置条件、被动响应比较及页面/接口/回查证据边界。
+- [测试数据台账与安全清理](test-data-ledger.md)：实践融合第3项，本次标记数据的创建/清理观察、防重复操作及残留报告。
+- [用例、断言与重试统计](execution-counts.md)：实践融合第4项，可选用例关联、只读复查、框架重试和缺失历史的计数边界。
+- [受控接口验证与故障模拟](controlled-api-validation.md)：实践融合第5项，同源GET/HEAD、单次GET故障注入、撤销及模拟证据区分。
 
 - [派发内容绑定](delegation-content-binding.md)：二轮架构修复第1项，登记参数、完整合同和证据索引的启动前核验。
 - [清单写入锁安全恢复](manifest-lock-recovery.md)：二轮架构修复第2项，失效所有者核验、并发恢复认领与不重放产品操作的边界。
@@ -23,6 +43,12 @@
 - [模型参数测量与迁移](model-parameter-tuning.md)：第5项真实对照、保留默认决策，以及不绑定单一模型的测量和迁移规则。
 
 - [报告证据索引与执行事实](report-evidence-index.md)：独立报告的实际文件索引、确定性统计与时序附录，不增加用户审查。
+- [独立回归交付](regression-delivery.md)：初测与本轮的可选观察对照、原失败保留和未覆盖范围，不自动关闭缺陷。
+- [独立回归报告真实验收](regression-agent-acceptance-2026-10-16.md)：附件任务自主完成，字段保真、结构化对照接入与点击验证仍有缺口。
+- [报告结果字段保真修复](report-result-fidelity.md)：唯一来源恢复、导出来源与模拟标签、原稿审计，不新增用户节点。
+- [输入与交付体验修复](input-and-delivery-repair.md)：明确附件导入入口、CLI自纠提示、核验链接及简洁收尾，保留会话隔离。
+- [修复后真实复验](regression-recheck-2026-10-16.md)：模拟标签校验修正、第二轮自主交付及扩展名/来源关联等剩余问题，区分导航下载与真实点击。
+- [附件与结构化内容兼容](attachment-content-compatibility.md)：归档扩展名补齐、按内容识别JSON与BOM、保留源字节及不猜测别名。
 
 - [配置与同步](penguinharness-configuration.md)、[凭据安全](credential-security.md)：维护者职责与边界。
 - [会话工作空间](penguin-session-workspaces.md)、[目录上下文](directory-context.md)：工程、会话和数据分离。

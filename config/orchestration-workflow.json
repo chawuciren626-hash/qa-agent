@@ -10,11 +10,13 @@
     {
       "id": "test_points", "label": "测试点", "agent": "test_point_agent", "skills": ["test-point-design"], "depends_on": ["analysis"], "confirmation": "after",
       "lifecycle_artifacts": ["design/test_points.json", "design/test_points.xmind"],
+      "optional_artifacts": ["design/test_points.md"],
       "task_artifacts": ["design/test_points.json", "design/test_points.xmind"], "task_result": "design/test_points-task.json"
     },
     {
       "id": "test_cases", "label": "测试用例", "agent": "test_case_agent", "skills": ["test-case-writing"], "depends_on": ["test_points"], "confirmation": "after",
       "lifecycle_artifacts": ["design/test_cases.json", "design/test_cases.xlsx"],
+      "optional_artifacts": ["design/test_cases.md"],
       "task_artifacts": ["design/test_cases.json", "design/test_cases.xlsx"], "task_result": "design/test_cases-task.json"
     },
     {

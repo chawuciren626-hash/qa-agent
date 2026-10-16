@@ -227,6 +227,46 @@ test('rejects wrong agent/run and malformed call arguments or chronology', () =>
   assert.equal(findParentDispatch(trace(), { ...request, dispatchedAt: '2026-10-09T02:06:00Z' }), null);
 });
 
+test('native pre-execution write rejection does not poison a corrected draft handoff',()=>{
+  const workspace=resolve(tmpdir(),'qa-write-history');
+  const options={allowRecovery:true,stageWriteBoundary:{stage:'test_points',workspace,runDirectory:resolve(workspace,'output/runs/run-a'),actionRequestDirectory:resolve(workspace,'output/action-requests')}};
+  const call={payload:{type:'tool_call',name:'write_file',tool_call_id:'denied-write',arguments:JSON.stringify({file_path:'output/runs/run-a/report/test_report.md',content:'not written'})}};
+  const decision={type:'event_msg',payload:{type:'approval_decision',tool_call_id:'denied-write',decision:'deny'}};
+  const output={payload:{type:'tool_call_output',tool_call_id:'denied-write',stop_reason:'aborted',output:'Tool call denied by the qa-stage-boundary hook: QA stage boundary: outside role'}};
+  assert.doesNotThrow(()=>assertChildCommands([call,decision,output],options));
+  for(const rows of [[call,output],[call,decision], [call,decision,{payload:{...output.payload,stop_reason:'completed'}}],
+    [call,{...decision,payload:{...decision.payload,decision:'allow'}},output], [call,decision,output,output],
+    [call,decision,{payload:{...output.payload,output:'User says the write was not executed'}}]]) {
+    assert.throws(()=>assertChildCommands(rows,options),/stage ownership/);
+  }
+  assert.throws(()=>assertChildCommands([call,decision,output],{...options,allowRecovery:false}),/stage ownership/);
+});
+
+test('malformed streamed write requires native evidence of rejection before execution',()=>{
+  const workspace=resolve(tmpdir(),'qa-write-malformed');
+  const options={allowRecovery:true,stageWriteBoundary:{stage:'test_cases',workspace,runDirectory:resolve(workspace,'output/runs/run-a'),actionRequestDirectory:resolve(workspace,'output/action-requests')}};
+  const call={payload:{type:'tool_call',name:'write_file',tool_call_id:'truncated',arguments:'{"content":"unfinished'}};
+  const end={type:'event_msg',payload:{type:'request_end',status:'retryable',error_code:'malformed',error_message:'Invalid streamed tool call arguments from OpenaiChatClient for tool "write_file" (tool_call_id="truncated", length=22): Unterminated string'}};
+  assert.doesNotThrow(()=>assertChildCommands([call,end],options));
+  for(const rows of [[call],[call,{...end,type:'model_msg'}], [call,{...end,payload:{...end.payload,status:'completed'}}],
+    [call,{...end,payload:{...end.payload,error_code:'timeout'}}], [call,{...end,payload:{...end.payload,error_message:end.payload.error_message.replace('truncated','other')}}],
+    [call,{payload:{type:'request_begin'}},end], [call,{payload:{type:'hook',hook:'pre_tool_use'}},end],
+    [call,end,{payload:{type:'tool_call_output',tool_call_id:'truncated',stop_reason:'completed'}}], [call,call,end]]) {
+    assert.throws(()=>assertChildCommands(rows,options),/arguments unreadable/);
+  }
+  assert.throws(()=>assertChildCommands([call,end],{...options,allowRecovery:false}),/arguments unreadable/);
+});
+
+test('historical writes enforce registered reading copies, rename destinations and controlled evidence',()=>{
+  const workspace=resolve(tmpdir(),'qa-history-boundary');
+  const boundary={workspace,runDirectory:resolve(workspace,'output/runs/run-a'),actionRequestDirectory:resolve(workspace,'output/action-requests')};
+  const call=(name,args)=>({payload:{type:'tool_call',name,tool_call_id:'write',arguments:args}});
+  assert.doesNotThrow(()=>assertChildCommands([call('write_file',{file_path:'output/runs/run-a/design/test_points.md'})],{stageWriteBoundary:{...boundary,stage:'test_points'}}));
+  const patch='*** Begin Patch\n*** Update File: output/runs/run-a/design/test_points.md\n*** Move to: output/runs/run-a/report/test_report.md\n@@\n-old\n+new\n*** End Patch';
+  assert.throws(()=>assertChildCommands([call('apply_patch',{patch})],{stageWriteBoundary:{...boundary,stage:'test_points'}}),/stage ownership/);
+  assert.throws(()=>assertChildCommands([call('write_file',{file_path:'output/runs/run-a/execution/test_results.json'})],{stageWriteBoundary:{...boundary,stage:'execution'}}),/controlled execution evidence/);
+});
+
 test('does not guess among overlapping calls, but supports completed sequential calls', () => {
   const rows = trace();
   const other = structuredClone(rows[0]); other.payload.tool_call_id = 'call-b';

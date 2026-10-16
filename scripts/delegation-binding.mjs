@@ -45,7 +45,11 @@ export function verifyDelegationBinding(root, { session, runId, stage, dispatchI
   // Unbound historical work is not silently promoted to a new launch authorization.
   if (binding?.version !== 1 || !Array.isArray(binding.files)) throw new Error('Historical dispatch has no content binding; do not launch or recreate the task to bypass it');
   if (parameterHash(receipt.delegation) !== binding.parameters_sha256) throw new Error('Registered delegation receipt changed');
-  if (parameterHash(args) !== binding.parameters_sha256) throw new Error('Delegation arguments differ from registration. Read delegation_path and copy its JSON unchanged; do not redispatch or ask the user to unlock');
+  const {yield_time_ms:yieldTime,...authorityArgs}=args ?? {};
+  if(yieldTime!==undefined && (!Number.isFinite(yieldTime) || yieldTime<250 || yieldTime>600000)) throw new Error('Invalid delegation yield_time_ms; expected 250..600000 milliseconds');
+  parameterHash(authorityArgs); // No extra execution/model options are accepted.
+  // Display wording is not delegated authority. Keep the original receipt hash intact.
+  if (parameterHash({...authorityArgs,description:receipt.delegation.description}) !== binding.parameters_sha256) throw new Error('Delegation arguments differ from registration. Copy the registered agent_id and prompt unchanged; only the display description may be reworded. Do not redispatch or ask the user to unlock');
   const prefix = `output/delegations/${dispatchId}`;
   const allowed = new Set([`${prefix}.json`, `${prefix}.prompt.txt`, `${prefix}.evidence.json`]);
   const seen = new Set();

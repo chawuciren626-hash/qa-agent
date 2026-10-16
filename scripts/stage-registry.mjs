@@ -27,6 +27,8 @@ export function validateStageRegistry(raw) {
       if (!Array.isArray(stage[key]) || !stage[key].length || !unique(stage[key]) || !stage[key].every(path)) fail(`${stage.id}: ${key}`);
     }
     if (!path(stage.task_result) || stage.task_artifacts.includes(stage.task_result)) fail(`${stage.id}: task_result`);
+    if (stage.optional_artifacts !== undefined && (!Array.isArray(stage.optional_artifacts) ||
+        !unique(stage.optional_artifacts) || !stage.optional_artifacts.every(path))) fail(`${stage.id}: optional_artifacts`);
   }
   const visiting = new Set(), visited = new Set();
   function visit(id) {
@@ -50,6 +52,23 @@ export function stageDefinition(id) {
   const stage = stageDefinitions.find(stage => stage.id === id);
   if (!stage) throw new Error(`Unknown stage: ${id}`);
   return stage;
+}
+
+// Shared by the live write guard, historical handoff and draft revision snapshots.
+export function stageWriteRules(id) {
+  const stage = stageDefinition(id);
+  const directories = {analysis:['analysis/'], execution:['execution/'], defects:['defects/'], report:['report/']};
+  return {
+    exact: [...new Set([...stage.lifecycle_artifacts, ...stage.task_artifacts, stage.task_result,
+      ...(stage.optional_artifacts ?? []), ...(id === 'execution' ? ['environment/test-env.json'] : [])])],
+    directories: directories[id] ?? []
+  };
+}
+
+export function isControlledStageEvidence(stage, path) {
+  const value = path.toLowerCase();
+  return stage === 'execution' && (/^execution\/browser-/.test(value) ||
+    ['execution/test_results.json','execution/exploration.json','execution/exploration.lock'].includes(value));
 }
 export function dispatchTemplate(id, runId = 'run-example') {
   const stage = stageDefinition(id);

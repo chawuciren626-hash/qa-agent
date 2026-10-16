@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
@@ -49,17 +49,32 @@ test('private connection publication remains complete JSON during concurrent pol
   if(process.platform!=='win32') assert.equal(statSync(path).mode & 0o777,0o600);
 });
 
-async function fixture(url) {
+async function fixture(url,{lifecycle=false}={}) {
   const parent=`session-2026-10-13-00-00-00-${randomUUID().replaceAll('-','')}`;
   const agentRoot=resolve(root,'output/acceptance',randomUUID()), traces=resolve(agentRoot,'test_agent/traces/2026-10-13');mkdirSync(traces,{recursive:true});
   const parentFile=resolve(traces,`${parent}_001.jsonl`);
   writeFileSync(parentFile,JSON.stringify({type:'session_meta',payload:{session_id:parent,agent_state:resolve(agentRoot,'test_agent/agent_state'),workspace:root}}));
+  const sourceText=`请对 ${url} 执行全流程测试，登录时由我处理。仅使用本地合成页面。`;
+  if(lifecycle) writeFileSync(parentFile,readFileSync(parentFile,'utf8')+'\n'+JSON.stringify({type:'model_msg',timestamp:new Date().toISOString(),payload:{type:'text',role:'user',text:sourceText}}));
   const call=r=>executeAction(root,parent,()=>JSON.stringify(r),{agentRoot});
   const created=await call({action:'create_run'});assert.equal(created.exit_code,0);
   const id=created.run_id,dir=resolve(root,'output/runs',id),send=r=>call({run_id:id,...r});
   assert.equal((await send({action:'archive_input',name:'request.txt',text:`${url} Please test adding a synthetic record in this engineering fixture.`})).exit_code,0);
   assert.equal((await send({action:'plan_run',stages:['execution']})).exit_code,0);
-  const dispatch=()=>send({action:'dispatch',stage:'execution',agent:'automation_execution_agent',skills:['playwright-execution']});
+  if(lifecycle) {
+    // Synthetic sealed design isolates the execution adapter; this is not a real Agent design run.
+    const path=resolve(dir,'manifest.json'),m=JSON.parse(readFileSync(path));
+    writeJson(resolve(dir,'design/test_cases.json'),[{case_id:'TC-1',title:'Observed case',expected:'Visible fixture',steps:['Inspect heading'],preconditions:[],priority:'P1'},{case_id:'TC-2',title:'Unexecuted case',expected:'Not tested',steps:['Not run'],preconditions:[],priority:'P2'}]);
+    const hash=createHash('sha256').update(readFileSync(resolve(dir,'design/test_cases.json'))).digest('hex');
+    m.orchestration.plan.workflow_mode='lifecycle';
+    const execution=m.orchestration.plan.stages.find(s=>s.id==='execution');execution.depends_on=['test_cases'];execution.confirmation='before';
+    const design=m.orchestration.plan.stages.find(s=>s.id==='test_cases');Object.assign(design,{selected:true,depends_on:[],confirmation:'none'});m.stages.test_cases.status='completed';
+    m.orchestration.events.push({type:'completed',stage:'test_cases',evidence:{artifact_contract:{version:1,run_id:id,stage:'test_cases',status:'passed',files:[{path:'design/test_cases.json',sha256:hash}]}}});
+    writeJson(path,m);
+    const denied=await send({action:'dispatch',stage:'execution',agent:'automation_execution_agent',skills:['playwright-execution'],mode:'browser'});
+    assert.equal(denied.status,'rejected','Native authorization cannot be omitted');
+  }
+  const dispatch=()=>send({action:'dispatch',stage:'execution',agent:'automation_execution_agent',skills:['playwright-execution'],...(lifecycle?{mode:'browser',source_text:sourceText}:{})});
   const dispatched=await dispatch();assert.equal(dispatched.exit_code,0,JSON.stringify(dispatched));
   const browser=async operation=>{
     const result=await send({action:'browser_task',operation});assert.equal(result.exit_code,0,JSON.stringify(result));return result.data;
@@ -72,9 +87,9 @@ async function fixture(url) {
       {timestamp:at,type:'event_msg',payload:{type:'subagent',session_id:child}},
       {timestamp:at,type:'model_msg',payload:{type:'tool_call_output',tool_call_id:toolId,stop_reason:'completed',output:'Synthetic child returned'}}
     ]);
-    const childDir=resolve(agentRoot,'automation_execution_agent/traces/2026-10-13');mkdirSync(childDir,{recursive:true});
+    const childDir=resolve(agentRoot,delegation.agent_id,'traces/2026-10-13');mkdirSync(childDir,{recursive:true});
     writeFileSync(resolve(childDir,`${child}_001.jsonl`),[
-      {type:'session_meta',payload:{session_id:child,source:'subagent',agent_state:resolve(agentRoot,'automation_execution_agent/agent_state'),workspace:root}},
+      {type:'session_meta',payload:{session_id:child,source:'subagent',agent_state:resolve(agentRoot,delegation.agent_id,'agent_state'),workspace:root}},
       {type:'model_msg',payload:{type:'text',role:'user',text:delegation.prompt}},
       {type:'model_msg',payload:{type:'text',role:'assistant',text:'Synthetic browser task return'}},
       {type:'event_msg',payload:{type:'request_end',status:'completed'}}
@@ -82,6 +97,225 @@ async function fixture(url) {
   };
   return {id,dir,parent,agentRoot,send,browser,dispatched,append,returnChild};
 }
+
+test('lifecycle browser execution resumes human login and hands partial truthful results to defects and Word/PDF reports',async t=>{
+  const server=createServer((req,res)=>{res.setHeader('content-type','text/html');res.end('<h1>Lifecycle fixture</h1>');});
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url,{lifecycle:true});
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic local heading checks only',headless:true});
+  await f.browser({type:'pause',request_id:'login',kind:'access',question:'Synthetic login completed?'});
+  await f.returnChild(f.dispatched.delegation);
+  f.append([{timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',text:'已登录，继续'}}]);
+  const resumed=await f.send({action:'dispatch',stage:'execution',agent:'automation_execution_agent',skills:['playwright-execution'],mode:'resume_browser'});
+  assert.equal(resumed.exit_code,0,JSON.stringify(resumed));
+  assert.equal((await f.browser({type:'snapshot',request_id:'continue'})).status,'ready');
+  await f.browser({type:'assert',request_id:'passed',target:{by:'role',value:'heading'},condition:'text',value:'Lifecycle fixture',case_id:'CHECK-1',title:'Observed heading',expected:'Lifecycle fixture',case_ref:{source_path:'design/test_cases.json',case_id:'TC-1'}});
+  await f.browser({type:'assert',request_id:'failed',target:{by:'role',value:'heading'},condition:'text',value:'Intentionally wrong',case_id:'CHECK-2',title:'Synthetic failure',expected:'Intentionally wrong',case_ref:{source_path:'design/test_cases.json',case_id:'TC-1'}});
+  const finished=await f.browser({type:'finish',request_id:'finish',summary:'One mapped case, one untested',limitations:['Synthetic checks only']});
+  assert.equal(finished.partial,true);
+  const task=(stage,source_paths)=>({run_id:f.id,stage,outcome:'partial',summary:'Synthetic lifecycle delivery',questions:[],limitations:['Not all designed cases were tested'],source_paths});
+  writeJson(resolve(f.dir,'execution/execution-task.json'),task('execution',['inputs/request.txt','design/test_cases.json']));
+  await f.returnChild(resumed.delegation);
+  const handed=await f.send(resumed.handoff_template);assert.equal(handed.exit_code,0,JSON.stringify(handed));
+  assert.equal(handed.data.stage_status,'completed');
+  assert.equal(existsSync(resolve(f.dir,'execution/execution-plan.json')),false);
+  assert.equal(existsSync(resolve(f.dir,'environment/test-env.json')),false);
+  const extended=await f.send({action:'extend_plan',stages:['defects','report'],reason:'Complete originally requested lifecycle'});assert.equal(extended.exit_code,0,JSON.stringify(extended));
+  const defects=await f.send(extended.dispatch_templates.find(r=>r.stage==='defects'));assert.equal(defects.exit_code,0,JSON.stringify(defects));
+  const actual=JSON.parse(readFileSync(resolve(f.dir,'execution/test_results.json'))),failure=actual.cases.find(r=>r.status==='failed');
+  const records=[{defect_id:'BUG-1',title:'Synthetic assertion failure',category:'needs_review',related_cases:[failure.case_id],evidence_refs:failure.evidence_paths}];
+  writeJson(resolve(f.dir,'defects/defect-records.json'),records);
+  writeFileSync(resolve(f.dir,'defects/bugs.md'),'# Synthetic failure classification\nNeeds review; not a confirmed product bug.');
+  const defectTaskPath=JSON.parse(readFileSync(resolve(root,'config/orchestration-workflow.json'))).stages.find(s=>s.id==='defects').task_result;
+  writeJson(resolve(f.dir,defectTaskPath),task('defects',['execution/test_results.json']));
+  await f.returnChild(defects.delegation);
+  assert.equal((await f.send(defects.handoff_template)).exit_code,0);
+  const report=await f.send(extended.dispatch_templates.find(r=>r.stage==='report'));assert.equal(report.exit_code,0,JSON.stringify(report));
+  const rows=actual.cases;
+  writeJson(resolve(f.dir,'report/reportable-results.json'),{run_id:f.id,cases:rows,summary:{total:rows.length,...Object.fromEntries(['passed','failed','blocked','skipped'].map(s=>[s,rows.filter(r=>r.status===s).length]))}});
+  writeJson(resolve(f.dir,'report/issues.json'),records);
+  writeFileSync(resolve(f.dir,'report/test_report.md'),'# Synthetic lifecycle report\nOne passing assertion, one failing assertion; TC-2 was not tested. Linked assertions do not prove completion of all case steps.');
+  writeJson(resolve(f.dir,'report/report-task.json'),task('report',['execution/test_results.json','execution/browser-coverage.json','defects/defect-records.json']));
+  const exported=await f.send({action:'export_report'});assert.equal(exported.exit_code,0,JSON.stringify(exported));
+  await f.returnChild(report.delegation);
+  const delivered=await f.send(report.handoff_template);assert.equal(delivered.exit_code,0,JSON.stringify(delivered));
+  for(const path of ['report/test_report.docx','report/test_report.pdf']) assert.ok(statSync(resolve(f.dir,path)).size>100);
+  assert.equal(existsSync(resolve(f.dir,'execution/execution-state.json')),false,'Browser evidence is not fabricated as a script invocation');
+  const forged=JSON.parse(readFileSync(resolve(f.dir,'report/reportable-results.json')));assert.equal(forged.summary.total,2);assert.equal(forged.design_coverage.untested_cases[0].case_id,'TC-2');delete forged.design_coverage;writeJson(resolve(f.dir,'report/reportable-results.json'),forged);
+  assert.match(inspectIndependentArtifacts(root,f.id,'report').errors.join(' '),/coverage/);
+});
+
+test('preconditions prevent writes; business response checks distinguish HTTP success, delayed persistence and missing evidence',async t=>{
+  let writes=0,stored='';
+  const server=createServer(async(req,res)=>{
+    if(req.url==='/save') {
+      writes++;const payload=JSON.stringify(writes===1?{code:400,token:'DO_NOT_EXPORT_SECRET'}:writes===2?{code:0}:{});
+      if(writes===2) stored='Saved record';
+      await pause(150);res.writeHead(200,{'content-type':'application/json','content-length':Buffer.byteLength(payload)});res.end(payload);return;
+    }
+    res.setHeader('content-type','text/html');res.end(`<!doctype html><input id="title" value="ready"><button id="save">Save</button><p id="toast" hidden></p><p id="stored">${stored}</p><script>document.querySelector('#save').onclick=()=>{fetch('/save',{method:'POST'});let e=document.querySelector('#toast');e.hidden=false;e.textContent='UI accepted';}</script>`);
+  });
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  const quote='HTTP 200 and code 0 mean accepted; saved records appear after reload.';
+  assert.equal((await f.send({action:'archive_input',name:'contract.txt',text:`${url}save ${quote}`})).exit_code,0);
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic response checks',headless:true});
+  const target={by:'css',value:'#save'},field={by:'css',value:'#title'};
+  const response_check={url:`${url}save`,method:'POST',http_status:200,field:'code',equals:0,source_path:'inputs/contract.txt',quote,case_id:'API1',title:'API contract',expected:'Code 0'};
+  const missing=await f.browser({type:'click',request_id:'precondition',target,preconditions:[{target:field,condition:'value',value:''}],response_check});
+  assert.equal(missing.status,'precondition_not_met');assert.equal(writes,0);assert.equal(missing.operation_started,false);
+  const op={type:'click',request_id:'rejected',target,preconditions:[{target:field,condition:'value',value:'ready'}],response_check,
+    assertion:{target:{by:'css',value:'#toast'},condition:'text',value:'UI accepted',case_id:'UI1',title:'UI feedback',expected:'UI accepted'}};
+  const failed=await f.browser(op);assert.equal(failed.assertion.status,'passed');assert.equal(failed.response_assertion.status,'failed');assert.equal(writes,1);
+  assert.equal(failed.assertion.verification_scope.layer,'ui');
+  assert.deepEqual(await f.browser(op),failed);assert.equal(writes,1);
+  const passed=await f.browser({type:'click',request_id:'accepted',target,response_check:{...response_check,case_id:'API2'}});
+  assert.equal(passed.response_assertion.status,'passed');assert.equal(writes,2);
+  await f.browser({type:'goto',request_id:'reload',url,source_path:'inputs/request.txt'});
+  const persisted=await f.browser({type:'assert',request_id:'stored',target:{by:'css',value:'#stored'},condition:'text',value:'Saved record',case_id:'RELOAD1',title:'Reloaded view',expected:'Saved record'});
+  assert.equal(persisted.assertion.status,'passed');assert.equal(writes,2);
+  const absent=await f.browser({type:'click',request_id:'missing-code',target,response_check:{...response_check,case_id:'API3'}});
+  assert.equal(absent.response_assertion.status,'blocked');assert.equal(writes,3);
+  const finished=await f.browser({type:'finish',request_id:'finish',summary:'Separate UI, API and reloaded-view evidence',limitations:['One response missing code']});
+  assert.equal(finished.partial,true);assert.deepEqual(finished.summary,{total:5,passed:3,failed:1,blocked:1,skipped:0});
+  writeFileSync(resolve(f.dir,'execution/execution-task.json'),JSON.stringify({run_id:f.id,stage:'execution',outcome:'partial',summary:'Synthetic response checks',source_paths:['inputs/request.txt'],questions:[],limitations:['Missing response field']}));
+  assert.equal(inspectIndependentArtifacts(root,f.id,'execution').status,'passed');
+  for(const name of ['rejected.response.json','accepted.response.json','missing-code.response.json']) assert.ok(!readFileSync(resolve(f.dir,'execution/browser-evidence',name),'utf8').includes('DO_NOT_EXPORT_SECRET'));
+});
+
+test('owned data cleanup preserves pre-existing records, refuses unrelated controls and never replays uncertainty',async t=>{
+  let writes=0,deletes=0;
+  const server=createServer((req,res)=>{
+    if(req.url==='/created') {writes++;res.end('ok');return;}
+    if(req.url==='/deleted') {deletes++;res.end('ok');return;}
+    res.setHeader('content-type','text/html');
+    res.end(`<!doctype html><input id="title"><button id="add">Add</button><button id="unrelated">Delete all</button><button id="identity">Change identity</button><ul id="records"><li id="original">Existing user record</li></ul><script>
+      let count=0;
+      document.querySelector('#identity').onclick=()=>{let li=document.querySelector('#records').lastElementChild;li.dataset.id=li.dataset.id==='changed'?String(count):'changed';};
+      document.querySelector('#unrelated').onclick=()=>fetch('/deleted',{method:'POST'});
+      document.querySelector('#add').onclick=()=>{
+        count++;let marker=document.querySelector('#title').value,li=document.createElement('li');li.dataset.id=String(count);li.dataset.marker=marker;li.append(document.createTextNode(marker));
+        let button=document.createElement('button');button.textContent='Remove';const removable=count===1;
+        button.onclick=()=>{fetch('/deleted',{method:'POST'});if(removable)li.remove();};li.append(button);document.querySelector('#records').append(li);fetch('/created',{method:'POST'});
+      };</script>`);
+  });
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  await f.send({action:'archive_input',name:'cleanup-scope.txt',text:'Synthetic test scope includes creating and removing only records created in this task. Preserve existing records.'});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic create and cleanup checks',headless:true});
+  const input={by:'css',value:'#title'};
+  for(const key of ['one','two']) {
+    const prepared=await f.browser({type:'data_prepare',request_id:`prepare-${key}`,key});
+    const marker=prepared.data.marker,record_target={by:'css',value:`li[data-marker="${marker}"]`};
+    await f.browser({type:'fill',request_id:`fill-${key}`,target:input,value:marker});
+    if(key==='one') {
+      const absent=await f.browser({type:'click',request_id:'unowned',target:{by:'css',value:'#unrelated'},data_effect:{kind:'cleanup',key:'foreign',record_target:{by:'css',value:'#original'}}});
+      assert.equal(absent.status,'data_tracking_unavailable');assert.equal(deletes,0);
+      const unprepared=await f.browser({type:'click',request_id:'without-input-check',target:{by:'css',value:'#add'},data_effect:{kind:'create',key,record_target}});
+      assert.equal(unprepared.status,'correctable_error');assert.equal(writes,0);
+      const collision=await f.browser({type:'click',request_id:'existing-record',target:{by:'css',value:'#add'},preconditions:[{target:input,condition:'value',value:marker}],data_effect:{kind:'create',key,record_target:{by:'css',value:'#original'}}});
+      assert.equal(collision.status,'correctable_error');assert.equal(writes,0);
+    }
+    const created=await f.browser({type:'click',request_id:`create-${key}`,target:{by:'css',value:'#add'},preconditions:[{target:input,condition:'value',value:marker}],data_effect:{kind:'create',key,record_target}});
+    assert.equal(created.test_data.status,'created_observed');
+    const invalid=await f.browser({type:'click',request_id:`outside-${key}`,target:{by:'css',value:'#unrelated'},data_effect:{kind:'cleanup',key,record_target}});
+    assert.equal(invalid.status,'correctable_error');assert.equal(deletes,key==='one'?0:1);
+    const operation={type:'click',request_id:`remove-${key}`,target:{by:'css',value:`${record_target.value} button`},data_effect:{kind:'cleanup',key,record_target}};
+    if(key==='two') {
+      await f.browser({type:'click',request_id:'identity-change',target:{by:'css',value:'#identity'}});
+      const changed=await f.browser({...operation,request_id:'changed-record'});
+      assert.equal(changed.status,'correctable_error');assert.equal(deletes,1);
+      await f.browser({type:'click',request_id:'identity-restore',target:{by:'css',value:'#identity'}});
+    }
+    const removed=await f.browser(operation);
+    assert.equal(removed.test_data.status,key==='one'?'removed_from_view':'cleanup_uncertain');
+    assert.deepEqual(await f.browser(operation),removed);
+    const repeated=await f.browser({...operation,request_id:`retry-${key}`});
+    assert.equal(repeated.status,'data_tracking_unavailable');assert.equal(repeated.operation_started,false);
+  }
+  assert.equal(writes,2);assert.equal(deletes,2);
+  const original=await f.browser({type:'assert',request_id:'original',target:{by:'css',value:'#original'},condition:'text',value:'Existing user record',case_id:'KEEP',title:'Preserved existing record',expected:'Existing user record'});
+  assert.equal(original.assertion.status,'passed');
+  const finished=await f.browser({type:'finish',request_id:'finish',summary:'Preserve existing data and report uncertain cleanup',limitations:['Second synthetic removal did not change the page']});
+  assert.equal(finished.cleanup.tracked,2);assert.equal(finished.cleanup.possible_residuals,1);assert.equal(finished.cleanup.removed_from_view,1);
+  assert.equal(finished.summary.total,1);assert.equal(finished.partial,false);
+  writeFileSync(resolve(f.dir,'execution/execution-task.json'),JSON.stringify({run_id:f.id,stage:'execution',outcome:'completed',summary:'Synthetic cleanup evidence',source_paths:['inputs/request.txt','inputs/cleanup-scope.txt'],questions:[],limitations:['One tracked residual']}));
+  assert.equal(inspectIndependentArtifacts(root,f.id,'execution').status,'passed');
+  const ledgerPath=resolve(f.dir,'execution/browser-data-ledger.json'),ledger=JSON.parse(readFileSync(ledgerPath));
+  assert.equal(ledger.run_id,f.id);assert.equal(ledger.items[1].status,'cleanup_uncertain');
+  writeFileSync(ledgerPath,JSON.stringify({...ledger,items:[]}));
+  assert.equal(inspectIndependentArtifacts(root,f.id,'execution').status,'blocked');
+});
+
+test('case references and read-only rechecks preserve failures without inflating cases or replaying actions',async t=>{
+  const server=createServer((req,res)=>{res.setHeader('content-type','text/html');res.end('<!doctype html><input id="value" value="not ready"><input id="other" value="ready">');});
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  await f.send({action:'archive_input',name:'cases.json',text:JSON.stringify({cases:[{case_id:'DESIGN1',expected:'Field value is ready'}]})});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic read-only recheck statistics',headless:true});
+  const check={type:'assert',request_id:'first',target:{by:'css',value:'#value'},condition:'value',value:'ready',case_id:'A1',title:'Ready',expected:'Field value is ready',case_ref:{source_path:'inputs/cases.json',case_id:'DESIGN1'}};
+  const failed=await f.browser(check);assert.equal(failed.assertion.status,'failed');
+  const invalid=await f.browser({...check,request_id:'invalid',case_id:'A2',recheck_of:'A1',target:{by:'css',value:'#other'}});
+  assert.equal(invalid.status,'invalid_operation');assert.equal(invalid.operation_started,false);
+  await f.browser({type:'fill',request_id:'prepare',target:check.target,value:'ready'});
+  const second={...check,request_id:'second',case_id:'A2',recheck_of:'A1'};
+  const passed=await f.browser(second);assert.equal(passed.assertion.status,'passed');
+  assert.deepEqual(await f.browser(second),passed);
+  const finished=await f.browser({type:'finish',request_id:'finish',summary:'One design case with two observations',limitations:['Only the stated field assertion was observed, not whole-case completion']});
+  assert.equal(finished.summary.total,2);assert.equal(finished.summary.failed,1);assert.equal(finished.statistics.linked_case_count,1);
+  assert.equal(finished.statistics.read_only_rechecks,1);assert.equal(finished.statistics.rechecks_passed_after_failure,1);
+  writeFileSync(resolve(f.dir,'execution/execution-task.json'),JSON.stringify({run_id:f.id,stage:'execution',outcome:'completed',summary:'Synthetic statistics',source_paths:['inputs/request.txt','inputs/cases.json'],questions:[],limitations:['Original failure retained']}));
+  assert.equal(inspectIndependentArtifacts(root,f.id,'execution').status,'passed');
+});
+
+test('scoped API checks and one-shot GET faults retain real/simulated evidence and restore routing',async t=>{
+  let gets=0,heads=0,writes=0;
+  const server=createServer((req,res)=>{
+    if(!['GET','HEAD'].includes(req.method)) writes++;
+    if(req.url==='/data') {if(req.method==='HEAD') heads++;else gets++;res.setHeader('content-type','application/json');res.end(JSON.stringify({code:0,token:'SECRET_RESPONSE_MUST_NOT_BE_EXPORTED'}));return;}
+    if(req.url==='/redirect') {res.writeHead(302,{location:'/data'});res.end();return;}
+    if(req.url==='/oversized') {res.setHeader('content-type','application/json');res.end(JSON.stringify({code:0,large:'x'.repeat(70000)}));return;}
+    res.setHeader('content-type','text/html');res.end(`<!doctype html><button id="load">Load</button><button id="no-request">No request</button><p id="status">Idle</p><script>
+      document.querySelector('#load').onclick=async()=>{try{let r=await fetch('/data');document.querySelector('#status').textContent=r.ok?'Loaded':'Load failed';}catch{document.querySelector('#status').textContent='Load failed';}};
+      document.querySelector('#no-request').onclick=()=>{document.querySelector('#status').textContent='Load failed';};</script>`);
+  });
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  const quote='Authorize GET/HEAD checks and one-request read failure simulation. HTTP 200 and code 0 mean accepted. Show Load failed on read error.';
+  await f.send({action:'archive_input',name:'api.txt',text:`${url}data ${url}redirect ${url}oversized ${quote}`});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic read checks and explicitly requested fault simulation',headless:true});
+  const check={url:`${url}data`,method:'GET',http_status:200,field:'code',equals:0,source_path:'inputs/api.txt',quote,case_id:'API',title:'Data API',expected:'Contract matched'};
+  const missingSource=await f.browser({type:'api_check',request_id:'bad-source',check:{...check,quote:'not in current source'}});
+  assert.equal(missingSource.operation_started,false);assert.equal(gets,0);
+  const foreign=await f.browser({type:'api_check',request_id:'foreign',check:{...check,url:'http://outside.invalid/data'}});
+  assert.equal(foreign.operation_started,false);assert.equal(gets,0);
+  const op={type:'api_check',request_id:'api',check};const api=await f.browser(op);assert.equal(api.response_assertion.status,'passed');assert.equal(gets,1);
+  assert.deepEqual(await f.browser(op),api);assert.equal(gets,1);
+  const head=await f.browser({type:'api_check',request_id:'head',check:{...check,method:'HEAD',field:undefined,equals:undefined,case_id:'HEAD'}});assert.equal(head.response_assertion.status,'passed');assert.equal(heads,1);
+  const redirect=await f.browser({type:'api_check',request_id:'redirect',check:{...check,url:`${url}redirect`,case_id:'REDIRECT'}});assert.equal(redirect.response_assertion.status,'blocked');assert.equal(gets,1);
+  const large=await f.browser({type:'api_check',request_id:'large',check:{...check,url:`${url}oversized`,case_id:'LARGE'}});assert.equal(large.response_assertion.status,'blocked');
+  const fault={url:`${url}data`,method:'GET',mode:'http_error',http_status:503,source_path:'inputs/api.txt',quote};
+  const assertion={target:{by:'css',value:'#status'},condition:'text',value:'Load failed',case_id:'SIM',title:'Simulated read failure',expected:'Load failed'};
+  const simulated=await f.browser({type:'click',request_id:'simulate',target:{by:'css',value:'#load'},fault,assertion});
+  assert.equal(simulated.simulation.applied,true);assert.equal(simulated.simulation.disabled,true);assert.equal(simulated.assertion.evidence_mode,'simulated');assert.equal(gets,1);
+  const later=await f.browser({type:'assert',request_id:'later',...assertion,case_id:'LATER'});assert.equal(later.assertion.evidence_mode,'simulation_affected');
+  const real=await f.browser({type:'api_check',request_id:'real-after',check:{...check,case_id:'AFTER'}});assert.equal(real.response_assertion.status,'passed');assert.equal(gets,2);
+  await f.browser({type:'goto',request_id:'reload',url,source_path:'inputs/request.txt'});
+  const missed=await f.browser({type:'click',request_id:'missed',target:{by:'css',value:'#no-request'},fault,assertion:{...assertion,case_id:'MISSED'}});
+  assert.equal(missed.simulation.applied,false);assert.equal(missed.assertion.status,'blocked');assert.equal(missed.simulation.disabled,true);
+  await f.browser({type:'goto',request_id:'reload-abort',url,source_path:'inputs/request.txt'});
+  const aborted=await f.browser({type:'click',request_id:'abort',target:{by:'css',value:'#load'},fault:{...fault,mode:'abort',http_status:undefined},assertion:{...assertion,case_id:'ABORT'}});
+  assert.equal(aborted.simulation.applied,true);assert.equal(aborted.assertion.status,'passed');assert.equal(gets,2);assert.equal(writes,0);
+  const finished=await f.browser({type:'finish',request_id:'finish',summary:'Separate synthetic faults and real API checks',limitations:['Redirect and oversized response not evaluated']});
+  assert.equal(finished.partial,true);assert.equal(finished.statistics.evidence_modes.simulated,3);assert.equal(finished.statistics.evidence_modes.simulation_affected,1);
+  writeFileSync(resolve(f.dir,'execution/execution-task.json'),JSON.stringify({run_id:f.id,stage:'execution',outcome:'partial',summary:'Synthetic API controls',source_paths:['inputs/request.txt','inputs/api.txt'],questions:[],limitations:['Some checks inconclusive']}));
+  assert.equal(inspectIndependentArtifacts(root,f.id,'execution').status,'passed');
+  assert.ok(!readFileSync(resolve(f.dir,'execution/browser-evidence/api.api.json'),'utf8').includes('SECRET_RESPONSE_MUST_NOT_BE_EXPORTED'));
+});
 
 test('operation contract rejects arbitrary evaluation, ambiguous targets and unknown fields',()=>{
   assert.throws(()=>validateBrowserOperation({type:'eval',request_id:'x',code:'alert(1)'}));
@@ -211,6 +445,10 @@ test('interactive task persists login/form state across human handoff, never rep
   await f.returnChild(f.dispatched.delegation);
   const resume={action:'dispatch',stage:'execution',agent:'automation_execution_agent',skills:['playwright-execution'],mode:'resume_browser'};
   assert.equal((await f.send(resume)).status,'rejected','No automatic invented human response');
+  f.append([{timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',sender:'harness',text:'Synthetic manual step completed; continue.'}}]);
+  assert.equal((await f.send(resume)).status,'rejected','Harness notices cannot confirm human intervention');
+  f.append([{timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',text:'Not yet done; wait.'}}]);
+  assert.equal((await f.send(resume)).status,'rejected','A native user pause cannot resume the browser');
   manual=true;await pause(15);
   f.append([{timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',text:'Synthetic manual step completed; continue.'}}]);
   const resumed=await f.send(resume);assert.equal(resumed.exit_code,0,JSON.stringify(resumed));

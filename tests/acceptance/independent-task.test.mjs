@@ -9,6 +9,7 @@ import { inspectIndependentArtifacts, taskResultPath } from '../../scripts/indep
 import { assertCompletedArtifacts } from '../../scripts/artifact-contracts.mjs';
 import { inspectHandoff, reconcileHandoff } from '../../scripts/controller-handoff.mjs';
 import { createServer } from 'node:http';
+import xlsx from 'xlsx';
 import { validateExplorationTarget } from '../../scripts/explore-task-url.mjs';
 const root=resolve(import.meta.dirname,'../..');
 const roles={analysis:['requirement_analysis_agent','requirement-analysis'],test_points:['test_point_agent','test-point-design'],test_cases:['test_case_agent','test-case-writing'],execution:['automation_execution_agent','playwright-execution'],defects:['defect_analysis_agent','bug-reporting'],report:['test_report_agent','test-report-writing']};
@@ -49,6 +50,8 @@ async function fixture(stage,{source_mode,requested=[stage]}={}) {
   assert.ok(contract.includes(JSON.stringify(dispatched.skill_files)));
   if(stage==='report') {
     assert.match(contract,/tool-generated evidence index/);
+    assert.match(contract,/regression_comparison/);
+    assert.match(contract,/do not write inputs or ask the parent\/user for a mapping file/);
     const index=JSON.parse(readFileSync(dispatched.delegation_contract_path.replace('.prompt.txt','.evidence.json'),'utf8'));
     assert.ok(index.files.some(f=>f.path==='inputs/request.txt'));
   }
@@ -63,6 +66,32 @@ async function fixture(stage,{source_mode,requested=[stage]}={}) {
   put(taskResultPath(stage),{run_id:id,stage,outcome:'completed',summary:'Synthetic independent delivery',source_paths:['inputs/request.txt'],questions:[],limitations:['No product execution in this engineering fixture']});
   return {id,dir,parent,agentRoot,parentFile,send,dispatched,put,manifest};
 }
+test('independent expectation basis is checked and exported without predecessor requirements or technical unlocks',async()=>{
+  const f=await fixture('test_cases');
+  const row={case_id:'TC-BASIS',title:'Required phone',priority:'P1',preconditions:[],steps:['Clear phone'],expected:'Empty phone is rejected.',
+    expected_basis:[{expected:'Empty phone is rejected.',kind:'requirement',source_path:'inputs/request.txt',quote:'Expected: empty phone is rejected.'}],
+    observations:[{statement:'Check optional formatting',kind:'engineering_assumption',reason:'Format rules not supplied'}]};
+  f.put('design/test_cases.json',[row]);
+  let result=await f.send({action:'diagnose_test_cases'});
+  assert.equal(result.result.status,'passed');assert.equal(result.result.expectation_diagnostics[0].semantic_verified,false);
+  assert.equal((await f.send({action:'export_test_cases'})).exit_code,0);
+  assert.equal(inspectIndependentArtifacts(root,f.id,'test_cases').status,'passed');
+  const bytes=readFileSync(resolve(f.dir,'design/test_cases.xlsx'));
+  row.expected+=' No record stored.';f.put('design/test_cases.json',[row]);
+  result=await f.send({action:'diagnose_test_cases'});
+  assert.match(result.result.errors.join('\n'),/Every expected clause/);
+  assert.equal(result.result.input_correction,true);
+  assert.equal(readControllerSession(root,f.parent).status,'ready');
+  assert.deepEqual(readFileSync(resolve(f.dir,'design/test_cases.xlsx')),bytes);
+  row.expected='Empty phone is rejected.';row.expected_basis[0].quote='Invented';f.put('design/test_cases.json',[row]);
+  assert.match(inspectIndependentArtifacts(root,f.id,'test_cases',{draft:true}).errors.join('\n'),/verbatim/);
+  row.expected_basis[0].quote='empty phone is rejected.';f.put('design/test_cases.json',[row]);
+  assert.match(inspectIndependentArtifacts(root,f.id,'test_cases').errors.join('\n'),/Excel expectation basis differs/);
+  assert.equal((await f.send({action:'export_test_cases'})).exit_code,0);
+  assert.equal(inspectIndependentArtifacts(root,f.id,'test_cases').status,'passed');
+  assert.equal(existsSync(resolve(f.dir,'analysis/requirement-ledger.json')),false);
+});
+
 test('independent data diagnosis measures Unicode and rejects declared bad data without predecessors or writes',async()=>{
   const f=await fixture('test_cases');
   const row={case_id:'TC-DATA',title:'Boundary',priority:'P1',preconditions:[],steps:['Enter sample'],expected:'Source-defined result',test_data:{title:'\u{1F600}e\u0301',empty:'',gross:100,discount:20,total:79},design_contract:{data_checks:[
@@ -219,21 +248,59 @@ test('independent report missing or malformed draft stays correctable and then e
 
 test('report export includes imported timing facts and preserves source and agent draft',async()=>{
   const f=await fixture('report');
-  const row={case_id:'CASE2',status:'passed',evidence_paths:['inputs/request.txt'],timing:{mode:'standalone_observation',delay_after_action_ms:13306,preceding_action:{request_id:'click-code'}}};
+  const row={case_id:'CASE2',status:'passed',expected:'EXPECTED_SOURCE',actual_result:'ACTUAL_SOURCE',evidence_mode:'simulated',verification_scope:{layer:'ui'},evidence_paths:['inputs/request.txt'],timing:{mode:'standalone_observation',delay_after_action_ms:13306,preceding_action:{request_id:'click-code'}}};
   const result={run_id:f.id,status:'completed',summary:{total:1,passed:1,failed:0,blocked:0,skipped:0},cases:[row]};
   f.put('inputs/results.json',result);
   const task=JSON.parse(readFileSync(resolve(f.dir,taskResultPath('report'))));
   task.source_paths.push('inputs/results.json');f.put(taskResultPath('report'),task);
   f.put('report/test_report.md','# Timing report\nImported observations.');
-  f.put('report/reportable-results.json',result);f.put('report/issues.json',[]);
+  f.put('report/reportable-results.json',{...result,cases:[{case_id:row.case_id,status:row.status,evidence_paths:row.evidence_paths}]});f.put('report/issues.json',[]);
   const before=readFileSync(resolve(f.dir,'inputs/results.json'));
   const exported=await f.send({action:'export_report'});
   assert.equal(exported.exit_code,0,JSON.stringify(exported));
   const html=readFileSync(resolve(f.dir,'report/test_report.html'),'utf8');
   assert.match(html,/独立观察/);assert.match(html,/13306/);assert.match(html,/用户导入/);
   assert.match(html,/结果记录/);assert.ok(!html.includes('执行用例'));
+  assert.match(html,/EXPECTED_SOURCE/);assert.match(html,/ACTUAL_SOURCE/);assert.match(html,/模拟场景/);
+  const preserved=JSON.parse(readFileSync(resolve(f.dir,'report/reportable-results.json')));
+  assert.equal(preserved.cases[0].evidence_mode,'simulated');assert.equal(preserved.cases[0].report_source.kind,'imported');
+  const sheet=xlsx.readFile(resolve(f.dir,'report/test_cases.xlsx')).Sheets['测试用例'];
+  assert.equal(sheet.G6.v,'EXPECTED_SOURCE');assert.match(sheet.H6.v,/ACTUAL_SOURCE/);assert.match(sheet.H6.v,/导入记录/);assert.equal(sheet.I6.v,'通过（模拟）');
   assert.deepEqual(readFileSync(resolve(f.dir,'inputs/results.json')),before);
   assert.equal(readFileSync(resolve(f.dir,'report/test_report.md'),'utf8'),'# Timing report\nImported observations.');
+  const validated=inspectIndependentArtifacts(root,f.id,'report');
+  assert.equal(validated.status,'passed',JSON.stringify(validated.errors));
+  const workbook=xlsx.readFile(resolve(f.dir,'report/test_cases.xlsx'));
+  workbook.Sheets['测试用例'].I6.v='通过';
+  xlsx.writeFile(workbook,resolve(f.dir,'report/test_cases.xlsx'));
+  assert.ok(inspectIndependentArtifacts(root,f.id,'report').errors.includes('Report workbook differs from supplied results'));
+});
+
+test('report task mapping reaches controlled export without a controller-created input map',async()=>{
+  const f=await fixture('report');
+  const row={case_id:'OLD',status:'failed',expected:'Ready',actual_result:'Not ready',check_fingerprint:'same',evidence_mode:'real',verification_scope:{layer:'ui'},evidence_paths:['inputs/request.txt']};
+  const old={run_id:'old',invocation_id:'one',started_at:'2026-10-14T01:00:00Z',finished_at:'2026-10-14T02:00:00Z',cases:[row]};
+  const current={run_id:'new',invocation_id:'two',started_at:'2026-10-15T01:00:00Z',finished_at:'2026-10-15T02:00:00Z',cases:[{...row,case_id:'NEW',status:'passed',actual_result:'Ready'}]};
+  f.put('inputs/old.json',old);f.put('inputs/current.json',current);
+  const task=JSON.parse(readFileSync(resolve(f.dir,taskResultPath('report'))));
+  task.source_paths.push('inputs/old.json','inputs/current.json');
+  task.regression_comparison={version:1,comparisons:[{id:'paired',layer:'original',baseline:{source_path:'inputs/old.json',case_id:'OLD'},current:{source_path:'inputs/current.json',case_id:'NEW'}}]};
+  f.put(taskResultPath('report'),task);
+  f.put('report/test_report.md','# Comparison\nImported records.');
+  f.put('report/reportable-results.json',{run_id:f.id,cases:current.cases,summary:{total:1,passed:1,failed:0,blocked:0,skipped:0}});f.put('report/issues.json',[]);
+  const sourceBefore=readFileSync(resolve(f.dir,'inputs/old.json'));
+  const taskBefore=readFileSync(resolve(f.dir,taskResultPath('report')));
+  const exported=await f.send({action:'export_report'});
+  assert.equal(exported.exit_code,0,JSON.stringify(exported));
+  const html=readFileSync(resolve(f.dir,'report/test_report.html'),'utf8');
+  assert.match(html,/回归对照（工具提取）/);assert.match(html,/本次观察通过（原失败保留）/);
+  const archive=resolve(f.dir,exported.artifact_archive ?? exported.result?.artifact_archive ?? '');
+  // Locate the persisted export receipt through the generated archive returned by the action.
+  const evidence=JSON.parse(readFileSync(resolve(archive,'report-evidence.json')));
+  assert.equal(evidence.regression.counts.now_passing,1);
+  assert.equal(evidence.regression.rows[0].baseline.source_sha256.length,64);
+  assert.deepEqual(readFileSync(resolve(archive,'before/report/report-task.json')),taskBefore);
+  assert.deepEqual(readFileSync(resolve(f.dir,'inputs/old.json')),sourceBefore);
 });
 
 test('report draft diagnostics identify the exact file and recover without changing test facts',async()=>{

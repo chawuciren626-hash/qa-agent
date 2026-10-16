@@ -24,8 +24,26 @@ export function extractDeliveries(text,workspace) {
   return [...found.values()];
 }
 
+export function normalizeDeliveryItems(items) {
+  const result=[];let placeholder=false;
+  for(const item of items) {
+    if(item.kind==='thinking' && (item.stopReason===undefined || item.stopReason==='completed') && typeof item.thinking==='string' && item.thinking.length<=64 && /^[\s.\u2026\u3002\u00b7]*$/.test(item.thinking)) {
+      placeholder=true;continue;
+    }
+    const previous=result.at(-1);
+    const sameBoundary=previous && ['requestId','turnId','sessionId'].every(key=>previous[key]===item[key]);
+    if(placeholder && previous?.kind==='assistant_text' && item.kind==='assistant_text' && sameBoundary &&
+      typeof previous.text==='string' && typeof item.text==='string' && !['aborted','fatal'].includes(previous.stopReason)) {
+      result[result.length-1]={...previous,text:previous.text+item.text,streaming:item.streaming,stopReason:item.stopReason};
+    } else result.push(item);
+    placeholder=false;
+  }
+  return result;
+}
+
 // Only texts structurally followed by work are folded; the final answer and errors stay visible.
 export function groupDeliveryItems(items) {
+  items=normalizeDeliveryItems(items);
   const segments=[];let pending=[];
   const flush=()=>{if(pending.length) segments.push({type:'group',items:pending});pending=[];};
   for(let i=0;i<items.length;i++) {

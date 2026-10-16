@@ -190,11 +190,11 @@ test('execution task stops at controlled execution artifacts despite multi-deliv
   assert.match(dispatch,/Do not use browser_task merely to satisfy the existence of test_results.json/);
 });
 
-test('controller instructions require byte-for-byte delegation arguments', () => {
+test('controller instructions bind role and task while allowing localized display descriptions', () => {
   const prompt=readFileSync(resolve(import.meta.dirname,'../../penguin/agents/test_agent/AGENTS.md'),'utf8');
   assert.match(prompt,/read_file读取返回的`delegation_path`/);
-  assert.match(prompt,/文件内整个JSON对象原样传给run_subagent/);
-  assert.match(prompt,/`agent_id`、`description`、`prompt`逐字段照抄/);
+  assert.match(prompt,/将`agent_id`和`prompt`逐字段照抄传给run_subagent/);
+  assert.match(prompt,/`description`仅为展示说明，可用用户语言简述任务，不改变子任务授权/);
   assert.match(prompt,/不省略、不改写、不追加业务目标/);
 });
 

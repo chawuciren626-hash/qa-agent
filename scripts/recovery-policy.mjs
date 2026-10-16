@@ -20,7 +20,7 @@ export function recordCorrection(state, category, context, error, result) {
     try { const data=JSON.parse(result.output_tail); diagnostics=data.errors ?? data.issues ?? data.status; }
     catch { diagnostics=result.output_tail; }
   }
-  const signature=createHash('sha256').update(JSON.stringify({request:context.request_sha256 ?? null,error:error?.message ?? null,status:result?.status ?? null,diagnostics})).digest('hex');
+  const signature=createHash('sha256').update(JSON.stringify({request:context.progress_sha256 ?? context.request_sha256 ?? null,error:error?.message ?? null,status:result?.status ?? null,diagnostics})).digest('hex');
   const previous=state.correction_progress[key];
   const consecutive=previous?.signature===signature?previous.consecutive+1:1;
   state.correction_progress[key]={signature,consecutive};
@@ -44,6 +44,8 @@ export function revisedDispatchId(manifest, stage, parent) {
   const dispatch = events.filter(e => e.type === 'dispatched' && e.stage === stage).at(-1);
   if (!dispatch?.dispatch_id || dispatch['parent-session-id'] !== parent || manifest.stages?.[stage]?.dispatch_id !== dispatch.dispatch_id) return null;
   if (stage === 'execution') {
+    const preparation = events.filter(e => e.type==='stage_recovered' && e.stage===stage && e.actor==='controller_auto_revision' && e.parent_session_id===parent && e.preparation_safety?.kind==='verified_preparation_only' && e.preparation_safety.dispatch_id===e.dispatch_id && e.preparation_safety.approval_granted===false).at(-1);
+    if(preparation?.archive && dispatch.mode==='prepare' && events.indexOf(dispatch)>events.indexOf(preparation) && dispatch.revision_context?.archive===preparation.archive && manifest.stages.execution.revision_archive===preparation.archive) return dispatch.dispatch_id;
     const recovery = events.filter(e => e.type === 'stage_recovered' && e.stage === stage && e.parent_session_id === parent && e.evidence?.sha256 && e.approval_ref).at(-1);
     return recovery?.archive && events.indexOf(dispatch) > events.indexOf(recovery) && manifest.stages.execution.revision_archive === recovery.archive ? dispatch.dispatch_id : null;
   }

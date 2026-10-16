@@ -28,8 +28,9 @@ test('cleanup only proposes backed-up unchanged test files and keeps tracked/his
 test('release allowlist refuses local configuration, runtime data, and traversal',t=>{
   const root=realpathSync(mkdtempSync(resolve(tmpdir(),'qa-release-')));t.after(()=>rmSync(root,{recursive:true,force:true}));
   mkdirSync(resolve(root,'scripts'));writeFileSync(resolve(root,'scripts/project-action.mjs'),'// fixture');
-  assert.equal(releaseResources(root,{version:1,files:['scripts/project-action.mjs']}).exe_ready,false);
-  for(const file of ['output/report.md','inputs/requirement.md','config/test-env.json','config/test-assets.json','scripts/../secret','scripts/tmp-stats.mjs']) assert.throws(()=>releaseResources(root,{version:1,files:[file]}));
+  mkdirSync(resolve(root,'penguin/ui'),{recursive:true});writeFileSync(resolve(root,'penguin/ui/workspace-ui.css'),'/* fixture */');
+  assert.equal(releaseResources(root,{version:1,files:['scripts/project-action.mjs','penguin/ui/workspace-ui.css']}).exe_ready,false);
+  for(const file of ['output/report.md','output/styles.css','penguin/agents/styles.css','inputs/requirement.md','config/test-env.json','config/test-assets.json','scripts/../secret','scripts/tmp-stats.mjs']) assert.throws(()=>releaseResources(root,{version:1,files:[file]}));
 });
 
 test('engineering workspace isolates generated inputs, configuration and dependencies without reinstalling',()=>{

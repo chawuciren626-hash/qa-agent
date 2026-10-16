@@ -4,6 +4,7 @@ import { resolve,extname,relative } from 'node:path';
 import { chromium,expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { patchDeliveryBundle } from './install-penguin-delivery-ui.mjs';
+import { patchClientBundle, clientModule } from './client-ui-patches.mjs';
 
 const [app,workspace,runId,output]=process.argv.slice(2);
 if(!app || !workspace || !/^run-[a-z0-9-]+$/i.test(runId??'') || !output) throw new Error('Usage: <resources/app> <session workspace> <existing run-id> <engineering screenshot directory>');
@@ -13,7 +14,7 @@ const index=readFileSync(resolve(web,'index.html'),'utf8');
 const asset=index.match(/src="\/assets\/([^"/?]+\.js)(?:\?[^" ]*)?"/)[1],css=index.match(/href="(\/assets\/[^"/]+\.css)"/)[1];
 const bundlePath=resolve(web,'assets',asset);
 const original=readFileSync(existsSync(bundlePath+'.qa-runtime-original')?bundlePath+'.qa-runtime-original':existsSync(bundlePath+'.qa-delivery-original')?bundlePath+'.qa-delivery-original':bundlePath,'utf8');
-let bundle=patchDeliveryBundle(original);
+let bundle=patchClientBundle(patchDeliveryBundle(original));
 const mount='Cke();Ske().then(e=>{e==="reload"?location.reload():RM()},RM);';
 assert.equal(bundle.split(mount).length,2);
 bundle=bundle.replace(mount,'')+'\nfunction QaHarness(props){return r.jsx(oB,{children:r.jsx(xB,{children:r.jsx(Ale,props)})});} export {eB,r as qaJSX,QaHarness as Ale};';
@@ -28,7 +29,7 @@ const mime={'.js':'text/javascript','.mjs':'text/javascript','.css':'text/css','
 const server=createServer(async(req,res)=>{
   try {
     const u=new URL(req.url,'http://localhost');
-    if(u.pathname==='/') {res.setHeader('content-type','text/html; charset=utf-8');res.end(`<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="${css}"></head><body><div id="root" hidden></div><main id="qa" style="padding:16px;max-width:960px;margin:auto"></main><aside aria-label="产物预览" hidden><button id="close-preview">关闭预览</button><iframe title="交付预览" sandbox="allow-scripts" style="width:100%;height:75vh;border:0"></iframe></aside><script type="module" src="/fixture.mjs"></script></body></html>`);return;}
+    if(u.pathname==='/') {res.setHeader('content-type','text/html; charset=utf-8');res.end(`<!doctype html><html data-qa-client="v2"><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="${css}"><style>${readFileSync(resolve(root,'penguin/ui/workspace-ui.css'),'utf8')}</style></head><body><div id="root" hidden></div><main id="qa" style="padding:16px;max-width:960px;margin:auto"></main><aside aria-label="产物预览" hidden><button id="close-preview">关闭预览</button><iframe title="交付预览" sandbox="allow-scripts" style="width:100%;height:75vh;border:0"></iframe></aside><script type="module" src="/fixture.mjs"></script></body></html>`);return;}
     if(u.pathname==='/fixture.mjs') {res.setHeader('content-type','text/javascript');res.end(`import {eB,qaJSX as r,Ale} from '/assets/qa-test-bundle.js';const ctx={qaPresentation:true,sessionId:'fixture',workspace:${JSON.stringify(workspace)},origin:[],taskRunning:false,pendingApprovals:new Map(),statFiles:async(paths)=>{const r=await fetch('/stat',{method:'POST',body:JSON.stringify(paths)});return new Set(await r.json());},onOpenFile:path=>{document.querySelector('aside').hidden=false;document.querySelector('iframe').src='/preview?path='+encodeURIComponent(path);}};document.querySelector('#close-preview').onclick=()=>{document.querySelector('aside').hidden=true;};eB.createRoot(document.querySelector('#qa')).render(r.jsx(Ale,{items:${JSON.stringify(items)},ctx}));`);return;}
     if(u.pathname==='/stat') {let text='';for await(const c of req) text+=c;const paths=JSON.parse(text);res.setHeader('content-type','application/json');res.end(JSON.stringify(paths.filter(p=>!missing && [report,sheet,pdf].includes(p))));return;}
     if(u.pathname==='/missing') {missing=true;res.end('ok');return;}
@@ -37,7 +38,7 @@ const server=createServer(async(req,res)=>{
     if(u.pathname.startsWith('/api/sessions/fixture/files/')) {actions.push(u.pathname);res.statusCode=u.pathname.endsWith('/open-deliverable')?nativeStatus:204;res.end();return;}
     if(u.pathname==='/preview') {const path=u.searchParams.get('path');if(![report,sheet,pdf].includes(path)) {res.statusCode=404;res.end();return;}res.setHeader('content-type',mime[extname(path)]??'application/octet-stream');res.setHeader('content-security-policy','sandbox allow-scripts');res.end(readFileSync(resolve(workspace,path)));return;}
     if(u.pathname==='/assets/qa-test-bundle.js') {res.setHeader('content-type','text/javascript');res.end(bundle);return;}
-    if(u.pathname==='/assets/qa-delivery-ui.js') {res.setHeader('content-type','text/javascript');res.end(readFileSync(resolve(root,'penguin/ui/delivery-ui.mjs')));return;}
+    if(u.pathname==='/assets/qa-delivery-ui.js') {res.setHeader('content-type','text/javascript');res.end(clientModule(...['penguin/ui/delivery-ui.mjs','penguin/ui/workspace-ui.mjs','penguin/ui/workspace-ui.css'].map(p=>readFileSync(resolve(root,p),'utf8'))));return;}
     const path=resolve(web,'.'+decodeURIComponent(u.pathname));
     if(relative(web,path).startsWith('..')) {res.statusCode=403;res.end();return;}
     res.setHeader('content-type',mime[extname(path)]??'application/octet-stream');res.end(readFileSync(path));

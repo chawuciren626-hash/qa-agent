@@ -43,7 +43,7 @@ export function patchDeliveryBundle(source,revision='1') {
   next=replaceOnce(next,'t.origin.length===0&&t.onOpenFile&&t.statFiles&&e.assistantText.trim()!==""&&r.jsx(gN',
     '!t.qaPresentation&&t.origin.length===0&&t.onOpenFile&&t.statFiles&&e.assistantText.trim()!==""&&r.jsx(gN');
   next=replaceOnce(next,'workspace:pe?.workspace??null,statFiles:ms,onFork:io}',
-    'workspace:pe?.workspace??null,sessionId:pe?.sessionId??null,qaPresentation:pe?.agentId==="test_agent",statFiles:ms,onFork:io}');
+    'workspace:pe?.workspace??null,sessionId:pe?.sessionId??null,qaPresentation:["test_agent","requirement_analysis_agent","test_point_agent","test_case_agent","automation_execution_agent","defect_analysis_agent","test_report_agent"].includes(pe?.agentId),statFiles:ms,onFork:io}');
   return `import { createDeliveryUI, groupDeliveryItems } from "./qa-delivery-ui.js?v=${revision}";\n`+next;
 }
 

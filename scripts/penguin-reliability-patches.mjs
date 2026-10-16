@@ -1,6 +1,32 @@
 // Exact anchors deliberately reject unsupported upstream builds before installation.
 export const reliabilityPatches = [
   [
+    '          workdir: {\n            type: "string",\n            description: "Working directory for the command; defaults to the cwd. Optionally a path relative to the cwd, or an absolute path."',
+    '          qa_request: {\n            type: "object",\n            description: "QA controller only: complete structured action JSON. With project-action.mjs execute --controller-session=<current> --request=output/action-requests/<unique>.json, the installed QA hook saves this exact body before execution. No separate write_file is needed. Existing different contents are never overwritten. Omit for other commands and professional child agents."\n          },\n          workdir: {\n            type: "string",\n            description: "Working directory for the command; omit to use the session workspace. Never use the word CWD as a path. Optionally a path relative to the cwd, or an absolute path."'
+  ],
+  [
+    '      const rawWorkdir = args2["workdir"];\n      const workdir = typeof rawWorkdir === "string" && rawWorkdir.length > 0 ? path19.resolve(ctx.workspaceDir, rawWorkdir) : ctx.workspaceDir;',
+    `      let rawWorkdir = args2["workdir"];
+      if (rawWorkdir === "CWD" && /^node(?:\\.exe)?\\s+(?:scripts[\\\\/])?project-action\\.mjs\\s+(?:catalog|summary|execute)(?:\\s|$)/.test(cmd)) {
+        const fs = await import("node:fs");
+        // Only a missing placeholder in an isolated QA workspace; real directories keep their meaning.
+        if (fs.existsSync(path19.resolve(ctx.workspaceDir, ".qa-session.json")) && !fs.existsSync(path19.resolve(ctx.workspaceDir, "CWD"))) rawWorkdir = undefined;
+      }
+      const workdir = typeof rawWorkdir === "string" && rawWorkdir.length > 0 ? path19.resolve(ctx.workspaceDir, rawWorkdir) : ctx.workspaceDir;
+      if (args2.qa_request !== undefined) {
+        try {
+          const fs = await import("node:fs"), util = await import("node:util");
+          const request = /--request=(?:"([^"\\r\\n]+)"|'([^'\\r\\n]+)'|([^\\s]+))/.exec(cmd);
+          const file = request && path19.resolve(workdir, request[1] ?? request[2] ?? request[3]);
+          const base = path19.resolve(ctx.workspaceDir, "output/action-requests");
+          if (!/^node(?:\\.exe)?\\s+(?:scripts[\\\\/])?project-action\\.mjs\\s+execute\\s/.test(cmd) || !file || path19.dirname(file) !== base || fs.realpathSync(file) !== file || !util.isDeepStrictEqual(JSON.parse(fs.readFileSync(file, "utf8")), args2.qa_request)) throw new Error("prepared request does not match qa_request");
+        } catch {
+          yield delta("[QA request was not prepared or differs from qa_request; no command was launched. Check the installed QA controller hook or use write_file with the exact request body first.]");
+          return { stopReason: "fatal" };
+        }
+      }`
+  ],
+  [
     '  async sessionHooks(runner, child) {\n    if (child) return void 0;\n    const { root: root8, projectId, agentId } = this.state;',
     '  async sessionHooks(runner, child) {\n    const { root: root8, projectId, agentId } = this.state;'
   ],

@@ -5,6 +5,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { patchServer, patchDeliveryBundle, patchDeliveryServer } from './penguin-runtime-patches.mjs';
 import { patchReliabilityServer } from './penguin-reliability-patches.mjs';
+import { patchClientBundle, clientModule } from './client-ui-patches.mjs';
+import { patchLibraryServer } from './client-library.mjs';
 
 const hash = bytes => bytes === null ? null : createHash('sha256').update(bytes).digest('hex');
 const read = path => existsSync(path) ? readFileSync(path) : null;
@@ -126,15 +128,16 @@ function plan(app, root) {
     });
   } else originals = legacyOriginals(app, paths);
   if (originals.slice(0, 3).some(bytes => bytes === null)) throw new Error('Missing original application files');
-  const module = readFileSync(resolve(root, 'penguin/ui/delivery-ui.mjs'));
-  const bundle = Buffer.from(patchDeliveryBundle(originals[2].toString('utf8'), hash(module).slice(0, 16)));
+  const module = Buffer.from(clientModule(...['penguin/ui/delivery-ui.mjs', 'penguin/ui/workspace-ui.mjs', 'penguin/ui/workspace-ui.css'].map(path => readFileSync(resolve(root, path), 'utf8'))));
+  const bundle = Buffer.from(patchClientBundle(patchDeliveryBundle(originals[2].toString('utf8'), hash(module).slice(0, 16))).replace('from "./qa-delivery-ui.js"', `from "./qa-delivery-ui.js?v=${hash(module).slice(0, 16)}"`));
   const sourceIndex = originals[1].toString('utf8'), anchor = `src="/assets/${asset}"`;
   if (sourceIndex.split(anchor).length !== 2) throw new Error('Original application index anchor not unique');
   const adapter = pathToFileURL(resolve(root, 'scripts/penguin-workspace-adapter.mjs')).href;
   const opener = pathToFileURL(resolve(root, 'scripts/open-deliverable.mjs')).href;
-  const next = [Buffer.from(patchReliabilityServer(patchDeliveryServer(patchServer(originals[0].toString('utf8'), adapter), opener))),
-    Buffer.from(sourceIndex.replace(anchor, `src="/assets/${asset}?qa-delivery=${hash(bundle).slice(0, 16)}"`)), bundle, module];
-  const runtime = Object.fromEntries(['scripts/penguin-workspace-adapter.mjs', 'scripts/open-deliverable.mjs'].map(path => [path, hash(readFileSync(resolve(root, path)))]));
+  const library = pathToFileURL(resolve(root, 'scripts/client-library.mjs')).href;
+  const next = [Buffer.from(patchLibraryServer(patchReliabilityServer(patchDeliveryServer(patchServer(originals[0].toString('utf8'), adapter), opener)), library)),
+    Buffer.from(sourceIndex.replace(anchor, `src="/assets/${asset}?qa-delivery=${hash(bundle).slice(0, 16)}"`).replace('<title>PenguinHarness</title>', '<title>AITestHarness</title>')), bundle, module];
+  const runtime = Object.fromEntries(['scripts/penguin-workspace-adapter.mjs', 'scripts/open-deliverable.mjs', 'scripts/client-library.mjs'].map(path => [path, hash(readFileSync(resolve(root, path)))]));
   return { paths, originals, next, runtime, record, version };
 }
 
@@ -155,7 +158,7 @@ export function installPenguinRuntime(app, root, mode = 'check', { afterWrite } 
     const runtimeChanged = !p.record || JSON.stringify(p.runtime) !== JSON.stringify(p.record.runtime) || p.record.engine_root !== root;
     const changed = fileChanges.length > 0 || (mode !== 'restore' && runtimeChanged);
     if (mode === 'check') return { status: p.record?.state === 'restored' ? 'restored' : changed ? 'update_available' : p.record ? 'installed' : 'adoption_available', changed,
-      migration_required: !p.record, components: ['workspace', 'delivery', 'reliability'], restart_required: false, restart_on_apply: changed || !p.record };
+      migration_required: !p.record, components: ['workspace', 'delivery', 'reliability', 'client-ui'], restart_required: false, restart_on_apply: changed || !p.record };
     const changes = new Map();
     if (!p.record) p.paths.forEach((path, i) => {
       if (p.originals[i] === null) return;
@@ -168,7 +171,7 @@ export function installPenguinRuntime(app, root, mode = 'check', { afterWrite } 
     if (changes.size || runtimeChanged || p.record?.state !== state) changes.set(recordName, Buffer.from(JSON.stringify({ version: 1, app_version: p.version, engine_root: root,
       paths: p.paths, original: p.originals.map(hash), installed: desired.map(hash), runtime: p.runtime, state, updated_at: new Date().toISOString() }, null, 2)));
     if (changes.size) transact(app, changes, afterWrite);
-    return { status: state, changed: changes.size > 0, components: ['workspace', 'delivery', 'reliability'], restart_required: changed || !p.record,
+    return { status: state, changed: changes.size > 0, components: ['workspace', 'delivery', 'reliability', 'client-ui'], restart_required: changed || !p.record,
       frontend_reload_required: fileChanges.some(path => path.startsWith('web-dist/')) };
   };
   if (mode === 'check' && existsSync(resolve(app, 'qa-runtime-install.lock'))) return { status: 'installer_busy', changed: false, restart_required: false };

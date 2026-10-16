@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { stageRegistry, stageDefinitions, validateStageRegistry, workflowDefinition, dispatchTemplate, stageDefinition } from '../../scripts/stage-registry.mjs';
+import { stageRegistry, stageDefinitions, validateStageRegistry, workflowDefinition, dispatchTemplate, stageDefinition, stageWriteRules } from '../../scripts/stage-registry.mjs';
 import { requiredArtifacts } from '../../scripts/artifact-contracts.mjs';
 import { taskRequiredArtifacts } from '../../scripts/independent-task.mjs';
 import { actionCatalog } from '../../scripts/structured-actions.mjs';
@@ -56,6 +56,8 @@ test('registry rejects malformed identities, dependency cycles and unsafe artifa
     r => { r.stages[0].agent = '../outside'; },
     r => { r.stages[0].confirmation = 'force'; },
     r => { r.stages[0].task_result = '../outside.json'; },
+    r => { r.stages[0].optional_artifacts = ['../outside.json']; },
+    r => { r.stages[0].optional_artifacts = ['analysis/a.md','analysis/a.md']; },
     r => { r.stages[0].task_artifacts = ['C:/outside.json']; },
     r => { r.stages[0].lifecycle_artifacts = ['/absolute.json']; },
     r => { r.stages[0].task_artifacts = ['analysis/../outside.json']; },
@@ -64,6 +66,15 @@ test('registry rejects malformed identities, dependency cycles and unsafe artifa
   for (const change of changes) {
     const raw = structuredClone(stageRegistry); change(raw);
     assert.throws(() => validateStageRegistry(raw), /Invalid stage registry/);
+  }
+});
+
+test('design reading copies are optional and share the registered write contract',()=>{
+  for(const stage of ['test_points','test_cases']) {
+    const path=`design/${stage}.md`;
+    assert.ok(stageWriteRules(stage).exact.includes(path));
+    assert.ok(!requiredArtifacts[stage].includes(path));
+    assert.ok(!taskRequiredArtifacts(stage).includes(path));
   }
 });
 

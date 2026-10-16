@@ -7,7 +7,7 @@ import { CommandUsageError } from './command-contracts.mjs';
 import { runProjectCommand } from './command-runtime.mjs';
 import { summarizeRun } from './run-status-summary.mjs';
 import { analysisSummary } from './analysis-summary.mjs';
-import { isIndependent, inspectIndependentArtifacts } from './independent-task.mjs';
+import { isIndependent, usesTaskArtifacts, inspectIndependentArtifacts } from './independent-task.mjs';
 import { deliveryPresentation } from './delivery-presentation.mjs';
 
 export class HandoffInputError extends CommandUsageError {}
@@ -78,10 +78,10 @@ export async function handoffStage(root,parent,request,{agentRoot,signal}={}) {
     catch(error) { presentation.errors.push({action:'analysis_summary',message:error.message}); }
   }
   presentation.status=presentation.errors.length?'unavailable':presentation.run_status.consistency==='consistent'?'ready':'review_required';
-  if(isIndependent(root,request.run_id)) presentation.task_result=inspectIndependentArtifacts(root,request.run_id,request.stage).delivery;
+  if(usesTaskArtifacts(root,request.run_id,request.stage)) presentation.task_result=inspectIndependentArtifacts(root,request.run_id,request.stage).delivery;
     presentation.delivery=deliveryPresentation(root,request.run_id,manifest);
   presentation.note='Read-only snapshots after handoff, not semantic approval. Use these summaries for the current reply; refresh run_status/analysis_summary after later changes. If unavailable, inspect the named read action only; do not repeat completion or invent a summary.';
   return {status:'completed',exit_code:0,execution_mode:'in_process',launches_child:receipts.length>0,result:{termination_confirmed:true},
     data:{run_id:request.run_id,stage:request.stage,stage_status:manifest.stages[request.stage].status,dispatch_id:inspection.dispatch_id,
-      presentation,next_action:presentation.status!=='ready'?'inspect_presentation':manifest.stages[request.stage].status==='awaiting_confirmation'?'present_result_and_wait_for_user':'inspect_run_status',approval_granted:false,execution_started:false,already_recorded:!receipts.length},handoff_receipts:receipts};
+      presentation,next_action:presentation.status!=='ready'?'inspect_presentation':manifest.stages[request.stage].status==='awaiting_confirmation'?'present_result_and_wait_for_user':'follow_saved_plan_or_deliver',approval_granted:false,execution_started:false,already_recorded:!receipts.length},handoff_receipts:receipts};
 }
