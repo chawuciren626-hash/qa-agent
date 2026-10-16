@@ -1,6 +1,20 @@
 // Exact anchors deliberately reject unknown host builds before writing installation files.
 const factory = `let qaClientInstance;function qaClient(){return qaClientInstance??=createWorkspaceUI({React:f,useProject:rn,useSessions:jo,useAuth:vn,useNavigate:Yn,useLocation:Xa,FolderPicker:b0,Modal:Kt,AccountMenu:eL,LegacySidebar:QaLegacySidebar,notify:ft,reportError:ze,request:je,Markdown:pl})}function c9(props){return r.jsx(qaClient().Sidebar,props)}function QaHero(props){return r.jsx(qaClient().Hero,props)}function QaSessionContext(props){return r.jsx(qaClient().SessionContext,props)}function upe(){const view=new URLSearchParams(Xa().search).get("view");return view==="schedules"||view==="library"?r.jsx(qaClient().SectionPage,{view}):r.jsx(QaNativeChat,{})}`;
 export const clientPatchPairs = [
+  // A new task always enters the controller. Native defaults/draft callbacks
+  // retain their other settings but cannot select a child agent.
+  [
+    'const[v,b]=f.useState(x.agentId??l?.agentId??null),[k,S]=f.useState(x.workspace??"");',
+    'const v=o.some(Be=>Be.agentId==="test_agent")?"test_agent":null,b=()=>{},[k,S]=f.useState(x.workspace??"");',
+  ],
+  [
+    'ct=f.useCallback(async(Be,tt=null)=>{if(!v||me.current)return!1;',
+    'ct=f.useCallback(async(Be,tt=null)=>{if(!v){ze("软件测试智能体尚未就绪，请刷新后重试");return!1}if(me.current)return!1;',
+  ],
+  [
+    'r.jsxs("div",{className:"mt-2 flex flex-wrap items-center gap-2",children:[r.jsx(Hde,{agents:o,selected:Xe,onSelect:Ee}),r.jsx(b0,{projectId:e,workspace:k,onChange:pe})]})',
+    'null',
+  ],
   ["function upe(){", "function QaNativeChat(){"],
   [
     "function c9({onNavigate:e,onCollapse:t}){",

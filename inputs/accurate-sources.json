@@ -1,0 +1,116 @@
+{
+  "run_id": "run-acceptance-draft-system-20261007",
+  "accurate_sources": [
+    {
+      "file": "acceptance/requirements.md",
+      "role": "核心用户需求",
+      "verified": true,
+      "key_points": [
+        "列表展示标题、预算、状态",
+        "标题去首尾空格后长度1-40，空白和超长不能保存",
+        "预算非负整数，空、小数、负数拒绝",
+        "创建成功显示Created且列表真实新增",
+        "删除仅影响当前scope目标并显示Deleted",
+        "服务失败显示错误不得虚报成功",
+        "三种模式：healthy、defect、unavailable",
+        "地址http://127.0.0.1:4317"
+      ]
+    },
+    {
+      "file": "acceptance/server.mjs",
+      "role": "服务端实现（实现观察，非需求来源）",
+      "verified": true,
+      "key_points": [
+        "stores.size >= 500 是全服务所有scenario:scope键数量上限，非每个scope上限",
+        "value.title.trim().length > 40 是字符数阈值，非字节",
+        "Number.isSafeInteger(value.budget) 有安全整数边界 ±9007199254740991",
+        "defect模式下故意接受负数预算是故障注入，不是正确行为"
+      ]
+    },
+    {
+      "file": "acceptance/site.html",
+      "role": "前端实现（实现观察，非需求来源）",
+      "verified": true,
+      "key_points": [
+        "前端budget输入类型为number",
+        "状态消息显示Created/Deleted/错误文本",
+        "列表列顺序：Title、Budget、Status、Action"
+      ]
+    },
+    {
+      "file": "acceptance/oracle.json",
+      "role": "预期结果与质量场景",
+      "verified": true,
+      "key_points": [
+        "healthy: 6通过",
+        "defect: 5通过，TC-BASE-05失败（预设缺陷）",
+        "unavailable: 1通过，5失败（写接口503）"
+      ]
+    },
+    {
+      "file": "tests/acceptance/ui/baseline.spec.ts",
+      "role": "固定验收用例（回归资产，不替代Agent自主设计）",
+      "verified": true,
+      "key_points": [
+        "TC-BASE-01 种子列表",
+        "TC-BASE-02 正常新增",
+        "TC-BASE-03 空标题",
+        "TC-BASE-04 超长标题",
+        "TC-BASE-05 负数预算",
+        "TC-BASE-06 删除"
+      ]
+    },
+    {
+      "file": "tests/acceptance/server.test.mjs",
+      "role": "API契约与边界验证（实现观察）",
+      "verified": true,
+      "key_points": [
+        "验证空预算、小数预算、负数预算、删除不存在记录等边界"
+      ]
+    },
+    {
+      "file": "docs/acceptance-baseline.md",
+      "role": "验收边界与执行方式",
+      "verified": true,
+      "key_points": [
+        "三种场景使用同一份业务要求",
+        "断言不可因场景而修改",
+        "服务故障触发的失败是原始执行事实"
+      ]
+    },
+    {
+      "file": "inputs/fixture-origin.json",
+      "role": "输入数据标注",
+      "verified": true,
+      "key_points": [
+        "synthetic acceptance",
+        "不依赖任何业务系统真实数据"
+      ]
+    }
+  ],
+  "non_authoritative_sources": [
+    "config/test-env.json（既有业务项目配置，与本次无关）"
+  ],
+  "corrections": [
+    {
+      "id": "CORR-01",
+      "issue": "BR-07将defect模式允许负数保存列成业务规则",
+      "fix": "defect模式接受负数预算是故意注入的故障，不是业务规则；应明确标注为'故障注入场景'或'预设缺陷'"
+    },
+    {
+      "id": "CORR-02",
+      "issue": "BR-12误写每个scope存储上限500",
+      "fix": "server.mjs stores.size >= 500 是全服务所有scenario:scope键数量上限，非每个scope的上限"
+    },
+    {
+      "id": "CORR-03",
+      "issue": "BR-15将JS字符串length阈值误写为字节",
+      "fix": "value.title.trim().length > 40 是字符数（Unicode code units），不是字节"
+    },
+    {
+      "id": "CORR-04",
+      "issue": "Q-05声称实现无上限但Number.isSafeInteger有安全整数边界",
+      "fix": "应明确预算受Number.isSafeInteger约束，安全整数范围为±9007199254740991"
+    }
+  ]
+}
