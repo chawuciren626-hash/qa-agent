@@ -15,6 +15,7 @@ import { executionInputs } from './safety-fixtures.mjs';
 import { zipFixture, resultArtifacts, designArtifacts } from './artifact-fixtures.mjs';
 import { reconcileHandoff } from '../../scripts/controller-handoff.mjs';
 import { guardControllerTool } from '../../scripts/controller-tool-guard.mjs';
+import { guardChildTool } from '../../scripts/child-tool-guard.mjs';
 import { probePython } from '../../scripts/command-runtime.mjs';
 import { scriptTarget } from '../../scripts/command-runtime.mjs';
 import { extendRunPlan } from '../../scripts/run-plan-extension.mjs';
@@ -39,6 +40,17 @@ function fixture() {
   return {id,agentRoot,run_id,execute};
 }
 
+test('non-CSS sequence targets are rejected before launching and never stop the controller',async()=>{
+  const f=fixture();
+  const result=await f.execute({action:'browser_task',run_id:f.run_id,operation:{type:'sequence',request_id:'batch',observed_request_id:'snapshot',steps:[
+    {type:'fill',request_id:'fill',target:{by:'role',value:'textbox'},value:'synthetic'},
+    {type:'assert',request_id:'assert',target:{by:'role',value:'textbox'},condition:'value',value:'synthetic',case_id:'C1',title:'Value',expected:'synthetic'}
+  ]}});
+  assert.equal(result.status,'rejected');assert.equal(result.classification,'input_rejected');assert.match(result.error,/CSS targets/);
+  assert.equal(result.recovery.category,'input_correction');assert.equal(result.command_id,undefined);
+  assert.equal(readControllerSession(root,f.id).status,'ready');
+});
+
 test('unknown run identifiers are correctable before work while a missing existing manifest remains a fault',async()=>{
   const f=fixture();
   const created=await f.execute({action:'create_run'});
@@ -54,7 +66,10 @@ test('unknown run identifiers are correctable before work while a missing existi
   mkdirSync(resolve(root,'output/runs',broken));
   const result=await f.execute({action:'export_test_cases',run_id:broken});
   assert.notEqual(result.classification,'input_rejected');
-  assert.equal(readControllerSession(root,f.id).status,'stopped');
+  assert.equal(result.recovery.category,'artifact_revision');
+  const state=readControllerSession(root,f.id);
+  assert.equal(state.status,'ready');
+  assert.ok(state.events.some(event=>event.type==='command_failed' && event.failure.error===result.error));
 });
 
 test('same user turn reuses its run, including concurrent requests and internal hook returns',async()=>{
@@ -258,7 +273,7 @@ test('diagnosis remains read-only and revision gets a new generation budget with
   const generated=await f.execute({action:'generate_analysis',run_id:f.run_id});
   assert.equal(generated.exit_code,0,JSON.stringify(generated));
   assert.notEqual(generated.task_key,paused.task_key);
-  assert.equal(readControllerSession(root,f.id).corrections[paused.task_key],4);
+  assert.equal(readControllerSession(root,f.id).corrections[paused.task_key],3);
   assert.deepEqual(f.read().confirmations ?? [],[]);
 });
 
@@ -456,7 +471,7 @@ test('audited stage recovery archives the reviewed draft and grants dispatch-loc
   await f.execute({action:'dispatch',run_id:f.run_id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis']});
   writeFileSync(ledgerPath,good);
   const generated=await f.execute({action:'generate_analysis',run_id:f.run_id});assert.equal(generated.exit_code,0,JSON.stringify(generated));
-  assert.notEqual(generated.task_key,old.task_key);assert.equal(readControllerSession(root,f.id).corrections[old.task_key],4);
+  assert.notEqual(generated.task_key,old.task_key);assert.equal(readControllerSession(root,f.id).corrections[old.task_key],3);
   assert.deepEqual(f.read().confirmations ?? [],[]);
 });
 
@@ -517,6 +532,111 @@ test('handoff retains native rejected write history without re-dispatch, but sti
   assert.equal(result.exit_code,0,JSON.stringify(result));
   assert.deepEqual(readFileSync(f.childFile),bytes);
   assert.equal(f.read().orchestration.events.filter(e=>e.type==='dispatched').length,before.orchestration.events.filter(e=>e.type==='dispatched').length);
+});
+
+test('blocked malformed-command draft can hand off existing verified artifacts without a new dispatch',async()=>{
+  const f=await returnedAnalysis('auto'),at=new Date().toISOString();
+  const rows=readFileSync(f.childFile,'utf8').trim().split(/\r?\n/).map(JSON.parse);
+  rows.splice(rows.length-1,0,
+    {timestamp:at,type:'model_msg',payload:{type:'tool_call',name:'exec_command',tool_call_id:'truncated',arguments:'{"cmd":"unfinished',stop_reason:'retryable'}},
+    {timestamp:at,type:'event_msg',payload:{type:'request_end',status:'retryable',error_code:'malformed',error_message:'Invalid streamed tool call arguments from OpenaiChatClient for tool "exec_command" (tool_call_id="truncated", length=18): Unterminated string'}},
+    {timestamp:at,type:'event_msg',payload:{type:'request_begin'}});
+  writeFileSync(f.childFile,rows.map(JSON.stringify).join('\n'));
+  const traceBefore=readFileSync(f.childFile),draft=readFileSync(resolve(f.dir,'analysis/requirement_analysis.md'));
+  const receipt={version:1,session_id:f.id,run_id:f.run_id,action:'handoff',status:'rejected',exit_code:2,at,task_key:`${f.run_id}:handoff:analysis`,classification:'input_rejected',error:'Stage handoff not ready: Child command arguments unreadable.',host_binding:{session_id:f.id,tool_call_id:'old-handoff'},recovery:null};
+  const base=resolve(root,'output/action-audit',f.id),path=resolve(base,`${randomUUID()}.json`);mkdirSync(base,{recursive:true});writeFileSync(path,JSON.stringify(receipt));
+  const history=[{timestamp:at,type:'model_msg',payload:{type:'tool_call',name:'exec_command',tool_call_id:'old-handoff'}},{timestamp:at,type:'model_msg',payload:{type:'tool_call_output',tool_call_id:'old-handoff',output:JSON.stringify({...receipt,action_receipt:path})}}];
+  writeFileSync(f.parentFile,readFileSync(f.parentFile,'utf8')+'\n'+history.map(JSON.stringify).join('\n'));
+  const blocked=await f.execute({action:'block',run_id:f.run_id,stage:'analysis',dispatch_id:f.read().stages.analysis.dispatch_id,reason:'Engineering handoff rejection'});
+  assert.equal(blocked.exit_code,0,JSON.stringify(blocked));
+  const before=f.read();
+  writeFileSync(resolve(f.dir,'analysis/requirement_analysis.md'),'invalid draft');
+  assert.equal((await f.execute(f.request)).exit_code,2);assert.deepEqual(f.read(),before);
+  writeFileSync(resolve(f.dir,'analysis/requirement_analysis.md'),draft);
+  const result=await f.execute(f.request);assert.equal(result.exit_code,0,JSON.stringify(result));
+  assert.equal(f.read().stages.analysis.status,'completed');
+  assert.ok(f.read().orchestration.events.at(-1).draft_delivery_reconciliation);
+  assert.equal(f.read().orchestration.events.filter(e=>e.type==='dispatched').length,before.orchestration.events.filter(e=>e.type==='dispatched').length);
+  assert.deepEqual(readFileSync(f.childFile),traceBefore);assert.deepEqual(readFileSync(resolve(f.dir,'analysis/requirement_analysis.md')),draft);
+});
+
+test('failed or blocked draft delivers corrected current evidence without error-text whitelist or new dispatch',async()=>{
+  for(const action of ['block','fail']) {
+    const f=await returnedAnalysis('auto');
+    const failed=await f.execute({action,run_id:f.run_id,stage:'analysis',dispatch_id:f.read().stages.analysis.dispatch_id,reason:'Temporary delivery transport failure'});
+    assert.equal(failed.exit_code,0,JSON.stringify(failed));
+    const original=readFileSync(resolve(f.dir,'analysis/requirement_analysis.md'));
+    const before=f.read();
+    const completed=await f.execute(f.request);
+    assert.equal(completed.exit_code,0,JSON.stringify(completed));
+    assert.equal(f.read().stages.analysis.status,'completed');
+    assert.equal(f.read().orchestration.events.filter(e=>e.type==='dispatched').length,1);
+    assert.deepEqual(f.read().orchestration.events.slice(0,before.orchestration.events.length),before.orchestration.events);
+    assert.deepEqual(readFileSync(resolve(f.dir,'analysis/requirement_analysis.md')),original);
+    assert.equal((await f.execute(f.request)).data.already_recorded,true);
+  }
+});
+
+test('native pre-execution CLI rejection then verified validation permits handoff without rewriting history',async()=>{
+  const f=await returnedAnalysis();
+  const rows=readFileSync(f.childFile,'utf8').trim().split(/\r?\n/).map(JSON.parse);
+  const cmd='node scripts/project-action.mjs validate_artifacts --stage=analysis';
+  const denied=guardChildTool(root,{tool_name:'exec_command',arguments:{cmd}},{agentId:'requirement_analysis_agent',agentRoot:f.agentRoot});
+  assert.equal(denied.decision,'deny');
+  const validated=await f.execute({action:'validate_artifacts',run_id:f.run_id,stage:'analysis'});
+  assert.equal(validated.exit_code,0);
+  const history=[
+    {type:'model_msg',payload:{type:'tool_call',name:'exec_command',tool_call_id:'bad-cli',arguments:{cmd}}},
+    {type:'event_msg',payload:{type:'approval_decision',tool_call_id:'bad-cli',decision:'deny'}},
+    {type:'model_msg',payload:{type:'tool_call_output',tool_call_id:'bad-cli',stop_reason:'aborted',output:`Tool call denied by the qa-stage-boundary hook: ${denied.reason}`}},
+    {type:'model_msg',payload:{type:'tool_call',name:'exec_command',tool_call_id:'corrected-cli',arguments:{cmd:`node scripts/project-action.mjs execute --controller-session=${f.id} --request=output/action-requests/valid.json`}}},
+    {type:'model_msg',payload:{type:'tool_call_output',tool_call_id:'corrected-cli',stop_reason:'completed',output:JSON.stringify(validated)}}
+  ].map(r=>({timestamp:rows.at(-1).timestamp,...r}));
+  rows.splice(rows.length-1,0,...history);
+  writeFileSync(f.childFile,rows.map(r=>JSON.stringify(r)).join('\n'));
+  const original=readFileSync(f.childFile);
+  const result=await f.execute(f.request);
+  assert.equal(result.exit_code,0,JSON.stringify(result));
+  assert.equal(readControllerSession(root,f.id).status,'ready');
+  assert.equal(f.read().orchestration.events.filter(e=>e.type==='dispatched').length,1);
+  assert.deepEqual(readFileSync(f.childFile),original);
+});
+
+test('complete prechecks failed child evidence, wrong identity and invalid artifacts without stopping the session',async()=>{
+  const f=await returnedAnalysis();
+  const request={...f.dispatched.completion_template};
+  const child=readFileSync(f.childFile,'utf8'),rows=child.split(/\r?\n/).map(JSON.parse);
+  const failed=[
+    {type:'model_msg',payload:{type:'tool_call',name:'exec_command',tool_call_id:'historical-cli',arguments:{cmd:'node scripts/project-action.mjs validate_artifacts --stage=analysis'}}},
+    {type:'model_msg',payload:{type:'tool_call_output',tool_call_id:'historical-cli',stop_reason:'fatal',output:JSON.stringify({status:'input_rejected',exit_code:2,error:'Unknown, empty or duplicate option'})}}
+  ].map(r=>({timestamp:rows.at(-1).timestamp,...r}));
+  rows.splice(rows.length-1,0,...failed);
+  writeFileSync(f.childFile,rows.map(r=>JSON.stringify(r)).join('\n'));
+  const before=f.read();
+  for(const action of [f.request,request]) {
+    const result=await f.execute(action);
+    assert.equal(result.exit_code,2,JSON.stringify(result));
+    assert.equal(result.recovery.category,'handoff_correction');
+    assert.equal(readControllerSession(root,f.id).status,'ready');
+    assert.deepEqual(f.read(),before);
+    assert.equal(result.command_id,undefined);
+  }
+  // Removing only synthetic fixture history allows the negative identity checks below.
+  writeFileSync(f.childFile,child);
+  for(const bad of [{...request,dispatch_id:randomUUID()},{...request,child_session:'session-2026-10-09-00-00-01-ffff'}]) {
+    assert.equal((await f.execute(bad)).exit_code,2);
+    assert.equal(readControllerSession(root,f.id).status,'ready');
+    assert.deepEqual(f.read(),before);
+  }
+  const file=resolve(f.dir,'analysis/requirement_analysis.md'),bytes=readFileSync(file);
+  writeFileSync(file,'invalid draft');
+  assert.equal((await f.execute(request)).exit_code,2);
+  assert.equal(readControllerSession(root,f.id).status,'ready');
+  assert.deepEqual(f.read(),before);
+  writeFileSync(file,bytes);
+  const result=await f.execute(request);
+  assert.equal(result.exit_code,0,JSON.stringify(result));
+  assert.equal(f.read().stages.analysis.status,'completed');
 });
 
 test('stop hook performs verified bookkeeping and then waits, without approval or repeat events',async()=>{
@@ -635,7 +755,7 @@ test('every non-execution stage receives new validation and export budgets only 
     const checked=await f.execute({action:'validate_artifacts',run_id:f.run_id,stage});
     assert.equal(checked.exit_code,0,JSON.stringify(checked));
     assert.notEqual(checked.task_key,oldKey);
-    assert.equal(readControllerSession(root,f.id).corrections[oldKey],4);
+    assert.equal(readControllerSession(root,f.id).corrections[oldKey],3);
     const state=JSON.parse(readFileSync(f.path));
     assert.equal(revisedDispatchId(state,stage,f.id),next.data.event.dispatch_id);
     assert.equal(revisedDispatchId(state,stage,'other-parent'),null);
@@ -805,13 +925,13 @@ test('draft exports reject current decisions and foreign dispatches and stop aft
     writeFileSync(f.path,JSON.stringify(m));
     const old=readFileSync(resolve(f.dir,'design/test_cases.xlsx'));
     const result=await f.execute({action:'export_test_cases',run_id:f.run_id});
-    assert.notEqual(result.exit_code,0);assert.equal(result.recovery, null);
+    assert.notEqual(result.exit_code,0);assert.equal(result.recovery,null);
     assert.deepEqual(readFileSync(resolve(f.dir,'design/test_cases.xlsx')),old);
   }
   const f=await artifactFixture('test_cases');writeFileSync(resolve(f.dir,'design/test_cases.json'),'bad');
   for(let i=1;i<=3;i++) {
     const failed=await f.execute({action:'export_test_cases',run_id:f.run_id});
-    assert.equal(failed.recovery.failure_number,i);assert.equal(failed.recovery.retry_allowed,true);
+    assert.equal(failed.recovery.failure_number,i);assert.equal(failed.recovery.retry_allowed,i<3);
   }
   const denied=await f.execute({action:'export_test_cases',run_id:f.run_id});assert.equal(denied.recovery.stalled,true);
 });
@@ -1193,7 +1313,7 @@ test('unreadable request has an isolated bounded budget and clear inline JSON di
   for(let i=1;i<=3;i++) {
     const bad=await executeAction(root,f.id,()=>'{broken',{agentRoot:f.agentRoot});
     assert.equal(bad.recovery.category,'request_correction');
-    assert.equal(bad.recovery.retry_allowed,true);
+    assert.equal(bad.recovery.retry_allowed,i<3);
   }
   assert.equal((await executeAction(root,f.id,()=>'{broken',{agentRoot:f.agentRoot})).recovery.stalled,true);
   assert.equal((await f.execute({action:'create_run',run_id:f.run_id})).exit_code,0);
@@ -1242,7 +1362,11 @@ test('dispatch catalog explains optional mode and normal analysis dispatch succe
   assert.match(result.delegation.prompt,/任务：需求分析/);
   assert.match(result.delegation.prompt,/使用中文/);
   assert.doesNotMatch(result.delegation.prompt,/You are|Before any work|Do not create/);
-  assert.ok(result.delegation.prompt.includes(result.delegation_contract_path));
+  assert.ok(result.delegation.prompt.includes(`output/delegations/${result.data.event.dispatch_id}.prompt.txt`));
+  assert.ok(!result.delegation.prompt.includes('\\'));
+  assert.ok(!result.delegation.prompt.includes(JSON.stringify(result.completion_template.artifacts)));
+  assert.match(result.dispatch_note,/直接将返回的短delegation/);
+  assert.match(contractText(result),/qa_request.*不另写请求文件/);
   const command=actionCommand(catalog.examples.prepare_execution,f.id);
   assert.ok(command.args.includes('--mode=prepare'));
 });
@@ -1275,7 +1399,7 @@ test('input correction budget is scoped to one action and does not stop unrelate
   for (let i=1;i<=3;i++) {
     const bad=await f.execute({action:'plan_run',run_id:f.run_id});
     assert.equal(bad.recovery.failure_number,i);
-    assert.equal(bad.recovery.retry_allowed,true);
+    assert.equal(bad.recovery.retry_allowed,i<3);
     assert.equal((await f.execute({action:'run_status',run_id:f.run_id})).exit_code,0);
   }
   const paused=await f.execute({action:'plan_run',run_id:f.run_id,stages:['analysis']});

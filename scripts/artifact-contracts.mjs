@@ -3,8 +3,8 @@ import { resolve } from 'node:path';
 import { resourcePath } from './directory-context.mjs';
 import { assertExecutionTargets, executionScriptFiles } from './execution-targets.mjs';
 import { isDeepStrictEqual } from 'node:util';
-import Ajv2020 from 'ajv/dist/2020.js';
-import xlsx from 'xlsx';
+import { schemaCache } from './versioned-schema-cache.mjs';
+import xlsx from './spreadsheet-runtime.mjs';
 import { inspectDesign, readRunFile, runDirectory, validatePlanDesign } from './design-quality.mjs';
 import { validateExecutionPlan } from './execution-plan.mjs';
 import { loadLatestExecution, verifyCurrentAttempt } from './execution-attempts.mjs';
@@ -30,16 +30,15 @@ export function stageRequiredArtifacts(root, runId, stage, mode = 'execute') {
   }
   return requiredArtifacts[stage];
 }
-const ajv = new Ajv2020({ allErrors: true, strict: false });
-const validators = new Map();
+const compiledSchema = schemaCache();
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const sameSet = (a, b) => isDeepStrictEqual([...a].sort(), [...b].sort());
 
 export function validateSchema(name, value, label = name) {
-  if (!validators.has(name)) validators.set(name, ajv.compile(JSON.parse(readFileSync(new URL(`../schemas/${name}.schema.json`, import.meta.url), 'utf8'))));
-  const validate = validators.get(name);
-  assert(validate(value), `${label}: ${ajv.errorsText(validate.errors, { separator: '; ' })}`);
+  assert(/^[a-z][a-z0-9_-]*$/.test(name),'Invalid schema name');
+  const compiled=compiledSchema(new URL(`../schemas/${name}.schema.json`,import.meta.url));
+  assert(compiled.validate(value), `${label}: ${compiled.errors()}`);
 }
 
 // This checks package structure, not desktop rendering or the truth of document prose.

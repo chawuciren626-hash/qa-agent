@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { within } from './application-data.mjs';
 import { probePython } from './command-runtime.mjs';
+import { packageMetadata } from './runtime-dependencies.mjs';
 
 export function prepareTestWorkspace(engine) {
   const parent=realpathSync(tmpdir());
@@ -41,26 +42,27 @@ export function prepareTestWorkspace(engine) {
 
 export function selectEngineeringTests(engine, args) {
   const available=readdirSync(resolve(engine,'tests/acceptance')).filter(name=>/^[a-z0-9-]+\.test\.mjs$/.test(name)).sort().map(name=>`tests/acceptance/${name}`);
-  let suite=null,list=false;const explicit=[];
+  let suite=null,list=false,coverage=false;const explicit=[];
   for(const arg of args) {
     if(arg==='--list' && !list) list=true;
+    else if(arg==='--coverage' && !coverage) coverage=true;
     else if(arg.startsWith('--suite=') && suite===null) suite=arg.slice(8);
     else if(available.includes(arg) && !explicit.includes(arg)) explicit.push(arg);
     else throw new Error(`Unknown, duplicate or unavailable test argument: ${arg}`);
   }
   if(suite!==null && (!['all','core','browser'].includes(suite) || explicit.length)) throw new Error('Use one suite (all/core/browser) OR explicit test files');
   suite ??= explicit.length?'selected':'all';
-  const browser=file=>['tests/acceptance/browser-task.test.mjs','tests/acceptance/independent-task.test.mjs'].includes(file);
+  const browser=file=>['tests/acceptance/browser-task.test.mjs','tests/acceptance/browser-ui-assertions.test.mjs','tests/acceptance/browser-worker-exit.test.mjs','tests/acceptance/independent-task.test.mjs'].includes(file);
   const files=explicit.length?explicit:available.filter(file=>suite==='all' || (suite==='browser'?browser(file):!browser(file)));
   if(!files.length) throw new Error('Selected suite has no tests');
-  return {suite,files,list};
+  return {suite,files,list,coverage};
 }
 
 export function engineeringEnvironment(engine, files, env=process.env) {
   const [major,minor]=process.versions.node.split('.').map(Number);
   if(major<20 || (major===20 && minor<11)) throw new Error('Engineering tests require Node.js >=20.11');
   const require=createRequire(resolve(engine,'package.json'));
-  const packages=Object.fromEntries(['@playwright/test','ajv','xlsx','xmind'].map(name=>[name,require(`${name}/package.json`).version]));
+  const packages=Object.fromEntries(['@playwright/test','ajv','xlsx','xmind'].map(name=>[name,packageMetadata(engine,name).version]));
   const git=spawnSync('git',['--version'],{encoding:'utf8',windowsHide:true,timeout:10000});
   if(git.status!==0) throw new Error('Git is required by engineering fixtures');
   const python=probePython(env);
@@ -81,7 +83,7 @@ export async function runEngineeringTests(engine,args) {
   if(selection.list) {console.log(JSON.stringify(selection,null,2));return 0;}
   const report=resolve(engine,'output/engineering-tests',`${new Date().toISOString().replace(/[:.]/g,'-')}-${randomUUID()}`);
   mkdirSync(report,{recursive:true});
-  const summary={version:1,suite:selection.suite,files:selection.files,started_at:new Date().toISOString(),status:'preparing',exit_code:1,report_dir:report};
+  const summary={version:1,suite:selection.suite,files:selection.files,coverage_requested:selection.coverage,started_at:new Date().toISOString(),status:'preparing',exit_code:1,report_dir:report};
   let sandbox;
   try {
     const runtime=engineeringEnvironment(engine,selection.files);summary.runtime=runtime.metadata;
@@ -93,7 +95,7 @@ export async function runEngineeringTests(engine,args) {
     const stderr=createWriteStream(resolve(report,'stderr.log'));
     let logError;
     const logs=[tap,stderr].map(stream=>new Promise(done=>{stream.once('finish',done);stream.on('error',error=>{logError=error;done();});}));
-    const child=spawn(process.execPath,['--test','--test-concurrency=2','--test-reporter=tap','--test-reporter-destination=stdout','--test-reporter=junit',`--test-reporter-destination=${resolve(report,'results.xml')}`,...selection.files],{cwd:sandbox.root,env:sandbox.env,stdio:['ignore','pipe','pipe'],windowsHide:true});
+    const child=spawn(process.execPath,['--test',...(selection.coverage?['--experimental-test-coverage']:[]),'--test-concurrency=2','--test-reporter=tap','--test-reporter-destination=stdout','--test-reporter=junit',`--test-reporter-destination=${resolve(report,'results.xml')}`,...selection.files],{cwd:sandbox.root,env:sandbox.env,stdio:['ignore','pipe','pipe'],windowsHide:true});
     child.stdout.on('data',data=>{process.stdout.write(data);tap.write(data);});
     child.stderr.on('data',data=>{process.stderr.write(data);stderr.write(data);});
     try { summary.exit_code=await new Promise((done,reject)=>{child.once('error',reject);child.once('close',(code)=>done(code ?? 1));}); }

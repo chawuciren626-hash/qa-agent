@@ -12,7 +12,7 @@ test('all tests are discovered exactly once and core/browser partition the defau
   assert.deepEqual([...core.files,...browser.files].sort(),all.files);
   assert.equal(new Set(all.files).size,all.files.length);
   for(const name of ['manifest-lock','delegation-binding','engineering-runner','trace-profile']) assert.ok(all.files.includes(`tests/acceptance/${name}.test.mjs`));
-  assert.deepEqual(browser.files,['tests/acceptance/browser-task.test.mjs','tests/acceptance/independent-task.test.mjs']);
+  assert.deepEqual(browser.files,['tests/acceptance/browser-task.test.mjs','tests/acceptance/browser-ui-assertions.test.mjs','tests/acceptance/browser-worker-exit.test.mjs','tests/acceptance/independent-task.test.mjs']);
 });
 
 test('list is read-only and invalid selectors cannot silently reduce test coverage',()=>{

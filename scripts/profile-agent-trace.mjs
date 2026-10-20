@@ -1,6 +1,10 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { redactBrowserText } from './browser-privacy.mjs';
+
+const safeLabel=value=>typeof value==='string' && value.length<=160 && /^[A-Za-z0-9][A-Za-z0-9_./:-]*$/.test(value) && redactBrowserText(value)===value?value:'redacted';
+const safeCount=n=>typeof n==='number' && Number.isSafeInteger(n) && n>=0;
 
 export function intervalUnion(intervals) {
   const merged=[];
@@ -16,13 +20,13 @@ const overlap=(a,b)=>duration(a.flatMap(([x,y])=>b.map(([u,v])=>[Math.max(x,u),M
 
 export function profileAgentTrace(rows) {
   const ordered=rows.map((row,i)=>({row,i,t:Date.parse(row.timestamp)})).filter(r=>Number.isFinite(r.t)).sort((a,b)=>a.t-b.t||a.i-b.i);
-  const requests=[],tools=[],pending=new Map(),byTool={},models=new Map(),warnings=[];
+  const requests=[],tools=[],pending=new Map(),byTool=Object.create(null),models=new Map(),warnings=[];
   let requestStart=null,requestCount=0,usageCount=0,failedTools=0;
   const tokens={};
   for(const {row,t} of ordered) {
     const p=row.payload??{};
     if(row.type==='session_meta') {
-      const model={provider:p.provider??null,model_id:p.model_id??null,context_window:p.model_context_window??null};
+      const model={provider:p.provider==null?null:safeLabel(p.provider),model_id:p.model_id==null?null:safeLabel(p.model_id),context_window:safeCount(p.model_context_window)?p.model_context_window:null};
       models.set(JSON.stringify(model),model);
     }
     if(p.type==='request_begin') {
@@ -39,16 +43,22 @@ export function profileAgentTrace(rows) {
       // Do not sum cumulative session usage, or assume provider token categories are disjoint.
       for(const key of ['input','output','cache_read','cache_write','reasoning','total']) {
         const n=p.request[key];
-        if(Number.isFinite(n)&&n>=0) tokens[key]=(tokens[key]??0)+n;
+        if(safeCount(n) && tokens[key]!==null) {
+          const sum=(tokens[key]??0)+n;
+          if(safeCount(sum)) tokens[key]=sum;
+          else {tokens[key]=null;warnings.push('token_sum_overflow');}
+        }
       }
     }
     if(p.type==='tool_call') {
+      if(typeof p.tool_call_id!=='string' || !p.tool_call_id || p.tool_call_id.length>256) {warnings.push('invalid_tool_id');continue;}
       if(pending.has(p.tool_call_id)) warnings.push('duplicate_pending_tool_id');
-      pending.set(p.tool_call_id,{start:t,name:p.name??'unknown'});
+      if(pending.has(p.tool_call_id)) {pending.set(p.tool_call_id,null);continue;}
+      pending.set(p.tool_call_id,{start:t,name:p.name==null?'unknown':safeLabel(p.name)});
     }
     if(p.type==='tool_call_output') {
       const call=pending.get(p.tool_call_id);
-      if(!call) {warnings.push('tool_output_without_call');continue;}
+      if(!call) {pending.delete(p.tool_call_id);warnings.push('tool_output_without_call');continue;}
       pending.delete(p.tool_call_id);
       const item=byTool[call.name]??={calls:0,failed_stop:0,intervals:[]};
       item.calls++;item.intervals.push([call.start,t]);tools.push([call.start,t]);
@@ -66,7 +76,8 @@ export function profileAgentTrace(rows) {
     outside_recorded_request_and_tools_ms:Math.max(0,wall-covered),
     tool_calls:tools.length,failed_tool_stops:failedTools,
     by_tool:Object.fromEntries(Object.entries(byTool).map(([name,v])=>[name,{calls:v.calls,failed_stop:v.failed_stop,wall_ms:duration(v.intervals)}])),
-    request_usage_records:usageCount,reported_tokens:usageCount?tokens:null,warnings:[...new Set(warnings)],
+    request_usage_records:usageCount,reported_tokens:Object.keys(tokens).length?tokens:null,warnings:[...new Set(warnings)],
+    pure_model_ms:null,queue_ms:null,estimated_cost:null,
     interpretation:'Per-session intervals only. Request-without-tools includes model, network and orchestration time, not pure inference or TTFT. Parent run_subagent waits overlap child execution; do not add session wall times. Tool failures count fatal/aborted stops, not every business or structured error. Token fields are provider-reported; missing is unknown, not zero. No prompts, reasoning text, tool arguments or outputs are retained.'};
 }
 

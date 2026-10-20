@@ -5,8 +5,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { patchServer, patchDeliveryBundle, patchDeliveryServer } from './penguin-runtime-patches.mjs';
 import { patchReliabilityServer } from './penguin-reliability-patches.mjs';
-import { patchClientBundle, clientModule } from './client-ui-patches.mjs';
+import { patchClientBundle, clientModule, brandDataUrl } from './client-ui-patches.mjs';
 import { patchLibraryServer } from './client-library.mjs';
+import { patchHostObservability } from './host-observability.mjs';
+import { patchHumanActions } from './human-action-patches.mjs';
 
 const hash = bytes => bytes === null ? null : createHash('sha256').update(bytes).digest('hex');
 const read = path => existsSync(path) ? readFileSync(path) : null;
@@ -128,16 +130,16 @@ function plan(app, root) {
     });
   } else originals = legacyOriginals(app, paths);
   if (originals.slice(0, 3).some(bytes => bytes === null)) throw new Error('Missing original application files');
-  const module = Buffer.from(clientModule(...['penguin/ui/delivery-ui.mjs', 'penguin/ui/workspace-ui.mjs', 'penguin/ui/workspace-ui.css'].map(path => readFileSync(resolve(root, path), 'utf8'))));
+  const module = Buffer.from(clientModule(...['penguin/ui/delivery-ui.mjs', 'penguin/ui/workspace-ui.mjs', 'penguin/ui/workspace-ui.css', 'penguin/ui/aith-logo.svg', 'penguin/ui/aith-logo-light.svg'].map(path => readFileSync(resolve(root, path), 'utf8'))));
   const bundle = Buffer.from(patchClientBundle(patchDeliveryBundle(originals[2].toString('utf8'), hash(module).slice(0, 16))).replace('from "./qa-delivery-ui.js"', `from "./qa-delivery-ui.js?v=${hash(module).slice(0, 16)}"`));
   const sourceIndex = originals[1].toString('utf8'), anchor = `src="/assets/${asset}"`;
   if (sourceIndex.split(anchor).length !== 2) throw new Error('Original application index anchor not unique');
   const adapter = pathToFileURL(resolve(root, 'scripts/penguin-workspace-adapter.mjs')).href;
   const opener = pathToFileURL(resolve(root, 'scripts/open-deliverable.mjs')).href;
   const library = pathToFileURL(resolve(root, 'scripts/client-library.mjs')).href;
-  const next = [Buffer.from(patchLibraryServer(patchReliabilityServer(patchDeliveryServer(patchServer(originals[0].toString('utf8'), adapter), opener)), library)),
-    Buffer.from(sourceIndex.replace(anchor, `src="/assets/${asset}?qa-delivery=${hash(bundle).slice(0, 16)}"`).replace('<title>PenguinHarness</title>', '<title>AITestHarness</title>')), bundle, module];
-  const runtime = Object.fromEntries(['scripts/penguin-workspace-adapter.mjs', 'scripts/open-deliverable.mjs', 'scripts/client-library.mjs'].map(path => [path, hash(readFileSync(resolve(root, path)))]));
+  const next = [Buffer.from(patchHumanActions(patchHostObservability(patchLibraryServer(patchReliabilityServer(patchDeliveryServer(patchServer(originals[0].toString('utf8'), adapter), opener)), library),pathToFileURL(resolve(root,'scripts/host-observability.mjs')).href),pathToFileURL(resolve(root,'scripts/browser-human-action.mjs')).href)),
+    Buffer.from(sourceIndex.replace(anchor, `src="/assets/${asset}?qa-delivery=${hash(bundle).slice(0, 16)}"`).replace('<title>PenguinHarness</title>', '<title>AITestHarness</title>').replace('href="/penguin-logo.svg"', 'href="'+brandDataUrl(readFileSync(resolve(root, 'penguin/ui/aith-logo.svg'), 'utf8'))+'"')), bundle, module];
+  const runtime = Object.fromEntries(['scripts/penguin-workspace-adapter.mjs', 'scripts/open-deliverable.mjs', 'scripts/client-library.mjs','scripts/host-observability.mjs','scripts/protected-inputs.mjs','scripts/browser-human-action.mjs'].map(path => [path, hash(readFileSync(resolve(root, path)))]));
   return { paths, originals, next, runtime, record, version };
 }
 

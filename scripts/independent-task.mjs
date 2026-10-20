@@ -1,13 +1,14 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import xlsx from 'xlsx';
+import xlsx from './spreadsheet-runtime.mjs';
 import { readRunFile, runDirectory, inspectCaseData } from './design-quality.mjs';
 import { CommandUsageError } from './command-contracts.mjs';
 
 import { independentArtifacts, stageDefinition } from './stage-registry.mjs';
 import { inspectExpectationBasis, expectationBasisRows, basisHeaders } from './expectation-basis.mjs';
 import { usesBrowserArtifacts, browserCoverage } from './browser-lifecycle.mjs';
+import { verifyRecoveredBrowserResults } from './browser-recovery-delivery.mjs';
 export const taskArtifacts = independentArtifacts;
 export const taskResultPath = stage => stageDefinition(stage).task_result;
 export function isIndependent(root, runId) {
@@ -132,23 +133,37 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
       if(observation.mode==='read_only_navigation') assert(!existsSync(resolve(dir,'execution/browser-state.json')),'Read-only exploration cannot replace an interactive browser run; preserve functional evidence and finish its browser');
       const dispatch=manifest.orchestration?.events?.filter(e=>e.stage==='execution' && e.type==='dispatched').at(-1);
       assert(!existsSync(resolve(dir,'execution/exploration.lock')),'Exploration has not closed cleanly');
-      assert(observation.run_id===runId && observation.dispatch_id===dispatch?.dispatch_id && ['read_only_navigation','interactive_browser'].includes(observation.mode),'Exploration belongs to another task');
+      assert(observation.run_id===runId && observation.dispatch_id===dispatch?.dispatch_id && ['read_only_navigation','interactive_browser','recovered_browser'].includes(observation.mode),'Exploration belongs to another task');
       assert(/^[a-f0-9-]{36}$/.test(observation.command_id ?? ''),'Exploration needs controlled command provenance');
       const commandPath=`audit/commands/${observation.command_id}`;
       const command=json(`${commandPath}/command.json`);
       const logged=JSON.parse(capture(`${commandPath}/command.log`).toString('utf8').trim());
-      assert(command.script===(observation.mode==='interactive_browser'?'browser-task.mjs':'explore-task-url.mjs') && command.run_id===runId && command.status==='completed' && command.result?.termination_confirmed===true,'Exploration command has not completed cleanly');
+      assert(command.script===(observation.mode==='read_only_navigation'?'explore-task-url.mjs':'browser-task.mjs') && command.run_id===runId && command.status==='completed' && command.result?.termination_confirmed===true,'Exploration command has not completed cleanly');
       assert(logged.exploration_sha256===readRunFile(dir,'execution/exploration.json').sha256,'Exploration differs from controlled command output');
       assert(readRunFile(dir,observation.source_path).sha256===observation.source_sha256,'Exploration source changed');capture(observation.source_path);
       assert(Array.isArray(observation.evidence) && observation.evidence.length>=2,'Missing exploration evidence');
       for(const f of observation.evidence) {assert(readRunFile(dir,f.path).sha256===f.sha256,'Exploration evidence changed');capture(f.path);}
-      if(observation.mode==='interactive_browser') {
+      if(observation.mode==='recovered_browser') {
+        verifyRecoveredBrowserResults(dir,result);
+        assert(observation.result_origin==='recovered' && observation.status==='partial' && observation.partial===true && observation.finished_at===null && observation.browser_closed==='unknown','Recovered execution must remain partial without a fabricated finish');
+        assert(logged.status==='recovered_partial' && isDeepStrictEqual(logged.summary,result.summary),'Recovery command output mismatch');
+        assert(isDeepStrictEqual(json('execution/browser-recovery.json'),result.recovery),'Recovery index differs from source evidence');
+        assert(isDeepStrictEqual(observation.unknown_operations,result.unknown_operations) && isDeepStrictEqual(observation.recovery_problems,result.recovery.problems),'Recovery limitations differ from actual evidence');
+        assert(result.run_id===runId && result.invocation_id===observation.invocation_id && task.outcome==='partial','Recovered execution identity or partial outcome mismatch');
+        for(const row of result.cases) row.evidence_paths.forEach(capture);
+        executionOutcome={status:'blocked',disposition:'report_actual_assertions',scope:'recovered_partial_browser_task'};
+        if(browserFlow) {
+          const coverage=json('execution/browser-coverage.json');
+          assert(isDeepStrictEqual(coverage,browserCoverage(dir,manifest,result)),'Recovered coverage differs from evidence');
+          assert(observation.evidence.some(f=>f.path==='execution/browser-coverage.json'),'Recovered coverage lacks provenance');
+        }
+      } else if(observation.mode==='interactive_browser') {
         assert(observation.status==='closed' && logged.status==='closed','Interactive browser is not closed');
         assert(result.run_id===runId && result.invocation_id===observation.invocation_id && Array.isArray(result.cases),'Interactive result identity mismatch');
         const ids=new Set();
         for(const row of result.cases) {
           const responseAssertion=row.verification_scope?.layer==='api_contract';
-          assert(text(row.case_id) && !ids.has(row.case_id) && (responseAssertion || row.evidence_mode==='simulated'?['passed','failed','blocked']:['passed','failed']).includes(row.status),'Invalid/duplicate interactive assertion');ids.add(row.case_id);
+          assert(text(row.case_id) && !ids.has(row.case_id) && (responseAssertion || row.evidence_mode==='simulated' || row.verdict_reason?['passed','failed','blocked']:['passed','failed']).includes(row.status),'Invalid/duplicate interactive assertion');ids.add(row.case_id);
           assert(strings(row.evidence_paths) && row.evidence_paths.length>=2,'Missing browser assertion evidence');
           const receipt=json(row.evidence_paths[0]);
           const assertionKey=responseAssertion?'response_assertion':'assertion';
@@ -193,6 +208,15 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
       const earlierDesign=verified.find(f=>f.path==='design/test_cases.json');
       if(earlierDesign) {assert(readRunFile(dir,earlierDesign.path).sha256===earlierDesign.sha256,'Earlier case design changed');capture(earlierDesign.path);}
       const result=json('report/reportable-results.json'), issues=json('report/issues.json');
+      if(verified.some(f=>f.path==='execution/test_results.json')) {
+        const actual=json('execution/test_results.json');
+        if(actual.result_origin==='recovered') {
+          verifyRecoveredBrowserResults(dir,actual);
+          assert(task.outcome==='partial','Recovered execution requires partial report delivery');
+          assert(isDeepStrictEqual(result.summary,actual.summary) && result.cases?.length===actual.cases.length && actual.cases.every(row=>result.cases.some(r=>r.case_id===row.case_id && r.status===row.status && isDeepStrictEqual(r.evidence_paths,row.evidence_paths))),'Report changed recovered execution facts');
+          if(!draft) assert(result.result_origin==='recovered' && result.status==='partial' && result.finished_at===null,'Report must retain recovered partial provenance');
+        }
+      }
       if(browserFlow) {
         const actual=json('execution/test_results.json'),coverage=json('execution/browser-coverage.json');
         for(const row of actual.cases) assert(result.cases?.some(r=>r.case_id===row.case_id && r.status===row.status && isDeepStrictEqual(r.evidence_paths,row.evidence_paths)),`Report changed or omitted browser assertion: ${row.case_id}`);
@@ -262,6 +286,9 @@ export function independentPrompt(stage,runId,{browserFlow=false}={}) {
     stage==='execution'?'For a requested feature test use browser_task, not reachability-only explore_url. Read catalog field_rules.browser_task. Start from the supplied URL and summarize only the actual user-authorized scope; no environment JSON, prior cases or repeated execution approval. Snapshot before choosing locators; fill/click/select/check within the requested feature; assert actual UI results with unique case IDs. Never expand into unrelated deletions, account permissions, real notifications/payments or destructive production actions without explicit user permission. Current-session credentials override history; mark sensitive fills secret=true, never echo values. For CAPTCHA/MFA use pause, keep the browser open, return ONLY the human action and current progress; do not finish/fail/block/validate/handoff while waiting. After mode=resume_browser, use snapshot in the SAME browser (never start/login again). Reuse request_id after transport uncertainty; never replay an uncertain submission under a new ID. Observe the outcome and finish partial if it cannot be resolved. finish closes the browser and writes actual assertion results; then write execution-task.json (partial if unfinished), validate_artifacts and return immediately to the controller. Use explore_url only when the user requests read-only exploration. Do not inspect spreadsheet/report libraries, generate design/ or report/ files, create test cases or reports, or write helper scripts. Those source-request sentences belong to separately assigned test_cases/report Agents. No package installs, ad hoc scripts, lifecycle prerequisites or technical unlock documents.':'',
     stage==='defects'?'Write defect-records.json {records:[{defect_id,title,category,evidence_refs,steps_to_reproduce,expected_result,actual_result,impact,recommendation}]}. Use needs_review when evidence is insufficient. Do not call lifecycle normalize_defects or invent an execution attempt.':'',
     stage==='report'?'Use ONLY the supplied inputs and available_sources; absent design/defect/lifecycle files are not prerequisites and must not be probed. Write reportable-results.json with this run_id, cases:[{case_id,title,status,evidence_paths}], summary:{total,passed,failed,blocked,skipped}; report/issues.json is a TOP-LEVEL array (empty: []), never {issues:[]} or {bugs:[]}. Refer to actual supplied evidence for every executed result; no results means all counts zero and explicit not executed, never fabricate passing results. Label supplied historical results as imported, not tests executed by you. Write Markdown and report-task.json, then diagnose_task(stage=report), export_report, validate_artifacts(stage=report). Each action goes in a JSON request FILE: save it with write_file, wait for success, then use catalog.invocation execute; action names are NOT CLI subcommands. Do not call build_report_metrics or create lifecycle ledgers. Without quality metrics, report observed counts and limitations, not a quality-gate approval; without a historical ledger, omit historical issue counts or say not assessed, never zero. Use a plain Markdown heading, no YAML metadata. Return delivery links and necessary questions only.':'',
+    stage==='execution'?'If health establishes a dead/expired worker and finish is unavailable, use browser_task {type:"recover",request_id:"recover-partial"}. It reads original receipts only. recovered_partial can hand off with execution-task.outcome=partial; do not ask for unlock documents or start another browser. recovery_not_ready preserves the live/unknown owner. Never call recover for a pending user login or to bypass explicit cancellation.':'',
+    ['execution','defects','report'].includes(stage)?'按实际checked_condition解释断言范围，不能把expected文字中未断言的字段写成通过。finish可附untested:["未测范围及原因"]，有未测项正常交付partial并继续分析/报告，不要求技术解锁。coverage未建立不等于全覆盖；错误提示检查通过不等于创建成功。保留源结果partial与未测范围。仅HTTP错误或断言失败不能确认产品缺陷，证据不足用needs_review。':'',
+    ['defects','report'].includes(stage)?'When source results have result_origin=recovered, preserve their assertion IDs/status/evidence and summary; task outcome must be partial. Unknown operations and recovery problems are limitations, not confirmed product defects. Use needs_review when available evidence cannot establish a cause. Report interrupted execution explicitly; no invented finished_at, normal closure or cleanup. Do not copy raw observations/credential fields into delivery.':'',
     `Use validate_artifacts(stage=${stage}) for the task contract. For drafts use diagnose_task(stage=${stage}) before export. Do not invoke lifecycle-only diagnosis or preparation. Return concise summary, actual artifact paths and genuine questions to the controller.`
   ].filter(Boolean).join('\n');
 }

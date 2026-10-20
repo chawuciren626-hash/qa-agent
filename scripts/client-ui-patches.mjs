@@ -1,6 +1,20 @@
+import { readFileSync } from 'node:fs';
 // Exact anchors deliberately reject unknown host builds before writing installation files.
 const factory = `let qaClientInstance;function qaClient(){return qaClientInstance??=createWorkspaceUI({React:f,useProject:rn,useSessions:jo,useAuth:vn,useNavigate:Yn,useLocation:Xa,FolderPicker:b0,Modal:Kt,AccountMenu:eL,LegacySidebar:QaLegacySidebar,notify:ft,reportError:ze,request:je,Markdown:pl})}function c9(props){return r.jsx(qaClient().Sidebar,props)}function QaHero(props){return r.jsx(qaClient().Hero,props)}function QaSessionContext(props){return r.jsx(qaClient().SessionContext,props)}function upe(){const view=new URLSearchParams(Xa().search).get("view");return view==="schedules"||view==="library"?r.jsx(qaClient().SectionPage,{view}):r.jsx(QaNativeChat,{})}`;
 export const clientPatchPairs = [
+  [
+    'className:"flex h-full flex-col items-center gap-1 py-2.5",children:[r.jsx(Pa,{label:c.nav.expandSidebar',
+    'className:"flex h-full flex-col items-center gap-1 py-2.5",children:[r.jsx(PO,{className:"qa-sidebar-logo"}),r.jsx(Pa,{label:c.nav.expandSidebar',
+  ],
+  [
+    'function PO({className:e}){return r.jsx("img",{src:"/penguin-logo.svg",alt:"","aria-hidden":!0,draggable:!1,className:`select-none ${e??"h-9 w-9 rounded-lg"}`})}',
+    'function PO({className:e}){return r.jsx(qaClient().BrandLogo,{className:e??"h-9 w-9 rounded-lg"})}',
+  ],
+  [
+    'r.jsx("span",{className:"text-sm font-semibold",children:c.appName})',
+    'r.jsxs("span",{className:"qa-mobile-brand text-sm font-semibold",children:[r.jsx(PO,{className:"qa-sidebar-logo"}),c.appName]})',
+  ],
+  ['icon:"/penguin-logo.svg"', 'icon:qaBrandLogo'],
   // A new task always enters the controller. Native defaults/draft callbacks
   // retain their other settings but cannot select a child agent.
   [
@@ -42,7 +56,7 @@ export const clientPatchPairs = [
   ],
   [
     "await Rm(J,{input:Be,...tt?{goal:tt}:{}})",
-    'await Rm(J,{input:[{type:"text",text:"测试场景："+qaScenes[qaScene].name},...Be],...tt?{goal:tt}:{}})',
+    'await Rm(J,{input:qaScenesEnabled?[{type:"text",text:"测试场景："+qaScenes[qaScene].name},...Be]:Be,...tt?{goal:tt}:{}})',
   ],
   [
     "m(wt?.session??Ae.session),Ze(),GO(Ke.sessionId)",
@@ -95,10 +109,15 @@ export function patchClientBundle(source) {
     result = result.replace(before, after);
   }
   return (
-    'import { createWorkspaceUI, qaBindProject, qaScenes } from "./qa-delivery-ui.js";\n' +
+    'import { createWorkspaceUI, qaBindProject, qaScenes, qaScenesEnabled, qaBrandLogo } from "./qa-delivery-ui.js";\n' +
     result
   );
 }
-export function clientModule(delivery, workspace, css) {
-  return `${delivery}\n${workspace}\nconst qaClientStyles = ${JSON.stringify(css)};\n`;
+export function brandDataUrl(svg) {
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+export function clientModule(delivery, workspace, css,
+  logo = readFileSync(new URL('../penguin/ui/aith-logo.svg', import.meta.url), 'utf8'),
+  light = readFileSync(new URL('../penguin/ui/aith-logo-light.svg', import.meta.url), 'utf8')) {
+  return `export const qaBrandLogo = ${JSON.stringify(brandDataUrl(logo))};\nconst qaBrandLogoLight = ${JSON.stringify(brandDataUrl(light))};\n${delivery}\n${workspace}\nconst qaClientStyles = ${JSON.stringify(css)};\n`;
 }

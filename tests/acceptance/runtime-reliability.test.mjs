@@ -7,6 +7,30 @@ import { assertChildCommands } from '../../scripts/child-command-policy.mjs';
 const replacement = prefix => reliabilityPatches.find(([before])=>before.startsWith(prefix))[1];
 const method = prefix => new Function(`return ({${replacement(prefix)}})`)();
 
+test('QA foreground interruption retains the native child and handle without weakening ordinary cancellation',async()=>{
+  const AsyncGeneratorFunction=Object.getPrototypeOf(async function*(){}).constructor;
+  const run=new AsyncGeneratorFunction('session','manager','prompt','partialToolCallOutput','toolCallId','signal',
+    replacement('      const onAbort =').split('      signal?.addEventListener')[0]+'\nonAbort();yield {registered,qaRetainedId};');
+  let aborts=0,kills=0,registrations=0;
+  const session={abortRun(){aborts++;},kill(){kills++;}};
+  const manager={register(){registrations++;return 'subagent-owned';}};
+  const qa='run_id=run-test QA_COMMAND_POLICY_V3 11111111-1111-1111-1111-111111111111: test';
+  const values=[];for await(const value of run(session,manager,qa,x=>x,'tool')) values.push(value);
+  assert.equal(aborts,1);assert.equal(kills,0);assert.equal(registrations,1);
+  assert.match(values[0].output,/^\[subagent retained with subagent_id subagent-owned;/);
+  assert.deepEqual(values[1],{registered:true,qaRetainedId:'subagent-owned'});
+  for await(const value of run(session,manager,'ordinary task',x=>x,'tool')) assert.equal(value.registered,false);
+  assert.equal(kills,1);assert.equal(registrations,1);
+});
+
+test('structured QA entry avoids bash login profiles without changing ordinary shell commands',()=>{
+  const getArgs=new Function('shell','opts','prefix',replacement('    const argv =')+'\nreturn argv;');
+  const shell={command:'bash',args:['-lc'],name:'bash'},opts={env:{QA_DIRECTORY_CONTEXT:'bound'},cmd:'node scripts/project-action.mjs catalog'};
+  assert.deepEqual(getArgs(shell,opts,''),['bash','--noprofile','--norc','-c',opts.cmd]);
+  for(const altered of [{...opts,env:{}},{...opts,cmd:'node other.mjs'},{...opts,cmd:opts.cmd+'; whoami'},{...opts,cmd:opts.cmd+' $(whoami)'}]) assert.equal(getArgs(shell,altered,'')[1],'-lc');
+  assert.equal(getArgs({...shell,name:'pwsh'},opts,'')[1],'-lc');
+});
+
 test('child sessions load only the installed QA pre-tool boundary and respect hooks disabled',async()=>{
   const construct=new Function('loadAgentState','listInstalledHooks','scriptPreToolUseHook',`return ({
     ${replacement('  async sessionHooks')}

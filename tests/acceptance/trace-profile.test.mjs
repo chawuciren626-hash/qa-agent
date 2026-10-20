@@ -25,3 +25,21 @@ test('failures and unsorted intervals are measured without exposing outputs',()=
   const p=profileAgentTrace([row(10,'tool_call_output',{tool_call_id:'a',stop_reason:'fatal',output:'SECRET'}),row(0,'tool_call',{tool_call_id:'a',name:'x'})]);
   assert.equal(p.failed_tool_stops,1);assert.ok(!JSON.stringify(p).includes('SECRET'));
 });
+
+test('trace metadata cannot serialize arbitrary objects, secrets or prototype names',()=>{
+  const p=profileAgentTrace([
+    {timestamp:new Date(0).toISOString(),type:'session_meta',payload:{provider:{token:'PRIVATE_SENTINEL'},model_id:'password:PRIVATE_SENTINEL',model_context_window:{secret:'PRIVATE_SENTINEL'}}},
+    row(1,'tool_call',{tool_call_id:'one',name:'constructor'}),row(2,'tool_call_output',{tool_call_id:'one'}),
+    row(3,'tool_call',{tool_call_id:'two',name:{args:'PRIVATE_SENTINEL'}}),row(4,'tool_call_output',{tool_call_id:'two'})]);
+  assert.ok(!JSON.stringify(p).includes('PRIVATE_SENTINEL'));
+  assert.equal(p.models[0].context_window,null);assert.equal(p.by_tool.constructor.calls,1);
+  assert.equal(p.by_tool.redacted.calls,1);assert.equal(p.pure_model_ms,null);assert.equal(p.queue_ms,null);assert.equal(p.estimated_cost,null);
+});
+
+test('conflicting tool identities and overflowing token sums are not plausible measurements',()=>{
+  const p=profileAgentTrace([row(0,'tool_call',{tool_call_id:'a',name:'one'}),row(1,'tool_call',{tool_call_id:'a',name:'two'}),row(2,'tool_call_output',{tool_call_id:'a'}),
+    row(3,'tool_call',{name:'missing'}),row(4,'token_usage',{request:{total:Number.MAX_SAFE_INTEGER}}),row(5,'token_usage',{request:{total:1}})]);
+  assert.equal(p.tool_calls,0);assert.ok(p.warnings.includes('duplicate_pending_tool_id'));assert.ok(p.warnings.includes('invalid_tool_id'));
+  assert.equal(p.reported_tokens.total,null);assert.ok(p.warnings.includes('token_sum_overflow'));
+  assert.equal(profileAgentTrace([row(0,'token_usage',{request:{output:'2'}})]).reported_tokens,null);
+});

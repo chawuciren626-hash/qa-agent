@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findParentDispatch, resolveDispatchedChild, readSession } from '../../scripts/stage-evidence.mjs';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, renameSync } from 'node:fs';
+import { findParentDispatch, resolveDispatchedChild, recordedChildHandle, readSession, partialBrowserDelivery, partialBrowserFailureVerifier, draftHandoffReconciliation } from '../../scripts/stage-evidence.mjs';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, renameSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { assertChildCommands, childCommandPolicy } from '../../scripts/child-command-policy.mjs';
@@ -44,12 +45,49 @@ test('binds actual PenguinHarness layout with ID in structured event, not respon
   assert.equal(findParentDispatch(trace(), request)?.tool_call_id, 'call-a');
 });
 
+test('interrupted child is diagnostic only, never a successful handoff',()=>{
+  const rows=trace();rows[2].payload.stop_reason='aborted';rows[2].payload.output='[interrupted: tool aborted by user]';
+  assert.equal(findParentDispatch(rows,request),null);
+  assert.equal(findParentDispatch(rows,{...request,includeInterrupted:true}).outcome,'interrupted');
+  assert.equal(findParentDispatch(rows,{...request,includeInterrupted:true,childId:'session-2026-10-09-10-05-30-ffff'}),null);
+  rows[2].payload.output='Tool call denied by a hook';
+  assert.equal(findParentDispatch(rows,{...request,includeInterrupted:true}),null);
+});
+
+test('only native retained-handle continuation can complete an interrupted binding',()=>{
+  const rows=trace();rows[2].payload.stop_reason='aborted';
+  rows[2].payload.output='[subagent retained with subagent_id subagent-native; continuation only]\n[interrupted]';
+  const call={timestamp:'2026-10-09T02:06:00Z',type:'model_msg',payload:{type:'tool_call',name:'input_subagent',tool_call_id:'resume',arguments:{subagent_id:'subagent-native',prompt:'continue'}}};
+  const output={timestamp:'2026-10-09T02:06:30Z',type:'model_msg',payload:{type:'tool_call_output',tool_call_id:'resume',stop_reason:'completed',output:'Delivered'}};
+  assert.equal(findParentDispatch([...rows,call],request),null);
+  assert.equal(findParentDispatch([...rows,call,output],request)?.tool_call_id,'call-a');
+  assert.equal(findParentDispatch([...rows,{...call,payload:{...call.payload,arguments:{subagent_id:'subagent-other'}}},output],request),null);
+  assert.equal(findParentDispatch([...rows,call,{...output,payload:{...output.payload,output:'[input_subagent error: unknown subagent_id subagent-native]'}}],request),null);
+  assert.equal(findParentDispatch([...rows,call,{...output,payload:{...output.payload,stop_reason:'aborted'}}],request),null);
+});
+
+test('handle lookup distinguishes interrupted, returned and pending; denied redispatch is ignored',()=>{
+  const dispatch={agent:request.agent,at:request.dispatchedAt,dispatch_id:'dispatch-a',child_command_policy:'policy-a'};
+  const rows=trace();rows[0].payload.arguments={agent_id:request.agent,prompt:`${request.runId} dispatch-a policy-a`};
+  assert.equal(recordedChildHandle(rows.slice(0,2),dispatch,request.runId).status,'unavailable');
+  assert.equal(recordedChildHandle(rows,dispatch,request.runId).status,'returned');
+  rows[2].payload.stop_reason='aborted';
+  assert.equal(recordedChildHandle(rows,dispatch,request.runId).status,'interrupted');
+  rows[2].payload.output='[subagent retained with subagent_id subagent-native; continuation only]\n[interrupted]';
+  const denied=[{...rows[0],payload:{...rows[0].payload,tool_call_id:'denied'}},{...rows[2],payload:{...rows[2].payload,tool_call_id:'denied',output:'Tool call denied by the qa-delegation-guard hook'}}];
+  const result=recordedChildHandle([...rows,...denied],dispatch,request.runId);
+  assert.equal(result.subagent_id,'subagent-native');assert.equal(result.call_state,'interrupted');
+  assert.equal(result.completion_verified,false);
+});
+
 test('fatal child binding is opt-in, identity-bound and never a successful return',()=>{
   const rows=trace();
   rows[2].payload.stop_reason='fatal';
   rows[2].payload.output='[subagent failed: rejected - 451 provider rejection]';
   assert.equal(findParentDispatch(rows,request),null);
   assert.equal(findParentDispatch(rows,{...request,includeFailed:true}).outcome,'failed');
+  const retained=structuredClone(rows);retained[2].payload.output='[subagent retained with subagent_id subagent-owned; continuation only]\n'+retained[2].payload.output;
+  assert.equal(findParentDispatch(retained,{...request,includeFailed:true}).outcome,'failed');
   assert.equal(findParentDispatch(rows,{...request,includeFailed:true,agent:'another_agent'}),null);
   rows[2].payload.stop_reason='aborted';
   assert.equal(findParentDispatch(rows,{...request,includeFailed:true}),null);
@@ -103,6 +141,13 @@ test('resolve child uses trace events and real child identity, never prose or gu
   const childFile=resolve(childDir,`${request.childId}_001.jsonl`);writeFileSync(childFile,JSON.stringify(childMeta));
   assert.equal(resolveDispatchedChild(root,request.runId,'analysis',parentId,agentRoot).child_session,request.childId);
   assert.equal(resolveDispatchedChild(root,request.runId,'analysis',parentId,agentRoot).completion_verified,false);
+  writeFileSync(childFile,[childMeta,{type:'event_msg',payload:{type:'abort',error_code:'user_abort'}}].map(JSON.stringify).join('\n'));
+  assert.equal(resolveDispatchedChild(root,request.runId,'analysis',parentId,agentRoot,{includeInterrupted:true}).outcome,'interrupted');
+  writeFileSync(childFile,JSON.stringify(childMeta));
+  const aborted=structuredClone(rows);aborted[2].payload.stop_reason='aborted';writeParent(aborted);
+  const interrupted=resolveDispatchedChild(root,request.runId,'analysis',parentId,agentRoot,{includeInterrupted:true});
+  assert.equal(interrupted.outcome,'interrupted');assert.equal(interrupted.continuation.status,'interrupted');
+  assert.throws(()=>resolveDispatchedChild(root,request.runId,'analysis',parentId,agentRoot),/No unique returned/);
   writeParent(rows.slice(0,2));assert.throws(()=>resolveDispatchedChild(root,request.runId,'analysis',parentId,agentRoot),/No unique returned/);
   writeParent(rows);childMeta.payload.source='user';writeFileSync(childFile,JSON.stringify(childMeta));
   assert.throws(()=>resolveDispatchedChild(root,request.runId,'analysis',parentId,agentRoot),/identity/);
@@ -200,6 +245,54 @@ test('read routing correction needs exact native read followed by same-stage ver
   ]) assert.throws(()=>assertChildCommands(rows,{...options,verifyRecovery:r=>r.action_receipt!=='forged'}));
   assert.throws(()=>assertChildCommands([...failed,...read(),...success],{...options,verifyRecovery:()=>false}));
   assert.throws(()=>assertChildCommands([...command('unknown',{...rejected,error:'Operation outcome unknown',recovery:null}),...read(),...success],options));
+  const engineDirectory=resolve(workspace,'engine'),doc='docs/interactive-browser-tasks.md';
+  const docsOptions={...options,stageWriteBoundary:{...options.stageWriteBoundary,engineDirectory}};
+  const docsFailed=command('docs-rejected',{...rejected,read_path:doc});
+  const docsRead=read();docsRead[0].payload.arguments.file_path=resolve(engineDirectory,doc);
+  assert.doesNotThrow(()=>assertChildCommands([...docsFailed,...docsRead,...success],docsOptions));
+  assert.throws(()=>assertChildCommands([...docsFailed,...read(),...success],docsOptions));
+  assert.throws(()=>assertChildCommands([...docsFailed,...docsRead,...success],options));
+});
+
+test('closed partial browser delivery retains owned failures without accepting cancellation, unrelated failures or changed evidence',t=>{
+  const root=mkdtempSync(resolve(tmpdir(),'qa-partial-handoff-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const runId='run-partial',parent='session-parent',child='session-child',dispatch='dispatch-one',closure=randomUUID(),failed=randomUUID();
+  const dir=resolve(root,'output/runs',runId),write=(path,value)=>{mkdirSync(resolve(path,'..'),{recursive:true});writeFileSync(path,JSON.stringify(value));};
+  const put=(path,value)=>write(resolve(dir,path),value),sha=path=>createHash('sha256').update(readFileSync(resolve(dir,path))).digest('hex');
+  const manifest={run_id:runId,orchestration:{plan:{workflow_mode:'task'},events:[{type:'dispatched',stage:'execution',dispatch_id:dispatch,at:'2026-10-20T00:00:00Z'}]}};
+  put('manifest.json',manifest);put('inputs/request.json',{scope:'synthetic'});
+  put('execution/execution-task.json',{run_id:runId,stage:'execution',outcome:'partial',summary:'Not executed',questions:[],limitations:['Engineering failure'],source_paths:['inputs/request.json']});
+  put('execution/test_results.json',{run_id:runId,invocation_id:'attempt',status:'partial',cases:[],summary:{total:0,passed:0,failed:0,blocked:0,skipped:0}});
+  const observation={mode:'interactive_browser',run_id:runId,invocation_id:'attempt',dispatch_id:dispatch,status:'closed',partial:true,command_id:closure,source_path:'inputs/request.json',source_sha256:sha('inputs/request.json'),evidence:['inputs/request.json','execution/test_results.json'].map(path=>({path,sha256:sha(path)}))};
+  put('execution/exploration.json',observation);
+  put(`audit/commands/${closure}/command.json`,{run_id:runId,script:'browser-task.mjs',status:'completed',finished_at:'2026-10-20T00:10:00Z',result:{termination_confirmed:true}});
+  put(`audit/commands/${closure}/command.log`,{status:'closed',exploration_sha256:sha('execution/exploration.json')});
+  const command={run_id:runId,script:'browser-task.mjs',status:'failed',host_binding:{session_id:child,tool_call_id:'failed'},result:{code:1,termination_confirmed:true,termination:null}};
+  put(`audit/commands/${failed}/command.json`,command);
+  const path=resolve(root,'output/action-audit',parent,'failure.json');
+  const saved={session_id:parent,host_binding:command.host_binding,run_id:runId,at:'2026-10-20T00:01:00Z',finished_at:'2026-10-20T00:02:00Z',action:'browser_task',status:'failed',exit_code:1,task_key:`${runId}:browser_task:`,classification:'script_failure',command_evidence:resolve(dir,`audit/commands/${failed}`)};
+  write(path,saved);
+  const result={status:'failed',exit_code:1,run_id:runId,task_key:saved.task_key,action_receipt:path,script:'browser-task.mjs',command_id:failed,evidence_dir:saved.command_evidence};
+  const row={payload:{tool_call_id:'failed'}};
+  const verify=()=>partialBrowserFailureVerifier(root,runId,parent,child,manifest);
+  assert.equal(partialBrowserDelivery(root,runId,manifest).contract.execution_outcome.status,'blocked');
+  assert.equal(verify()(result,row),true);
+  for(const changed of [{...result,script:'other.mjs'},{...result,exit_code:0},{...result,evidence_dir:root},{...result,run_id:'run-other'}]) assert.equal(verify()(changed,row),false);
+  assert.equal(verify()(result,{payload:{tool_call_id:'other'}}),false);
+  put(`audit/commands/${failed}/command.json`,{...command,result:{...command.result,termination:'interrupted'}});assert.equal(verify()(result,row),false);
+  put(`audit/commands/${failed}/command.json`,command);
+  const timeoutCommand={...command,status:'timeout',result:{code:null,termination_confirmed:true,termination:'timeout'}};
+  put(`audit/commands/${failed}/command.json`,timeoutCommand);
+  write(path,{...saved,status:'timeout',exit_code:124});
+  assert.equal(verify()({...result,status:'timeout',exit_code:124},row),true);
+  put(`audit/commands/${failed}/command.json`,{...timeoutCommand,result:{...timeoutCommand.result,termination_confirmed:false}});
+  assert.equal(verify()({...result,status:'timeout',exit_code:124},row),false);
+  put(`audit/commands/${failed}/command.json`,command);
+  const rejected={...saved,status:'rejected',exit_code:2,classification:'session_stopped',command_evidence:undefined};write(path,rejected);
+  assert.equal(verify()({status:'rejected',exit_code:2,classification:'session_stopped',run_id:runId,task_key:saved.task_key,action_receipt:path},row),true);
+  write(path,{...saved,finished_at:'2026-10-20T00:11:00Z'});assert.equal(verify()(result,row),false);
+  write(path,saved);put('execution/exploration.json',{...observation,status:'ready'});assert.equal(verify()(result,row),false);
+  put('execution/exploration.json',observation);put('execution/test_results.json',{status:'completed',cases:[]});assert.equal(verify()(result,row),false);
 });
 
 test('stage delivery enforces file ownership for write, edit and patch tools',()=>{
@@ -255,6 +348,45 @@ test('malformed streamed write requires native evidence of rejection before exec
     assert.throws(()=>assertChildCommands(rows,options),/arguments unreadable/);
   }
   assert.throws(()=>assertChildCommands([call,end],{...options,allowRecovery:false}),/arguments unreadable/);
+});
+
+test('malformed streamed command is not execution failure, but missing output alone never excuses a command',()=>{
+  const call={type:'model_msg',payload:{type:'tool_call',name:'exec_command',tool_call_id:'truncated',arguments:'{"cmd":"unfinished',stop_reason:'retryable'}};
+  const end={type:'event_msg',payload:{type:'request_end',status:'retryable',error_code:'malformed',error_message:'Invalid streamed tool call arguments from OpenaiChatClient for tool "exec_command" (tool_call_id="truncated", length=18): Unterminated string'}};
+  const options={allowRecovery:true,requireControlledCommands:true};
+  assert.doesNotThrow(()=>assertChildCommands([call,end],options));
+  for(const rows of [[call],[call,{...end,payload:{...end.payload,error_code:'timeout'}}],[call,{...end,payload:{...end.payload,error_message:end.payload.error_message.replace('truncated','wrong')}}],
+    [call,{payload:{type:'hook',hook:'pre_tool_use'}},end],[call,end,{payload:{type:'tool_call_output',tool_call_id:'truncated',stop_reason:'completed'}}],[call,call,end]]) assert.throws(()=>assertChildCommands(rows,options));
+  assert.throws(()=>assertChildCommands([call,end],{...options,allowRecovery:false}));
+  assert.throws(()=>assertChildCommands([{...call,payload:{...call.payload,arguments:'{"cmd":"node scripts/project-action.mjs catalog"}'}},end],options),/unknown terminal/);
+});
+
+test('draft reconciliation uses current owned child rather than historic error text, never execution or human rejection',()=>{
+  const root=mkdtempSync(resolve(tmpdir(),'qa-malformed-delivery-')),agentRoot=resolve(root,'agents');
+  const runId=request.runId,parentId='session-2026-10-09-10-00-00-abcd',stage='test_cases',agent='test_case_agent';
+  const dispatch={type:'dispatched',stage,agent,at:request.dispatchedAt,dispatch_id:'dispatch-1','parent-session-id':parentId,child_command_policy:'policy-1'};
+  const manifest={stages:{[stage]:{status:'blocked'}},orchestration:{events:[dispatch,{type:'blocked',stage,at:'2026-10-09T02:07:00Z','dispatch-id':dispatch.dispatch_id}]}};
+  const dir=resolve(root,'output/runs',runId);mkdirSync(dir,{recursive:true});writeFileSync(resolve(dir,'manifest.json'),JSON.stringify(manifest));
+  const parent=trace();parent[0].payload.arguments={agent_id:agent,prompt:`${runId} dispatch-1 policy-1`};
+  const call={type:'model_msg',payload:{type:'tool_call',name:'exec_command',tool_call_id:'truncated',arguments:'{"cmd":"unfinished',stop_reason:'retryable'}};
+  const end={type:'event_msg',payload:{type:'request_end',status:'retryable',error_code:'malformed',error_message:'Invalid streamed tool call arguments from OpenaiChatClient for tool "exec_command" (tool_call_id="truncated", length=18): Unterminated string'}};
+  const write=(role,id,rows)=>{const d=resolve(agentRoot,role,'traces/2026-10-09');mkdirSync(d,{recursive:true});writeFileSync(resolve(d,`${id}_001.jsonl`),rows.map(JSON.stringify).join('\n'));};
+  const meta=(role,id,source)=>({type:'session_meta',payload:{session_id:id,agent_state:resolve(agentRoot,role,'agent_state'),workspace:root,source}});
+  write(agent,request.childId,[meta(agent,request.childId,'subagent'),call,end]);
+  const base=resolve(root,'output/action-audit',parentId);mkdirSync(base,{recursive:true});const path=resolve(base,`${randomUUID()}.json`);
+  const receipt={action:'handoff',status:'rejected',exit_code:2,classification:'input_rejected',run_id:runId,session_id:parentId,at:'2026-10-09T02:06:00Z',task_key:`${runId}:handoff:${stage}`,error:'Stage handoff not ready: Child command arguments unreadable.',host_binding:{session_id:parentId,tool_call_id:'handoff'},recovery:null};
+  writeFileSync(path,JSON.stringify(receipt));
+  parent.push({payload:{type:'tool_call',name:'exec_command',tool_call_id:'handoff'}},{payload:{type:'tool_call_output',tool_call_id:'handoff',output:JSON.stringify({...receipt,action_receipt:path})}});
+  write('test_agent',parentId,[meta('test_agent',parentId),...parent]);
+  assert.deepEqual(draftHandoffReconciliation(root,runId,manifest,stage,parentId,agentRoot).unexecuted_tool_calls,['truncated']);
+  assert.throws(()=>draftHandoffReconciliation(root,runId,manifest,'execution',parentId,agentRoot));
+  assert.throws(()=>draftHandoffReconciliation(root,runId,{...manifest,confirmations:[{status:'rejected'}]},stage,parentId,agentRoot));
+  writeFileSync(path,JSON.stringify({...receipt,task_key:`${runId}:handoff:report`}));
+  assert.equal(draftHandoffReconciliation(root,runId,manifest,stage,parentId,agentRoot).kind,'current_dispatch_revalidation');
+  writeFileSync(path,JSON.stringify(receipt));write(agent,request.childId,[meta(agent,request.childId,'subagent'),call]);
+  assert.deepEqual(draftHandoffReconciliation(root,runId,manifest,stage,parentId,agentRoot).unexecuted_tool_calls,[]);
+  // Eligibility never excuses an unresolved command in the subsequent full evidence check.
+  assert.throws(()=>assertChildCommands([call],{allowRecovery:true}),/unreadable/);
 });
 
 test('historical writes enforce registered reading copies, rename destinations and controlled evidence',()=>{

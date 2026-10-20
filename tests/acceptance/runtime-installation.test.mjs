@@ -11,10 +11,12 @@ import { patchDeliveryBundle, patchDeliveryServer } from '../../scripts/install-
 import { libraryAnchor } from '../../scripts/client-library.mjs';
 import { clientPatchPairs } from '../../scripts/client-ui-patches.mjs';
 import { reliabilityPatches } from '../../scripts/penguin-reliability-patches.mjs';
+import { hostPatchAnchors } from '../../scripts/host-observability.mjs';
+import { humanActionAnchors } from '../../scripts/human-action-patches.mjs';
 
 const root=resolve(import.meta.dirname,'../..');
 const digest=bytes=>bytes===null?null:createHash('sha256').update(bytes).digest('hex');
-const originalServer='    let workspaceDir2;\n    if (opts.workspaceDir) {\n    const sessionId = formatSessionId();\n    const spec = {\n        controlEnv: () => this.controlEnv({\n          projectId: this.state.projectId,\n          agentId: this.state.agentId,\n          sessionId\n        })\n      } : {},\n  app.post("/:sessionId/files/reveal", async (c7) => {'+'\n'+libraryAnchor+'\n'+reliabilityPatches.map(([before])=>before).join('\n');
+const originalServer='    let workspaceDir2;\n    if (opts.workspaceDir) {\n    const sessionId = formatSessionId();\n    const spec = {\n        controlEnv: () => this.controlEnv({\n          projectId: this.state.projectId,\n          agentId: this.state.agentId,\n          sessionId\n        })\n      } : {},\n  app.post("/:sessionId/files/reveal", async (c7) => {'+'\n'+libraryAnchor+'\n'+reliabilityPatches.map(([before])=>before).join('\n')+'\n'+hostPatchAnchors.join('\n')+'\n'+humanActionAnchors.join('\n')+'\nsession.startRun(messages, { suppressDoneReport: true });\nsession.startRun(messages, { suppressDoneReport: true });';
 const originalBundle=[
   'function lO({item:e,ctx:t}){',
   'case"assistant_text":return r.jsxs("div",{className:"md-body anim-msg my-3',
@@ -114,7 +116,7 @@ test('interrupted install is detected and recovered only for known before/after 
 test('runtime helper changes and engine relocation require apply/restart without accepting app drift',()=>{
   const f=fixture();installPenguinRuntime(f.app,root,'apply');
   const engine=resolve(f.app,'engine');
-  for(const path of ['penguin/ui/delivery-ui.mjs','penguin/ui/workspace-ui.mjs','penguin/ui/workspace-ui.css','scripts/penguin-workspace-adapter.mjs','scripts/open-deliverable.mjs','scripts/client-library.mjs']) {
+  for(const path of ['penguin/ui/delivery-ui.mjs','penguin/ui/workspace-ui.mjs','penguin/ui/workspace-ui.css','penguin/ui/aith-logo.svg','penguin/ui/aith-logo-light.svg','scripts/penguin-workspace-adapter.mjs','scripts/open-deliverable.mjs','scripts/client-library.mjs','scripts/host-observability.mjs','scripts/protected-inputs.mjs','scripts/browser-human-action.mjs']) {
     mkdirSync(dirname(resolve(engine,path)),{recursive:true});cpSync(resolve(root,path),resolve(engine,path));
   }
   assert.equal(installPenguinRuntime(f.app,engine).restart_on_apply,true);

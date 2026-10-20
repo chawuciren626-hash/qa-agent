@@ -120,6 +120,39 @@ export function hasPendingConfirmation(manifest, stageId) {
   return (manifest.confirmations ?? []).some((item) => item.stage === stageId && item.status === "pending");
 }
 
+export function stageDependencyScope(manifest, stageId) {
+  const scope = new Set();
+  const visit = id => {
+    if (scope.has(id)) return;
+    scope.add(id);
+    for (const dependency of getPlanStage(manifest, id)?.depends_on ?? []) visit(dependency);
+  };
+  visit(stageId);
+  return scope;
+}
+
+export function currentStageDecision(manifest, stageId) {
+  const decision = (manifest.confirmations ?? []).filter(item => item.stage === stageId).at(-1);
+  if (!decision || decision.status !== 'revision_requested') return decision ?? null;
+  const events = manifest.orchestration?.events ?? [];
+  const resolved = events.findLastIndex(event => event.type === 'confirmation_resolved' && event.stage === stageId && event.decision === 'revision_requested');
+  const dispatch = events.findLastIndex(event => event.type === 'dispatched' && event.stage === stageId);
+  // A recorded revision dispatch consumes the old request, never an unresolved rejection.
+  if (resolved >= 0 && dispatch > resolved && events[dispatch].revision_context?.archive &&
+      events[dispatch].dispatch_id === manifest.stages?.[stageId]?.dispatch_id) return null;
+  return decision;
+}
+
+export function assertRecoveryDecisions(manifest, stageId) {
+  if ((manifest.confirmations ?? []).some(item => typeof item.stage !== 'string')) throw new Error('Human decision stage is missing; preserve the decision for diagnosis');
+  for (const id of stageDependencyScope(manifest, stageId)) {
+    const decision = currentStageDecision(manifest, id);
+    if (['pending', 'rejected', 'revision_requested'].includes(decision?.status)) {
+      throw new Error(`Human decision must be respected: ${id} ${decision.status}`);
+    }
+  }
+}
+
 export function recomputeRunStatus(manifest) {
   const stages = selectedPlanStages(manifest);
   if (!stages.length) return manifest.status ?? "created";

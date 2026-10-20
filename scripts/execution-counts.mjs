@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 const requireValue=(ok,message)=>{if(!ok) throw new Error(message);};
 export function uiCheckFingerprint(check) {
-  return createHash('sha256').update(JSON.stringify({target:{by:check.target.by,value:check.target.value,name:check.target.name ?? null},condition:check.condition,value:check.value ?? (check.condition==='text'?check.target.value:null)})).digest('hex');
+  return createHash('sha256').update(JSON.stringify({target:{by:check.target.by,value:check.target.value,name:check.target.name ?? null},condition:check.condition,value:check.value ?? (check.condition==='text'?check.target.value:null),...(check.ready?{ready:check.ready}:{}),...(check.value_ref?{value_ref:check.value_ref}:{}),...(check.text_mode?{text_mode:check.text_mode}:{}),...(check.expected_basis?{expected_basis:check.expected_basis}:{})})).digest('hex');
 }
 export function validateCountMetadata(check) {
   if(check.case_ref!==undefined) {

@@ -143,7 +143,7 @@ test('native route enforces desktop authentication and file scope before calling
   class HttpError extends Error {constructor(status,code,message){super(message);this.status=status;this.code=code;}}
   const deps={desktopMode:true,workspaceFiles:{resolvePath:async(workspace,path)=>{resolved.push(path);return `${workspace}/${path}`;}}};
   new Function('app','resolveSession','deps','HttpError','qaOpenDeliverable',source.slice(source.indexOf('\n')+1))(
-    {post:(path,handler)=>handlers.set(path,handler)},()=>({workspace:'workspace'}),deps,HttpError,async path=>{if(timeout)throw Object.assign(new Error('timeout'),{code:'QA_DOCUMENT_OPEN_TIMEOUT'});opened.push(path);});
+    {get:(path,handler)=>handlers.set(path,handler),post:(path,handler)=>handlers.set(path,handler)},()=>({workspace:'workspace'}),deps,HttpError,async path=>{if(timeout)throw Object.assign(new Error('timeout'),{code:'QA_DOCUMENT_OPEN_TIMEOUT'});opened.push(path);});
   const handler=handlers.get('/:sessionId/files/open-deliverable');
   const context=(path,sessionVia='desktop')=>({var:{sessionVia},req:{query:()=>path},body:(_,status)=>status});
   const valid='output/runs/run-123/report/测试 用例.xlsx';
@@ -153,4 +153,20 @@ test('native route enforces desktop authentication and file scope before calling
   assert.equal(await handler(context(valid)),204);assert.equal(opened.length,1);
   timeout=true;
   await assert.rejects(handler(context(valid)),e=>e.status===504 && e.code==='document_open_timeout');
+});
+
+test('evidence route resolves authenticated session before read and returns inert downloads',async()=>{
+  const handlers=new Map();let allowed=false,reads=0;
+  const source=patchDeliveryServer('  app.post("/:sessionId/files/reveal", async (c7) => {});','file:///unused');
+  class HttpError extends Error {constructor(status,code,message){super(message);this.status=status;}}
+  new Function('app','resolveSession','deps','HttpError','qaOpenDeliverable','qaReadDeliveryEvidence',source.slice(source.indexOf('\n')+1))(
+    {get:(path,handler)=>handlers.set(path,handler),post:(path,handler)=>handlers.set(path,handler)},
+    ()=>{if(!allowed)throw new HttpError(403,'denied','denied');return {workspace:'current-workspace'};},{},HttpError,()=>assert.fail('must not launch'),
+    (workspace,path)=>{reads++;assert.equal(workspace,'current-workspace');return {kind:'json',path,text:'{"safe":true}'};});
+  const handler=handlers.get('/:sessionId/files/evidence'),context=download=>({req:{query:key=>key==='path'?'output/runs/run-a/execution/test_results.json':download},json:value=>value,header:()=>{}});
+  await assert.rejects(handler(context()),e=>e.status===403);assert.equal(reads,0);
+  allowed=true;assert.equal((await handler(context())).kind,'json');
+  const response=await handler(context('1'));
+  assert.match(response.headers.get('content-disposition'),/^attachment/);assert.equal(response.headers.get('x-content-type-options'),'nosniff');
+  assert.equal(response.headers.get('content-security-policy'),'sandbox');assert.equal(await response.text(),'{"safe":true}');
 });

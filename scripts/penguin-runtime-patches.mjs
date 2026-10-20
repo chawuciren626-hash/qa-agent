@@ -50,7 +50,20 @@ export function patchDeliveryBundle(source,revision='1') {
 export function patchDeliveryServer(source,moduleUrl) {
   if(source.includes('qaOpenDeliverable')) throw new Error('Delivery adapter already present');
   const anchor='  app.post("/:sessionId/files/reveal", async (c7) => {';
-  const route=`  app.post("/:sessionId/files/open-deliverable", async (c7) => {
+  const route=`  app.get("/:sessionId/files/evidence", async (c7) => {
+    const row = resolveSession(c7);
+    const rel = c7.req.query("path") ?? "";
+    let evidence;
+    try { evidence = qaReadDeliveryEvidence(row.workspace, rel); }
+    catch { throw new HttpError(400,"evidence_unavailable","Evidence is missing, restricted, invalid or too large."); }
+    if (c7.req.query("download") === "1" && evidence.kind === "json") return new Response(evidence.text, { headers: {
+      "Content-Type":"application/json; charset=utf-8", "Content-Disposition":"attachment; filename*=UTF-8''"+encodeURIComponent(rel.split("/").pop()),
+      "X-Content-Type-Options":"nosniff", "Cache-Control":"no-store", "Content-Security-Policy":"sandbox"
+    }});
+    c7.header("Cache-Control","no-store");
+    return c7.json(evidence);
+  });
+  app.post("/:sessionId/files/open-deliverable", async (c7) => {
     const row = resolveSession(c7);
     if (!deps.desktopMode || c7.var.sessionVia !== "desktop") throw new HttpError(403, "desktop_shell_only", "Open documents from the desktop application.");
     const rel = c7.req.query("path") ?? "";
@@ -64,5 +77,5 @@ export function patchDeliveryServer(source,moduleUrl) {
     return c7.body(null, 204);
   });
 `;
-  return `import { openDeliverable as qaOpenDeliverable } from ${JSON.stringify(moduleUrl)};\n`+replaceOnce(source,anchor,route+anchor);
+  return `import { openDeliverable as qaOpenDeliverable, readDeliveryEvidence as qaReadDeliveryEvidence } from ${JSON.stringify(moduleUrl)};\n`+replaceOnce(source,anchor,route+anchor);
 }

@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { resolve, relative, isAbsolute, dirname } from "node:path";
 import { assertStageReady, assertStageHistory, assertDispatchScheduling, getRunContext, recomputeRunStatus, writeJson, withRunLock } from "./orchestration-state.mjs";
-import { verifyStageEvidence, assertParentSession } from './stage-evidence.mjs';
+import { verifyStageEvidence, assertParentSession, partialBrowserDelivery, draftHandoffReconciliation } from './stage-evidence.mjs';
 import { randomUUID } from 'node:crypto';
 import { childCommandPolicy } from './child-command-policy.mjs';
 import { assertExecutionAuthorized } from './execution-authorization.mjs';
@@ -86,7 +86,11 @@ if (eventType === "dispatched" && options.stage) {
 }
 if (["completed", "failed", "blocked"].includes(eventType) && options.stage) {
   const current = manifest.stages[options.stage]?.status;
-  if (current !== "in_progress") throw new Error(`阶段 ${options.stage} 当前状态为 ${current ?? "未计划"}，不能记录 ${eventType}。`);
+  const partialReconciliation=eventType==='completed' && options.stage==='execution' && ['blocked','failed'].includes(current);
+  const draftReconciliation=eventType==='completed' && options.stage!=='execution' && ['blocked','failed'].includes(current);
+  if(draftReconciliation) draftHandoffReconciliation(root,runId,manifest,options.stage,options['parent-session-id']);
+  if(partialReconciliation) partialBrowserDelivery(root,runId,manifest);
+  if (current !== "in_progress" && !partialReconciliation && !draftReconciliation) throw new Error(`阶段 ${options.stage} 当前状态为 ${current ?? "未计划"}，不能记录 ${eventType}。`);
   const dispatch = manifest.orchestration.events.filter(event => event.type === 'dispatched' && event.stage === options.stage).at(-1);
   if (dispatch?.dispatch_id && (options['dispatch-id'] !== dispatch.dispatch_id || options['parent-session-id'] !== dispatch['parent-session-id'])) throw new Error('Current dispatch ID and owning parent session required');
   if (eventType !== 'completed' && !options.reason?.trim()) throw new Error('Failure or blocking reason required');
@@ -113,6 +117,13 @@ if (eventType === 'completed') {
   assertDependencyArtifacts(root, runId, manifest, options.stage);
   event.evidence = verifyStageEvidence(root, runId, manifest, options);
   event.evidence.artifact_contract = assertArtifactContract(root, runId, options.stage, { mode: manifest.stages[options.stage].mode, artifacts: (options.artifacts ?? '').split(',').filter(Boolean) });
+  if(['blocked','failed'].includes(manifest.stages[options.stage].status) && options.stage!=='execution') {
+    event.draft_delivery_reconciliation=draftHandoffReconciliation(root,runId,manifest,options.stage,options['parent-session-id']);
+  }
+  if(['blocked','failed'].includes(manifest.stages[options.stage].status) && options.stage==='execution') {
+    if(!event.evidence.partial_browser_failures?.some(f=>['failed','timeout'].includes(f.status))) throw new Error('Blocked execution requires verified browser failure evidence for partial delivery');
+    event.partial_delivery_reconciliation={previous_stage:structuredClone(manifest.stages[options.stage]),product_actions_replayed:false,meaning:'Partial evidence delivered; product execution remains blocked, not passed'};
+  }
 }
 const prepared = eventType === 'completed' && options.stage === 'execution' && manifest.stages.execution.mode === 'prepare';
 if (prepared) event.type = 'preparation_completed';

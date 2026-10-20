@@ -5,9 +5,12 @@ import { pathToFileURL } from 'node:url';
 import { chromium } from '@playwright/test';
 import { readRunFile, runDirectory } from './design-quality.mjs';
 import { writeJson } from './orchestration-state.mjs';
+import { refreshBrowserPrivacy, privateSnapshot, privateBrowserUrl, privateBrowserError, capturePrivateScreenshot } from './browser-privacy.mjs';
+import { operationPerformance } from './browser-performance.mjs';
 
 export function validateExplorationTarget(url,sourcePath,sourceText) {
-  const target=new URL(url);
+  let target;
+  try {target=new URL(url);} catch {throw new Error('Invalid exploration URL');}
   if(!['http:','https:'].includes(target.protocol) || target.username || target.password) throw new Error('Use an HTTP(S) URL without embedded credentials');
   const name=/^inputs\/([A-Za-z0-9][A-Za-z0-9._-]*)$/.exec(sourcePath)?.[1];
   if(!name || (name.includes('.') && !/\.(txt|md|json)$/i.test(name))) throw new Error('URL source must be archived text/Markdown/JSON input (extensionless text is supported)');
@@ -16,7 +19,7 @@ export function validateExplorationTarget(url,sourcePath,sourceText) {
   const candidates=urls.flatMap(value=>value.split(/\]\(/)).flatMap(value=>[value,value.replace(/[\]),，。；;]+$/,'')]);
   // Recognize adjacent prose without altering archived text or truncating Chinese URL paths.
   for(const value of [...candidates]) {
-    const boundary=value.search(/[，。；、]|(?:帮我|请你|请)(?:测|测试|检查|查看|打开|访问|验证|分析)/u);
+    const boundary=value.search(/[，。；、]|(?:帮我|请你|请)(?:测|测试|检查|查看|打开|访问|验证|分析)|(?:这个|该|当前)(?:页面|网址|地址|链接)(?=的|是|为|中|上|里|需要|所有)/u);
     if(boundary>0) candidates.push(value.slice(0,boundary));
   }
   if(!candidates.some(value=>{try{return new URL(value).href===target.href;}catch{return false;}})) throw new Error('Target URL is not present in the supplied source; do not guess an environment');
@@ -38,8 +41,8 @@ export async function exploreTaskUrl(root,runId,url,sourcePath) {
   writeFileSync(lock,JSON.stringify({pid:process.pid,dispatch_id:dispatch.dispatch_id}),{flag:'wx'});
   const invocation=randomUUID(), evidenceDir=`execution/explorations/${invocation}`;
   mkdirSync(resolve(dir,evidenceDir),{recursive:true});
-  const started=new Date().toISOString();let browser;
-  const observation={version:1,run_id:runId,command_id:commandId,dispatch_id:dispatch.dispatch_id,invocation_id:invocation,mode:'read_only_navigation',source_path:sourcePath,source_sha256:source.sha256,target_url:target.href,started_at:started,http_status:null,final_url:null,title:null,structure:null,blocked_requests:0,page_errors:0,error:null,
+  const started=new Date().toISOString(),secrets=new Set(),metrics=operationPerformance();let browser;
+  const observation={version:1,run_id:runId,command_id:commandId,dispatch_id:dispatch.dispatch_id,invocation_id:invocation,mode:'read_only_navigation',source_path:sourcePath,source_sha256:source.sha256,target_url:privateBrowserUrl(target.href),started_at:started,http_status:null,final_url:null,title:null,structure:null,blocked_requests:0,page_errors:0,error:null,
     limitations:['Single-page GET navigation only; no clicks, submissions, login, business mutations or business-flow assertions.', 'Non-GET requests and cross-origin document navigation are blocked; applications needing these may render incompletely.']};
   let screenshot;
   try {
@@ -52,21 +55,30 @@ export async function exploreTaskUrl(root,runId,url,sourcePath) {
       return route.continue();
     });
     const page=await context.newPage();page.on('pageerror',()=>observation.page_errors++);
-    const response=await page.goto(target.href,{waitUntil:'domcontentloaded',timeout:30000});
-    observation.http_status=response?.status() ?? null;observation.final_url=page.url();observation.title=await page.title();
-    observation.structure=await page.evaluate(()=>({
+    const response=await metrics.measure('navigation',()=>page.goto(target.href,{waitUntil:'domcontentloaded',timeout:30000}));
+    observation.http_status=response?.status() ?? null;
+    const privacy=await metrics.measure('privacy_scan',()=>refreshBrowserPrivacy(page,secrets));
+    observation.target_url=privateBrowserUrl(target.href,secrets);observation.final_url=privateBrowserUrl(page.url(),secrets);
+    const structure=privacy.status==='observed'?await metrics.measure('snapshot_dom',()=>page.evaluate(()=>({
+      title:document.title,
       headings:[...document.querySelectorAll('h1,h2,h3')].slice(0,40).map(e=>e.textContent.trim()),
       fields:[...document.querySelectorAll('input,textarea,select')].slice(0,80).map(e=>({tag:e.tagName,type:e.type,name:e.name,label:e.getAttribute('aria-label') || e.placeholder || ''})),
       buttons:[...document.querySelectorAll('button,[role="button"]')].slice(0,60).map(e=>e.textContent.trim()),
       link_count:document.querySelectorAll('a[href]').length
-    }));
-    screenshot=`${evidenceDir}/page.png`;await page.screenshot({path:resolve(dir,screenshot),timeout:10000});
-  } catch(error) {observation.error=String(error.message).slice(0,1500);}
-  finally {if(browser) await browser.close();}
+    }))):{};
+    observation.structure=privateSnapshot(structure,secrets,privacy);observation.title=observation.structure.title ?? null;
+    const candidate=`${evidenceDir}/page.png`;
+    const capture=await metrics.measure('screenshot_with_privacy',()=>capturePrivateScreenshot(page,resolve(dir,candidate),secrets));
+    if(capture.captured) screenshot=candidate;
+    else observation.capture_warning=capture.warning;
+  } catch(error) {observation.error=privateBrowserError(error,'exploration');}
+  finally {if(browser) try {await browser.close();} catch(error) {observation.close_warning=privateBrowserError(error,'close');}}
+  observation.performance=metrics.snapshot();
+  if(observation.capture_warning || observation.structure?.privacy?.content_withheld) observation.limitations.push('Some page evidence was withheld or unavailable; do not retry navigation or disable privacy protection to obtain it. Reachability does not prove page content or business behavior.');
   observation.finished_at=new Date().toISOString();
   const path=`${evidenceDir}/observation.json`;writeJson(resolve(dir,path),observation);
   const state=observation.error?'blocked':observation.http_status>=200 && observation.http_status<400?'passed':'failed';
-  const cases=[{case_id:'URL-REACHABILITY-001',title:'目标页面可达性（不是业务全流程）',status:state,actual_result:observation.error ?? `HTTP ${observation.http_status}; ${observation.page_errors} page errors; ${observation.blocked_requests} requests blocked by read-only policy`,evidence_paths:[path,...(screenshot && existsSync(resolve(dir,screenshot))?[screenshot]:[])]}];
+  const cases=[{case_id:'URL-REACHABILITY-001',title:'目标页面可达性（不是业务全流程）',status:state,actual_result:observation.error?`Exploration unavailable: ${observation.error.category}`:`HTTP ${observation.http_status}; ${observation.page_errors} page errors; ${observation.blocked_requests} requests blocked by read-only policy`,evidence_paths:[path,...(screenshot && existsSync(resolve(dir,screenshot))?[screenshot]:[])]}];
   const summary={total:1,passed:0,failed:0,blocked:0,skipped:0};summary[state]=1;
   const result={run_id:runId,invocation_id:invocation,status:state==='passed'?'completed':state,started_at:started,finished_at:observation.finished_at,summary,cases};
   writeJson(resolve(dir,'execution/test_results.json'),result);

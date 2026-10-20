@@ -4,6 +4,8 @@ import { dataPath, directoryContext } from './directory-context.mjs';
 import { isPermittedChildShell } from './child-command-policy.mjs';
 import { guardSensitiveRead } from './sensitive-file-guard.mjs';
 import { stageWriteRules, isControlledStageEvidence } from './stage-registry.mjs';
+import { prepareInlineAction } from './inline-action-request.mjs';
+import { parseActionInvocation } from './command-contracts.mjs';
 
 const stages={
   requirement_analysis_agent:'analysis',
@@ -57,8 +59,23 @@ export function guardChildTool(root,input,{agentId,agentRoot}) {
   if(sensitive.decision==='deny') return sensitive;
   if(input.tool_name==='exec_command' && stages[agentId]) {
     try {
-      if(isPermittedChildShell(parse(input)?.cmd)) return {};
-    } catch {}
+      const args=parse(input);
+      if(isPermittedChildShell(args?.cmd)) {
+        if(/project-action\.mjs/i.test(args.cmd)) parseActionInvocation(args.cmd);
+        if(args.qa_request!==undefined) {
+          const runId=currentRunId(agentRoot,agentId,input.session_id);
+          const manifest=JSON.parse(readFileSync(dataPath(root,'output/runs',runId,'manifest.json'),'utf8'));
+          const stage=stages[agentId];
+          const dispatch=manifest.orchestration?.events?.filter(e=>e.type==='dispatched' && e.stage===stage).at(-1);
+          if(manifest.stages?.[stage]?.status!=='in_progress' || !dispatch?.['parent-session-id']) throw new Error('Active professional dispatch required');
+          const common=['read_source','run_status','validate_artifacts','extract_word','diagnose_task'];
+          const own={analysis:['generate_analysis','validate_analysis','diagnose_analysis','analysis_summary'],test_points:['draft_records','diagnose_test_points','export_test_points'],test_cases:['draft_records','diagnose_test_cases','export_test_cases'],execution:['browser_task','explore_url','prepare_execution_plan','validate_execution_prepare'],defects:['assess_evidence','normalize_defects'],report:['build_report_metrics','export_report']};
+          if(![...common,...own[stage]].includes(args.qa_request.action) || (args.qa_request.stage!==undefined && args.qa_request.stage!==stage)) throw new Error('Action belongs to another role; use this stage catalog');
+          prepareInlineAction(root,args,{runId,parentSession:dispatch['parent-session-id']});
+        }
+        return {};
+      }
+    } catch(error) {return {decision:'deny',reason:`QA shell redirect: This command was NOT executed. ${error.message}. Correct the structured request without user unlock.`};}
     return {decision:'deny',reason:'QA shell redirect: This command was NOT executed. Use read_file with the supplied absolute engine/run paths for inspection; for test data lengths and integer money use diagnose_test_cases after saving the draft and task summary. Use the structured project-action entry for supported work. Correct the tool choice and continue without user approval, nested shells, helper scripts or repeated unchanged attempts.'};
   }
   if(!['write_file','edit_file','apply_patch'].includes(input.tool_name)) return {};

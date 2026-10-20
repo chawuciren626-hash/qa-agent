@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import xlsx from 'xlsx';
+import xlsx from '../../scripts/spreadsheet-runtime.mjs';
 import { writeJsonFile, executionInputs } from './safety-fixtures.mjs';
 
 export function zipFixture(path, entries) {

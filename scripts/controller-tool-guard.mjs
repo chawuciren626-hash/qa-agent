@@ -59,7 +59,7 @@ export function guardControllerTool(root,input) {
         let actual;
         try { actual=realpathSync(dataPath(root,path)); }
         catch(error) {
-          if(error.code==='ENOENT') throw new Error('Request JSON file does not exist. First use write_file to save the intended action in output/action-requests, wait for success, then execute the same file path. No action was launched; do not create another run or ask the user to unlock. Never guess the request contents.');
+          if(error.code==='ENOENT') throw new Error('Request JSON file does not exist. Prefer exec_command.qa_request with the complete action object in one call; the hook saves it. Only without qa_request support: First use write_file to save the intended action in output/action-requests, wait for success, then execute the same file path. No action was launched; do not create another run or ask the user to unlock. Never guess the request contents.');
           throw error;
         }
         const rel=relative(realpathSync(dataPath(root, 'output/action-requests')),actual);

@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "check:static": "node scripts/engineering-preflight.mjs --static",
+    "check:production": "node scripts/verify-production-install.mjs",
+    "doctor:read-only": "node scripts/engineering-preflight.mjs",
+    "test:coverage": "node scripts/run-engineering-tests.mjs --coverage --suite=all",
     "test": "node scripts/run-engineering-tests.mjs --suite=all",
     "test:core": "node scripts/run-engineering-tests.mjs --suite=core",
     "test:browser": "node scripts/run-engineering-tests.mjs --suite=browser",
@@ -58,12 +62,13 @@
     "skills:check": "node scripts/check-skills.mjs",
     "skills:contracts": "node scripts/run-engineering-tests.mjs tests/acceptance/skill-resources.test.mjs"
   },
-  "devDependencies": {
-    "@playwright/test": "^1.63.0"
+  "engines": {
+    "node": ">=20.11"
   },
   "dependencies": {
+    "@playwright/test": "1.63.0",
     "ajv": "^8.18.0",
-    "xlsx": "^0.18.5",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "xmind": "^2.2.33"
   }
 }

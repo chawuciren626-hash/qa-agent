@@ -6,6 +6,39 @@ export const correctionLimit = 2;
 export const draftStages = ['analysis', 'test_points', 'test_cases', 'defects', 'report'];
 export const stageRevisionLimit = null;
 
+export class ArtifactSafetyError extends Error {
+  constructor(message, options) {
+    super(message,options);
+    this.name='ArtifactSafetyError';
+    this.code='artifact_safety_violation';
+  }
+}
+
+// These actions operate on local evidence and artifacts, never on the product.
+// Dispatch (including preparation) and execute deliberately have no exemption.
+export function isSafeArtifactAction(context) {
+  return ['extract_word','generate_analysis','validate_analysis','validate_artifacts',
+    'export_test_points','export_test_cases','assess_evidence','normalize_defects',
+    'build_report_metrics','export_report','handoff','complete'].includes(context?.action);
+}
+
+export function safeStoppedOperation(context) {
+  if(isSafeArtifactAction(context)) return true;
+  const agents={analysis:'requirement_analysis_agent',test_points:'test_point_agent',test_cases:'test_case_agent',
+    defects:'defect_analysis_agent',report:'test_report_agent'};
+  return context?.action==='dispatch' && Object.hasOwn(agents,context.stage) &&
+    context.agent===agents[context.stage];
+}
+
+const progressIdentity = context => context?.progress_sha256 ?? context?.request_sha256 ?? null;
+
+export function stalledCorrection(state, context) {
+  const previous = state.correction_progress?.[context?.key];
+  if (!previous || previous.consecutive < 3 || previous.progress !== progressIdentity(context,previous.recovery?.category)) return null;
+  return { ...previous.recovery, retry_allowed:false, stalled:true,
+    next_action:'inspect_and_repair_artifacts_or_handoff_partial', policy:'progress_based' };
+}
+
 export function stageRevisionBudget(events, stage) {
   const used = events.filter(e => e.type === 'stage_recovered' && e.stage === stage && e.actor === 'controller_auto_revision').length;
   return { limit: null, used, remaining: null, policy: 'progress_based' };
@@ -20,11 +53,12 @@ export function recordCorrection(state, category, context, error, result) {
     try { const data=JSON.parse(result.output_tail); diagnostics=data.errors ?? data.issues ?? data.status; }
     catch { diagnostics=result.output_tail; }
   }
-  const signature=createHash('sha256').update(JSON.stringify({request:context.progress_sha256 ?? context.request_sha256 ?? null,error:error?.message ?? null,status:result?.status ?? null,diagnostics})).digest('hex');
+  const signature=createHash('sha256').update(JSON.stringify({request:progressIdentity(context,category),error:error?.message ?? null,status:result?.status ?? null,diagnostics})).digest('hex');
   const previous=state.correction_progress[key];
   const consecutive=previous?.signature===signature?previous.consecutive+1:1;
-  state.correction_progress[key]={signature,consecutive};
-  return {category,key,failure_number:used,retry_allowed:true,remaining_corrections:null,policy:'progress_based',consecutive_same_failure:consecutive,stalled:consecutive>=3,next_action:consecutive>=3?'change_approach_or_report_partial':'correct_and_retry'};
+  const recovery={category,key,failure_number:used,retry_allowed:consecutive<3,remaining_corrections:null,policy:'progress_based',consecutive_same_failure:consecutive,stalled:consecutive>=3,next_action:consecutive>=3?'inspect_and_repair_artifacts_or_handoff_partial':'correct_and_retry'};
+  state.correction_progress[key]={signature,consecutive,progress:progressIdentity(context,category),recovery};
+  return recovery;
 }
 
 export function upstreamDraftRevision(manifest, stage) {
@@ -58,13 +92,21 @@ export function revisedDispatchId(manifest, stage, parent) {
 }
 export function classifyRecoverable(error, result, context) {
   if (!context) return null;
-  if (error instanceof CommandUsageError && context.action === 'handoff') return 'handoff_correction';
+  const seen=new Set();
+  for(let cause=error;cause && !seen.has(cause);cause=cause.cause) {
+    if(cause instanceof ArtifactSafetyError) return null;
+    seen.add(cause);
+  }
+  if (error instanceof CommandUsageError && ['handoff','complete'].includes(context.action)) return 'handoff_correction';
   if (error instanceof CommandUsageError && context.readOnly) return 'read_correction';
   if (error instanceof CommandUsageError && context.action === null) return 'request_correction';
   if (error instanceof CommandUsageError) return 'input_correction';
-  // Artifact validation reads evidence; the word "execution" in its stage is not a product execution.
-  if (context.action==='validate_artifacts' && result?.status==='failed' && result.result?.termination_confirmed===true) return 'artifact_revision';
-  // Only confirmed, non-executing artifact work can be corrected automatically.
-  if ((['extract_word','generate_analysis','validate_analysis','validate_artifacts','export_test_points','export_test_cases','assess_evidence','normalize_defects','build_report_metrics','export_report'].includes(context.action) && context.stage !== 'execution' || ['prepare_execution_plan','validate_execution_prepare'].includes(context.action) && context.stage === 'execution') && result?.status === 'failed' && result.result?.termination_confirmed === true) return 'artifact_revision';
+  if (isSafeArtifactAction(context) && error && !result) return 'artifact_revision';
+  if (isSafeArtifactAction(context) && ['failed','timeout'].includes(result?.status) && result.result?.termination_confirmed===true &&
+    !['interrupted','cleanup_required'].includes(result.result.termination)) return 'artifact_revision';
+  // Preparation remains correctable in a ready session but never unlocks stopped execution.
+  if (['prepare_execution_plan','validate_execution_prepare'].includes(context.action) && context.stage==='execution' &&
+    result?.status==='failed' && result.result?.termination_confirmed===true &&
+    !['interrupted','cleanup_required'].includes(result.result.termination)) return 'artifact_revision';
   return null;
 }

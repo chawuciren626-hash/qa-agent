@@ -75,6 +75,7 @@ export function qaProjectForSession(projects, bindings, session) {
   return matches[0].project;
 }
 export function qaTaskStatus(session, live = {}) {
+  if (live.humanWaiting) return { label: "等待人工操作", kind: "waiting" };
   if (live.error) return { label: "连接异常", kind: "error" };
   if (live.pending > 0) return { label: "等待确认", kind: "waiting" };
   const status = live.status ?? session?.status;
@@ -109,6 +110,15 @@ export function qaLastOutcome(items = []) {
   }
   return undefined;
 }
+// Temporarily disabled until the scene-specific workflow is defined.
+export const qaScenesEnabled = false;
+const qaGeneralPrompts = [
+  "帮我新建一个测试任务",
+  "根据需求生成测试用例",
+  "执行一轮回归测试",
+  "汇总本轮测试结果并输出测试报告",
+  "分析目标的性能与安全测试范围",
+];
 export const qaScenes = [
   {
     name: "功能测试",
@@ -163,6 +173,11 @@ export function createWorkspaceUI(deps) {
     reportError,
   } = deps;
   const h = R.createElement;
+  function BrandLogo({className = "qa-sidebar-logo"}) {
+    return h("span", {className: `qa-brand-mark ${className}`, role: "img", "aria-label": "AITestHarness Logo"},
+      h("img", {src: qaBrandLogo, className:"qa-logo-default", alt:"", "aria-hidden":true, draggable:false}),
+      h("img", {src: qaBrandLogoLight, className:"qa-logo-light", alt:"", "aria-hidden":true, draggable:false}));
+  }
   if (
     typeof document !== "undefined" &&
     !document.getElementById("aitest-client-styles")
@@ -502,6 +517,7 @@ export function createWorkspaceUI(deps) {
       h(
         "div",
         { className: "qa-brand" },
+        h(BrandLogo),
         h("span", null, "AITestHarness"),
         onCollapse &&
           h(
@@ -839,7 +855,7 @@ export function createWorkspaceUI(deps) {
       "div",
       { className: "qa-hero" },
       h("h1", null, "AITestHarness, 我帮你"),
-      h(
+      qaScenesEnabled && h(
         "div",
         { className: "qa-scenes", role: "group", "aria-label": "测试场景" },
         ...qaScenes.map((s, i) =>
@@ -866,7 +882,7 @@ export function createWorkspaceUI(deps) {
               key: label,
               className: "qa-quick-chip",
               onClick: () =>
-                controlRef.current?.fillPrompt(qaScenes[scene].prompts[i], []),
+                controlRef.current?.fillPrompt(qaScenesEnabled ? qaScenes[scene].prompts[i] : qaGeneralPrompts[i], []),
             },
             label,
           ),
@@ -894,6 +910,33 @@ export function createWorkspaceUI(deps) {
     );
   }
   function SessionContext({ session, status, pending, error, items, onBack }) {
+    const [human, setHuman] = R.useState({ session: null, actions: [] });
+    const [busy, setBusy] = R.useState(false), [humanError, setHumanError] = R.useState("");
+    const submitting = R.useRef(false);
+    const base = session?.sessionId ? `/api/sessions/${encodeURIComponent(session.sessionId)}/human-actions` : null;
+    R.useEffect(() => {
+      let alive = true, timer;
+      setHuman({ session: session?.sessionId, actions: [] });setHumanError("");setBusy(false);
+      async function refresh() {
+        try {
+          const data = await deps.request(base);
+          if (alive) setHuman({ session: session.sessionId, actions: data.actions ?? [] });
+        } catch { /* Keep an existing waiting card across temporary network loss. */ }
+        finally { if (alive) timer = setTimeout(refresh, 2500); }
+      }
+      if (base && session?.agentId === "test_agent") refresh();
+      return () => { alive = false; clearTimeout(timer); };
+    }, [base, session?.agentId]);
+    const actions = human.session === session?.sessionId ? human.actions : [];
+    async function answer(action, decision) {
+      if (submitting.current) return;
+      submitting.current = true;setBusy(true);setHumanError("");
+      try {
+        const result = await deps.request(base, { method: "POST", body: { run_id: action.run_id, action_id: action.action_id, decision } });
+        if(decision !== "wait") setHuman(previous => ({ ...previous, actions: previous.actions.map(item => item.action_id === action.action_id ? { ...item, status: result.status, decision } : item) }));
+      } catch { setHumanError("暂时无法续接原任务。请稍后刷新查看，未重新派发或重放操作。"); }
+      finally { submitting.current = false;setBusy(false); }
+    }
     const groups = useGroups(),
       group = qaProjectForSession(groups.projects, groups.bindings, session);
     const outcome = qaLastOutcome(items);
@@ -902,8 +945,9 @@ export function createWorkspaceUI(deps) {
       pending,
       error,
       stopReason: outcome,
+      humanWaiting: actions.length > 0,
     });
-    return h(
+    return h(R.Fragment, null, h(
       "div",
       { className: "qa-session-context" },
       h(
@@ -924,10 +968,21 @@ export function createWorkspaceUI(deps) {
         h("span", { className: `qa-dot ${state.kind}` }),
         state.label,
       ),
-    );
+    ), ...actions.map(action => {
+      const available = ["waiting_human", "not_sent"].includes(action.status);
+      return h("section", { className: "qa-human-card", key: action.action_id, "aria-label": "人工操作", role: "region" },
+        h("strong", null, available ? "需要你完成操作" : action.status === "accepted" ? (action.decision === "cancel" ? "正在结束原任务" : "已确认，正在续接原任务") : "正在核对续接状态"),
+        h("p", null, action.question),
+        h("p", { className: "qa-human-note" }, "原任务和浏览器已保留，尚未完成测试。"),
+        h("div", { className: "qa-human-buttons" },
+          h("button", { type: "button", className: "qa-button qa-primary", disabled: busy || !available, onClick: () => answer(action, "continue") }, ["access", "captcha", "mfa"].includes(action.kind) ? "已完成登录，继续测试" : "已完成操作，继续"),
+          h("button", { type: "button", className: "qa-button", disabled: busy || !available, onClick: () => answer(action, "wait") }, "继续等待"),
+          h("button", { type: "button", className: "qa-button", disabled: busy || !available, onClick: () => answer(action, "cancel") }, "取消任务")),
+        humanError && h("p", { role: "alert" }, humanError));
+    }));
   }
   const SectionPage = createSectionsUI({ ...deps, Icon, h });
-  return { Sidebar, Hero, SessionContext, SectionPage };
+  return { Sidebar, Hero, SessionContext, SectionPage, BrandLogo };
 }
 function relativeTime(value) {
   const ms = Date.now() - Date.parse(value);

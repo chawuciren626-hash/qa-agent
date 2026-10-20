@@ -83,7 +83,7 @@ test('stage events cannot bypass approval or override state and audit fields', (
     if (stage === 'analysis') {
       const parentPath = resolve(parentDir, `${parentId}_001.jsonl`);
       const traceBefore = readFileSync(parentPath, 'utf8');
-      const extra = { timestamp, type: 'model_msg', payload: { type: 'tool_call', name: 'run_subagent', tool_call_id: 'unregistered-retry', arguments: JSON.stringify({ agent_id: agent, prompt: id }) } };
+      const extra = { timestamp, type: 'model_msg', payload: { type: 'tool_call', name: 'run_subagent', tool_call_id: 'unregistered-retry', arguments: JSON.stringify({ agent_id: agent, prompt: `run_id=${id} ${dispatchId}` }) } };
       writeFileSync(parentPath, traceBefore + '\n' + JSON.stringify(extra));
       assert.notEqual(run('record-orchestration-event', [...completion, `--parent-session-id=${parentId}`]).status, 0);
       assert.equal(readFileSync(resolve(dir, 'manifest.json'), 'utf8'), before);

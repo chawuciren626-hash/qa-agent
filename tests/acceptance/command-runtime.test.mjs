@@ -25,6 +25,12 @@ test('native runner preserves spaces, Unicode and shell metacharacters as litera
   assert.equal(record.shell, false); assert.equal(record.runtime, process.execPath);
   assert.equal(record.argument_count, args.length); assert.equal(record.result.termination_confirmed, true);
   assert.equal(record.args, undefined);
+  const timing=record.result.timing;
+  assert.ok(timing.spawn_ms>=0 && timing.exit_ms>=timing.spawn_ms && timing.close_ms>=timing.exit_ms);
+  assert.ok(timing.settled_ms>=timing.close_ms);assert.equal(timing.stop_requested_ms,null);
+  const timeline=readFileSync(resolve(result.evidence_dir,'command.log.process.jsonl'),'utf8');
+  assert.deepEqual(timeline.trim().split('\n').map(line=>JSON.parse(line).event),['runner_started','child_spawned','child_exited','child_closed','runner_settled']);
+  assert.ok(!timeline.includes('two words'));assert.equal(record.result.timeline_write_errors,0);
 });
 
 test('runner propagates nonzero status instead of reporting wrapper success', async () => {
@@ -35,13 +41,18 @@ test('runner propagates nonzero status instead of reporting wrapper success', as
 });
 
 test('timeout and cancellation stop owned processes and retain evidence', async () => {
-  const root = fixture(); writeFileSync(resolve(root, 'scripts/wait.mjs'), 'setInterval(()=>{},1000);');
-  const result = await runProjectCommand(root, { kind: 'node', script: 'wait.mjs', timeoutMs: 300 });
+  const root = fixture(); writeFileSync(resolve(root, 'scripts/wait.mjs'), 'console.log(JSON.stringify({status:"synthetic_diagnostic_written"}));setInterval(()=>{},1000);');
+  const result = await runProjectCommand(root, { kind: 'node', script: 'wait.mjs', timeoutMs: 1000 });
   assert.equal(result.status, 'timeout'); assert.equal(result.exit_code, 124); assert.equal(result.result.termination_confirmed, true);
+  assert.equal(JSON.parse(result.output_tail).status,'synthetic_diagnostic_written');
+  assert.ok(result.result.timing.stop_requested_ms>=0);
+  assert.ok(result.result.timing.exit_ms>=result.result.timing.stop_requested_ms);
+  assert.match(readFileSync(resolve(result.evidence_dir,'command.log.process.jsonl'),'utf8'),/termination_requested/);
   const controller = new AbortController(); controller.abort();
   const interrupted = await runProjectCommand(root, { kind: 'node', script: 'wait.mjs', signal: controller.signal });
   assert.equal(interrupted.status, 'interrupted'); assert.equal(interrupted.exit_code, 130);
   assert.equal(interrupted.child_pid, null); assert.ok(existsSync(resolve(interrupted.evidence_dir, 'command.log')));
+  assert.equal(interrupted.result.timing.spawn_ms,null);
 });
 
 test('runner rejects shell commands, path escapes, recursion, missing run and invalid timeouts', async () => {

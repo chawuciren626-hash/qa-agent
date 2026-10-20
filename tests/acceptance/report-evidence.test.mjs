@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve, dirname } from 'node:path';
 import { readRunFile } from '../../scripts/design-quality.mjs';
 import { buildReportEvidence, reportFactsMarkdown } from '../../scripts/report-evidence.mjs';
+import { humanHandoffTiming, summarizeBrowserPerformance } from '../../scripts/browser-performance.mjs';
 
 function fixture() {
   const dir = mkdtempSync(resolve(tmpdir(), 'report-evidence-'));
@@ -20,6 +21,43 @@ function fixture() {
   };
   return { dir, manifest, sources, put };
 }
+
+test('normal partial browser finish preserves untested scope without inventing a product defect',()=>{
+  const f=fixture();
+  f.put('execution/exploration.json',{run_id:'run-facts',mode:'interactive_browser',evidence:[]});
+  f.put('execution/test_results.json',{run_id:'run-facts',status:'partial',coverage:{status:'partial',untested:['Create success path: service unavailable']},cases:[{case_id:'error-feedback',status:'passed',failure_category:'none'}]});
+  const index=buildReportEvidence(f.dir,f.manifest),fact=index.facts[0];
+  assert.equal(fact.partial,true);assert.equal(fact.counts.passed,1);assert.equal(fact.counts.failed,0);
+  assert.equal(fact.coverage.untested.length,1);
+  const md=reportFactsMarkdown(index);
+  assert.match(md,/仅交付部分结果/);assert.match(md,/Create success path/);assert.match(md,/不能把断言通过数/);
+});
+
+test('performance summaries union same-phase spans and never copy free text or invent missing time',()=>{
+  const performance={version:1,worker_elapsed_ms:100,spans:[{phase:'privacy_scan',start_offset_ms:0,duration_ms:30},{phase:'privacy_scan',start_offset_ms:20,duration_ms:30},{phase:'screenshot_with_privacy',start_offset_ms:0,duration_ms:80}],question:'PRIVATE_SENTINEL'};
+  const result=summarizeBrowserPerformance([{result:{performance}},{result:{}},{result:{performance:{...performance,worker_elapsed_ms:1}}}]);
+  assert.equal(result.measured_operations,1);assert.equal(result.missing_operations,1);assert.equal(result.invalid_operations,1);
+  assert.equal(result.phases.privacy_scan.duration_ms,50);assert.equal(result.phases.navigation.duration_ms,null);
+  assert.equal(result.recorded_operation_ms,100);assert.equal(result.model_round_trip_ms,null);assert.ok(!JSON.stringify(result).includes('PRIVATE_SENTINEL'));
+  assert.equal(summarizeBrowserPerformance([]).recorded_operation_ms,null);
+  assert.equal(summarizeBrowserPerformance([{result:{performance:{...performance,spans:[{phase:'PRIVATE_SENTINEL',start_offset_ms:0,duration_ms:1}]}}}]).status,'invalid');
+});
+
+test('report timing only uses hash-bound receipts from the exact browser attempt',()=>{
+  const f=fixture();
+  const receipt={version:2,run_id:'run-facts',invocation_id:'attempt',dispatch_id:'dispatch',request_id:'one',status:'completed',result:{performance:{version:1,worker_elapsed_ms:100,spans:[{phase:'navigation',start_offset_ms:0,duration_ms:80}]}}};
+  const evidence=f.put('execution/browser-evidence/one.json',receipt,false);
+  const foreign=f.put('execution/browser-evidence/two.json',{...receipt,request_id:'two',invocation_id:'other'},false);
+  f.put('execution/exploration.json',{run_id:'run-facts',invocation_id:'attempt',dispatch_id:'dispatch',mode:'interactive_browser',evidence:[evidence,foreign]});
+  f.put('execution/test_results.json',{run_id:'run-facts',cases:[]});
+  const before=readFileSync(resolve(f.dir,evidence.path));
+  const index=buildReportEvidence(f.dir,f.manifest);
+  assert.equal(index.facts[0].browser_performance_summary.measured_operations,1);
+  assert.match(reportFactsMarkdown(index),/导航 \| 1 \| 80/);assert.match(reportFactsMarkdown(index),/模型及队列耗时未记录/);
+  assert.deepEqual(readFileSync(resolve(f.dir,evidence.path)),before);
+  writeFileSync(resolve(f.dir,evidence.path),JSON.stringify({...receipt,result:{performance:{version:1,worker_elapsed_ms:900,spans:[]}}}));
+  assert.equal(buildReportEvidence(f.dir,f.manifest).facts[0].browser_performance_summary.status,'not_recorded');
+});
 
 test('extracts exact assertion counts, timing and hashed evidence without changing source', () => {
   const f=fixture();
@@ -51,6 +89,22 @@ test('missing optional artifacts and text-only report do not require predecessor
   assert.equal(index.files.length,1);assert.deepEqual(index.facts,[]);
   assert.match(reportFactsMarkdown(index),/未评估/);
   assert.ok(!index.files.some(p=>p.path.includes('metrics')));
+});
+
+test('report includes verified human handoff totals without claiming human effort or copying questions',()=>{
+  const f=fixture();let now=0;
+  const timing=humanHandoffTiming({clock:()=>now,wall:()=> '2026-10-19T00:00:00.000Z'});
+  timing.begin('first','captcha');now=200;timing.end('resumed');timing.begin('second','mfa');now=250;
+  const source=timing.snapshot();source.question='PRIVATE_SENTINEL';
+  f.put('execution/exploration.json',{run_id:'run-facts',mode:'interactive_browser',human_handoff_timing:source,evidence:[]});
+  f.put('execution/test_results.json',{run_id:'run-facts',cases:[{case_id:'C',status:'passed'}]});
+  const index=buildReportEvidence(f.dir,f.manifest),markdown=reportFactsMarkdown(index);
+  assert.equal(index.facts[0].human_handoff_summary.closed_window_ms,200);
+  assert.equal(index.facts[0].human_handoff_summary.open_observed_ms,50);
+  assert.match(markdown,/人工交接时间/);assert.match(markdown,/不是用户实际操作工时/);
+  assert.match(markdown,/不推算之后/);assert.ok(!markdown.includes('PRIVATE_SENTINEL'));assert.ok(!JSON.stringify(index).includes('PRIVATE_SENTINEL'));
+  const bytes=readFileSync(resolve(f.dir,'execution/exploration.json'));
+  buildReportEvidence(f.dir,f.manifest);assert.deepEqual(readFileSync(resolve(f.dir,'execution/exploration.json')),bytes);
 });
 
 test('tampering, foreign run data, traversal and unlisted evidence are not facts', () => {

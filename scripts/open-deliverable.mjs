@@ -31,3 +31,4 @@ export async function openDeliverable(file,{run=spawn,platform=process.platform,
     child.once('error',finish);child.once('exit',code=>finish(code===0?null:new Error('Document application could not be opened')));
   });
 }
+export { readDeliveryEvidence } from './delivery-evidence.mjs';

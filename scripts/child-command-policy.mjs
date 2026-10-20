@@ -1,5 +1,6 @@
 import { isAbsolute, relative, resolve } from 'node:path';
 import { stageWriteRules, isControlledStageEvidence } from './stage-registry.mjs';
+import { isSafeArtifactAction } from './recovery-policy.mjs';
 
 export function childCommandPolicy(dispatchId, version = 3) {
   if (version === 3) return `QA_COMMAND_POLICY_V3 ${dispatchId}: 仅交付已分配阶段，校验和导出使用结构化动作。安全输入与草稿纠错不设固定次数；依据已记录的recovery修正原因，stalled=true时改变方法或返回已有结果和限制，不原样循环。不得要求用户技术解锁。保留真实证据，未解决的错误不得宣称完成。禁止重放结果未知的产品操作、绕过凭据或扩大范围，不自行批准阶段或直接编辑manifest。`;
@@ -120,14 +121,14 @@ function assertStageWrites(rows,options) {
   const boundary=options.stageWriteBoundary;
   for(const [index,row] of rows.entries()) {
     if(row.payload?.type!=='tool_call' || !['write_file','edit_file','apply_patch'].includes(row.payload.name)) continue;
-    if(options.allowRecovery && writeWasNotExecuted(rows,index)) continue;
+    if(options.allowRecovery && toolWasNotExecuted(rows,index)) continue;
     const args=parseToolArguments(row);
     const targets=row.payload.name==='apply_patch' ? patchTargets(args) : [args?.file_path];
     targets.forEach(target=>assertStageWriteTarget(target,boundary));
   }
 }
 
-function writeWasNotExecuted(rows,index) {
+export function toolWasNotExecuted(rows,index) {
   const call=rows[index].payload;
   const matches=rows.filter(row=>row.payload?.type==='tool_call' && row.payload.tool_call_id===call.tool_call_id);
   if(!call.tool_call_id || matches.length!==1) return false;
@@ -156,8 +157,18 @@ function writeWasNotExecuted(rows,index) {
     String(terminal.payload.error_message).includes(`for tool "${call.name}" (tool_call_id="${call.tool_call_id}",`);
 }
 
+function normalizedInspectionPath(path) {
+  return path.replaceAll('\\', '/').replace(/\/$/, '').toLowerCase();
+}
+
 function inspectedPath(command) {
-  return String(command ?? '').match(/["']([a-z]:[\\/][^"']+)["']/i)?.[1].replaceAll('\\', '/').replace(/\/$/, '').toLowerCase() ?? null;
+  const path=String(command ?? '').match(/["']([a-z]:[\\/][^"']+)["']/i)?.[1];
+  return path ? normalizedInspectionPath(path) : null;
+}
+
+function isSingleFileRead(command) {
+  // Native file reads can replace a single content read, not listings or searches.
+  return /^\s*Get-Content\s+(?:(?:-LiteralPath|-Path)\s+)?(?:"[a-z]:[\\/][^"*?\[\]]+"|'[a-z]:[\\/][^'*?\[\]]+')(?:\s+(?:-Raw|-(?:TotalCount|Tail)\s+\d+|-Encoding\s+[A-Za-z0-9-]+))*\s*$/i.test(String(command));
 }
 
 function isCatalogLookup(command) {
@@ -186,7 +197,7 @@ function entryModuleMissing(output) {
     /requireStack:\s*\[\s*\]/.test(value) && /Function\.executeUserEntryPoint/.test(value);
 }
 
-function terminalCommandOutput(rows, index, initial) {
+function terminalCommandOutput(rows, index, initial, allowRecovery) {
   const marker = String(initial.payload.output ?? '').match(/\[process running with process_id (proc-[A-Za-z0-9-]+); use input_command to send input or poll for output\]\s*$/);
   if (!marker) return initial;
   const processId = marker[1];
@@ -194,6 +205,7 @@ function terminalCommandOutput(rows, index, initial) {
   for (let i = index + 1; i < rows.length; i++) {
     const call = rows[i];
     if (call.payload?.type !== 'tool_call' || call.payload.name !== 'input_command') continue;
+    if (allowRecovery && toolWasNotExecuted(rows,i)) continue;
     let args;
     try { args = typeof call.payload.arguments === 'string' ? JSON.parse(call.payload.arguments) : call.payload.arguments; }
     catch { throw new Error('Child process poll arguments unreadable'); }
@@ -210,7 +222,7 @@ function terminalCommandOutput(rows, index, initial) {
 }
 
 // Only inspect structured tool calls/results, never model reasoning or prose claims.
-export function assertChildCommands(rows, { allowRecovery = false, allowUnresolvedRecovery = false, requireControlledCommands = false, verifyRecovery = () => false, stageWriteBoundary = null } = {}) {
+export function assertChildCommands(rows, { allowRecovery = false, allowUnresolvedRecovery = false, requireControlledCommands = false, verifyRecovery = () => false, verifyPartialBrowserFailure = () => false, stageWriteBoundary = null } = {}) {
   assertStageWrites(rows,{stageWriteBoundary,allowRecovery});
   const pending = new Set();
   const pendingReads = new Map();
@@ -218,21 +230,28 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
   let pendingCatalog = false;
   let pendingShellProbes = 0;
   for (const [index, row] of rows.entries()) {
-    if(allowRecovery && pendingReads.size && stageWriteBoundary && row.payload?.type==='tool_call' && row.payload.name==='read_file') {
+    if(allowRecovery && (pendingInspection || pendingReads.size && stageWriteBoundary) && row.payload?.type==='tool_call' && row.payload.name==='read_file') {
       let args;try {args=parseToolArguments(row);} catch { /* A later valid native read may still correct this read-only detour. */ }
       const outputs=rows.slice(index+1).filter(item=>item.payload?.type==='tool_call_output' && item.payload.tool_call_id===row.payload.tool_call_id);
-      if(typeof args?.file_path==='string' && outputs.length===1 && outputs[0].payload.stop_reason==='completed') {
+      const calls=rows.filter(item=>item.payload?.type==='tool_call' && item.payload.tool_call_id===row.payload.tool_call_id);
+      if(typeof args?.file_path==='string' && row.payload.tool_call_id && calls.length===1 && outputs.length===1 && outputs[0].payload.stop_reason==='completed') {
+        const target=/^[a-z]:[\\/]/i.test(args.file_path) || isAbsolute(args.file_path) ? args.file_path : stageWriteBoundary && resolve(stageWriteBoundary.workspace,args.file_path);
+        if(pendingInspection?.nativeRead && index>pendingInspection.failedAt && target && normalizedInspectionPath(target)===pendingInspection.path) pendingInspection=null;
+        if(!stageWriteBoundary) continue;
         const path=normalizeRunRelative(stageWriteBoundary.runDirectory,args.file_path,stageWriteBoundary.workspace);
-        for(const read of pendingReads.values()) if(read.path===path) read.readAt=rows.indexOf(outputs[0]);
+        for(const read of pendingReads.values()) if(read.scope==='engine'
+          ? stageWriteBoundary.engineDirectory && isAbsolute(args.file_path) && resolve(args.file_path)===resolve(stageWriteBoundary.engineDirectory,read.path)
+          : read.path===path) read.readAt=rows.indexOf(outputs[0]);
       }
     }
     if (row.payload?.type !== 'tool_call' || row.payload.name !== 'exec_command') continue;
+    if (allowRecovery && toolWasNotExecuted(rows,index)) continue;
     let args;
     try { args = typeof row.payload.arguments === 'string' ? JSON.parse(row.payload.arguments) : row.payload.arguments; }
     catch { throw new Error('Child command arguments unreadable'); }
     const outputs = rows.slice(index + 1).filter(item => item.payload?.type === 'tool_call_output' && item.payload.tool_call_id === row.payload.tool_call_id);
     if (outputs.length !== 1) throw new Error('Child command has unknown terminal response; review required');
-    const response = terminalCommandOutput(rows, index, outputs[0]);
+    const response = terminalCommandOutput(rows, index, outputs[0], allowRecovery);
     if(allowRecovery && wasRedirectedBeforeExecution(rows,index,response,row.payload.tool_call_id)) continue;
     if (!isControlledCommand(args?.cmd)) {
       if(allowRecovery && isSuccessfulLiteralCount(args?.cmd,response.payload)) continue;
@@ -243,10 +262,11 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
       if (response.payload.stop_reason === 'fatal') {
         const path = inspectedPath(args?.cmd);
         if (recoverableDetour) {}
+        else if (allowRecovery && isSafeInspection(args?.cmd) && isSingleFileRead(args?.cmd) && path && !pendingInspection) pendingInspection = {path,nativeRead:true,failedAt:rows.indexOf(response)};
         else if (allowRecovery && isHarmlessShellProbe(args?.cmd, response.payload.output)) pendingShellProbes++;
         else if (!allowRecovery || !isSafeInspection(args?.cmd) || !path || pendingInspection) throw new Error('Child command failed');
-        else pendingInspection = path;
-      } else if (pendingInspection && isSafeInspection(args?.cmd) && inspectedPath(args?.cmd) === pendingInspection && response.payload.stop_reason === 'completed') pendingInspection = null;
+        else pendingInspection = {path,nativeRead:isSingleFileRead(args?.cmd),failedAt:rows.indexOf(response)};
+      } else if (pendingInspection && isSafeInspection(args?.cmd) && inspectedPath(args?.cmd) === pendingInspection.path && response.payload.stop_reason === 'completed') pendingInspection = null;
       if (allowRecovery && response.payload.stop_reason === 'completed' && isSuccessfulReportHeaderInspection(args?.cmd, response.payload.output)) pendingShellProbes = 0;
       continue;
     }
@@ -283,17 +303,32 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     }
     // A read_source routing error may be corrected with the native reader. Bind the
     // exact path to its persisted rejection and require subsequent stage validation.
-    if(allowRecovery && stageWriteBoundary && result?.status==='rejected' && result.classification==='input_rejected' && result.action==='read_source' && result.error==='Source must be a run-relative inputs path' && result.recovery?.category==='read_correction' && result.recovery.retry_allowed===true && typeof result.read_path==='string' && /^(analysis|design|execution|defects|report)\//.test(result.read_path) && !result.read_path.includes('\\') && !result.read_path.split('/').some(part=>['','.','..'].includes(part)) && verifyRecovery(result)) {
-      pendingReads.set(result.task_key,{path:result.read_path,run:result.run_id,readAt:null});continue;
+    if(allowRecovery && stageWriteBoundary && result?.status==='rejected' && result.classification==='input_rejected' && result.action==='read_source' && result.error==='Source must be a run-relative inputs path' && result.recovery?.category==='read_correction' && result.recovery.retry_allowed===true && typeof result.read_path==='string' && (/^(analysis|design|execution|defects|report)\//.test(result.read_path) || stageWriteBoundary.engineDirectory && /^docs\/[A-Za-z0-9_/-]+\.md$/.test(result.read_path)) && !result.read_path.includes('\\') && !result.read_path.split('/').some(part=>['','.','..'].includes(part)) && verifyRecovery(result)) {
+      pendingReads.set(result.task_key,{path:result.read_path,scope:result.read_path.startsWith('docs/')?'engine':'run',run:result.run_id,readAt:null});continue;
     }
-    // A returned draft may be archived for a new bounded dispatch, never completed, after verified exhaustion.
+    const safeArtifactTimeout=result?.status==='timeout' && result.recovery?.category==='artifact_revision' &&
+      isSafeArtifactAction(result) && result.result?.termination_confirmed===true &&
+      !['interrupted','cleanup_required'].includes(result.result.termination);
+    const correctionStatus=['failed','rejected'].includes(result?.status) || safeArtifactTimeout;
+    // Stalling forbids unchanged retries, but does not invalidate a later verified correction.
+    if(allowRecovery && correctionStatus && result.exit_code!==0 &&
+      ['input_correction','artifact_revision','read_correction','request_correction','handoff_correction'].includes(result.recovery?.category) &&
+      result.recovery.policy==='progress_based' && result.recovery.stalled===true && result.recovery.retry_allowed===false &&
+      Number.isInteger(result.recovery.failure_number) && result.recovery.failure_number>=3 &&
+      typeof result.task_key==='string' && result.task_key.length>0 && result.recovery.key===result.task_key &&
+      (result.classification!=='correction_stalled' || result.status==='rejected' && result.exit_code===2) && verifyRecovery(result)) {
+      pending.add(result.task_key); continue;
+    }
+    // A returned draft may be archived, never completed, after verified exhaustion.
     // Native tools label ordinary nonzero exits fatal too; only a matching persisted safe receipt can qualify.
     if(allowRecovery && allowUnresolvedRecovery && result && verifyRecovery(result) &&
-      ((['input_correction','artifact_revision','read_correction','request_correction'].includes(result.recovery?.category) && result.recovery.failure_number===3 && result.recovery.retry_allowed===false && ['failed','rejected'].includes(result.status)) ||
+      ((['input_correction','artifact_revision','read_correction','request_correction'].includes(result.recovery?.category) && Number.isInteger(result.recovery.failure_number) && result.recovery.failure_number>=3 && result.recovery.retry_allowed===false && correctionStatus) ||
        (result.status==='rejected' && result.classification==='task_paused' && result.recovery==null && result.exit_code===2))) {
       pending.add(result.task_key); continue;
     }
-    if (allowRecovery && result?.exit_code !== 0 && ['failed','rejected'].includes(result?.status) && result?.recovery?.retry_allowed === true && ['input_correction','artifact_revision','read_correction','request_correction'].includes(result.recovery.category) && ((result.recovery.policy==='progress_based' && Number.isInteger(result.recovery.failure_number) && result.recovery.failure_number>0) || [1,2].includes(result.recovery.failure_number)) && verifyRecovery(result)) { pending.add(result.recovery.key); continue; }
+    if (allowRecovery && result?.exit_code !== 0 && correctionStatus && result?.recovery?.retry_allowed === true && ['input_correction','artifact_revision','read_correction','request_correction'].includes(result.recovery.category) && ((result.recovery.policy==='progress_based' && Number.isInteger(result.recovery.failure_number) && result.recovery.failure_number>0) || [1,2].includes(result.recovery.failure_number)) && verifyRecovery(result)) { pending.add(result.recovery.key); continue; }
+    // A verified partial browser delivery preserves failed commands; it never turns them into passes.
+    if(allowRecovery && verifyPartialBrowserFailure(result,row)) continue;
     if (!result || response.payload.stop_reason === 'fatal' || !['completed', 'ready', 'help'].includes(result.status) || (result.exit_code !== undefined && result.exit_code !== 0)) throw new Error('Child command failed or was rejected; cannot complete this dispatch after retry');
     if (pendingCatalog && isCatalogLookup(args?.cmd) && result.status === 'help') pendingCatalog = false;
     if (allowRecovery && result.status === 'completed' && result.action_receipt && verifyRecovery(result)) {

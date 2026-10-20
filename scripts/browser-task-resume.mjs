@@ -29,6 +29,7 @@ export function browserWaiting(root,runId,manifest) {
 export function assertBrowserResume(root,runId,manifest,parent,agentRoot=process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(),'.penguin/data/default_project/agents')) {
   const waiting=browserWaiting(root,runId,manifest);
   if(!waiting) throw new Error('No verified human-waiting browser task; do not use resume for failures');
+  if(waiting.human_protocol===1) throw new Error('Use the human action card or reply 已登录. The host resumes the original child and dispatch; do not redispatch or mark the task completed.');
   const rows=assertParentSession(root,runId,parent,agentRoot);
   if(!nativeBrowserContinuation(rows,waiting.waiting_at)) throw new Error('Wait for the actual user response confirming continuation; no technical unlock approval is needed');
   const child=resolveDispatchedChild(root,runId,'execution',parent,agentRoot);

@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, extname, relative } from "node:path";
 import { patchDeliveryBundle } from "./penguin-runtime-patches.mjs";
-import { patchClientBundle, clientModule } from "./client-ui-patches.mjs";
+import { patchClientBundle, clientModule, brandDataUrl } from "./client-ui-patches.mjs";
 const app = process.argv[2],
   port = Number(process.argv[3] || 59870),
   root = resolve(import.meta.dirname, "..");
@@ -94,6 +94,7 @@ const calls = [],
   unhandled = new Set();
 let seq = 0;
 const inputBySession = new Map();
+let previewHumanStatus = "waiting_human";
 const json = (res, data, status = 200) => {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(data));
@@ -107,6 +108,10 @@ const server = createServer(async (req, res) => {
     const data = body ? JSON.parse(body) : {};
     if (p.startsWith("/api/")) {
       calls.push({ method: req.method, path: p, data });
+      if (p.endsWith("/human-actions")) {
+        if (req.method === "POST" && data.decision !== "wait") previewHumanStatus = "accepted";
+        return json(res, req.method === "POST" ? { status: previewHumanStatus } : { actions: process.env.QA_PREVIEW_HUMAN_CARD === "1" ? [{ run_id: "run-preview", action_id: "00000000-0000-4000-8000-000000000001", kind: "access", question: "请在保留的浏览器窗口完成登录与验证码验证。", status: previewHumanStatus }] : [] });
+      }
       writeFileSync(
         resolve(out, "preview-requests.json"),
         JSON.stringify(calls, null, 2),
@@ -305,7 +310,7 @@ const server = createServer(async (req, res) => {
               payload: {
                 type: "text",
                 role: "assistant",
-                text: "已完成本轮测试用例梳理。\n\n- 覆盖正常登录、输入校验和登录状态。\n- 待确认：连续登录失败后的锁定规则。\n\n这是客户端工程预览中的合成对话，未执行产品测试。",
+                text: process.env.QA_PREVIEW_HUMAN_CARD === "1" ? "等待你完成登录，原任务和浏览器已保留，测试尚未完成。" : "已完成本轮测试用例梳理。\n\n- 覆盖正常登录、输入校验和登录状态。\n- 待确认：连续登录失败后的锁定规则。\n\n这是客户端工程预览中的合成对话，未执行产品测试。",
                 stop_reason: "completed",
               },
             },
@@ -392,7 +397,7 @@ const server = createServer(async (req, res) => {
     }
     res.setHeader("content-type", "text/html; charset=utf-8");
     res.end(
-      html.replace(
+      html.replace('href="/penguin-logo.svg"', 'href="'+brandDataUrl(readFileSync(resolve(root, 'penguin/ui/aith-logo.svg'), 'utf8'))+'"').replace(
         "<title>PenguinHarness</title>",
         "<title>AITestHarness · 工程预览</title>",
       ),
@@ -404,6 +409,6 @@ const server = createServer(async (req, res) => {
 });
 server.listen(port, "127.0.0.1", () =>
   console.log(
-    `Isolated UI preview (synthetic API only): http://127.0.0.1:${port}/chat/new`,
+    `Isolated UI preview (synthetic API only): http://127.0.0.1:${server.address().port}/chat/new`,
   ),
 );

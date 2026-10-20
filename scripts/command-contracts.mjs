@@ -109,3 +109,26 @@ export function parseOptions(args, allowed) {
   }
   return options;
 }
+
+// The tool hook validates the literal invocation before a shell or CLI can run.
+export function parseActionInvocation(command) {
+  const value=String(command ?? '').trim();
+  requireUsage(!/[\r\n;&|`$<>%\x00]/.test(value),'Use one literal structured command');
+  const match=/^node(?:\.exe)?\s+(?:"[^"\r\n]*project-action\.mjs"|'[^'\r\n]*project-action\.mjs'|[^\s"']*project-action\.mjs)(?:\s+(catalog|help|--help|summary|execute))?(?:\s+(.*))?$/.exec(value);
+  requireUsage(match,'Use project-action.mjs catalog, summary or execute; action names belong in qa_request');
+  requireUsage(match[1] || !match[2],'Use project-action.mjs execute --controller-session=<parent-session> --request=<JSON-file>; put validate_artifacts and other action names in qa_request, not the CLI subcommand');
+  const action=match[1] ?? 'catalog';
+  let rest=match[2] ?? '';
+  const args=[];
+  while(rest.trim()) {
+    rest=rest.trimStart();
+    const flag=/^--([a-z-]+)=(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\s"']+))(?=\s|$)/.exec(rest);
+    requireUsage(flag,'Use --name=value flags, not positional or unmatched quoted arguments');
+    args.push(`--${flag[1]}=${flag[2] ?? flag[3] ?? flag[4]}`);
+    rest=rest.slice(flag[0].length);
+  }
+  const options=parseOptions(args,action==='execute'?['controller-session','request']:['controller-session']);
+  if(['execute','summary'].includes(action)) requireUsage(options['controller-session'],'Missing --controller-session=<parent-session>');
+  if(action==='execute') requireUsage(options.request && !/^[\s]*[\[{]/.test(options.request),'Missing --request=<JSON-file>; use qa_request for the body');
+  return {action,options};
+}

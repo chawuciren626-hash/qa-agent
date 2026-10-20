@@ -15,9 +15,21 @@ const documents = [
 export function deliveryPresentation(root, runId, manifest) {
   const dir=runDirectory(root,runId), artifacts=[];
   const contracts=new Map();
-  for(const event of manifest.orchestration?.events ?? []) {
-    const contract=event.type==='completed' ? event.evidence?.artifact_contract : null;
-    if(contract?.status==='passed' && contract.run_id===runId && contract.stage===event.stage) contracts.set(event.stage,contract);
+  for(const [stage,current] of Object.entries(manifest.stages ?? {})) {
+    if(!['completed','awaiting_confirmation'].includes(current.status)) continue;
+    const events=(manifest.orchestration?.events ?? []).filter(event=>event.stage===stage);
+    const event=events.filter(event=>event.type==='completed').at(-1);
+    const dispatch=events.filter(event=>event.type==='dispatched').at(-1);
+    const contract=event?.evidence?.artifact_contract;
+    if(contract?.status!=='passed' || contract.run_id!==runId || contract.stage!==stage) continue;
+    // Legacy contracts carry their binding on the completion event, not in the receipt.
+    // With no dispatch identity anywhere, retain the legacy chronological contract.
+    if(dispatch && events.indexOf(event)<events.indexOf(dispatch)) continue;
+    const dispatchId=dispatch?.dispatch_id ?? current.dispatch_id;
+    if(dispatchId && event['dispatch-id']!==dispatchId) continue;
+    if(current.dispatch_id && dispatch?.dispatch_id && current.dispatch_id!==dispatch.dispatch_id) continue;
+    if(contract.dispatch_id && contract.dispatch_id!==(dispatchId ?? event['dispatch-id'])) continue;
+    contracts.set(stage,contract);
   }
   const verified=(stage,path)=>{
     const expected=contracts.get(stage)?.files?.find(file=>file.path===path);

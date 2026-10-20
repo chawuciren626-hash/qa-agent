@@ -1,6 +1,7 @@
 """Read-only exact-value audit. Never print credentials, snippets or key hashes."""
 
 import argparse
+import hashlib
 import json
 import os
 import stat
@@ -38,6 +39,21 @@ def matches(data, secrets):
     return found
 
 
+def evidence_secret(path, pointer, maximum_file):
+    """Read one explicitly selected JSON string, never discover or echo values."""
+    if not pointer or not pointer.startswith('/'):
+        raise ValueError('explicit_json_pointer_required')
+    if path.is_symlink() or path.stat().st_size > maximum_file:
+        raise ValueError('unsafe_or_oversized_source')
+    node = json.loads(path.read_bytes())
+    for part in pointer[1:].split('/'):
+        part = part.replace('~1', '/').replace('~0', '~')
+        node = node[int(part)] if isinstance(node, list) else node[part]
+    if not isinstance(node, str) or not node or node.isspace():
+        raise ValueError('selected_source_must_be_nonempty_string')
+    return [node]
+
+
 def git(root, *args):
     result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=False)
     if result.returncode:
@@ -57,7 +73,8 @@ def scan_files(paths, secrets, maximum_file, maximum_total, excluded=()):
                 continue
             if path.resolve() in excluded:
                 continue
-            size = path.stat().st_size
+            before = path.stat()
+            size = before.st_size
             if size > maximum_file:
                 report["skipped"] += 1
                 report["complete"] = False
@@ -66,11 +83,17 @@ def scan_files(paths, secrets, maximum_file, maximum_total, excluded=()):
                 report["complete"] = False
                 break
             data = path.read_bytes()
+            after = path.stat()
+            stable = (before.st_size, before.st_mtime_ns) == (after.st_size, after.st_mtime_ns)
+            if not stable:
+                report['complete'] = False
             report["files_scanned"] += 1
             report["bytes_scanned"] += len(data)
             found = matches(data, secrets)
             if found:
-                report["findings"].append({"path": str(path), "keys": found})
+                report["findings"].append({"path": str(path), "keys": found,
+                                           "file_sha256": hashlib.sha256(data).hexdigest(),
+                                           "stable_during_read": stable})
         except OSError:
             report["skipped"] += 1
             report["complete"] = False
@@ -159,7 +182,10 @@ def scan_history(root, secrets, maximum_file, maximum_total):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", required=True, type=Path)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--config", type=Path)
+    source.add_argument("--secret-json", type=Path, help="Explicit local evidence JSON; never a secret literal")
+    parser.add_argument("--secret-pointer", help="JSON pointer to one known secret string")
     parser.add_argument("--repo", required=True, type=Path)
     parser.add_argument("--scan-root", action="append", default=[], type=Path)
     parser.add_argument("--history", action="store_true")
@@ -169,22 +195,27 @@ def main():
     args = parser.parse_args()
     secrets = []
     try:
-        import tomllib  # Maintenance audit requires Python 3.11+; no package installation.
-
         if args.max_file_mib <= 0 or args.max_total_mib <= 0:
             raise ValueError("positive_limits_required")
-        with args.config.open("rb") as stream:
-            secrets = credential_values(tomllib.load(stream))
+        file_limit, total_limit = args.max_file_mib * 1024**2, args.max_total_mib * 1024**2
+        if args.config:
+            import tomllib  # Config audit requires Python 3.11+; no package installation.
+            if args.secret_pointer:
+                raise ValueError('json_pointer_requires_evidence_source')
+            with args.config.open("rb") as stream:
+                secrets = credential_values(tomllib.load(stream))
+        else:
+            secrets = evidence_secret(args.secret_json, args.secret_pointer, file_limit)
         if not secrets:
             raise RuntimeError("no_literal_credentials_to_check")
-        file_limit, total_limit = args.max_file_mib * 1024**2, args.max_total_mib * 1024**2
+        excluded = [args.config] if args.config else []
         names = git(args.repo, "ls-files", "--cached", "--others", "--exclude-standard", "-z").split(b"\0")
         files = [args.repo / os.fsdecode(name) for name in dict.fromkeys(names) if name]
-        report = {"mode": "read_only_exact_configured_key_audit", "credential_count": len(secrets),
+        report = {"mode": "read_only_exact_configured_key_audit" if args.config else "read_only_exact_evidence_value_audit", "credential_count": len(secrets),
                   "limits": {"max_file_bytes": file_limit, "max_scope_bytes": total_limit},
-                  "working_tree": scan_files(files, secrets, file_limit, total_limit, [args.config]),
+                  "working_tree": scan_files(files, secrets, file_limit, total_limit, excluded),
                   "local_scopes": [], "limitations": [
-                      "Only current configured API key values are checked; older/rotated credentials and transformed encodings may be missed.",
+                      "Only explicitly selected values are checked; other/rotated credentials and transformed encodings may be missed. No validity or permission check is performed.",
                       "Git history is local reachable refs only; no fetch, reflog, dangling object or remote-provider audit.",
                       "Directory links and dependency/cache directories are excluded; archives are not unpacked.",
                       "File and per-scope byte limits apply; skipped or incomplete scopes do not prove absence of exposure."]}
@@ -195,7 +226,7 @@ def main():
                 report["local_scopes"].append({"root": str(root), "complete": False, "error": "scope_unavailable"})
             else:
                 traversal = {"errors": 0, "links_excluded": 0}
-                result = scan_files(scoped_files(root, traversal), secrets, file_limit, total_limit, [args.config])
+                result = scan_files(scoped_files(root, traversal), secrets, file_limit, total_limit, excluded)
                 if traversal["errors"] or traversal["links_excluded"]:
                     result["complete"] = False
                 report["local_scopes"].append({"root": str(root), **result, "traversal": traversal})

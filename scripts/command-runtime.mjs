@@ -9,6 +9,7 @@ import { writeJson } from './orchestration-state.mjs';
 import { runDirectory } from './design-quality.mjs';
 import { CommandUsageError, validateCommandArguments } from './command-contracts.mjs';
 import { handledExecutionCommand } from './execution-outcome.mjs';
+import { applicationDataRoot, assertPlainPath } from './application-data.mjs';
 
 function executable(path) {
   return existsSync(path) && statSync(path).isFile() && (process.platform !== 'win32' || /\.exe$/i.test(path));
@@ -18,6 +19,12 @@ export function pythonCandidates(env = process.env) {
   if (env.QA_PYTHON) {
     if (!isAbsolute(env.QA_PYTHON) || !executable(env.QA_PYTHON)) return [];
     return [realpathSync(env.QA_PYTHON)];
+  }
+  const local=assertPlainPath(resolve(applicationDataRoot(resolve(import.meta.dirname,'..'),env),'runtime/python.json'));
+  if(existsSync(local)) {
+    const config=JSON.parse(readFileSync(local,'utf8'));
+    if(config.version!==1 || !isAbsolute(config.executable ?? '') || !executable(config.executable)) return [];
+    return [realpathSync(config.executable)];
   }
   const paths = Object.entries(env).find(([key]) => key.toLowerCase() === 'path')?.[1] ?? '';
   const names = process.platform === 'win32' ? ['python.exe', 'python3.exe'] : ['python3', 'python'];
@@ -31,13 +38,13 @@ export function probePython(env = process.env, run = spawnSync) {
     // Only the read-only dependency probe is retried, never an export or product operation.
     for(const timeout of [5000,15000]) {
       if(attempts.length>=8) break;
-      const result = run(path, ['-c', 'import sys; from docx import Document; import reportlab; print(sys.executable)'], { env, encoding: 'utf8', windowsHide: true, shell: false, timeout });
+      const result = run(path, ['-c', 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ required"; import tomllib; from docx import Document; import reportlab; print(sys.executable)'], { env, encoding: 'utf8', windowsHide: true, shell: false, timeout });
       attempts.push({ executable: path, code: result.status, error: result.error?.code ?? (result.status === 0 ? null : 'report_modules_unavailable') });
       if (result.status === 0 && !result.error) return { status: 'ready', executable: path, attempts };
       if(result.error?.code!=='ETIMEDOUT') break;
     }
   }
-  return { status: 'not_ready', executable: null, attempts, reason: attempts.some(a=>a.error==='ETIMEDOUT')?'Python dependency probe timed out; availability unresolved, do not infer missing packages':env.QA_PYTHON ? 'Explicit QA_PYTHON is invalid or unusable; no silent fallback' : 'No native Python with python-docx/reportlab found on PATH' };
+  return { status: 'not_ready', executable: null, attempts, reason: attempts.some(a=>a.error==='ETIMEDOUT')?'Python dependency probe timed out; availability unresolved, do not infer missing packages':env.QA_PYTHON ? 'Explicit QA_PYTHON is invalid or unusable; no silent fallback' : 'No configured/PATH Python 3.11+ with tomllib/python-docx/reportlab; use configure-python.mjs with a verified interpreter' };
 }
 
 export function inspectRuntime(root, env = process.env) {
@@ -89,6 +96,7 @@ export async function runProjectCommand(root, { kind, script, args = [], runId, 
   if (executionRun) env.QA_EXECUTION_COMMAND_ID = id;
   const recordPath = resolve(dir, 'command.json');
   const record = { version: 1, command_id: id, run_id: runId ?? null, runtime, script, argument_count: args.length, shell: false, timeout_ms: timeoutMs, started_at: new Date().toISOString(), status: 'running', owner_pid: process.pid, child_pid: null };
+  if(/^session-[0-9-]+[a-f0-9]+$/.test(env.PENGUIN_SESSION_ID ?? '') && /^[A-Za-z0-9_-]{1,160}$/.test(env.QA_HOST_TOOL_CALL_ID ?? '')) record.host_binding={session_id:env.PENGUIN_SESSION_ID,tool_call_id:env.QA_HOST_TOOL_CALL_ID};
   writeJson(recordPath, record);
   const result = await runManagedProcess({ command: runtime, args: [target, ...args], cwd: root, env, timeoutMs, logPath: resolve(dir, 'command.log'), signal, onSpawn: pid => { record.child_pid = pid; writeJson(recordPath, record); } });
   record.status = !result.termination_confirmed ? 'cleanup_required' : result.termination ?? (result.error ? 'launch_failed' : result.code === 0 ? 'completed' : 'failed');

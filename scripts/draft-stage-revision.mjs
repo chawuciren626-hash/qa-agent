@@ -3,8 +3,8 @@ import { resolve, relative, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { sessionWorkspaces } from './directory-context.mjs';
-import { getRunContext, withRunLock, writeJson, recomputeRunStatus, assertStageHistory } from './orchestration-state.mjs';
-import { assertParentSession, readSession, findParentDispatch, requiredArtifacts, verifyActionRecoveryReceipt } from './stage-evidence.mjs';
+import { getRunContext, withRunLock, writeJson, recomputeRunStatus, assertStageHistory, assertRecoveryDecisions, currentStageDecision, stageDependencyScope } from './orchestration-state.mjs';
+import { assertParentSession, readSession, resolveDispatchedChild, requiredArtifacts, verifyActionRecoveryReceipt } from './stage-evidence.mjs';
 import { assertChildCommands, childCommandPolicy } from './child-command-policy.mjs';
 import { readRunFile } from './design-quality.mjs';
 import { draftStages, stageRevisionBudget } from './recovery-policy.mjs';
@@ -24,33 +24,25 @@ export function inspectDraftRevision(root,runId,stage,parentId,reason,agentRoot=
   const current=manifest.stages?.[stage];
   assertStageHistory(manifest,stage);
   if (!['in_progress','blocked','failed','completed'].includes(current?.status)) throw new Error('Stage is not eligible for controller revision');
-  if ((manifest.confirmations ?? []).some(c=>c.status === 'pending') || (manifest.confirmations ?? []).filter(c=>c.stage===stage).at(-1)?.status === 'rejected') throw new Error('Pending/rejected user decision must be respected');
-  if (Object.entries(manifest.stages).some(([id,s])=>id!==stage && s.status==='in_progress')) throw new Error('Another stage is active');
-  const approved=(manifest.confirmations ?? []).filter(c=>c.stage===stage).at(-1)?.status === 'approved';
+  assertRecoveryDecisions(manifest,stage);
+  const taskMode=manifest.orchestration?.plan?.workflow_mode==='task';
+  if (Object.entries(manifest.stages).some(([id,s])=>id!==stage && s.status==='in_progress' &&
+      (!taskMode || stageDependencyScope(manifest,stage).has(id) || stageDependencyScope(manifest,id).has(stage)))) throw new Error('Another dependent stage is active');
+  const approved=currentStageDecision(manifest,stage)?.status === 'approved';
   if (approved) throw new Error('Already approved content requires user revision decision');
   const events=manifest.orchestration?.events ?? [];
   const dispatch=events.filter(e=>e.type==='dispatched' && e.stage===stage).at(-1);
   if (!dispatch || ![2,3].some(version=>dispatch.child_command_policy===childCommandPolicy(dispatch.dispatch_id,version)) || dispatch['parent-session-id']!==parentId) throw new Error('Automatic revision requires a current owned V2/V3 dispatch');
   if(stage==='execution' && (dispatch.mode!=='prepare' || current.mode!=='prepare' || !['failed','blocked','in_progress'].includes(current.status))) throw new Error('Execution recovery requires a preparation-only dispatch, never actual or unknown product execution');
   const parent=assertParentSession(root,runId,parentId,agentRoot);
-  const calls=parent.filter(r=>r.payload?.type==='tool_call' && r.payload.name==='run_subagent' && Date.parse(r.timestamp)>=Date.parse(dispatch.at));
-  const bound=[];
-  for (const call of calls) {
-    const args=typeof call.payload.arguments==='string' ? JSON.parse(call.payload.arguments) : call.payload.arguments;
-    if (!String(args?.prompt).split(/[^A-Za-z0-9-]+/).includes(runId)) continue;
-    const index=parent.indexOf(call);
-    const end=parent.findIndex((r,i)=>i>index && r.payload?.type==='tool_call_output' && r.payload.tool_call_id===call.payload.tool_call_id);
-    if (end<0) throw new Error('Child has not returned');
-    for (const event of parent.slice(index+1,end).filter(r=>r.payload?.type==='subagent')) bound.push({agent:args.agent_id,id:event.payload.session_id});
-  }
-  if (bound.length!==1 || bound[0].agent!==dispatch.agent) throw new Error('Exactly one real child return required');
-  const childId=bound[0].id;
-  if (!findParentDispatch(parent,{runId,agent:dispatch.agent,childId,dispatchedAt:dispatch.at,dispatchId:dispatch.dispatch_id,commandPolicy:dispatch.child_command_policy})) throw new Error('Child dispatch binding missing');
+  const bound=resolveDispatchedChild(root,runId,stage,parentId,agentRoot,{includeFailed:stage!=='execution'});
+  const childId=bound.child_session;
   const child=readSession(agentRoot,dispatch.agent,childId);
   const meta=child.find(row=>row.type==='session_meta')?.payload;
   if (meta?.session_id!==childId || meta.source!=='subagent' || resolve(meta.agent_state ?? '')!==resolve(agentRoot,dispatch.agent,'agent_state') || !sessionWorkspaces(root,resolve(manifestPath,'..')).includes(resolve(meta.workspace ?? ''))) throw new Error('Child identity or workspace mismatch');
   const end=child.filter(r=>['request_begin','request_end'].includes(r.payload?.type)).at(-1);
-  if (end?.payload.type!=='request_end' || end.payload.status!=='completed') throw new Error('Child termination requires review');
+  if (end?.payload.type!=='request_end' || (end.payload.status!=='completed' &&
+      !(stage!=='execution' && bound.outcome==='failed' && ['failed','fatal','rejected'].includes(end.payload.status)))) throw new Error('Child termination requires review');
   assertChildCommands(child,{allowRecovery:true,allowUnresolvedRecovery:true,verifyRecovery:result=>verifyActionRecoveryReceipt(root,runId,parentId,dispatch.at,result)});
   const dir=resolve(manifestPath,'..');
   const preparation=stage==='execution'?inspectPreparationSafety(root,dir,runId,parentId,dispatch,child,parent):null;

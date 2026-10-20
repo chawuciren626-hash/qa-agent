@@ -9,6 +9,23 @@ import { guardControllerTool } from '../../scripts/controller-tool-guard.mjs';
 import { guardChildTool } from '../../scripts/child-tool-guard.mjs';
 
 const engine=resolve(import.meta.dirname,'../..');
+
+test('evidence audit reads an explicit pointer without exposing values or changing original bytes',t=>{
+  const root=fixture(t),repo=resolve(root,'repo');mkdirSync(repo);
+  execFileSync('git',['init','-q',repo]);
+  const secret='synthetic-evidence-secret',source=resolve(repo,'source.json'),copy=resolve(repo,'copy.txt');
+  writeFileSync(source,JSON.stringify({observed:secret}));writeFileSync(copy,secret);
+  const before=readFileSync(source);
+  const args=[resolve(engine,'scripts/credential-exposure-audit.py'),'--repo',repo,'--secret-json',source,'--secret-pointer','/observed'];
+  const result=spawnSync(process.env.QA_SECURITY_PYTHON ?? 'python',args,{encoding:'utf8',timeout:30000});
+  assert.equal(result.status,0,result.stdout);assert.ok(!result.stdout.includes(secret));assert.ok(!result.stderr.includes(secret));
+  const report=JSON.parse(result.stdout);assert.equal(report.mode,'read_only_exact_evidence_value_audit');
+  assert.equal(report.working_tree.findings.length,2);
+  assert.ok(report.working_tree.findings.every(row=>/^[a-f0-9]{64}$/.test(row.file_sha256) && row.stable_during_read));
+  assert.deepEqual(readFileSync(source),before);
+  const invalid=spawnSync(process.env.QA_SECURITY_PYTHON ?? 'python',[...args.slice(0,-1),'/missing'],{encoding:'utf8',timeout:30000});
+  assert.equal(invalid.status,1);assert.equal(JSON.parse(invalid.stdout).status,'audit_failed');assert.ok(!invalid.stdout.includes(secret));
+});
 function fixture(t) {
   const root=mkdtempSync(resolve(tmpdir(),'qa-secret-'));
   t.after(()=>rmSync(root,{recursive:true,force:true}));

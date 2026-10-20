@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import xlsx from 'xlsx';
+import xlsx from '../../scripts/spreadsheet-runtime.mjs';
 import { probePython } from '../../scripts/command-runtime.mjs';
 
 test('delivery exports preserve unexecuted cases, evidence, issues and Markdown tables', () => {

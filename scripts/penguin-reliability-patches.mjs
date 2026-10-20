@@ -1,8 +1,33 @@
 // Exact anchors deliberately reject unsupported upstream builds before installation.
 export const reliabilityPatches = [
   [
+    '      const onAbort = () => session.kill();\n      let registered = false;\n      signal?.addEventListener("abort", onAbort, { once: true });\n      const windowSignal = collectUntil(signal, detachSignal);',
+    `      const qaRetained = /QA_COMMAND_POLICY_V[23] [a-f0-9-]{36}:/.test(prompt) && /\\brun_id=run-[A-Za-z0-9-]+/.test(prompt);
+      const qaRetainedId = qaRetained ? manager.register(session) : null;
+      if (qaRetainedId) yield partialToolCallOutput({eventType:"delta",toolCallId,output:
+        \`[subagent retained with subagent_id \${qaRetainedId}; continuation only, not completion. Use input_subagent for new information after interruption; never repeat run_subagent.]\\n\`});
+      if (signal?.aborted) { session.abortRun(); return {stopReason:"aborted"}; }
+      const onAbort = () => qaRetained ? session.abortRun() : session.kill();
+      let registered = qaRetained;
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const windowSignal = collectUntil(signal, detachSignal);`
+  ],
+  [
+    '        if (session.running) {\n          const id = manager.register(session);\n          registered = true;\n          if (detachSignal?.aborted) {\n            armSubagentDoneReport(session, id, prompt, services);',
+    '        if (session.running) {\n          const id = qaRetainedId ?? manager.register(session);\n          registered = true;\n          if (detachSignal?.aborted) {\n            armSubagentDoneReport(session, id, prompt, services);'
+  ],
+  [
+    '    const argv = [shell.command, ...shell.args, prefix + opts.cmd];',
+    `    // QA entry commands use the inherited, explicitly prepended runtime PATH.
+    // Do not source login profiles on every structured call; ordinary shells are unchanged.
+    const qaStructured = !!opts.env?.QA_DIRECTORY_CONTEXT && shell.name === "bash" &&
+      /^node(?:\\.exe)?\\s+(?:scripts[\\\\/])?project-action\\.mjs\\s+(?:catalog|summary|execute)(?:\\s|$)/.test(opts.cmd) &&
+      !/[\\r\\n;&|\x60$<>]/.test(opts.cmd);
+    const argv = [shell.command, ...(qaStructured ? ["--noprofile", "--norc", "-c"] : shell.args), prefix + opts.cmd];`
+  ],
+  [
     '          workdir: {\n            type: "string",\n            description: "Working directory for the command; defaults to the cwd. Optionally a path relative to the cwd, or an absolute path."',
-    '          qa_request: {\n            type: "object",\n            description: "QA controller only: complete structured action JSON. With project-action.mjs execute --controller-session=<current> --request=output/action-requests/<unique>.json, the installed QA hook saves this exact body before execution. No separate write_file is needed. Existing different contents are never overwritten. Omit for other commands and professional child agents."\n          },\n          workdir: {\n            type: "string",\n            description: "Working directory for the command; omit to use the session workspace. Never use the word CWD as a path. Optionally a path relative to the cwd, or an absolute path."'
+    '          qa_request: {\n            type: "object",\n            description: "QA controller or dispatched professional child: complete structured action JSON. With project-action.mjs execute --controller-session=<parent> --request=output/action-requests/<unique>.json, the installed QA hook saves this exact body before execution. No separate write_file is needed. Existing different contents are never overwritten. Omit for other commands; dispatch, authorization and stage guards still apply."\n          },\n          workdir: {\n            type: "string",\n            description: "Working directory for the command; omit to use the session workspace. Never use the word CWD as a path. Optionally a path relative to the cwd, or an absolute path."'
   ],
   [
     '      const rawWorkdir = args2["workdir"];\n      const workdir = typeof rawWorkdir === "string" && rawWorkdir.length > 0 ? path19.resolve(ctx.workspaceDir, rawWorkdir) : ctx.workspaceDir;',

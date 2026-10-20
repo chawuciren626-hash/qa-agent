@@ -33,7 +33,7 @@ test('pre-tool hook checks actual role, active dispatch, policy and repeat calls
   assert.deepEqual(guardDelegation(root,{tool_name:'read_file'},f.agentRoot),{});
 });
 
-function returnedDraft(f) {
+function returnedDraft(f,failed=false) {
   const token=f.dispatch();
   const policy=f.read().orchestration.events.at(-1).child_command_policy;
   const child=`session-2026-10-09-16-01-00-${randomUUID().replaceAll('-','')}`;
@@ -41,11 +41,12 @@ function returnedDraft(f) {
   appendFileSync(f.parentFile,[
     {type:'model_msg',timestamp:at,payload:{type:'tool_call',name:'run_subagent',tool_call_id:token,arguments:{agent_id:'requirement_analysis_agent',prompt:`${f.id} ${token} ${policy}`}}},
     {type:'event_msg',timestamp:at,payload:{type:'subagent',session_id:child}},
-    {type:'model_msg',timestamp:at,payload:{type:'tool_call_output',tool_call_id:token,stop_reason:'completed',output:'Synthetic draft returned'}}
+    {type:'model_msg',timestamp:at,payload:{type:'tool_call_output',tool_call_id:token,stop_reason:failed?'fatal':'completed',output:failed?'[subagent failed: provider unavailable]':'Synthetic draft returned'}}
   ].map(row=>JSON.stringify(row)).join('\n')+'\n');
   f.trace('requirement_analysis_agent',child,[
     {type:'session_meta',payload:{session_id:child,source:'subagent',agent_state:resolve(f.agentRoot,'requirement_analysis_agent/agent_state'),workspace:root}},
-    {type:'event_msg',timestamp:at,payload:{type:'request_end',status:'completed'}}
+    {type:'model_msg',timestamp:at,payload:{type:'text',role:'user',text:`${f.id} ${token} ${policy}`}},
+    {type:'event_msg',timestamp:at,payload:{type:'request_end',status:failed?'fatal':'completed'}}
   ]);
   return [f.id,'analysis',f.parent,'Synthetic draft formatting correction'];
 }
@@ -78,6 +79,30 @@ test('controller draft revision respects decisions and execution locks without o
   const revision=f.call('revise-draft-stage',args);assert.equal(revision.status,0,revision.stderr);
   assert.equal(f.read().orchestration.events.filter(e=>e.type==='stage_recovered'&&e.actor==='controller_auto_revision').length,3);
   const g=fixture();g.dispatch();assert.notEqual(g.call('revise-draft-stage',[g.id,'analysis',g.parent,'No returned child']).status,0);
+});
+
+test('independent draft revision ignores unrelated active work and native call history',()=>{
+  const f=fixture(),args=returnedDraft(f),state=f.read();
+  state.orchestration.plan.workflow_mode='task';
+  Object.assign(state.orchestration.plan.stages.find(stage=>stage.id==='report'),{selected:true,depends_on:[]});
+  state.stages.report={status:'in_progress'};
+  state.confirmations=[{stage:'report',status:'pending'}];
+  writeFileSync(f.manifestPath,JSON.stringify(state));
+  appendFileSync(f.parentFile,JSON.stringify({type:'model_msg',timestamp:new Date().toISOString(),payload:{type:'tool_call',name:'run_subagent',tool_call_id:'unrelated-malformed',arguments:'{"prompt":'}})+'\n');
+  const command=f.call('revise-draft-stage',args);
+  assert.equal(command.status,0,command.stdout+command.stderr);
+  const revision=JSON.parse(command.stdout);
+  assert.equal(revision.status,'revision_requested');
+  assert.equal(f.read().stages.report.status,'in_progress');
+  assert.equal(f.read().confirmations[0].status,'pending');
+});
+
+test('a native terminal failed draft can be incrementally revised without claiming it completed',()=>{
+  const f=fixture(),args=returnedDraft(f,true);
+  const revision=f.ok('revise-draft-stage',args);
+  assert.equal(revision.status,'revision_requested');
+  assert.equal(f.read().orchestration.events.some(event=>event.type==='completed'),false);
+  assert.equal(f.read().orchestration.events.filter(event=>event.type==='dispatched').length,1);
 });
 function fixture() {
   const id = `run-recovery-${randomUUID()}`;

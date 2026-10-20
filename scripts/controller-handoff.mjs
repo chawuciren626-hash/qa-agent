@@ -1,8 +1,9 @@
 import { dataPath } from './directory-context.mjs';
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { assertParentSession, resolveDispatchedChild, verifyStageEvidence, requiredArtifacts } from './stage-evidence.mjs';
-import { readControllerSession } from './controller-command-session.mjs';
+import { assertParentSession, resolveDispatchedChild, partialBrowserDelivery } from './stage-evidence.mjs';
+import { readControllerSession, permitsArtifactContinuation } from './controller-command-session.mjs';
+import { inspectStageHandoff } from './stage-handoff.mjs';
 import { readRunFile, runDirectory } from './design-quality.mjs';
 import { assertArtifactContract, stageRequiredArtifacts } from './artifact-contracts.mjs';
 import { writeJson } from './orchestration-state.mjs';
@@ -11,7 +12,7 @@ import { guardDelegation } from './delegation-guard.mjs';
 export function inspectHandoff(root,parentId,agentRoot) {
   const rows=assertParentSession(root,'run-command-session',parentId,agentRoot);
   const state=readControllerSession(root,parentId);
-  if(state.status!=='ready') return null;
+  if(state.status!=='ready' && !(state.status==='stopped' && permitsArtifactContinuation(root,state,{action:'handoff'}))) return null;
   const runIds=new Set();
   for(const row of rows) {
     if(row.payload?.type!=='tool_call' || row.payload.name!=='run_subagent') continue;
@@ -19,16 +20,26 @@ export function inspectHandoff(root,parentId,agentRoot) {
     // Only delegation metadata identifies a run; prose such as "run-relative" is not an ID.
     for(const match of String(args.prompt).matchAll(/\brun_id=(run-[A-Za-z0-9-]+)\b/g)) runIds.add(match[1]);
   }
-  const pending=[];
+  const pending=[],unavailable=[];
   for(const runId of runIds) {
-    const manifest=JSON.parse(readRunFile(runDirectory(root,runId),'manifest.json').data);
+    let manifest;
+    try {
+      manifest=JSON.parse(readRunFile(runDirectory(root,runId),'manifest.json').data);
+      if(!manifest || typeof manifest!=='object') throw new Error('Invalid run manifest');
+    }
+    catch(error) {
+      // A removed historical run is not evidence that the current delivery failed.
+      if(runId===state.active_run_id) unavailable.push(`${runId}: ${error.message}`);
+      continue;
+    }
     for(const [stage,current] of Object.entries(manifest.stages ?? {})) {
-      if(!['in_progress','completed'].includes(current.status)) continue;
+      try {
+      if(!['in_progress','completed','blocked','failed'].includes(current.status)) continue;
       const dispatch=manifest.orchestration?.events?.filter(e=>e.type==='dispatched' && e.stage===stage).at(-1);
       const decision=(manifest.confirmations ?? []).filter(c=>c.stage===stage).at(-1);
       if(dispatch?.['parent-session-id']!==parentId || ['pending','approved','rejected'].includes(decision?.status)) continue;
       const artifacts=stageRequiredArtifacts(root,runId,stage);if(!artifacts?.length) continue;
-      if(current.status==='in_progress') {
+      if(['in_progress','blocked','failed'].includes(current.status)) {
         {
           const calls=rows.filter(r=>{
             if(r.payload?.type!=='tool_call' || r.payload.name!=='run_subagent') return false;
@@ -42,12 +53,13 @@ export function inspectHandoff(root,parentId,agentRoot) {
         try { child=resolveDispatchedChild(root,runId,stage,parentId,agentRoot,{includeFailed:true}); }
         catch(error) { if(stage==='execution') continue; throw error; }
         if(child.outcome==='failed') {
-          pending.push({dispatch_id:dispatch.dispatch_id,request:child.failure_template});
+          if(current.status==='in_progress') pending.push({dispatch_id:dispatch.dispatch_id,request:child.failure_template});
           continue;
         }
-        if(stage==='execution') continue;
-        verifyStageEvidence(root,runId,manifest,{stage,'dispatch-id':dispatch.dispatch_id,'parent-session-id':parentId,'session-id':child.child_session,artifacts:artifacts.join(',')},agentRoot);
-        assertArtifactContract(root,runId,stage);
+        if(stage==='execution') {
+          try {partialBrowserDelivery(root,runId,manifest);} catch {continue;}
+        }
+        inspectStageHandoff(root,parentId,{run_id:runId,stage,artifacts},agentRoot);
         pending.push({dispatch_id:dispatch.dispatch_id,request:{action:'complete',run_id:runId,stage,dispatch_id:dispatch.dispatch_id,artifacts}});
       } else if(stage!=='execution' && manifest.orchestration.plan.stages.find(s=>s.id===stage)?.confirmation==='after') {
         const completed=manifest.orchestration.events.filter(e=>e.type==='completed' && e.stage===stage).at(-1);
@@ -55,20 +67,29 @@ export function inspectHandoff(root,parentId,agentRoot) {
         assertArtifactContract(root,runId,stage);
         pending.push({dispatch_id:dispatch.dispatch_id,request:{action:'request_confirmation',run_id:runId,stage}});
       }
+      } catch(error) {unavailable.push(`${runId}/${stage}: ${error.message}`);}
     }
   }
   // Finalize ready returns one at a time; several completed independent children are not an error.
+  if(!pending.length && unavailable.length) throw new Error(`No verified handoff available; unresolved candidates: ${unavailable.join('; ')}`);
   return pending[0] ?? null;
 }
 
 function resumeUnlaunchedDispatch(root,parentId,agentRoot) {
-  if(readControllerSession(root,parentId).status!=='ready') return {};
+  if(!['ready','stopped'].includes(readControllerSession(root,parentId).status)) return {};
   const audit=dataPath(root,'output/action-audit',parentId);
   if(!existsSync(audit)) return {};
-  const receipts=readdirSync(audit).filter(name=>name.endsWith('.json')).map(name=>JSON.parse(readFileSync(resolve(audit,name),'utf8')));
+  const receipts=readdirSync(audit).filter(name=>name.endsWith('.json')).flatMap(name=>{
+    try {return [JSON.parse(readFileSync(resolve(audit,name),'utf8'))];} catch {return [];}
+  });
   for(const receipt of receipts) {
-    if(receipt.action!=='dispatch' || receipt.status!=='completed' || receipt.exit_code!==0 || receipt.session_id!==parentId || !receipt.delegation || !receipt.dispatch_id) continue;
-    const manifest=JSON.parse(readRunFile(runDirectory(root,receipt.run_id),'manifest.json').data);
+    if(!receipt || receipt.action!=='dispatch' || receipt.status!=='completed' || receipt.exit_code!==0 || receipt.session_id!==parentId || !receipt.delegation || !receipt.dispatch_id) continue;
+    let manifest;
+    try {
+      manifest=JSON.parse(readRunFile(runDirectory(root,receipt.run_id),'manifest.json').data);
+      if(!manifest || typeof manifest!=='object') continue;
+    }
+    catch {continue;}
     const current=manifest.stages?.[receipt.stage];
     const dispatch=manifest.orchestration?.events?.filter(e=>e.type==='dispatched' && e.stage===receipt.stage).at(-1);
     if(current?.status!=='in_progress' || current.dispatch_id!==receipt.dispatch_id || dispatch?.dispatch_id!==receipt.dispatch_id) continue;
@@ -99,7 +120,13 @@ export async function reconcileHandoff(root,parentId,agentRoot) {
     if(request.action==='fail') return {decision:'stop',reason:'Professional child failed; stage failure recorded. No completion, approval or retry performed.',handoff_receipt:result.action_receipt};
     const awaiting=result.data?.stage_status==='awaiting_confirmation';
     return {decision:'continue',reason:'Verified stage handoff recorded',input:`Internal bookkeeping, NOT a user message or approval. ${JSON.stringify(result.data)}. ${awaiting?'Present the deliverables and the specific pending decision, then wait for the user.':'Continue the next selected stage in this run when dependencies are ready. Present the accumulated result at a real business decision or the final deliverable.'} Do not invent a business decision or bypass execution authorization.`,handoff_receipt:result.action_receipt};
-  } catch(error) { return {decision:'stop',reason:`Handoff not verified: ${error.message}. Keep this stage incomplete; report the actual draft issue, not successful delivery. No approval or state change was performed by this check.`}; }
+  } catch(error) {
+    try {
+      const launch=resumeUnlaunchedDispatch(root,parentId,agentRoot);
+      if(launch.decision==='continue') return launch;
+    } catch { /* Preserve the original handoff issue when no verified launch is available. */ }
+    return {decision:'stop',reason:`Handoff not verified: ${error.message}. Keep this stage incomplete; report the actual draft issue, not successful delivery. No approval or state change was performed by this check.`};
+  }
 }
 
 export function handoffReminder(root,parentId,agentRoot) {

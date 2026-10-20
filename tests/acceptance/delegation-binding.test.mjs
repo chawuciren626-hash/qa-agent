@@ -4,6 +4,17 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, unlinkSync
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { captureDelegationBinding, verifyDelegationBinding } from '../../scripts/delegation-binding.mjs';
+import { guardDelegation } from '../../scripts/delegation-guard.mjs';
+
+test('session identifiers cannot be used as resumable subagent handles',()=>{
+  for(const subagent_id of ['session-2026-10-19-18-19-37-0520cd3a','dispatch-a','',null]) {
+    const result=guardDelegation('.', {tool_name:'input_subagent',arguments:{subagent_id}},'.');
+    assert.equal(result.decision,'deny');assert.match(result.reason,/No task was resumed/);
+  }
+  assert.equal(guardDelegation('.',{tool_name:'input_subagent',arguments:'invalid'},'.').decision,'deny');
+  // Syntax acceptance never substitutes for the host's ownership/liveness check.
+  assert.deepEqual(guardDelegation('.',{tool_name:'input_subagent',arguments:{subagent_id:'subagent-aabbccdd'}},'.'),{});
+});
 
 function fixture(t, { contract = true, evidence = false } = {}) {
   const root=realpathSync(mkdtempSync(resolve(tmpdir(),'qa-binding-')));

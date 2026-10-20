@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { guardChildTool } from '../../scripts/child-tool-guard.mjs';
 import { assertChildCommands } from '../../scripts/child-command-policy.mjs';
+import { parseActionInvocation } from '../../scripts/command-contracts.mjs';
 
 test('shell detours are redirected before execution; only native recorded redirect is recoverable',()=>{
   const f=fixture(), options={agentId:'test_case_agent',agentRoot:f.agentRoot};
@@ -12,7 +13,7 @@ test('shell detours are redirected before execution; only native recorded redire
     const denied=guardChildTool(f.root,{tool_name:'exec_command',arguments:{cmd}},options);
     assert.equal(denied.decision,'deny');assert.match(denied.reason,/NOT executed/);
   }
-  for(const cmd of ['node scripts/project-action.mjs catalog','node scripts/project-action.mjs execute --request=output/action-requests/request.json']) {
+  for(const cmd of ['node scripts/project-action.mjs catalog','node scripts/project-action.mjs execute --controller-session=session-parent --request=output/action-requests/request.json']) {
     assert.deepEqual(guardChildTool(f.root,{tool_name:'exec_command',arguments:{cmd}},options),{});
   }
   const call={payload:{type:'tool_call',name:'exec_command',tool_call_id:'redirect',arguments:{cmd:'node -e "console.log(51)"'}}};
@@ -25,6 +26,31 @@ test('shell detours are redirected before execution; only native recorded redire
   assert.throws(()=>assertChildCommands([call,decision,{payload:{...output.payload,output:'Tool call denied by user.'}}],policy));
   assert.throws(()=>assertChildCommands([call,decision,{payload:{...output.payload,stop_reason:'completed'}}],policy));
   assert.throws(()=>assertChildCommands([call,decision,output],{...policy,allowRecovery:false}));
+});
+
+test('malformed action CLI is denied before execution, never recorded as a failed business command',()=>{
+  const f=fixture(),options={agentId:'automation_execution_agent',agentRoot:f.agentRoot};
+  const invalid=[
+    'node scripts/project-action.mjs validate_artifacts --stage=execution',
+    'node scripts/project-action.mjs execute --request=output/action-requests/a.json',
+    'node scripts/project-action.mjs execute --controller-session=session-parent',
+    'node scripts/project-action.mjs execute --controller-session=session-parent --request=a.json --request=b.json',
+    'node scripts/project-action.mjs catalog --stage=execution',
+    'node scripts/project-action.mjs summary',
+    'node scripts/project-action.mjs execute --controller-session=session-parent --request="a.json',
+    'node scripts/project-action.mjs execute --controller-session=session-parent --request=a.json; echo wrong'
+  ];
+  for(const cmd of invalid) {
+    const denied=guardChildTool(f.root,{tool_name:'exec_command',arguments:{cmd}},options);
+    assert.equal(denied.decision,'deny',cmd);
+    const call={payload:{type:'tool_call',name:'exec_command',tool_call_id:'bad-cli',arguments:{cmd}}};
+    const decision={type:'event_msg',payload:{type:'approval_decision',tool_call_id:'bad-cli',decision:'deny'}};
+    const output={payload:{type:'tool_call_output',tool_call_id:'bad-cli',stop_reason:'aborted',output:`Tool call denied by the qa-stage-boundary hook: ${denied.reason}`}};
+    assert.doesNotThrow(()=>assertChildCommands([call,decision,output],{allowRecovery:true,requireControlledCommands:true}));
+    assert.throws(()=>assertChildCommands([call,output],{allowRecovery:true,requireControlledCommands:true}));
+  }
+  assert.equal(parseActionInvocation('node "E:/engine space/scripts/project-action.mjs" execute --request="output/action-requests/a.json" --controller-session=session-parent').options.request,'output/action-requests/a.json');
+  assert.equal(parseActionInvocation('node scripts/project-action.mjs catalog').action,'catalog');
 });
 
 function fixture() {
@@ -41,6 +67,15 @@ function fixture() {
   const input=(tool_name,file_path,extra={})=>({tool_name,session_id,arguments:{file_path,...extra}});
   return {root,agentRoot,session_id,input};
 }
+
+test('professional inline requests persist once and cannot dispatch another role or use another parent',()=>{
+  const f=fixture(),options={agentId:'automation_execution_agent',agentRoot:f.agentRoot};
+  writeFileSync(resolve(f.root,'output/runs/run-a/manifest.json'),JSON.stringify({stages:{execution:{status:'in_progress'}},orchestration:{events:[{type:'dispatched',stage:'execution','parent-session-id':'session-parent'}]}}));
+  const input={tool_name:'exec_command',session_id:f.session_id,arguments:{cmd:'node scripts/project-action.mjs execute --controller-session=session-parent --request=output/action-requests/inline.json',qa_request:{action:'browser_task',run_id:'run-a',operation:{type:'health',request_id:'health'}}}};
+  assert.deepEqual(guardChildTool(f.root,input,options),{});assert.deepEqual(guardChildTool(f.root,input,options),{});
+  assert.equal(guardChildTool(f.root,{...input,arguments:{...input.arguments,qa_request:{action:'dispatch',run_id:'run-a'}}},options).decision,'deny');
+  assert.equal(guardChildTool(f.root,{...input,arguments:{...input.arguments,cmd:input.arguments.cmd.replace('session-parent','session-other')}},options).decision,'deny');
+});
 
 test('professional write guard permits only action requests, own stage and own scratchpad',()=>{
   const f=fixture();

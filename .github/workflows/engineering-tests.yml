@@ -43,8 +43,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip check
       - name: Install test browser
-        if: matrix.suite == 'browser'
         run: npx --no-install playwright install chromium
+      - name: Runtime and static checks
+        run: npm run check:static
+      - name: Verify production dependency installation
+        if: matrix.suite == 'core'
+        run: npm run check:production
       - name: Check release resources
         run: npm run release:check
       - name: Run engineering suite

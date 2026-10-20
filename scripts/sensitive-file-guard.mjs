@@ -4,6 +4,7 @@ import { dataPath } from './directory-context.mjs';
 
 export function isSensitiveRuntimePath(path) {
   if(typeof path!=='string') return false;
+  if(path.replaceAll('\\','/').split('/').some(part=>part.toLowerCase()==='protected-inputs')) return true;
   // Include backups, Windows alternate streams and case-insensitive names.
   const name=basename(path.replaceAll('\\','/')).split(':')[0].replace(/[. ]+$/,'').toLowerCase();
   return /^(?:\.project_config\.toml|\.vault\.toml|api-token|browser-private\.json)(?:$|[.~_-])/.test(name);

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img">
+  <title>方案八（浅色版）：A 字徽标</title>
+  <rect width="512" height="512" rx="118" fill="#E6F1FB"/>
+  <path d="M168 388 L256 154 L344 388" fill="none" stroke="#185FA5" stroke-width="29" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M212 300 L252 340 L311 260" fill="none" stroke="#0F6E56" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

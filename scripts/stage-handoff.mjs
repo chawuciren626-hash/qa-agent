@@ -1,5 +1,5 @@
 import { readRunFile, runDirectory } from './design-quality.mjs';
-import { resolveDispatchedChild, verifyStageEvidence } from './stage-evidence.mjs';
+import { resolveDispatchedChild, verifyStageEvidence, partialBrowserDelivery, draftHandoffReconciliation } from './stage-evidence.mjs';
 import { assertArtifactContract, assertCompletedArtifacts, assertDependencyArtifacts } from './artifact-contracts.mjs';
 import { assertStageHistory } from './orchestration-state.mjs';
 import { executionSnapshot } from './execution-authorization.mjs';
@@ -26,9 +26,14 @@ export function inspectStageHandoff(root, parent, request, agentRoot) {
   const completed = manifest.orchestration.events.filter(e=>e.type===completionType && e.stage===stage).at(-1);
   const recorded = completed?.['dispatch-id']===dispatch.dispatch_id;
   const commands = [];
-  if (current.status==='in_progress') {
+  const partialReconciliation=stage==='execution' && ['blocked','failed'].includes(current.status);
+  const draftReconciliation=stage!=='execution' && ['blocked','failed'].includes(current.status);
+  if(draftReconciliation) draftHandoffReconciliation(root,runId,manifest,stage,parent,agentRoot);
+  if(partialReconciliation) partialBrowserDelivery(root,runId,manifest);
+  if (current.status==='in_progress' || partialReconciliation || draftReconciliation) {
     const child = resolveDispatchedChild(root,runId,stage,parent,agentRoot);
-    verifyStageEvidence(root,runId,manifest,{stage,'dispatch-id':dispatch.dispatch_id,'parent-session-id':parent,'session-id':child.child_session,artifacts:artifacts.join(',')},agentRoot);
+    const evidence=verifyStageEvidence(root,runId,manifest,{stage,'dispatch-id':dispatch.dispatch_id,'parent-session-id':parent,'session-id':child.child_session,artifacts:artifacts.join(',')},agentRoot);
+    if(partialReconciliation && !evidence.partial_browser_failures?.some(f=>['failed','timeout'].includes(f.status))) throw new Error('Blocked execution lacks a verified closed browser failure for partial delivery');
     assertDependencyArtifacts(root,runId,manifest,stage);
     assertArtifactContract(root,runId,stage,{mode:prepare?'prepare':'execute',artifacts});
     commands.push({script:'record-orchestration-event.mjs',args:[runId,'completed',`--stage=${stage}`,`--dispatch-id=${dispatch.dispatch_id}`,`--parent-session-id=${parent}`,`--session-id=${child.child_session}`,`--artifacts=${artifacts.join(',')}`]});
@@ -58,30 +63,57 @@ export function inspectStageHandoff(root, parent, request, agentRoot) {
 export async function handoffStage(root,parent,request,{agentRoot,signal}={}) {
   let inspection;
   try { inspection=inspectStageHandoff(root,parent,request,agentRoot); }
-  catch(error) { throw new HandoffInputError(`Stage handoff not ready: ${error.message}. Keep this stage incomplete; correct the professional draft through revise_stage when eligible. Do not self-unlock or draft downstream artifacts.`); }
+  catch(error) { throw new HandoffInputError(`Stage handoff not ready: ${error.message}. No completion was launched. Keep this stage incomplete and retain its evidence. Complete uses the same checks and is not a fallback. A returned child without a running handle is not missing; never use its session ID as input_subagent handle. Correct eligible drafts through revise_stage; otherwise report the specific unresolved engineering limitation without asking the user to unlock.`); }
   const receipts=[];
+  let commitReconciled=false;
   const env={...process.env,...(agentRoot?{PENGUIN_AGENT_ROOT:agentRoot}:{})};
   delete env.QA_CONTROLLER_SESSION;
   for (const command of inspection.commands) {
-    const result=await runProjectCommand(root,{kind:'node',...command,runId:request.run_id,timeoutMs:20000,env,signal});
+    const result=await runProjectCommand(root,{kind:'node',...command,runId:request.run_id,timeoutMs:120000,env,signal});
     receipts.push(result);
-    if (result.status!=='completed' || result.exit_code!==0) return {...result,handoff_receipts:receipts,approval_granted:false};
+    if (result.status!=='completed' || result.exit_code!==0) {
+      const launched=[result.child_pid,result.result?.pid].some(pid=>Number.isInteger(pid) && pid>0);
+      if(launched && result.result?.termination_confirmed===true && !signal?.aborted &&
+        !['interrupted','launch_failed'].includes(result.status) && result.result?.termination!=='interrupted') {
+        // A lost response can follow a durable commit. Inspect only; never replay the writer.
+        try {
+          const committed=inspectStageHandoff(root,parent,request,agentRoot);
+          commitReconciled=Boolean(inspection.dispatch_id && committed.dispatch_id===inspection.dispatch_id && !committed.commands.length);
+        } catch { /* Unverifiable commits retain the original failure receipt. */ }
+      }
+      if(!commitReconciled) return {...result,handoff_receipts:receipts,approval_granted:false};
+      break;
+    }
   }
-  const raw=readRunFile(runDirectory(root,request.run_id),'manifest.json').data;
-  const manifest=JSON.parse(raw);
   // Presentation failures do not undo a committed handoff or request another confirmation.
-  const presentation={run_status:null,analysis_summary:null,errors:[],approval_granted:false};
-  try { presentation.run_status=summarizeRun(raw,request.run_id); }
-  catch(error) { presentation.errors.push({action:'run_status',message:error.message}); }
-  if(request.stage==='analysis' && !isIndependent(root,request.run_id)) {
-    try { presentation.analysis_summary=analysisSummary(root,request.run_id); }
-    catch(error) { presentation.errors.push({action:'analysis_summary',message:error.message}); }
+  const presentation={run_status:null,analysis_summary:null,delivery:null,errors:[],approval_granted:false};
+  const readPresentation=(action,read)=>{
+    try { return read(); }
+    catch(error) { presentation.errors.push({action,message:error.message}); return null; }
+  };
+  let raw,stageStatus=null;
+  const manifest=readPresentation('manifest',()=>{
+    raw=readRunFile(runDirectory(root,request.run_id),'manifest.json').data;
+    const value=JSON.parse(raw);
+    stageStatus=value.stages[request.stage].status;
+    return value;
+  });
+  if(manifest) {
+    presentation.run_status=readPresentation('run_status',()=>summarizeRun(raw,request.run_id));
+    if(request.stage==='analysis') presentation.analysis_summary=readPresentation('analysis_summary',()=>
+      isIndependent(root,request.run_id)?null:analysisSummary(root,request.run_id));
+    const taskResult=readPresentation('task_result',()=>{
+      if(!usesTaskArtifacts(root,request.run_id,request.stage)) return null;
+      const check=inspectIndependentArtifacts(root,request.run_id,request.stage);
+      if(check.status!=='passed') throw new Error(check.errors?.join('; ') || 'Task artifacts unavailable');
+      return check.delivery;
+    });
+    if(taskResult) presentation.task_result=taskResult;
+    presentation.delivery=readPresentation('delivery',()=>deliveryPresentation(root,request.run_id,manifest));
   }
-  presentation.status=presentation.errors.length?'unavailable':presentation.run_status.consistency==='consistent'?'ready':'review_required';
-  if(usesTaskArtifacts(root,request.run_id,request.stage)) presentation.task_result=inspectIndependentArtifacts(root,request.run_id,request.stage).delivery;
-    presentation.delivery=deliveryPresentation(root,request.run_id,manifest);
+  presentation.status=presentation.errors.length?'unavailable':presentation.run_status?.consistency==='consistent'?'ready':'review_required';
   presentation.note='Read-only snapshots after handoff, not semantic approval. Use these summaries for the current reply; refresh run_status/analysis_summary after later changes. If unavailable, inspect the named read action only; do not repeat completion or invent a summary.';
   return {status:'completed',exit_code:0,execution_mode:'in_process',launches_child:receipts.length>0,result:{termination_confirmed:true},
-    data:{run_id:request.run_id,stage:request.stage,stage_status:manifest.stages[request.stage].status,dispatch_id:inspection.dispatch_id,
-      presentation,next_action:presentation.status!=='ready'?'inspect_presentation':manifest.stages[request.stage].status==='awaiting_confirmation'?'present_result_and_wait_for_user':'follow_saved_plan_or_deliver',approval_granted:false,execution_started:false,already_recorded:!receipts.length},handoff_receipts:receipts};
+    data:{run_id:request.run_id,stage:request.stage,stage_status:stageStatus,dispatch_id:inspection.dispatch_id,
+      presentation,next_action:presentation.status!=='ready'?'inspect_presentation':stageStatus==='awaiting_confirmation'?'present_result_and_wait_for_user':'follow_saved_plan_or_deliver',approval_granted:false,execution_started:false,already_recorded:!receipts.length,commit_reconciled:commitReconciled},handoff_receipts:receipts};
 }
