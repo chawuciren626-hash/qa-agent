@@ -55,6 +55,9 @@ test('unified check is read-only; apply is idempotent; restore and reapply maint
   assert.equal(installPenguinRuntime(f.app,root,'apply').restart_required,true);
   assert.equal(installPenguinRuntime(f.app,root).status,'installed');
   assert.equal(installPenguinRuntime(f.app,root,'apply').changed,false);
+  const installedIndex=f.get('web-dist/index.html');
+  const imports=JSON.parse(installedIndex.match(/<script type="importmap">(.*?)<\/script>/)[1]).imports;
+  assert.equal(imports['/assets/index-fixture.js'],installedIndex.match(/src="([^"]+)"/)[1]);
   assert.match(f.get('dist/server.js'),/qaWorkspaceBind/);assert.match(f.get('dist/server.js'),/qaOpenDeliverable/);
   installPenguinRuntime(f.app,root,'restore');
   assert.equal(f.get('dist/server.js'),originalServer);assert.equal(f.get('web-dist/index.html'),originalIndex);assert.equal(f.get('web-dist/assets/index-fixture.js'),originalBundle);

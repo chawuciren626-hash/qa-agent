@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { patchClientBundle216 } from './penguin-ui-0.2.16.mjs';
 // Exact anchors deliberately reject unknown host builds before writing installation files.
 const factory = `let qaClientInstance;function qaClient(){return qaClientInstance??=createWorkspaceUI({React:f,useProject:rn,useSessions:jo,useAuth:vn,useNavigate:Yn,useLocation:Xa,FolderPicker:b0,Modal:Kt,AccountMenu:eL,LegacySidebar:QaLegacySidebar,notify:ft,reportError:ze,request:je,Markdown:pl})}function c9(props){return r.jsx(qaClient().Sidebar,props)}function QaHero(props){return r.jsx(qaClient().Hero,props)}function QaSessionContext(props){return r.jsx(qaClient().SessionContext,props)}function upe(){const view=new URLSearchParams(Xa().search).get("view");return view==="schedules"||view==="library"?r.jsx(qaClient().SectionPage,{view}):r.jsx(QaNativeChat,{})}`;
 export const clientPatchPairs = [
@@ -52,7 +53,7 @@ export const clientPatchPairs = [
   ],
   [
     'typeof t.workspace=="string"&&(n.workspace=t.workspace);',
-    'typeof t.workspace=="string"&&(n.workspace=t.workspace);typeof t.qaProjectId=="string"&&(n.qaProjectId=t.qaProjectId);Number.isInteger(t.qaScene)&&t.qaScene>=0&&t.qaScene<3&&(n.qaScene=t.qaScene);',
+    'typeof t.workspace=="string"&&(n.workspace=t.workspace);(t.qaProjectId===null||typeof t.qaProjectId=="string")&&(n.qaProjectId=t.qaProjectId);Number.isInteger(t.qaScene)&&t.qaScene>=0&&t.qaScene<3&&(n.qaScene=t.qaScene);',
   ],
   [
     "await Rm(J,{input:Be,...tt?{goal:tt}:{}})",
@@ -60,7 +61,7 @@ export const clientPatchPairs = [
   ],
   [
     "m(wt?.session??Ae.session),Ze(),GO(Ke.sessionId)",
-    'm(wt?.session??Ae.session),(()=>{try{qaBindProject(e,p,qaProjectId,Ke.sessionId)}catch{ze("任务已发起，但项目归属保存失败；可在任务列表中继续")}})(),Ze(),GO(Ke.sessionId)',
+    'm(wt?.session??Ae.session),qaCompleteFirstRun(e,p),(()=>{try{qaBindProject(e,p,qaProjectId,Ke.sessionId)}catch{ze("任务已发起，但项目归属保存失败；可在任务列表中继续")}})(),Ze(),GO(Ke.sessionId)',
   ],
   [
     "[e,v,j,T,k,x.source,m,Ze,a]),rt=f.useRef(null)",
@@ -72,7 +73,7 @@ export const clientPatchPairs = [
   ],
   [
     'r.jsxs("div",{className:"mb-10 text-center",children:[r.jsx(PO,{className:"mx-auto mb-1 h-36 w-36 rounded-3xl"}),r.jsx("h1",{className:"text-3xl font-semibold tracking-tight text-gray-900 dark:text-gray-100",children:c.appName}),r.jsx("p",{className:"mt-2 text-base text-gray-400 dark:text-gray-500",children:c.chat.draftSubtitle}),r.jsx(Ude,{})]})',
-    "r.jsx(QaHero,{controlRef:rt,scene:qaScene,onSceneChange:setQaScene,groupId:qaProjectId,workspace:k,onWorkspaceChange:pe})",
+    "r.jsx(QaHero,{controlRef:rt,scene:qaScene,onSceneChange:setQaScene,groupId:qaProjectId,workspace:k,onWorkspaceChange:pe,onProjectChange:group=>{const workspace=group?.folders[0]??'';pe(workspace);a(s.pathname+s.search,{replace:!0,state:{...s.state,qaProjectId:group?.id??null,workspace}})}})",
   ],
   [
     'className:"mt-6 space-y-1",children:[d4.map',
@@ -100,6 +101,7 @@ export const clientPatchPairs = [
   ],
 ];
 export function patchClientBundle(source) {
+  if(source.includes('function MFe({projectId:e,models:t,draftId:n,composerRef:r,onWorkspaceChange:a,onAgentChange:o}){')) return patchClientBundle216(source);
   let result = source;
   for (const [before, after] of clientPatchPairs) {
     if (result.split(before).length !== 2)
@@ -109,7 +111,7 @@ export function patchClientBundle(source) {
     result = result.replace(before, after);
   }
   return (
-    'import { createWorkspaceUI, qaBindProject, qaScenes, qaScenesEnabled, qaBrandLogo } from "./qa-delivery-ui.js";\n' +
+    'import { createWorkspaceUI, qaBindProject, qaCompleteFirstRun, qaScenes, qaScenesEnabled, qaBrandLogo } from "./qa-delivery-ui.js";\n' +
     result
   );
 }

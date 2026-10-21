@@ -15,9 +15,10 @@ const asset = index.match(/src="\/assets\/([^"/?]+\.js)/)[1], css = index.match(
 const path = resolve(web, 'assets', asset);
 const original = readFileSync(existsSync(path + '.qa-runtime-original') ? path + '.qa-runtime-original' : path, 'utf8');
 let bundle = patchClientBundle(patchDeliveryBundle(original));
-const mount = 'Cke();Ske().then(e=>{e==="reload"?location.reload():RM()},RM);';
+const modern=JSON.parse(readFileSync(resolve(app,'package.json'),'utf8')).version==='0.2.16';
+const mount = modern?'Mst();Tst().then(e=>{e==="reload"?location.reload():KH()},KH);':'Cke();Ske().then(e=>{e==="reload"?location.reload():RM()},RM);';
 assert.equal(bundle.split(mount).length, 2);
-bundle = bundle.replace(mount, '') + '\nfunction QaHarness(props){return r.jsx(oB,{children:r.jsx(xB,{children:r.jsx(Ale,props)})});} export {eB,r as qaJSX,QaHarness};';
+bundle = bundle.replace(mount, '') + (modern?'\nfunction QaHarness(props){return s.jsx(G4e,{children:s.jsx(x7e,{children:s.jsx(x$e,props)})});} export {lce as eB,s as qaJSX,QaHarness};':'\nfunction QaHarness(props){return r.jsx(oB,{children:r.jsx(xB,{children:r.jsx(Ale,props)})});} export {eB,r as qaJSX,QaHarness};');
 const module = clientModule(...['penguin/ui/delivery-ui.mjs', 'penguin/ui/workspace-ui.mjs', 'penguin/ui/workspace-ui.css'].map(file => readFileSync(resolve(root, file), 'utf8')));
 const server = createServer((req, res) => {
   try {

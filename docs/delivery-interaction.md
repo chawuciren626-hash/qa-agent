@@ -19,7 +19,7 @@ HTML沿用宿主带sandbox的预览服务，未建立新的任意文件HTTP服�
 
 ## 安装与回退
 
-统一安装器scripts/install-penguin-runtime.mjs同时管理工作区和交付补丁，仅支持已检查的PenguinHarness 0.2.13。安装前验证全部锚点、现状和原件SHA256；应用更新或未知修改时拒绝覆盖。旧install-penguin-workspace-adapter.mjs及install-penguin-delivery-ui.mjs入口均转到同一管理器，--restore会一起回退两项能力，不再单独拆层。
+统一安装器scripts/install-penguin-runtime.mjs同时管理工作区和交付补丁，支持已检查的PenguinHarness 0.2.13、0.2.16。0.2.16使用独立前端配方及新版hook/文件路由适配，见[升级记录](penguinharness-upgrade-2026-10-20.md)。安装前验证全部锚点、现状和原件SHA256；应用更新或未知修改时拒绝覆盖。旧install-penguin-workspace-adapter.mjs及install-penguin-delivery-ui.mjs入口均转到同一管理器，--restore会一起回退两项能力，不再单独拆层。
 
 使用 --check 只读检查、--apply 安装/更新、--restore 回退两项补丁、--recover 恢复未完成的安装事务，首个参数为resources/app目录。安装修改前必须从托盘退出应用；安装器检查本机应用进程，拒绝运行中修改。不会强制关闭程序。服务端及外部运行模块更新需要重启，前端入口和模块均使用内容版本标识。
 

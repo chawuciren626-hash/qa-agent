@@ -1,56 +1,92 @@
-# 软件测试智能体
+# AITestHarness 软件测试智能体
 
-基于PenguinHarness的多Agent测试工程。总控按需派发需求分析、测试点、测试用例、自动化执行、缺陷分析和报告任务，默认模型为 `tokendance / step-3.7-flash`。
+AITestHarness 基于 PenguinHarness 运行底座，提供软件测试总控及六个专业智能体，按需完成需求分析、测试点、测试用例、自动化执行、缺陷分析和测试报告。可以独立生成用例，也可以按明确请求执行完整测试流程。
 
-**当前仍在工程迭代和真实验收阶段，不是已稳定通过全流程验收的独立桌面产品。** 最新进度与待办见[当前状态](docs/current-status-and-next-steps.md)。
+当前版本为 **0.1.0-preview.4（Windows x64 预览版）**，内置 PenguinHarness **0.2.16**。仍在持续开发和验收中，完整验收范围见 [当前状态](docs/current-status-and-next-steps.md) 和 Release 的 `acceptance.json`。
 
-## 怎么使用
+## 下载安装
 
-1. 打开已完成本机适配的PenguinHarness，新建“软件测试总控智能体”对话。
-2. 工作空间留空使用默认任务目录，或选择工程目录之外的工作空间；不要选择源码目录作为新任务工作空间。
-3. 上传Word、输入需求文字，或提供测试URL与目标。总控按请求派发独立任务；只有明确要求“跑全流程”才运行全生命周期。
-4. 查看完成摘要及可点击交付物。仅在业务歧义、必要人工操作或缺少有效执行授权时介入；也可主动要求逐阶段确认。
+前往 [GitHub Releases](https://github.com/chawuciren626-hash/qa-agent/releases/tag/v0.1.0-preview.4)，下载 `AITestHarness-0.1.0-preview.4-win-x64.exe`。这是预览版，请从带有 Pre-release 标记的版本页下载，不依赖 GitHub 的 latest 链接。
 
-不需要手工创建run、编写JSON、提交解锁材料或先生成前序产物。环境配置能力仍保留，但不是URL任务的统一前置条件。实际执行只限用户授权范围，不默认为允许无关删除、支付、真实通知或生产破坏性操作。
+仓库目前为私有仓库，下载需要登录有访问权限的 GitHub 账号。
 
-示例：“根据附件写测试用例，交付Excel，不执行测试。”或“测试这个测试环境登录页的输入校验，输出实际结果和报告。”
+1. 运行安装包，选择当前用户可写的目录，例如 `E:\AITestHarness\installed`。
+2. 从安装生成的 **AITestHarness Preview** 快捷方式或安装目录中的 `AITestHarness.exe` 启动。
+3. 首次使用在“模型库”配置自己的模型服务和凭据，验证连接，然后填写示例或自己的测试任务。
+4. 成功发起测试会话后，首次使用引导不再显示；已有测试任务的用户自动跳过。
 
-详细操作、交付方式和遇阻处理见[使用指南](docs/user-guide.md)。
+**不需要另外安装 PenguinHarness、Node.js、Python 或浏览器。** 安装包内置这些运行组件，但不提供模型账号或额度。连接验证会调用一次小型模型请求，可能产生费用；填写示例不会自动发送。
 
-## 主要能力
+安装器当前未签名。可用 Release 中的 `SHA256SUMS.txt` 核对下载文件：
 
-- 总控与六个专业Agent，11个项目Skill；独立派发、按需组合或显式全流程。
-- XMind测试点、JSON/Excel用例、Markdown/Word/PDF报告及交付链接。
-- 只读URL探索与交互浏览器测试分开，保留断言、截图和原始失败证据。
-- 会话目录隔离、内部产物检查、执行批次、缺陷分类及报告来源核对。
-- 公共指令、Skill、hook和维护脚本版本化；内部校验由工程处理，不交给用户做技术审查。
+```powershell
+Get-FileHash .\AITestHarness-0.1.0-preview.4-win-x64.exe -Algorithm SHA256
+```
 
-“已有实现”不等于“所有真实场景验收通过”，具体边界以当前状态页为准。
+新机器上的完整用户验收仍待完成，Windows 构建/安装冒烟测试不等于干净机器真实模型任务验收。
 
-## 文件放在哪里
+## 日常使用
 
-| 位置 | 用途 |
+- 输入需求、上传 Word，或提供已授权测试环境的 URL 和目标。
+- 默认由总控按需派发专业智能体；只有明确要求“跑全流程”才执行完整生命周期。
+- 工作空间留空使用应用默认任务目录；也可选择外部工作目录。不要选择源码目录作为任务工作空间。
+- 查看任务摘要和可下载交付物，包括 XMind 测试点、JSON/Excel 用例及 Markdown/Word/PDF 报告。
+- 必要的登录、验证码或业务确认由用户完成；内部校验和工程步骤由应用处理。
+
+示例：“根据附件写测试用例，交付 Excel，不执行测试。”或“测试这个测试环境登录页的输入校验，输出实际结果和报告。”
+
+应用不默认授权删除、支付、真实通知等有副作用操作。功能覆盖及限制见 [使用指南](docs/user-guide.md)。
+
+## 目录结构
+
+安装目录由用户选择，以下路径均相对于该目录：
+
+| 目录或文件 | 内容 |
 | --- | --- |
-| `E:\Codex\AITestWorker` | 本机工程源码、Skill、脚本和共享依赖，不是新任务输出目录 |
-| `E:\QAWorkspaces\<时间戳-短ID>` | 未选择工作空间时的新会话任务目录 |
-| `<指定工作空间>\<时间戳-短ID>` | 选择外部工作空间时的新会话任务目录 |
-| `<会话目录>\output\runs\<run_id>` | 本次任务产物、执行证据和报告 |
-| `E:\QAArchives\AITestWorker` | 已归档历史及维护证据，不是新任务默认目录 |
+| `AITestHarness.exe` | 应用启动入口 |
+| `app/engine` | 部署的测试业务引擎和角色配置 |
+| `runtime/penguin` | 固定版本的 PenguinHarness 宿主 |
+| `runtime/tools` | Node.js、Python 和浏览器 |
+| `data/penguin` | 模型配置、原生会话和宿主数据 |
+| `data/qa` | 业务索引和保护数据 |
+| `data/desktop-profile` | 桌面配置与登录状态 |
+| `workspaces` | 默认任务工作区、测试证据和交付物 |
 
-PenguinHarness原生聊天数据库、trace与上传附件仍由宿主管理；任务文件隔离不等于聊天数据库迁移。旧会话保持既有绑定，不自动迁移或删除。
+开发源码与已安装程序分开。本项目维护者当前使用 `E:\AITestHarness\source` 作为 Git 仓库，`E:\AITestHarness\installed` 作为安装目录，`releases`、`backups` 保存制品和本机备份；新用户无需使用相同盘符。详见 [本机迁移记录](docs/unified-local-workspace-2026-10-21.md)。
 
-仓库主要目录：`config/`配置与样例、`penguin/`公开角色及宿主适配、`skills/`专业能力、`scripts/`运行与维护脚本、`schemas/`数据契约、`tests/`工程测试、`docs/`文档。工程中保留的旧inputs/output或临时业务脚本不作为新会话通用入口。
+源码、公开角色、适配代码和构建配置提交 Git；运行数据、凭据、工作区、备份和二进制安装包不提交源码仓库。修改源码后需要重新构建或受控部署，安装副本不会自动同步。
 
-## 维护与安全
+## 应用和宿主如何更新
 
-新机器不能仅克隆仓库就直接运行。角色同步、运行时依赖和宿主适配是维护者的安装工作，见[配置与同步](docs/penguinharness-configuration.md)及[桌面适配](docs/delivery-interaction.md)。正常任务不得自动安装依赖。
+维护者跟踪 PenguinHarness 官方 Release，在隔离环境完成兼容适配与回归，然后更新 `packaging/runtime-sources.json` 中的宿主版本、下载地址和 SHA256，构建并发布新版 AITestHarness。
 
-密钥、账号、私有连接文件和运行产物不应提交Git；忽略规则不是内容泄漏检测器。模型配置和vault不应当作加密存储，见[凭据安全](docs/credential-security.md)。本机工程路径被安装适配引用，移动源码前需维护检查，不直接复制到应用安装目录。
+用户通过 **AITestHarness Release** 更新整个应用，获得已验证的内置宿主；不要运行上游安装器覆盖应用管理的宿主目录。当前没有完成应用自动检测、下载和安装的闭环，需手动下载新版安装包。
 
-## 文档入口
+升级前退出应用，运行新安装包并选择原安装目录。现阶段仅支持宿主 0.2.16、数据版本 1 不变的应用升级，跨宿主版本升级及降级会拒绝。事务失败恢复、保留数据卸载和空间要求见 [安装包说明](packaging/README.md)。不要直接移动已初始化的安装目录。
 
-开发维护统一回归：`npm test`；查看范围：`npm run test:list`；普通/浏览器分组：`npm run test:core`、`npm run test:browser`。依赖准备、结果目录及GitHub Actions边界见[工程测试与CI](docs/engineering-tests-and-ci.md)，不要求日常用户操作。
+## 开发与构建
 
-- [当前状态与下一步](docs/current-status-and-next-steps.md)：唯一当前待办入口。
-- [使用指南](docs/user-guide.md)：日常操作，不要求用户运行工程命令。
-- [文档导航](docs/index.md)：技术参考、学习资料和历史记录。
+源码克隆用于开发；普通用户使用安装包。维护环境推荐 Node.js 24.14.0 和 Python 3.12。开发测试依赖及准备步骤见 [工程测试与 CI](docs/engineering-tests-and-ci.md)。
+
+```powershell
+npm ci
+npm run check:static
+npm run release:check
+npm run test:list
+npm test
+```
+
+Windows 构建流程为 GitHub Actions 的 **Windows installation candidate**，固定下载并校验上游运行组件，按发布白名单打包，执行安装工具冒烟与恢复测试。Actions 生成候选制品，不会自动发布 Release。完整构建命令见 [packaging/README.md](packaging/README.md)。
+
+目前仍有待验收项：干净 Windows、新安装环境的真实模型任务、六阶段发行验收及跨宿主升级恢复。已有本机历史任务成功记录不能替代新安装包验收；`distribution_ready:false` 保留真实状态。
+
+## 文档与第三方组件
+
+- [当前状态与下一步](docs/current-status-and-next-steps.md)
+- [使用指南](docs/user-guide.md)
+- [发行维护流程](docs/release-maintenance-2026-10-21.md)
+- [首次使用引导](docs/onboarding-completion-2026-10-21.md)
+- [凭据与数据保护](docs/credential-security.md)
+- [文档导航](docs/index.md)
+
+PenguinHarness 由 Prism Shadow 开发，使用 Apache-2.0 许可证。AITestHarness 是基于该底座的测试应用，并非 PenguinHarness 官方发行版。发行包保留上游及运行依赖的许可证和声明，见 [第三方组件声明](packaging/THIRD-PARTY-NOTICES.txt)。

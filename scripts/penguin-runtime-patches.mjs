@@ -1,3 +1,5 @@
+import { patchDeliveryBundle216 } from './penguin-ui-0.2.16.mjs';
+
 export function relocatedPatch(current, original, adapter) {
   const line=current.slice(0,current.indexOf('\n'));
   const prefix='import { applies as qaWorkspaceApplies, bindWorkspace as qaWorkspaceBind, workspaceEnv as qaWorkspaceEnv } from ';
@@ -27,6 +29,7 @@ function replaceOnce(source,before,after) {
 }
 
 export function patchDeliveryBundle(source,revision='1') {
+  if(source.includes('function NC({item:e,ctx:t,last:n=!1}){')) return patchDeliveryBundle216(source,revision);
   if(!/^[a-f0-9]+$/.test(revision)) throw new Error('Invalid UI revision');
   let next=source;
   next=replaceOnce(next,'function lO({item:e,ctx:t}){',
@@ -47,9 +50,9 @@ export function patchDeliveryBundle(source,revision='1') {
   return `import { createDeliveryUI, groupDeliveryItems } from "./qa-delivery-ui.js?v=${revision}";\n`+next;
 }
 
-export function patchDeliveryServer(source,moduleUrl) {
+export function patchDeliveryServer(source,moduleUrl,version='0.2.13') {
   if(source.includes('qaOpenDeliverable')) throw new Error('Delivery adapter already present');
-  const anchor='  app.post("/:sessionId/files/reveal", async (c7) => {';
+  const anchor=version==='0.2.16'?'  registerWorkspaceFileRoutes(app, "/:sessionId/files", deps, (c22) => resolveSession(c22).workspace);':'  app.post("/:sessionId/files/reveal", async (c7) => {';
   const route=`  app.get("/:sessionId/files/evidence", async (c7) => {
     const row = resolveSession(c7);
     const rel = c7.req.query("path") ?? "";

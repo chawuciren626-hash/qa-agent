@@ -5,8 +5,9 @@ export const humanActionAnchors = [
   '      ...resume ? { resume } : {}\n    }) ?? "gone";',
   '    this.attachHostTap(session);\n    if (session.steer(messages)) return "steered";',
 ];
-export function patchHumanActions(source, moduleUrl) {
+export function patchHumanActions(source, moduleUrl, version='0.2.13') {
   const replace = (before, after) => {
+    if(version==='0.2.16') { before=before.replaceAll('c7','c22'); after=after.replaceAll('c7','c22'); }
     if(source.split(before).length!==2) throw Error(`Unsupported human-action anchor: ${before.slice(0,70)}`);
     source=source.replace(before,after);
   };

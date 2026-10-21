@@ -154,9 +154,30 @@ export const reliabilityPatches = [
   ]
 ];
 
-export function patchReliabilityServer(source) {
+export function patchReliabilityServer(source, version='0.2.13') {
   let next = source;
-  for (const [before, after] of reliabilityPatches) {
+  const pairs = reliabilityPatches.map(pair => [...pair]);
+  if (version === '0.2.16') {
+    pairs[4] = pairs[4].map(text => text.replaceAll('path19', 'path24'));
+    // 0.2.16 snapshots hooks per context and passes spawn confinement options.
+    // Children still receive only the QA pre-tool boundary, even if parent hooks are disabled.
+    pairs[5] = [
+      '    const hookPackages = child || state2.systemConfig.hooks?.enabled === false ? [] : await listInstalledHooks(root8, projectId, agentId);',
+      '    const hookPackages = !child && state2.systemConfig.hooks?.enabled === false ? [] : await listInstalledHooks(root8, projectId, agentId);'
+    ];
+    pairs[6] = [
+      '    const stop = installed2.flatMap(\n      (hook) => hook.stop.map(',
+      `    if (spec.subagentDepth > 0 || spec.source === "subagent") {
+      const preToolUse = installed2.filter(hook => hook.name === "qa-stage-boundary").flatMap(
+        hook => hook.pre_tool_use.map(cmd => scriptPreToolUseHook(hook.name, hook.dir, cmd.command, withTimeout(cmd.timeout)))
+      );
+      return { stop: [], preToolUse, userPrompt: [] };
+    }
+    const stop = installed2.flatMap(
+      (hook) => hook.stop.map(`
+    ];
+  }
+  for (const [before, after] of pairs) {
     if (next.split(before).length !== 2) throw new Error(`Unsupported PenguinHarness reliability anchor: ${before.slice(0,80)}`);
     next = next.replace(before, after);
   }

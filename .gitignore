@@ -1,5 +1,6 @@
 # Dependencies and local tool state
 node_modules/
+/dist/
 .playwright-cli/
 __pycache__/
 *.pyc
@@ -19,6 +20,7 @@ test-results/
 # Local environment configuration may contain private URLs or test data
 config/test-env.json
 config/test-environments.json
+config/product-installation.local.json
 
 # Credential stores and runtime connection secrets, including local backup copies
 **/.project_config.toml*

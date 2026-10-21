@@ -1,0 +1,113 @@
+name: Windows installation candidate
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          npm ci --ignore-scripts --no-audit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix packaging/tools --ignore-scripts --no-audit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Download pinned runtime archives
+        shell: pwsh
+        run: ./packaging/fetch-runtime.ps1 -Cache "$env:RUNNER_TEMP/aitest-downloads"
+      - name: Installation, upgrade and onboarding contracts
+        shell: pwsh
+        run: node scripts/run-engineering-tests.mjs tests/acceptance/product-upgrade.test.mjs tests/acceptance/product-installation.test.mjs tests/acceptance/model-onboarding.test.mjs tests/acceptance/client-asset-identity.test.mjs tests/acceptance/runtime-installation.test.mjs tests/acceptance/release-maintenance.test.mjs
+      - name: Stage complete application
+        shell: pwsh
+        run: |
+          $nodeHome = Split-Path (Get-Command node).Source
+          $npmCli = Join-Path $nodeHome 'node_modules/npm/bin/npm-cli.js'
+          $buildPython = (Get-Command python).Source
+          node packaging/prepare-windows.mjs "--stage=$env:RUNNER_TEMP/aitest-stage" "--installer=$env:RUNNER_TEMP/aitest-downloads/penguin-installer.exe" "--python-archive=$env:RUNNER_TEMP/aitest-downloads/python-embed.zip" --tooling=packaging/tools "--npm-cli=$npmCli" "--build-python=$buildPython"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node packaging/verify-payload.mjs "$env:RUNNER_TEMP/aitest-stage"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify host adapter in an isolated copy
+        shell: pwsh
+        run: node scripts/host-compatibility-review.mjs "$env:RUNNER_TEMP/aitest-stage/runtime/penguin/resources/app" "$env:RUNNER_TEMP/aitest-host-review"
+      - name: Compile installer candidate
+        shell: pwsh
+        run: |
+          & './packaging/tools/node_modules/7zip-bin/win/x64/7za.exe' x "$env:RUNNER_TEMP/aitest-downloads/nsis.7z" "-o$env:RUNNER_TEMP/aitest-nsis" -y -bso0 -bsp0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $env:NSISDIR = Join-Path $env:RUNNER_TEMP 'aitest-nsis'
+          $version = (Get-Content packaging/runtime-sources.json -Raw | ConvertFrom-Json).product_version
+          $outFile = Join-Path (Get-Location) "dist/AITestHarness-$version-win-x64.exe"
+          & "$env:RUNNER_TEMP/aitest-nsis/Bin/makensis.exe" /INPUTCHARSET UTF8 "/DPRODUCT_VERSION=$version" "/DSTAGE=$env:RUNNER_TEMP/aitest-stage" "/DOUTPUT=$outFile" packaging/installer.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $digest = (Get-FileHash -LiteralPath $outFile -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$digest  AITestHarness-$version-win-x64.exe" | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+          Copy-Item "$env:RUNNER_TEMP/aitest-stage/product-payload.json" dist/
+      - name: Verify installed tools and uninstall data retention
+        shell: pwsh
+        run: |
+          $installed = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'AITest 安装 smoke'))
+          $version = (Get-Content packaging/runtime-sources.json -Raw | ConvertFrom-Json).product_version
+          $installer = Join-Path (Get-Location) "dist/AITestHarness-$version-win-x64.exe"
+          $process = Start-Process -FilePath $installer -ArgumentList "/S /D=$installed" -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0 -or !(Test-Path "$installed/AITestHarness.exe")) { throw 'Candidate installation failed' }
+          if ((Get-FileHash "$installed/product-payload.json").Hash -ne (Get-FileHash "$env:RUNNER_TEMP/aitest-stage/product-payload.json").Hash) { throw 'Installed payload manifest does not match stage' }
+          & "$installed/runtime/tools/node/node.exe" packaging/smoke-installed.mjs $installed "$env:RUNNER_TEMP/aitest-tool-evidence"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$env:RUNNER_TEMP/aitest-tool-evidence/result.json" dist/installed-tools-result.json
+          Set-Content "$installed/data/preserve-sentinel.txt" 'synthetic data'
+          Set-Content "$installed/workspaces/preserve-sentinel.txt" 'synthetic workspace'
+          node packaging/smoke-upgrade-rollback.mjs "$env:RUNNER_TEMP/aitest-stage" $installed "$env:RUNNER_TEMP/aitest-rollback-evidence"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$env:RUNNER_TEMP/aitest-rollback-evidence/result.json" dist/upgrade-rollback-result.json
+          $process = Start-Process -FilePath $installer -ArgumentList "/S /D=$installed" -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Same-version transactional reinstall failed' }
+          if ((Get-Content "$installed/data/preserve-sentinel.txt" -Raw).Trim() -ne 'synthetic data') { throw 'Reinstall changed data' }
+          $process = Start-Process -FilePath "$installed/Uninstall.exe" -ArgumentList "/S _?=$installed" -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0 -or (Test-Path "$installed/app") -or (Test-Path "$installed/runtime")) { throw 'Candidate uninstall failed' }
+          if (!(Test-Path "$installed/data/preserve-sentinel.txt") -or !(Test-Path "$installed/workspaces/preserve-sentinel.txt")) { throw 'Uninstall did not preserve data' }
+          # These statuses describe only the checks actually completed above. A same-version
+          # reinstall is not accepted as old-to-new version upgrade acceptance.
+          $pins = Get-Content packaging/runtime-sources.json -Raw | ConvertFrom-Json
+          $receipt = @{
+            version = 1
+            product_version = $version
+            host_version = $pins.host.version
+            installer_sha256 = (Get-FileHash $installer).Hash.ToLowerInvariant()
+            payload_manifest_sha256 = (Get-FileHash "$env:RUNNER_TEMP/aitest-stage/product-payload.json").Hash.ToLowerInvariant()
+            checks = @('installer_payload_binding','fresh_install','installed_tools','host_contracts','rollback_recovery','uninstall_retention') | ForEach-Object { @{id=$_;status='passed'} }
+          }
+          $receipt | ConvertTo-Json -Depth 5 | Set-Content "$env:RUNNER_TEMP/aitest-acceptance.json" -Encoding utf8
+      - name: Prepare reviewable release directory
+        shell: pwsh
+        run: |
+          $version = (Get-Content packaging/runtime-sources.json -Raw | ConvertFrom-Json).product_version
+          node scripts/prepare-release-candidate.mjs "$env:RUNNER_TEMP/aitest-stage" "dist/AITestHarness-$version-win-x64.exe" "$env:RUNNER_TEMP/aitest-acceptance.json" dist/release-candidate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installation-candidate
+          path: dist/release-candidate/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-maintainer-checks
+          path: |
+            dist/installed-tools-result.json
+            dist/upgrade-rollback-result.json
+            ${{ runner.temp }}/aitest-host-review/host-review.json
+          if-no-files-found: error
+      # No automatic GitHub Release publication: installation/upgrade acceptance is still required.

@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "product": "node scripts/product-entry.mjs",
+    "product:contracts": "node scripts/run-engineering-tests.mjs tests/acceptance/product-installation.test.mjs",
     "check:static": "node scripts/engineering-preflight.mjs --static",
     "check:production": "node scripts/verify-production-install.mjs",
     "doctor:read-only": "node scripts/engineering-preflight.mjs",

@@ -15,9 +15,10 @@ const asset=index.match(/src="\/assets\/([^"/?]+\.js)(?:\?[^" ]*)?"/)[1],css=ind
 const bundlePath=resolve(web,'assets',asset);
 const original=readFileSync(existsSync(bundlePath+'.qa-runtime-original')?bundlePath+'.qa-runtime-original':existsSync(bundlePath+'.qa-delivery-original')?bundlePath+'.qa-delivery-original':bundlePath,'utf8');
 let bundle=patchClientBundle(patchDeliveryBundle(original));
-const mount='Cke();Ske().then(e=>{e==="reload"?location.reload():RM()},RM);';
+const modern=JSON.parse(readFileSync(resolve(app,'package.json'),'utf8')).version==='0.2.16';
+const mount=modern?'Mst();Tst().then(e=>{e==="reload"?location.reload():KH()},KH);':'Cke();Ske().then(e=>{e==="reload"?location.reload():RM()},RM);';
 assert.equal(bundle.split(mount).length,2);
-bundle=bundle.replace(mount,'')+'\nfunction QaHarness(props){return r.jsx(oB,{children:r.jsx(xB,{children:r.jsx(Ale,props)})});} export {eB,r as qaJSX,QaHarness as Ale};';
+bundle=bundle.replace(mount,'')+(modern?'\nfunction QaHarness(props){return s.jsx(G4e,{children:s.jsx(x7e,{children:s.jsx(x$e,props)})});} export {lce as eB,s as qaJSX,QaHarness as Ale};':'\nfunction QaHarness(props){return r.jsx(oB,{children:r.jsx(xB,{children:r.jsx(Ale,props)})});} export {eB,r as qaJSX,QaHarness as Ale};');
 const report=`output/runs/${runId}/report/test_report.html`,sheet=`output/runs/${runId}/report/test_cases.xlsx`,pdf=`output/runs/${runId}/report/test_report.pdf`;
 for(const path of [report,sheet,pdf]) assert.ok(existsSync(resolve(workspace,path)),path);
 const sample=`已生成测试用例与报告。以下为已有产物，不代表本次重新执行了产品测试。\n\n[测试报告](<${report}>) · [测试用例 Excel](<${sheet}>) · [测试报告 PDF](<${pdf}>)`;

@@ -4,6 +4,8 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, extname, relative } from "node:path";
 import { patchDeliveryBundle } from "./penguin-runtime-patches.mjs";
 import { patchClientBundle, clientModule, brandDataUrl } from "./client-ui-patches.mjs";
+import { createHash } from "node:crypto";
+import { versionClientIndex } from "./client-asset-identity.mjs";
 const app = process.argv[2],
   port = Number(process.argv[3] || 59870),
   root = resolve(import.meta.dirname, "..");
@@ -19,6 +21,17 @@ const html = readFileSync(
   "utf8",
 );
 const asset = html.match(/src="\/assets\/(index-[\w-]+\.js)"/)[1];
+const originalBundle=readFileSync(resolve(web,"assets",asset+".qa-runtime-original"),"utf8");
+const digest=text=>createHash("sha256").update(text).digest("hex").slice(0,16);
+let cachedAssets;
+function clientAssets() {
+  const module=clientModule(...["penguin/ui/delivery-ui.mjs","penguin/ui/workspace-ui.mjs","penguin/ui/workspace-ui.css"].map(file=>readFileSync(resolve(root,file),"utf8")));
+  if(cachedAssets?.module===module) return cachedAssets;
+  const revision=digest(module);
+  const bundle=patchClientBundle(patchDeliveryBundle(originalBundle,revision)).replace('from "./qa-delivery-ui.js"',`from "./qa-delivery-ui.js?v=${revision}"`);
+  cachedAssets={module,bundle,html:versionClientIndex(html,asset,digest(bundle))};
+  return cachedAssets;
+}
 const user = {
   userId: "preview_admin",
   displayName: "admin",
@@ -208,6 +221,14 @@ const server = createServer(async (req, res) => {
         return;
       }
       if (p.endsWith("/agents")) return json(res, { agents });
+      if (p.endsWith("/machines")) return json(res, { machines: [] });
+      if (p.endsWith("/workbenches")) return json(res, { workbenches: [] });
+      if (p.endsWith("/sessions/batch")) return json(res, {
+        results: (data.requests ?? []).map(({agentId}) => {
+          const rows=agentId==='test_agent'?sessions:[];
+          return {agentId,ok:true,sessions:rows,counts:{active:rows.length,subagent:0,schedule:0,benchmark:0,archived:0},workspaceCounts:{},workspaceLatest:{},workspaceLatestActive:{}};
+        })
+      });
       if (p.endsWith("/chat-defaults"))
         return json(res, {
           agentId: "test_agent",
@@ -344,7 +365,7 @@ const server = createServer(async (req, res) => {
       if (p.includes("/update") || p.includes("/version"))
         return json(res, {
           mode: "none",
-          version: "0.2.13",
+          version: JSON.parse(readFileSync(resolve(app,'package.json'),'utf8')).version,
           buildDate: null,
           status: "up_to_date",
           flow: { kind: "idle" },
@@ -358,26 +379,13 @@ const server = createServer(async (req, res) => {
     }
     if (p === "/__requests") return json(res, calls);
     if (p === "/assets/" + asset) {
-      const original = readFileSync(
-        resolve(web, "assets", asset + ".qa-runtime-original"),
-        "utf8",
-      );
-      const bundle = patchClientBundle(patchDeliveryBundle(original));
       res.setHeader("content-type", "text/javascript");
-      res.end(bundle);
+      res.end(clientAssets().bundle);
       return;
     }
     if (p === "/assets/qa-delivery-ui.js") {
       res.setHeader("content-type", "text/javascript");
-      res.end(
-        clientModule(
-          ...[
-            "penguin/ui/delivery-ui.mjs",
-            "penguin/ui/workspace-ui.mjs",
-            "penguin/ui/workspace-ui.css",
-          ].map((f) => readFileSync(resolve(root, f), "utf8")),
-        ),
-      );
+      res.end(clientAssets().module);
       return;
     }
     if (p.startsWith("/assets/") || p.endsWith(".svg")) {
@@ -397,7 +405,7 @@ const server = createServer(async (req, res) => {
     }
     res.setHeader("content-type", "text/html; charset=utf-8");
     res.end(
-      html.replace('href="/penguin-logo.svg"', 'href="'+brandDataUrl(readFileSync(resolve(root, 'penguin/ui/aith-logo.svg'), 'utf8'))+'"').replace(
+      clientAssets().html.replace('href="/penguin-logo.svg"', 'href="'+brandDataUrl(readFileSync(resolve(root, 'penguin/ui/aith-logo.svg'), 'utf8'))+'"').replace(
         "<title>PenguinHarness</title>",
         "<title>AITestHarness · 工程预览</title>",
       ),

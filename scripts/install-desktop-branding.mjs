@@ -18,17 +18,24 @@ function replaceOnce(source, anchor, replacement) {
   if (source.split(anchor).length !== 2) throw new Error('Unsupported desktop shell anchor: ' + anchor);
   return source.replace(anchor, replacement);
 }
-export function patchDesktopBranding(source) {
+export function patchDesktopBranding(source, version='0.2.13') {
+  const replace = (text, before, after) => {
+    if(version==='0.2.16') {
+      before=before.replaceAll('app5','app6').replaceAll('path9','path27');
+      after=after.replaceAll('app5','app6').replaceAll('path9','path27');
+    }
+    return replaceOnce(text,before,after);
+  };
   // Keep the original application identity for storage and taskbar grouping.
   // Only the visible name changes; existing sessions/preferences remain in place.
-  source = replaceOnce(source, 'app5.setName(identity.name);', `app5.setName(identity.name);
+  source = replace(source, 'app5.setName(identity.name);', `app5.setName(identity.name);
 var qaOriginalUserData = app5.getPath("userData");
 var qaOriginalSessionData = app5.getPath("sessionData");
 identity.name = "AITestHarness";
 app5.setName(identity.name);
 app5.setPath("userData", qaOriginalUserData);
 app5.setPath("sessionData", qaOriginalSessionData);`);
-  return replaceOnce(source, '  win.once("ready-to-show", () => win?.show());', `  if (process.platform === "win32") win.setAppDetails({
+  return replace(source, '  win.once("ready-to-show", () => win?.show());', `  if (process.platform === "win32") win.setAppDetails({
     appId: identity.appUserModelId,
     appIconPath: path9.join(app5.getAppPath(), "dist", "aith-icon.ico"),
     appIconIndex: 0,
@@ -58,7 +65,8 @@ export function installDesktopBranding(app, root, mode='check') {
   if(process.platform!=='win32') throw new Error('Windows desktop branding requires Windows');
   if(!['check','apply'].includes(mode)) throw new Error('Use --check or --apply');
   app=resolve(app); root=resolve(root);
-  if(JSON.parse(readFileSync(join(app,'package.json'),'utf8')).version!=='0.2.13') throw new Error('Only inspected desktop version 0.2.13 supported');
+  const version=JSON.parse(readFileSync(join(app,'package.json'),'utf8')).version;
+  if(!['0.2.13','0.2.16'].includes(version)) throw new Error('Only inspected desktop versions 0.2.13 and 0.2.16 supported');
   const exe=resolve(app,'../../PenguinHarness.exe');
   if(!existsSync(exe)) throw new Error('Installed executable missing');
   const recordPath=join(app,'qa-desktop-branding.json');
@@ -83,7 +91,7 @@ export function installDesktopBranding(app, root, mode='check') {
   const mainPath=join(app,'dist/main.js');
   const savedMain=record?.files.find(file=>file.path===mainPath);
   const originalMain=savedMain?Buffer.from(savedMain.before,'base64'):read(mainPath);
-  const desired=new Map([[mainPath,Buffer.from(patchDesktopBranding(originalMain.toString('utf8')))]]);
+  const desired=new Map([[mainPath,Buffer.from(patchDesktopBranding(originalMain.toString('utf8'),version))]]);
   for(const [target,source] of [['dist/icon.png','aith-icon.png'],['dist/tray/tray.png','aith-tray.png'],['dist/tray/tray@2x.png','aith-tray@2x.png'],['dist/aith-icon.ico','aith-icon.ico']]) desired.set(join(app,target),readFileSync(join(root,'penguin/ui',source)));
   const shortcuts=JSON.parse(ps(discoverShortcuts,{QA_BRAND_EXE:exe}));
   const icon=join(app,'dist/aith-icon.ico')+',0';

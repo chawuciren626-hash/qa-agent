@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "installation_id": "aitestharness-local",
+  "layout": "unified",
+  "root": "..",
+  "project_id": "default_project",
+  "paths": {
+    "engine": "app/engine",
+    "host_executable": "runtime/penguin/PenguinHarness.exe",
+    "host_data": "data/penguin",
+    "qa_data": "data/qa",
+    "desktop_profile": "data/desktop-profile",
+    "workspaces": "workspaces",
+    "node": "runtime/tools/node/node.exe",
+    "python": "runtime/tools/python/python.exe",
+    "browsers": "runtime/tools/browsers"
+  }
+}
