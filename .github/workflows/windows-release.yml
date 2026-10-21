@@ -23,6 +23,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm ci --prefix packaging/tools --ignore-scripts --no-audit
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install -r requirements-ci.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Download pinned runtime archives
         shell: pwsh
         run: ./packaging/fetch-runtime.ps1 -Cache "$env:RUNNER_TEMP/aitest-downloads"
