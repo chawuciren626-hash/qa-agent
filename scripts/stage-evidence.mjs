@@ -81,15 +81,25 @@ export function readSession(agentRoot, agent, id) {
   const files = readdirSync(dir).filter(name => name.startsWith(`${id}_`) && name.endsWith('.jsonl')).sort();
   if (!files.length) throw new Error('PenguinHarness session trace missing');
   const rows=files.flatMap(name => readFileSync(resolve(dir, name), 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)));
-  const commandIds=new Set(rows.filter(r=>r.payload?.type==='tool_call' && r.payload.name==='exec_command').map(r=>r.payload.tool_call_id));
+  const commands=new Map(rows.filter(r=>r.payload?.type==='tool_call' && ['exec_command','input_command'].includes(r.payload.name)).map(r=>[r.payload.tool_call_id,r]));
   return rows.map(row=>{
     const p=row.payload;
-    if(p?.type!=='tool_call_output' || !commandIds.has(p.tool_call_id) || typeof p.output!=='string') return row;
-    const archived=/\n\[output archived: ([^\r\n]+)\]\s*$/.exec(p.output);
+    if(p?.type!=='tool_call_output' || !commands.has(p.tool_call_id) || typeof p.output!=='string') return row;
+    const call=commands.get(p.tool_call_id),name=call.payload.name;
+    const archived=/\n\[output archived: ([^\r\n]+)\]([^]*?)$/.exec(p.output);
     if(!archived) return row;
+    const suffix=archived[2].trim();
+    if(name==='input_command') {
+      const args=typeof call.payload.arguments==='string'?JSON.parse(call.payload.arguments):call.payload.arguments;
+      const processId=args?.process_id;
+      if(!/^proc-[A-Za-z0-9-]+$/.test(processId??'')) throw new Error('Archived poll process identity missing');
+      const launches=rows.slice(0,rows.indexOf(call)).filter(r=>r.payload?.type==='tool_call_output' && commands.get(r.payload.tool_call_id)?.payload.name==='exec_command' && String(r.payload.output).endsWith(`[process running with process_id ${processId}; use input_command to send input or poll for output]`));
+      if(launches.length!==1) throw new Error('Archived poll has no unique originating command');
+      if(suffix && suffix!==`[process ${processId} had already exited (exit code 0); session removed]`) throw new Error('Archived poll has an unverified terminal suffix');
+    } else if(suffix) throw new Error('Archived command has an unverified suffix');
     const base=resolve(agentRoot,agent,'scratchpad',id,'truncated-tool-output');
     const path=resolve(archived[1]);
-    if(!isAbsolute(archived[1]) || resolve(path,'..')!==base || !/^exec_command-[a-z0-9-]+\.log$/i.test(basename(path))) throw new Error('Archived command output belongs to another session or has an invalid path');
+    if(!isAbsolute(archived[1]) || resolve(path,'..')!==base || !new RegExp(`^${name}-[a-z0-9-]+\\.log$`,'i').test(basename(path))) throw new Error('Archived command output belongs to another session or has an invalid path');
     if(realpathSync(base)!==base || realpathSync(path)!==path || !statSync(path).isFile() || statSync(path).size>8*1024*1024) throw new Error('Archived command output is redirected, invalid or too large');
     const full=readFileSync(path,'utf8');
     if(!full.trim()) throw new Error('Archived command output is empty');
@@ -171,7 +181,7 @@ export function resolveDispatchedChild(root, runId, stage, parentId, agentRoot =
   if (!dispatch || dispatch['parent-session-id']!==parentId) throw new Error('No current dispatch owned by this parent');
   if (matchingDispatchCalls(parent,runId,dispatch).length!==1) throw new CommandUsageError('Dispatch must bind exactly one child call; retries need failure and explicit recovery');
   const candidates=[...new Set(parent.filter(r=>r.type==='event_msg' && r.payload?.type==='subagent').map(r=>r.payload.session_id))];
-  const parallel=manifest.orchestration?.plan?.workflow_mode==='task';
+  const parallel=manifest.orchestration?.plan?.workflow_mode==='task' || (manifest.orchestration?.plan?.execution_branches?.length??0)>1;
   const owned=candidates.filter(childId=>{
     if(!parallel) return true;
     try {return readSession(agentRoot,dispatch.agent,childId).some(r=>r.payload?.type==='text' && r.payload.role==='user' && r.payload.text?.split(/[^A-Za-z0-9-]+/).includes(dispatch.dispatch_id) && r.payload.text.includes(dispatch.child_command_policy));} catch {return false;}
@@ -240,7 +250,7 @@ export function verifyStageEvidence(root, runId, manifest, options, agentRoot = 
   if (meta?.payload.session_id !== childId || meta.payload.source !== 'subagent' || resolve(meta.payload.agent_state) !== resolve(agentRoot, dispatch.agent, 'agent_state')) throw new Error('Wrong child agent or session source');
   if (!sessionWorkspaces(root,runDirectory(root,runId)).includes(resolve(meta.payload.workspace))) throw new Error('Child workspace mismatch');
   if (dispatch.child_command_policy && ![1,2,3].some(version=>dispatch.child_command_policy === childCommandPolicy(dispatch.dispatch_id,version))) throw new Error('Dispatch command policy differs from supported contract');
-  const called = findParentDispatch(parent, { runId, agent: dispatch.agent, childId, dispatchedAt: dispatch.at, dispatchId: dispatch.dispatch_id, commandPolicy: dispatch.child_command_policy, parallel:manifest.orchestration?.plan?.workflow_mode==='task' });
+  const called = findParentDispatch(parent, { runId, agent: dispatch.agent, childId, dispatchedAt: dispatch.at, dispatchId: dispatch.dispatch_id, commandPolicy: dispatch.child_command_policy, parallel:manifest.orchestration?.plan?.workflow_mode==='task' || (manifest.orchestration?.plan?.execution_branches?.length??0)>1 });
   if (!called) throw new Error('No matching parent dispatch response for this run');
   const partialFailures=[];
   if (dispatch.child_command_policy) {

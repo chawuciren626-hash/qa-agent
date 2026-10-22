@@ -1,6 +1,6 @@
 # Windows 安装候选
 
-目标为 Windows x64。当前产物是内部预览。preview.3 增加首次模型配置与示例任务引导，保留 preview.2 的同宿主版本事务升级与失败恢复。现有环境的三用例 Excel 任务已完成并核验；新安装环境的真实模型任务、干净机器验收仍待完成，不应当作为正式版本发布。宿主固定为 PenguinHarness 0.2.16，后续通过适配验证后再升级。详见[首次使用验收](../docs/product-onboarding-progress-2026-10-21.md)。
+目标为 Windows x64。当前产物是内部预览。preview.3 增加首次模型配置与示例任务引导，保留 preview.2 的同宿主版本事务升级与失败恢复。现有环境的三用例 Excel 任务已完成并核验；新安装环境的真实模型任务、干净机器验收仍待完成，不应当作为正式版本发布。宿主固定为 PenguinHarness 0.2.16，后续通过适配验证后再升级。详见首次使用验收（本地历史记录，不随源码分发）。
 
 ## 普通用户的预期使用方式
 
@@ -20,7 +20,7 @@
 
 推荐提交到自己的仓库后，在 Actions 手动执行 **Windows installation candidate**。工作流生成安装包、SHA256、文件清单和已安装工具冒烟结果，作为 Actions artifact；不会自动发布 Releases。构建所需 Node/Python 属于维护环境，用户安装时不需要这些开发工具。
 
-工作流现已接入隔离宿主兼容检查和发行候选整理。主 artifact 内含 `RELEASE-NOTES.md`、`acceptance.json` 和固定发行文件；待验收项保留 pending。维护命令、验收记录格式及本机 preview.2 → preview.3 升级实测见[发行维护记录](../docs/release-maintenance-2026-10-21.md)。本机可审核候选位于 `dist/release-preview.3/`，尚未上传。
+工作流现已接入隔离宿主兼容检查和发行候选整理。主 artifact 内含 `RELEASE-NOTES.md`、`acceptance.json` 和固定发行文件；待验收项保留 pending。维护命令、验收记录格式及本机 preview.2 → preview.3 升级实测见发行维护记录（本地历史记录，不随源码分发）。本机可审核候选位于 `dist/release-preview.3/`，尚未上传。
 
 本机完整构建过程见 `.github/workflows/windows-release.yml`：
 

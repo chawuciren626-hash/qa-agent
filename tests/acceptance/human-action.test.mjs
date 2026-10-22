@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { answerHumanAction, inspectHumanAction, listHumanActions, nativeHumanDecision, humanConfirmationText, isLoginConfirmation } from '../../scripts/browser-human-action.mjs';
 import { qaTaskStatus } from '../../penguin/ui/workspace-ui.mjs';
+import { ownProcessIdentity } from '../../scripts/process-identity.mjs';
 const root=resolve(import.meta.dirname,'../..');
 function fixture() {
   const workspace=resolve(root,'output/acceptance/human',randomUUID()), agentRoot=resolve(workspace,'agents');
@@ -34,6 +35,20 @@ test('waiting card is native-child bound, retains task state, and overrides comp
   assert.throws(()=>inspectHumanAction(f.workspace,'wrong-parent',f.runId,f.agentRoot)??(()=>{throw Error('wrong')})());
   assert.equal(qaTaskStatus({status:'completed'},{humanWaiting:true}).label,'等待人工操作');
   assert.equal(f.manifest.stages.execution.status,'in_progress');
+});
+
+test('API authentication card binds original child and continues without browser health or redispatch',async()=>{
+  const f=fixture(),oldTrace=resolve(f.agentRoot,'automation_execution_agent/traces/2026-10-20',`${f.child}_001.jsonl`),parentTrace=resolve(f.agentRoot,'test_agent/traces/2026-10-20',`${f.parent}_001.jsonl`);
+  f.put(resolve(f.agentRoot,'api_automation_agent/traces/2026-10-20',`${f.child}_001.jsonl`),readFileSync(oldTrace,'utf8'));
+  writeFileSync(parentTrace,readFileSync(parentTrace,'utf8').replaceAll('automation_execution_agent','api_automation_agent'));
+  f.manifest.stages.api_execution={status:'in_progress'};
+  f.manifest.orchestration.events.push({...f.manifest.orchestration.events[0],stage:'api_execution',agent:'api_automation_agent'});
+  f.put(resolve(f.dir,'manifest.json'),f.manifest);
+  f.put(resolve(f.dir,'execution/api/human-action.json'),{run_id:f.runId,action_id:f.actionId,dispatch_id:f.dispatchId,child_session:f.child,parent_session:f.parent,worker_pid:process.pid,process_identity:ownProcessIdentity(),channel:'api',kind:'access',status:'waiting_human',question:'请提供接口认证'});
+  assert.equal(listHumanActions(f.workspace,f.parent,f.agentRoot)[0].channel,'api');
+  let sends=0;
+  const options={...f.options,decision:'continue',health:()=>{throw Error('Must not use browser');},send:async(child,text,decision,channel)=>{sends++;assert.equal(channel,'api');assert.equal(child,f.child);return 'resumed';}};
+  assert.equal((await answerHumanAction(options)).status,'accepted');await answerHumanAction(options);assert.equal(sends,1);
 });
 test('concurrent and repeated confirmation sends exactly once to the original child',async()=>{
   const f=fixture();let sends=0;

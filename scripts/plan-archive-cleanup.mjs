@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { resolve, isAbsolute, toNamespacedPath } from 'node:path';
+import { resolve, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { within } from './application-data.mjs';
@@ -19,7 +19,7 @@ export function cleanupPlan(root,archive,tracked) {
       decision='review_candidate';
       for(const path of [source,backup]) {
         if(!existsSync(path)) {decision='retain_missing_file';break;}
-        if(lstatSync(path).isSymbolicLink() || realpathSync(toNamespacedPath(path))!==toNamespacedPath(path)) {decision='retain_linked_file';break;}
+        if(lstatSync(path).isSymbolicLink() || realpathSync(path)!==path) {decision='retain_linked_file';break;}
         const content=readFileSync(path);
         if(content.length!==file.size || createHash('sha256').update(content).digest('hex')!==file.sha256) {decision='retain_changed_or_unverified';break;}
       }

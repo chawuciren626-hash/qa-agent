@@ -7,7 +7,7 @@ export function safeInputName(name) {
     !/^[.]|[. ]$|[<>:"/\\|?*\p{Cc}\p{Cf}]/u.test(name) &&
     !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:[ .]|$)/i.test(name);
 }
-const stages = ['analysis', 'test_points', 'test_cases', 'execution', 'defects', 'report'];
+const stages = ['analysis', 'test_points', 'test_cases', 'execution', 'api_execution', 'defects', 'report'];
 const usages = {
   'run-ui-tests.mjs': '--run-id=<run_id> [--headed]',
   'extract-word-input.py': '<run_id> inputs/<archived-name>.docx',
@@ -63,7 +63,7 @@ export function validateCommandArguments(script, args, runId) {
   if (['generate-analysis-markdown.mjs', 'show-run-status.mjs', 'show-run-plan.mjs', 'get-run-resume-point.mjs'].includes(script)) { requireUsage(args.length === 1, usages[script]); return; }
   if (script === 'record-orchestration-event.mjs') {
     requireUsage(['dispatched', 'completed', 'failed', 'blocked'].includes(args[1]), 'Unknown stage event');
-    const o = parseOptions(args.slice(2), ['stage','agent','skills','artifacts','reason','session-id','parent-session-id','dispatch-id','mode']);
+    const o = parseOptions(args.slice(2), ['stage','agent','skills','artifacts','reason','session-id','parent-session-id','dispatch-id','mode','resource-keys']);
     requireUsage(stages.includes(o.stage) && session(o['parent-session-id']), 'Stage and parent session required');
     if (args[1] === 'dispatched') {
       requireUsage(o.agent && o.skills && !o['dispatch-id'], 'Dispatch requires agent/skills; dispatch ID is generated');

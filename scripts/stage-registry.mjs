@@ -57,17 +57,17 @@ export function stageDefinition(id) {
 // Shared by the live write guard, historical handoff and draft revision snapshots.
 export function stageWriteRules(id) {
   const stage = stageDefinition(id);
-  const directories = {analysis:['analysis/'], execution:['execution/'], defects:['defects/'], report:['report/']};
+  const directories = {analysis:['analysis/'], api_execution:[], execution:['execution/'], defects:['defects/'], report:['report/']};
   return {
     exact: [...new Set([...stage.lifecycle_artifacts, ...stage.task_artifacts, stage.task_result,
-      ...(stage.optional_artifacts ?? []), ...(id === 'execution' ? ['environment/test-env.json'] : [])])],
+      ...(stage.optional_artifacts ?? []), ...(id === 'api_execution' ? ['execution/api/scenario-draft.json'] : []), ...(id === 'execution' ? ['environment/test-env.json'] : [])])],
     directories: directories[id] ?? []
   };
 }
 
 export function isControlledStageEvidence(stage, path) {
   const value = path.toLowerCase();
-  return stage === 'execution' && (/^execution\/browser-/.test(value) ||
+  return (value.startsWith('execution/api/') && (stage==='execution' || stage==='api_execution' && value!=='execution/api/scenario-draft.json')) || stage === 'execution' && (/^execution\/browser-/.test(value) ||
     ['execution/test_results.json','execution/exploration.json','execution/exploration.lock'].includes(value));
 }
 export function dispatchTemplate(id, runId = 'run-example') {

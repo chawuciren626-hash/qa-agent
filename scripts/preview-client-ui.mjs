@@ -315,7 +315,10 @@ const server = createServer(async (req, res) => {
       }
       if (p.endsWith("/messages"))
         return json(res, {
-          messages: [
+          messages: process.env.QA_PREVIEW_TURN_NAV === '1' ? Array.from({length:18},(_,i)=>[
+            {type:'model_msg',timestamp:new Date(Date.UTC(2026,9,22,8,i*2)).toISOString(),payload:{type:'text',role:'user',text:['分析登录模块的功能需求和接口文档','补充手机号输入边界与异常场景','生成对应的功能测试点和接口测试点','导出登录模块测试用例，保留需求来源','继续执行并生成 HTML 测试报告'][i%5]+`（第 ${i+1} 轮）`}},
+            {type:'model_msg',timestamp:new Date(Date.UTC(2026,9,22,8,i*2+1)).toISOString(),payload:{type:'text',role:'assistant',text:'## 登录模块测试进展\n\n这是导航交互的合成预览，不是真实测试结果。\n\n'+Array.from({length:4},()=>'- 已整理正常流程、边界输入及异常路径，保留来源和待确认事项。').join('\n'),stop_reason:'completed'}}
+          ]).flat() : [
             {
               type: "model_msg",
               timestamp: "2026-10-16T10:00:00Z",
@@ -337,12 +340,16 @@ const server = createServer(async (req, res) => {
             },
           ],
         });
-      if (p.match(/^\/api\/sessions\/[^/]+$/))
+      if (p.match(/^\/api\/sessions\/[^/]+$/)) {
+        const index = sessions.findIndex(s => s.sessionId === decodeURIComponent(p.split("/")[3]));
+        if (req.method === "DELETE") { if(index >= 0) sessions.splice(index,1); return json(res,{}); }
+        if (req.method === "PATCH" && index >= 0) Object.assign(sessions[index],data);
         return json(res, {
           session:
             sessions.find((s) => s.sessionId === p.split("/")[3]) ||
             sessions[0],
         });
+      }
       if (
         p.match(/^\/api\/sessions\/[^/]+\/(input|message|send|turn|tasks)$/)
       ) {

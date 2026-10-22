@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,existsSync,readFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {resolve,dirname} from 'node:path';
-import {resolveProductLayout,productEnvironment} from '../../scripts/product-layout.mjs';
+import {resolveProductLayout,productEnvironment,bindProductCommandPaths} from '../../scripts/product-layout.mjs';
 import {classifyHostRelease,checkHostUpdate,hostCompatibility} from '../../scripts/product-updates.mjs';
 import {parseProductArguments} from '../../scripts/product-entry.mjs';
 import {inspectProductService} from '../../scripts/product-doctor.mjs';
@@ -38,6 +38,16 @@ test('product environment scopes paths and removes caller session ownership and 
   assert.ok(env.Path.startsWith(dirname(layout.paths.node)));assert.equal(env.PATH,undefined);
 });
 const release=version=>({tag_name:'v'+version,html_url:'https://github.com/Prism-Shadow/penguin-harness/releases/tag/v'+version,draft:false,prerelease:false});
+test('agent commands recover stripped trace root from their own installation without copying secrets or session context',t=>{
+  const f=fixture(t);writeFileSync(f.file,JSON.stringify(f.value));
+  const env={QA_DIRECTORY_CONTEXT:'current-session',PENGUIN_SESSION_ID:'current-child'};
+  bindProductCommandPaths(f.layout.paths.engine,env);
+  assert.deepEqual(env,{QA_DIRECTORY_CONTEXT:'current-session',PENGUIN_SESSION_ID:'current-child',PENGUIN_AGENT_ROOT:f.layout.agent_root});
+  const isolated={PENGUIN_AGENT_ROOT:resolve(f.root,'isolated-agents')};bindProductCommandPaths(f.layout.paths.engine,isolated);
+  assert.equal(isolated.PENGUIN_AGENT_ROOT,resolve(f.root,'isolated-agents'));
+  assert.throws(()=>bindProductCommandPaths(resolve(f.root,'other/engine'),{}),/engine mismatch/);
+  const legacy={};bindProductCommandPaths(resolve(f.root,'legacy/deep/engine'),legacy);assert.deepEqual(legacy,{});
+});
 test('new upstream releases require compatibility review and never authorize installation',()=>{
   assert.equal(classifyHostRelease(release('0.2.17'),'0.2.16',undefined,'win32-x64').status,'compatibility_review_required');
   const known=classifyHostRelease(release('0.2.16'),'0.2.13',undefined,'win32-x64');assert.equal(known.status,'compatible_update_available');assert.equal(known.automatic_install,false);assert.equal(known.distribution_ready,false);

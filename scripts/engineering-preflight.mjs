@@ -13,7 +13,7 @@ export function engineeringPreflight(root,{app,env=process.env,staticCheck=false
   add('node',major>20 || major===20 && minor>=11?'ready':'unsupported',{version:process.version,minimum:'20.11'});
   const python=probePython(env);add('python',python.status,{executable:python.executable,minimum:'3.11',reason:python.reason});
   const require=createRequire(resolve(root,'package.json')),pkg=JSON.parse(readFileSync(resolve(root,'package.json')));
-  for(const name of ['@playwright/test','ajv','xlsx','xmind']) {
+  for(const name of ['@playwright/test','ajv','xlsx','xmind','yaml']) {
     try {add(name,pkg.dependencies?.[name]?'ready':'production_dependency_missing',{version:packageMetadata(root,name).version});}
     catch {add(name,'missing');}
   }

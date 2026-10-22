@@ -7,6 +7,9 @@ import { guardSensitiveRead } from './sensitive-file-guard.mjs';
 const parentActions=new Set(['reuse_design','diagnose_task','create_run','plan_run','set_review_mode','extend_plan','archive_input','extract_word','analysis_summary','apply_analysis_feedback','diagnose_analysis','diagnose_test_points','diagnose_test_cases','prepare_execution_plan','validate_execution_prepare','preview_revision','read_source','run_status','resolve_child','dispatch','handoff','complete','block','fail','request_confirmation','resolve_confirmation','revise_stage','validate_analysis','validate_artifacts']);
 
 parentActions.add('resolve_child_handle');
+parentActions.add('plan_test_tracks');
+parentActions.add('configure_delivery');
+parentActions.add('create_api_snapshot_report');
 
 // This host-tool guard prevents accidental bypasses; it is not an OS security sandbox.
 export function guardControllerTool(root,input) {

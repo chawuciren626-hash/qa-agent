@@ -5,7 +5,7 @@
 适用对象：产品负责人、测试负责人、测试工程师、Agent 开发及维护人员
 工程位置：`E:\Codex\AITestWorker`
 
-> 本文根据当前工程配置、角色指令、Skill 与运行脚本整理，不是未来功能清单。当前产品依托已适配的 PenguinHarness 桌面应用运行，尚未发布独立 AITestWorker 安装包。独立任务已有真实运行记录，但不能据此认定所有全流程场景均稳定通过。最新验收结论以[当前状态与下一步](current-status-and-next-steps.md)为准。
+> 本文根据当前工程配置、角色指令、Skill 与运行脚本整理，不是未来功能清单。当前产品依托已适配的 PenguinHarness 桌面应用运行，尚未发布独立 AITestWorker 安装包。独立任务已有真实运行记录，但不能据此认定所有全流程场景均稳定通过。最新验收结论以当前状态与下一步（本地历史记录，不随源码分发）为准。
 
 ## 1. 产品定位
 
@@ -377,7 +377,7 @@ AITestWorker/
 ### 12.3 使用与维护文档
 
 - [日常使用指南](user-guide.md)
-- [当前状态与下一步](current-status-and-next-steps.md)
+- 当前状态与下一步（本地历史记录，不随源码分发）
 - [PenguinHarness 配置与同步](penguinharness-configuration.md)
 - [工程测试与 CI](engineering-tests-and-ci.md)
 - [派发接口最近修复与验收](delegation-interface-repair.md)

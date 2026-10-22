@@ -5,6 +5,18 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { createExecutionCases, extractCases } from './execution-plan.mjs';
 import { inspectRequirementLedger, referencedRule } from './requirement-provenance.mjs';
+import { CommandUsageError } from './command-contracts.mjs';
+
+export function assertConfirmedExecutionCases(rows) {
+  const unresolved=rows.filter(row=>(row.design_contract?.basis??[]).some(r=>r.status!=='confirmed') || (row.design_contract?.assumptions??[]).some(r=>r.status!=='confirmed'));
+  if(unresolved.length) throw new CommandUsageError(`Execution design needs correction before any product operation: ${unresolved.map(r=>r.case_id??r.id).join(', ')}. Unconfirmed business expectations cannot execute. Keep observable setup in preconditions/steps, not pending business assumptions; correct eligible drafts before dispatch without inventing approval.`);
+}
+
+export function assertExecutionDesignReady(dir,stage) {
+  if(!existsSync(resolve(dir,'design/test_cases.json'))) return;
+  const value=JSON.parse(readRunFile(dir,'design/test_cases.json').data),rows=extractCases(value);
+  assertConfirmedExecutionCases(rows.filter(row=>stage==='api_execution'?row.execution_layer==='api'||row.api_scenario:row.execution_layer!=='api'));
+}
 
 export function runDirectory(root, runId) {
   if (!/^run-[A-Za-z0-9-]+$/.test(runId ?? '')) throw new Error('Invalid run_id');

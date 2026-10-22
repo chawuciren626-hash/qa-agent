@@ -181,6 +181,15 @@ export async function qaProbeConfiguredModel(request,base) {
   const after=await load();if(after.stamp!==before.stamp)return {status:'changed',model:after};
   return {status:result?.ok===true?'connected':'failed',model:after};
 }
+// Persist turn numbers, not reducer item IDs: prepending history rebuilds item IDs.
+export function qaReadBookmarks(key, storage = globalThis.localStorage) {
+  try { const value=JSON.parse(storage.getItem(key)||'[]');return Array.isArray(value)?[...new Set(value.filter(n=>Number.isSafeInteger(n)&&n>=0))]:[]; } catch { return []; }
+}
+export function qaToggleBookmark(key, turn, storage = globalThis.localStorage) {
+  if(!Number.isSafeInteger(turn)||turn<0)throw new Error('Invalid conversation turn');
+  const current=qaReadBookmarks(key,storage),next=current.includes(turn)?current.filter(n=>n!==turn):[...current,turn];
+  storage.setItem(key,JSON.stringify(next));return next;
+}
 export function createWorkspaceUI(deps) {
   const {
     React: R,
@@ -193,10 +202,40 @@ export function createWorkspaceUI(deps) {
     Modal,
     AccountMenu,
     SidebarTools,
+    useSessionActions = () => null,
     notify,
     reportError,
   } = deps;
   const h = R.createElement;
+  function ConversationNav({entries=[],turnOffset=0,version,scrollRef,jump,findActive,sessionId,fit,compact=false,older}) {
+    const {currentProject}=useProject(),{user}=useAuth();
+    const key=qaScope(currentProject?.projectId,user?.userId)+'.bookmarks.'+encodeURIComponent(sessionId||'');
+    const [saved,setSaved]=R.useState(()=>qaReadBookmarks(key)),[active,setActive]=R.useState(null),[hover,setHover]=R.useState(null),[open,setOpen]=R.useState(false),[onlySaved,setOnlySaved]=R.useState(false);
+    const nav=R.useRef(null),closeTimer=R.useRef(null);
+    R.useEffect(()=>{setSaved(qaReadBookmarks(key));setHover(null);setOpen(false);setOnlySaved(false);const changed=e=>{if(e.key===key)setSaved(qaReadBookmarks(key));};window.addEventListener('storage',changed);return()=>{window.removeEventListener('storage',changed);clearTimeout(closeTimer.current);};},[key]);
+    R.useEffect(()=>{
+      const scroller=scrollRef.current;if(!scroller)return;
+      let frame;const update=()=>{frame=null;setActive(findActive(scroller,new Set(entries.map(e=>e.anchorId))));};
+      const schedule=()=>{if(frame==null)frame=requestAnimationFrame(update);};update();scroller.addEventListener('scroll',schedule,{passive:true});
+      const resize=new ResizeObserver(schedule);resize.observe(scroller);if(scroller.firstElementChild)resize.observe(scroller.firstElementChild);
+      return()=>{scroller.removeEventListener('scroll',schedule);resize.disconnect();if(frame!=null)cancelAnimationFrame(frame);};
+    },[scrollRef,version,entries,findActive]);
+    R.useEffect(()=>{if(!open)return;const outside=e=>{if(!nav.current?.contains(e.target))setOpen(false);};document.addEventListener('pointerdown',outside);return()=>document.removeEventListener('pointerdown',outside);},[open]);
+    R.useEffect(()=>{const rail=nav.current?.querySelector('.qa-turn-rail'),tick=rail?.querySelector('[aria-current]');if(!rail||!tick)return;const a=rail.getBoundingClientRect(),b=tick.getBoundingClientRect();if(b.top<a.top)rail.scrollTop+=b.top-a.top;else if(b.bottom>a.bottom)rail.scrollTop+=b.bottom-a.bottom;},[active,entries.length]);
+    const rows=entries.map((e,i)=>({...e,turn:turnOffset+i})),visible=onlySaved?rows.filter(e=>saved.includes(e.turn)):rows;
+    const selected=rows.find(e=>e.anchorId===hover?.id);
+    const keep=()=>clearTimeout(closeTimer.current),close=()=>{keep();closeTimer.current=setTimeout(()=>setHover(null),180);};
+    function show(e,event){keep();const rect=event.currentTarget.getBoundingClientRect(),base=nav.current.getBoundingClientRect();setHover({id:e.anchorId,top:rect.top+rect.height/2-base.top});}
+    function go(e){jump(scrollRef.current,e.anchorId);setActive(e.anchorId);setOpen(false);}
+    function toggle(e){try{setSaved(qaToggleBookmark(key,e.turn));}catch{reportError('书签保存失败，请检查本地存储空间后重试');}}
+    const mark=e=>h('button',{type:'button',className:'qa-turn-bookmark','aria-label':(saved.includes(e.turn)?'取消书签：':'添加书签：')+(e.question||'图片提问'),'aria-pressed':saved.includes(e.turn),onClick:()=>toggle(e)},h('svg',{width:15,height:17,viewBox:'0 0 16 18',fill:saved.includes(e.turn)?'currentColor':'none',stroke:'currentColor',strokeWidth:1.25,'aria-hidden':true},h('path',{d:'M4 2h8a1 1 0 0 1 1 1v13L8 13l-5 3V3a1 1 0 0 1 1-1Z'})));
+    const menu=open&&h('section',{className:'qa-turn-menu','aria-label':'提问与书签',style:compact?undefined:{maxHeight:Math.max(80,(fit?.height||300)-20)}},h('div',{className:'qa-turn-tabs'},h('button',{type:'button','aria-pressed':!onlySaved,onClick:()=>setOnlySaved(false)},'全部提问'),h('button',{type:'button','aria-pressed':onlySaved,onClick:()=>setOnlySaved(true)},'书签 '+saved.length)),h('div',{className:'qa-turn-list'},visible.map(e=>h('div',{key:e.anchorId,className:'qa-turn-row'},h('button',{type:'button','aria-current':active===e.anchorId?'location':undefined,onClick:()=>go(e),title:e.question},h('small',null,e.turn+1),e.question||'图片提问'),mark(e))),visible.length===0&&h('p',null,onlySaved?'当前已加载内容中暂无书签':'暂无提问')),older?.hasMore&&h('button',{type:'button',className:'qa-turn-load',disabled:older.loading,onClick:older.onLoad},older.loading?'正在加载…':older.error?'重试加载更早提问':'加载更早提问'));
+    if(!sessionId||(!entries.length&&!older?.hasMore)||(!compact&&!fit?.shown))return null;
+    return h('nav',{ref:nav,className:compact?'qa-turn-nav qa-turn-compact':'qa-turn-nav','aria-label':'会话导航',onKeyDown:e=>{if(e.key==='Escape'){setOpen(false);setHover(null);nav.current.querySelector('.qa-turn-menu-toggle')?.focus();}}},
+      !compact&&h('div',{className:'qa-turn-rail',style:{maxHeight:Math.max(60,(fit.height||300)-90)}},rows.map(e=>h('button',{type:'button',key:e.anchorId,className:'qa-turn-tick'+(saved.includes(e.turn)?' is-bookmarked':''),'data-outline-tick':e.anchorId,'aria-current':active===e.anchorId?'location':undefined,'aria-label':`第 ${e.turn+1} 次提问：${e.question||'图片提问'}`,onMouseEnter:event=>show(e,event),onMouseLeave:close,onFocus:event=>show(e,event),onBlur:close,onClick:()=>go(e)},h('span')))),
+      h('button',{type:'button',className:'qa-turn-menu-toggle','aria-label':'提问与书签','aria-expanded':open,onClick:()=>{setOpen(!open);setHover(null);}},h(Icon,{name:'list',size:16})),menu,
+      !open&&selected&&!compact&&h('div',{className:'qa-turn-preview',style:{top:Math.min(Math.max(hover.top,26),Math.max(26,(fit.height||300)-26))},onMouseEnter:keep,onMouseLeave:close,onFocus:keep,onBlur:e=>{if(!e.currentTarget.contains(e.relatedTarget))close();}},h('button',{type:'button',className:'qa-turn-summary',title:selected.question,onClick:()=>go(selected)},selected.question||'图片提问'),mark(selected)));
+  }
   function BrandLogo({className = "qa-sidebar-logo"}) {
     return h("span", {className: `qa-brand-mark ${className}`, role: "img", "aria-label": "AITestHarness Logo"},
       h("img", {src: qaBrandLogo, className:"qa-logo-default", alt:"", "aria-hidden":true, draggable:false}),
@@ -232,6 +271,7 @@ export function createWorkspaceUI(deps) {
     refresh: "M20 7V2l-4 4a9 9 0 1 0 4 10M20 7h-5",
     back: "M20 12H4m7-7-7 7 7 7",
     more: "M4 12h1m6 0h1m6 0h1",
+    list: "M4 6h16M4 12h12M4 18h16",
     close: "m6 6 12 12M6 18 18 6",
   };
   function Icon({ name, size = 16, className }) {
@@ -462,6 +502,7 @@ export function createWorkspaceUI(deps) {
       [search, setSearch] = R.useState(""),
       [refreshing, setRefreshing] = R.useState(false);
     const selectedId = location.pathname.split("/chat/")[1];
+    const sessionActions = useSessionActions({selectedId, onRemoved: () => go("/chat/new")});
     const sessions = sessionState.sessions.filter(
       (s) =>
         !s.origin?.length &&
@@ -497,6 +538,7 @@ export function createWorkspaceUI(deps) {
     const recent = [...sessions]
       .filter(matches)
       .sort((a, b) =>
+        Number(sessionActions?.pins.has(b.sessionId) ?? false) - Number(sessionActions?.pins.has(a.sessionId) ?? false) ||
         String(b.lastActiveAt).localeCompare(String(a.lastActiveAt)),
       );
     const projectActivity = (group) =>
@@ -509,6 +551,7 @@ export function createWorkspaceUI(deps) {
         group.createdAt || "",
       );
     const taskRow = (s) => {
+      if (sessionActions) return h("ul", {key:s.sessionId, className:"qa-native-session-row"}, sessionActions.row(s, task));
       const status = qaTaskStatus(s);
       return h(
         "button",
@@ -545,6 +588,7 @@ export function createWorkspaceUI(deps) {
     return h(
       "div",
       { className: "qa-sidebar" },
+      sessionActions?.overlays,
       h(
         "div",
         { className: "qa-brand" },
@@ -898,7 +942,7 @@ export function createWorkspaceUI(deps) {
     const scope=JSON.stringify([base,user?.userId??null]);
     const [state,setState]=R.useState({scope:null,status:'loading'}),[expanded,setExpanded]=R.useState(true);
     const epoch=R.useRef(0),busy=R.useRef(false);
-    const roleIds=['test_agent','requirement_analysis_agent','test_point_agent','test_case_agent','automation_execution_agent','defect_analysis_agent','test_report_agent'];
+    const roleIds=['test_agent','requirement_analysis_agent','test_point_agent','test_case_agent','automation_execution_agent','api_automation_agent','defect_analysis_agent','test_report_agent'];
     const count=roleIds.filter(id=>agents.some(a=>a.agentId===id&&a.enabled!==false)).length;
     async function refresh(){
       const ticket=++epoch.current;busy.current=false;setState({scope,status:'loading'});
@@ -1064,7 +1108,7 @@ export function createWorkspaceUI(deps) {
     }));
   }
   const SectionPage = createSectionsUI({ ...deps, Icon, h });
-  return { Sidebar, Hero, SessionContext, SectionPage, BrandLogo };
+  return { Sidebar, Hero, SessionContext, SectionPage, BrandLogo, ConversationNav };
 }
 function relativeTime(value) {
   const ms = Date.now() - Date.parse(value);

@@ -14,7 +14,7 @@ try {
   const result=spawnSync(process.execPath,[npm,'ci','--omit=dev','--ignore-scripts','--no-audit','--no-fund','--fetch-retries=0','--fetch-timeout=20000'],{cwd:dir,encoding:'utf8',windowsHide:true,timeout:120000});
   if(result.status!==0) throw new Error(`Production npm ci failed: ${result.stderr?.slice(-2000)}`);
   const require=createRequire(resolve(dir,'package.json'));
-  const packages={};for(const name of ['@playwright/test','ajv','xlsx','xmind']) {require(name);packages[name]=packageMetadata(dir,name).version;}
+  const packages={};for(const name of ['@playwright/test','ajv','xlsx','xmind','yaml']) {require(name);packages[name]=packageMetadata(dir,name).version;}
   console.log(JSON.stringify({status:'passed',omit_dev:true,lifecycle_scripts:false,packages,browser_binary:'separate operator installation; not downloaded by this check'}));
 } finally {
   if(!within(base,dir) || dir===base || realpathSync(dir)!==dir || !dir.startsWith(resolve(base,'qa-production-'))) throw new Error('Refusing cleanup outside generated production fixture');

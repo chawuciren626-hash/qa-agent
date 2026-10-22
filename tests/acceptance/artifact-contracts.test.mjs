@@ -16,6 +16,7 @@ function fixture(full = false, failed = false) {
   const id = `run-contract-${randomUUID()}`;
   const dir = resolve(root, 'output/runs', id);
   for (const folder of ['analysis', 'design', 'execution', 'defects', 'report']) mkdirSync(resolve(dir, folder), { recursive: true });
+  writeJsonFile(resolve(dir,'manifest.json'),{run_id:id,orchestration:{plan:{workflow_mode:'lifecycle'}}});
   return { id, ...(full ? resultArtifacts(root, id, failed) : designArtifacts(root, id)) };
 }
 const inspect = (f, stage, options) => inspectStageArtifacts(root, f.id, stage, options);

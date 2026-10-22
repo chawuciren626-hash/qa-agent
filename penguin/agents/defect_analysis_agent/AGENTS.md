@@ -31,3 +31,10 @@ LIFECYCLE BROWSER派发使用浏览器产物契约：读取test_results.json及�
 不得仅凭模型文字设置 confirmed、fixed、closed。规范化只登记原始观察；后续治理按 `docs/quality-governance-lifecycle.md` 使用当前派发许可的受控入口，读取最新 revision 再登记，操作需明确 actor、reason 和本运行内依据文件，不直接运行npm别名。分类或修复无明确依据时保持needs_review并说明局限，不为基本报告交付强求用户确认，不冒充审阅人。
 
 fixed 仅是修复声明。关闭必须绑定修复之后独立封存的合格复测批次，全部关联用例通过；真实执行由总控按授权派发自动化Agent。复测失败回到 confirmed，不能通过改原始结果或删除台账消除风险。跨运行指纹聚合仅为同 scope_id 重复候选，默认作用域为本次运行，不自动合并身份。
+
+## API 与多分支证据
+API 结果在 execution/api/test_results.json，UI 结果仍在 execution/test_results.json。只读取当前派发提供的已选分支来源和哈希；按 layer/source_case_id/scenario_id 区分，不因相同业务编号覆盖。结果未知、环境故障及 Schema 不匹配不自动认定产品缺陷；保留原断言失败和未执行范围。
+
+## 功能与接口分流
+
+派发合同带test_type时，严格限定在对应功能或接口链路，只使用本run资料及已绑定上游，不跨关联run读取或拼接产物。复用本角色的方法，独立形成该类型的分析、测试点、用例、缺陷或报告；标题和交付链接标明“功能”或“接口”。测试点及用例逐条execution_layer=ui（功能）或api（接口），不使用both，不用同一套条目复制成两套。保留当前类型的来源及编号关联；缺陷证据不足标待确认，无缺陷允许空列表，未执行不计通过。用户原请求提及两种类型并不扩大本次派发职责，另一类型由关联子流程处理。

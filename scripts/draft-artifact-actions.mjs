@@ -13,6 +13,7 @@ import { preserveReportResults, resultFidelityMarkdown } from './report-result-f
 import { browserLifecycle, browserCoverageMarkdown } from './browser-lifecycle.mjs';
 import { ArtifactSafetyError } from './recovery-policy.mjs';
 import { assertUnlinked } from './skill-resources.mjs';
+import { reportDeliveryTitle } from './test-tracks.mjs';
 
 function assertArtifactBoundary(dir,path) {
   try {assertUnlinked(dir,resolve(dir,path));}
@@ -29,7 +30,7 @@ export const draftArtifactActions = {
   assess_evidence: { stage: 'defects', script: 'assess-execution-evidence.mjs', inputs: ['execution/execution-state.json', 'execution/test_results.json', 'execution/execution-blocked.json'], outputs: ['quality/evidence-assessment.json'] },
   normalize_defects: { stage: 'defects', script: 'normalize-defects.mjs', inputs: ['defects/bugs.json', 'quality/evidence-assessment.json'], outputs: ['defects/defect-records.json', 'defects/lifecycle.json'] },
   build_report_metrics: { stage: 'report', script: 'build-quality-metrics.mjs', inputs: ['execution/execution-state.json', 'execution/test_results.json', 'execution/execution-blocked.json', 'quality/evidence-assessment.json', 'defects/defect-records.json', 'defects/lifecycle.json'], outputs: ['report/quality-metrics.json', 'report/reportable-results.json'] },
-  export_report: { stage: 'report', kind: 'python', script: 'generate-report-documents.py', inputs: ['report/test_report.md', 'report/reportable-results.json', 'defects/bugs.json', 'report/quality-metrics.json', 'design/test_cases.json'], outputs: ['report/test_report.docx', 'report/test_report.pdf', 'report/test_report.html', 'report/test_cases.xlsx'] }
+  export_report: { stage: 'report', kind: 'python', script: 'generate-report-documents.py', inputs: ['report/test_report.md', 'report/reportable-results.json', 'defects/bugs.json', 'report/quality-metrics.json', 'design/test_cases.json'], outputs: ['report/test_report.html', 'report/test_cases.xlsx'] }
 };
 
 function reuseSealedExport(root, runId, parent, manifest, definition, dispatch) {
@@ -73,11 +74,12 @@ function reuseSealedExport(root, runId, parent, manifest, definition, dispatch) 
     }
     const paths=new Set(receipt.files.map(file=>file.path));
     // Older report contracts seal Word/PDF only; never advertise unsealed formats.
-    const required=stage==='report'?definition.outputs.slice(0,2):definition.outputs;
+    const legacyReport=stage==='report' && !paths.has('report/test_report.html') && ['report/test_report.docx','report/test_report.pdf'].every(p=>paths.has(p));
+    const required=legacyReport?['report/test_report.docx','report/test_report.pdf']:definition.outputs;
     if(required.some(path=>!paths.has(path))) throw new Error('Export output is missing from the sealed contract');
     return {status:'completed',exit_code:0,execution_mode:'in_process',launches_child:false,
       run_id:runId,stage,dispatch_id:dispatch.dispatch_id,reused:true,
-      generated_artifacts:definition.outputs.filter(path=>paths.has(path)),approval_granted:false};
+      generated_artifacts:(legacyReport?required:definition.outputs).filter(path=>paths.has(path)),approval_granted:false};
   } catch(error) {
     throw new Error(`Sealed export reuse refused: ${error.message}. Repair only this presentation version against its sealed evidence; do not redispatch professional work, regenerate source content, or change confirmations or contracts through export.`,{cause:error});
   }
@@ -137,7 +139,7 @@ export async function runDraftArtifactAction(root, parent, action, runId, { sign
     const record = { action, run_id: runId, stage, dispatch_id: dispatch.dispatch_id, parent_session: parent, before: snapshot([...definition.inputs, ...definition.outputs, ...taskInputs], 'before'), status: 'started' };
     writeJson(resolve(base, 'generation.json'), record);
     let args;
-    if (action === 'export_report') args = [definition.inputs[0], definition.inputs[1], definition.inputs[2], ...definition.outputs.slice(0, 2), ...(definition.inputs[3]?[definition.inputs[3]]:[])].map(p => resolve(dir, p));
+    if (action === 'export_report') args = [...[definition.inputs[0], definition.inputs[1], definition.inputs[2], 'report/test_report.docx','report/test_report.pdf', ...(definition.inputs[3]?[definition.inputs[3]]:[])].map(p => resolve(dir, p)), '--html-only', '--title='+reportDeliveryTitle(root,runId)];
     else if (action.startsWith('export_')) args = [...definition.inputs, ...definition.outputs].map(p => resolve(dir, p));
     else args = [`--run-id=${runId}`];
     if (action === 'export_report' && usesTaskArtifacts(root, runId, stage)) {
@@ -145,7 +147,7 @@ export async function runDraftArtifactAction(root, parent, action, runId, { sign
       const index = buildReportEvidence(dir, manifest, task.source_paths.filter(p => p.startsWith('inputs/')), task.regression_comparison);
       const draftResults = JSON.parse(readRunFile(dir,'report/reportable-results.json').data);
       const fidelity = preserveReportResults(draftResults,index,path=>readRunFile(dir,path));
-      if(fidelity.results.status==='partial' && index.facts.some(f=>f.source_path==='execution/test_results.json' && f.partial)) {
+      if(fidelity.results.status==='partial' && index.facts.some(f=>['execution/test_results.json','execution/api/test_results.json'].includes(f.source_path) && f.partial)) {
         task.outcome='partial';
         task.limitations=[...new Set([...(task.limitations ?? []),...(fidelity.results.coverage?.untested ?? [])])];
         writeJson(resolve(dir,taskResultPath('report')),task);

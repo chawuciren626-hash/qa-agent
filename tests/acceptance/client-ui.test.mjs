@@ -8,6 +8,8 @@ import {
   qaTaskStatus,
   qaProjectForSession,
   qaLastOutcome,
+  qaReadBookmarks,
+  qaToggleBookmark,
 } from "../../penguin/ui/workspace-ui.mjs";
 import {
   clientPatchPairs,
@@ -20,6 +22,17 @@ const memory = () => {
     setItem: (key, value) => map.set(key, value),
   };
 };
+test('conversation bookmarks survive item ID changes and stay isolated by session and user',()=>{
+  const store=memory(),alice=qaScope('project','alice',store)+'.bookmarks.session-1',other=qaScope('project','alice',store)+'.bookmarks.session-2',bob=qaScope('project','bob',store)+'.bookmarks.session-1';
+  assert.deepEqual(qaToggleBookmark(alice,37,store),[37]);
+  assert.deepEqual(qaReadBookmarks(alice,store),[37]);
+  assert.deepEqual(qaReadBookmarks(other,store),[]);assert.deepEqual(qaReadBookmarks(bob,store),[]);
+  assert.deepEqual(qaToggleBookmark(alice,37,store),[]);
+  store.setItem(alice,'[2,2,-1,"3",null]');assert.deepEqual(qaReadBookmarks(alice,store),[2]);
+  store.setItem(alice,'broken');assert.deepEqual(qaReadBookmarks(alice,store),[]);
+  assert.throws(()=>qaToggleBookmark(alice,-1,store),/Invalid/);
+  assert.throws(()=>qaToggleBookmark(alice,2,{getItem:()=>null,setItem:()=>{throw Error('quota');}}),/quota/);
+});
 test("project metadata is isolated by account, host configuration and installation", () => {
   const store = memory();
   store.setItem("penguin.installId", "a");

@@ -28,3 +28,10 @@ JSON草稿写好后先调用diagnose_test_points（run_id），检查result.stat
 先读取`analysis/requirement-ledger.json`。每个测试点必须有`rule_ids`引用台账中的范围内行为需求或假设，不以实现观察定义预期；按上述分类规则检查覆盖。未确认规则只能生成明确标注的草稿，不得擅自改为confirmed。新增风险建议先登记待确认假设，经需求角色修订/确认后再纳入，不静默扩展范围。详见`docs/requirement-provenance.md`。
 
 正式结果归档到当前运行的 `design/test_points.json`，从JSON导出同内容的 `design/test_points.xmind`。`design/test_points.md` 是可选阅读版，不作为交接前置条件，不为补阅读版重新派发。产物契约以工程 `config/orchestration-workflow.json` 注册表为准。测试点需要覆盖主流程、异常、边界及与任务有关的安全、性能、兼容性或权限风险；每项可追溯到来源或假设，并标注风险和覆盖类型。source引用本run内来源文件，规则编号另用source_locator。交付前通过结构化 `validate_artifacts`（stage=test_points）校验，遵循`docs/artifact-contracts.md`。不要将测试步骤写成测试点，也不替代用例编写或执行工作。
+
+## 接口测试点
+接口任务复用契约及业务规则，测试点保留 operation_id、来源和 execution_layer=api，覆盖正向、负向、边界、认证和依赖；输出现有 JSON/XMind。设计不发业务请求，不依据实测修改预期。
+
+## 功能与接口分流
+
+派发合同带test_type时，严格限定在对应功能或接口链路，只使用本run资料及已绑定上游，不跨关联run读取或拼接产物。复用本角色的方法，独立形成该类型的分析、测试点、用例、缺陷或报告；标题和交付链接标明“功能”或“接口”。测试点及用例逐条execution_layer=ui（功能）或api（接口），不使用both，不用同一套条目复制成两套。保留当前类型的来源及编号关联；缺陷证据不足标待确认，无缺陷允许空列表，未执行不计通过。用户原请求提及两种类型并不扩大本次派发职责，另一类型由关联子流程处理。

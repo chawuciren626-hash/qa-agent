@@ -100,7 +100,7 @@ test('all current role packages install with their optional skills and readable 
   const engine = resolve(import.meta.dirname, '../..');
   const manifest = JSON.parse(readFileSync(resolve(engine, 'penguin/agents.json')));
   const workflow = JSON.parse(readFileSync(resolve(engine, 'config/orchestration-workflow.json')));
-  assert.equal(manifest.agents.length, 7);
+  assert.equal(manifest.agents.length, 8);
   for (const agent of manifest.agents) mkdirSync(resolve(f.target, agent.id, 'agent_state'), { recursive: true });
   syncPenguinAgents(engine, f.target, { apply: true });
   for (const agent of manifest.agents) for (const skill of agent.skills) {
@@ -109,7 +109,7 @@ test('all current role packages install with their optional skills and readable 
     }
   }
   for (const stage of workflow.stages) {
-    assert.equal(stage.skills.length, 1);
+    assert.equal(stage.skills.length, stage.id === 'api_execution' ? 2 : 1);
     const agent = manifest.agents.find(agent => agent.id === stage.agent);
     assert.ok(stage.skills.every(skill => agent.skills.includes(skill)));
   }
@@ -192,10 +192,10 @@ test('execution task stops at controlled execution artifacts despite multi-deliv
 
 test('controller instructions bind role and task while allowing localized display descriptions', () => {
   const prompt=readFileSync(resolve(import.meta.dirname,'../../penguin/agents/test_agent/AGENTS.md'),'utf8');
-  assert.match(prompt,/read_file读取返回的`delegation_path`/);
-  assert.match(prompt,/将`agent_id`和`prompt`逐字段照抄传给run_subagent/);
-  assert.match(prompt,/`description`仅为展示说明，可用用户语言简述任务，不改变子任务授权/);
-  assert.match(prompt,/不省略、不改写、不追加业务目标/);
+  assert.match(prompt,/只有回显缺失或截断时才read_file读取`delegation_path`恢复同一对象/);
+  assert.match(prompt,/直接将返回的短`delegation`对象传给run_subagent，目标角色必填/);
+  assert.match(prompt,/`description`仅为中文展示说明，不改变授权/);
+  assert.match(prompt,/不改写prompt或追加业务目标/);
 });
 
 test('shared runtime commands do not infer PowerShell from Windows',()=>{

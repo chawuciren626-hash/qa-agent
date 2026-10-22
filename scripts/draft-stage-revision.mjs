@@ -3,7 +3,7 @@ import { resolve, relative, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { sessionWorkspaces } from './directory-context.mjs';
-import { getRunContext, withRunLock, writeJson, recomputeRunStatus, assertStageHistory, assertRecoveryDecisions, currentStageDecision, stageDependencyScope } from './orchestration-state.mjs';
+import { getRunContext, withRunLock, writeJson, recomputeRunStatus, assertStageHistory, assertRecoveryDecisions, currentStageDecision, stageDependencyScope, assertDesignMutable } from './orchestration-state.mjs';
 import { assertParentSession, readSession, resolveDispatchedChild, requiredArtifacts, verifyActionRecoveryReceipt } from './stage-evidence.mjs';
 import { assertChildCommands, childCommandPolicy } from './child-command-policy.mjs';
 import { readRunFile } from './design-quality.mjs';
@@ -21,6 +21,7 @@ export function inspectDraftRevision(root,runId,stage,parentId,reason,agentRoot=
   if (!reason?.trim() || (!draftStages.includes(stage) && stage !== 'execution')) throw new Error('Only non-executing draft stages or verified preparation may be revised with a reason');
   const project=JSON.parse(readFileSync(resolve(root,'config/project.json'),'utf8'));
   const {manifest,manifestPath}=getRunContext(root,project,runId);
+  assertDesignMutable(manifest,stage);
   const current=manifest.stages?.[stage];
   assertStageHistory(manifest,stage);
   if (!['in_progress','blocked','failed','completed'].includes(current?.status)) throw new Error('Stage is not eligible for controller revision');

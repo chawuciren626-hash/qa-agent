@@ -21,7 +21,7 @@ const legacy = [
 
 test('registry preserves the six legacy contracts and returns detached plan projections', () => {
   const workflow = workflowDefinition();
-  assert.deepEqual(workflow.stages, legacy.map(([id, agent, skill, depends_on, confirmation]) => ({ id, agent, skills: [skill], depends_on, confirmation })));
+  assert.deepEqual(workflow.stages.filter(s=>s.id!=='api_execution'), legacy.map(([id, agent, skill, depends_on, confirmation]) => ({ id, agent, skills: [skill], depends_on, confirmation })));
   workflow.stages[1].depends_on.push('report');
   assert.deepEqual(stageDefinition('test_points').depends_on, ['analysis']);
   assert.throws(() => stageDefinitions[0].skills.push('other'), TypeError);

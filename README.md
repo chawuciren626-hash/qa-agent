@@ -1,8 +1,8 @@
 # AITestHarness 软件测试智能体
 
-AITestHarness 基于 PenguinHarness 运行底座，提供软件测试总控及六个专业智能体，按需完成需求分析、测试点、测试用例、自动化执行、缺陷分析和测试报告。可以独立生成用例，也可以按明确请求执行完整测试流程。
+AITestHarness 基于 PenguinHarness 运行底座，提供软件测试总控及七个专业智能体，按需完成需求分析、测试点、测试用例、Web/接口自动化执行、缺陷分析和测试报告。按提供的功能需求或接口资料分别建立测试链路，也可以独立生成设计产物。
 
-当前版本为 **0.1.0-preview.4（Windows x64 预览版）**，内置 PenguinHarness **0.2.16**。仍在持续开发和验收中，完整验收范围见 [当前状态](docs/current-status-and-next-steps.md) 和 Release 的 `acceptance.json`。
+现有发行版本为 **0.1.0-preview.4（Windows x64 预览版）**，内置 PenguinHarness **0.2.16**。源码包含后续接口自动化、分流交付和会话导航优化，不代表现有安装包已包含这些改动。发行验收范围以对应 Release 的 `acceptance.json` 为准。
 
 ## 下载安装
 
@@ -30,7 +30,8 @@ Get-FileHash .\AITestHarness-0.1.0-preview.4-win-x64.exe -Algorithm SHA256
 - 输入需求、上传 Word，或提供已授权测试环境的 URL 和目标。
 - 默认由总控按需派发专业智能体；只有明确要求“跑全流程”才执行完整生命周期。
 - 工作空间留空使用应用默认任务目录；也可选择外部工作目录。不要选择源码目录作为任务工作空间。
-- 查看任务摘要和可下载交付物，包括 XMind 测试点、JSON/Excel 用例及 Markdown/Word/PDF 报告。
+- 各阶段交付模块命名的需求分析 Markdown、功能/接口测试点 XMind、测试用例 Excel，以及对应类型 HTML 测试报告；新报告暂不生成 Word/PDF。
+- 会话支持刻度导航、悬停摘要、定位跳转和本地书签。
 - 必要的登录、验证码或业务确认由用户完成；内部校验和工程步骤由应用处理。
 
 示例：“根据附件写测试用例，交付 Excel，不执行测试。”或“测试这个测试环境登录页的输入校验，输出实际结果和报告。”
@@ -52,7 +53,9 @@ Get-FileHash .\AITestHarness-0.1.0-preview.4-win-x64.exe -Algorithm SHA256
 | `data/desktop-profile` | 桌面配置与登录状态 |
 | `workspaces` | 默认任务工作区、测试证据和交付物 |
 
-开发源码与已安装程序分开。本项目维护者当前使用 `E:\AITestHarness\source` 作为 Git 仓库，`E:\AITestHarness\installed` 作为安装目录，`releases`、`backups` 保存制品和本机备份；新用户无需使用相同盘符。详见 [本机迁移记录](docs/unified-local-workspace-2026-10-21.md)。
+开发源码与已安装程序分开。本项目维护者当前使用 `E:\AITestHarness\source` 作为 Git 仓库，`E:\AITestHarness\installed` 作为安装目录，`releases`、`backups` 保存制品和本机备份；新用户无需使用相同盘符。
+
+开发入口见 [技术文档导航](docs/index.md)。日常优化验证后受控同步本地运行副本，提交和安装包构建按维护者明确请求进行。
 
 源码、公开角色、适配代码和构建配置提交 Git；运行数据、凭据、工作区、备份和二进制安装包不提交源码仓库。修改源码后需要重新构建或受控部署，安装副本不会自动同步。
 
@@ -82,10 +85,9 @@ Windows 构建流程为 GitHub Actions 的 **Windows installation candidate**，
 
 ## 文档与第三方组件
 
-- [当前状态与下一步](docs/current-status-and-next-steps.md)
+- [接口自动化协议](docs/api-execution.md)
 - [使用指南](docs/user-guide.md)
-- [发行维护流程](docs/release-maintenance-2026-10-21.md)
-- [首次使用引导](docs/onboarding-completion-2026-10-21.md)
+- [安装与发行维护](packaging/README.md)
 - [凭据与数据保护](docs/credential-security.md)
 - [文档导航](docs/index.md)
 

@@ -240,7 +240,8 @@ test('independent report missing or malformed draft stays correctable and then e
     f.put('report/issues.json',[]);
     const retry=await f.send({action:'export_report'});
     assert.equal(retry.exit_code,0,JSON.stringify(retry));
-    assert.equal(existsSync(resolve(f.dir,'report/test_report.pdf')),true);
+    assert.equal(existsSync(resolve(f.dir,'report/test_report.pdf')),false);
+    assert.equal(existsSync(resolve(f.dir,'report/test_report.docx')),false);
     assert.match(readFileSync(resolve(f.dir,'report/test_report.html'),'utf8'),/执行事实（工具提取）/);
     assert.equal(readFileSync(resolve(f.dir,'report/test_report.md'),'utf8'),'# Report\nNo product tests executed.');
   }

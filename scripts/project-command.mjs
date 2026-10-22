@@ -4,11 +4,13 @@ import { CommandUsageError, commandHelp, parseOptions, validateCommandArguments 
 import { readControllerSession, reviewControllerSession, withControllerSession } from './controller-command-session.mjs';
 import { executeAction } from './structured-actions.mjs';
 import { assertParentSession } from './stage-evidence.mjs';
+import { bindProductCommandPaths } from './product-layout.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const [action, ...argv] = process.argv.slice(2);
 const readonly = new Set(['show-run-status.mjs', 'show-run-plan.mjs', 'get-run-resume-point.mjs']);
 try {
+  bindProductCommandPaths(root);
   const separator = argv.indexOf('--');
   const rawHead = separator < 0 ? argv : argv.slice(0, separator);
   const sessionFlags = rawHead.filter(arg => arg.startsWith('--controller-session='));

@@ -1,11 +1,11 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,readdirSync,existsSync,rmSync,symlinkSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,readdirSync,existsSync,rmSync,symlinkSync,renameSync} from 'node:fs';
 import {resolve,dirname,relative} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
-import {installProductCandidate,recoverProductUpgrade} from '../../scripts/product-upgrade.mjs';
+import {installProductCandidate,recoverProductUpgrade,renameWithRetry} from '../../scripts/product-upgrade.mjs';
 const digest=b=>createHash('sha256').update(b).digest('hex');
 const read=p=>JSON.parse(readFileSync(p,'utf8'));
 const put=(p,v)=>{mkdirSync(dirname(p),{recursive:true});writeFileSync(p,typeof v==='string'?v:JSON.stringify(v));};
@@ -80,4 +80,64 @@ test('failed fresh setup can retry with empty data directories but will not adop
   assert.throws(()=>installProductCandidate(f.source,fresh,{...opts,performSetup:r=>{mkdirSync(resolve(r,'data/penguin'),{recursive:true});mkdirSync(resolve(r,'workspaces'));throw Error('setup interrupted');}}));
   assert.equal(installProductCandidate(f.source,fresh,opts).status,'installed');
   const unknown=resolve(f.base,'unowned');put(resolve(unknown,'data/penguin/user.txt'),'keep');assert.throws(()=>installProductCandidate(f.source,unknown,opts));assert.equal(readFileSync(resolve(unknown,'data/penguin/user.txt'),'utf8'),'keep');
+});
+
+test('Windows transient access errors retry within a bound; unrelated errors fail immediately',()=>{
+  for(const code of ['EPERM','EACCES','EBUSY']){
+    let calls=0,waits=0;
+    renameWithRetry('from','to',{platform:'win32',retries:2,rename:()=>{if(++calls<3)throw Object.assign(Error(code),{code});},sleep:()=>waits++});
+    assert.equal(calls,3);assert.equal(waits,2);
+  }
+  for(const [platform,code,expected] of [['win32','EPERM',3],['win32','ENOENT',1],['linux','EACCES',1]]){
+    let calls=0;const error=Object.assign(Error(code),{code});
+    assert.throws(()=>renameWithRetry('from','to',{platform,retries:2,rename:()=>{calls++;throw error;},sleep:()=>{}}),e=>e===error);
+    assert.equal(calls,expected);
+  }
+});
+
+test('transient runtime locks allow fresh install and upgrade to finish',t=>{
+  for(const fresh of [false,true]){
+    const f=fixture(t),target=fresh?resolve(f.base,'fresh'):f.target;let denied=0;
+    const result=installProductCandidate(f.source,target,{...opts,move:(from,to)=>renameWithRetry(from,to,{platform:'win32',sleep:()=>{},rename:(a,b)=>{
+      if(b===resolve(target,'runtime')&&denied++<2)throw Object.assign(Error('scanner lock'),{code:'EPERM'});
+      renameSync(a,b);
+    }})});
+    assert.equal(result.status,fresh?'installed':'upgraded');assert.equal(denied,3);
+    assert.equal(existsSync(resolve(target,'.product-upgrade/active.json')),false);
+    if(!fresh)preserved(f);
+  }
+});
+
+test('exhausted runtime rename retries preserve diagnostic details and restore old programs',t=>{
+  const f=fixture(t);let denied=0,restoreDenied=0;
+  assert.throws(()=>installProductCandidate(f.source,f.target,{...opts,move:(from,to)=>renameWithRetry(from,to,{platform:'win32',retries:2,sleep:()=>{},rename:(a,b)=>{
+    if(a.endsWith('incoming\\runtime')||a.endsWith('incoming/runtime')){denied++;throw Object.assign(Error('locked runtime'),{code:'EPERM',syscall:'rename',path:a,dest:b});}
+    if((a.endsWith('backup\\runtime')||a.endsWith('backup/runtime'))&&restoreDenied++===0)throw Object.assign(Error('brief restore lock'),{code:'EBUSY'});
+    renameSync(a,b);
+  }})}),/目录可能被占用/);
+  assert.equal(denied,3);assert.equal(restoreDenied,2);preserved(f);
+  assert.equal(readFileSync(resolve(f.target,'runtime/penguin/PenguinHarness.exe'),'utf8'),'0.1.0-preview.1');
+  const tx=readdirSync(resolve(f.target,'.product-upgrade'))[0],journal=read(resolve(f.target,'.product-upgrade',tx,'transaction.json'));
+  assert.equal(journal.status,'rolled_back');assert.equal(journal.failure.code,'EPERM');assert.equal(journal.failure.dest,resolve(f.target,'runtime'));
+  assert.equal(existsSync(resolve(f.target,'.product-upgrade/active.json')),false);
+});
+
+test('persistent rollback lock keeps recovery materials and can recover after release',t=>{
+  const f=fixture(t);
+  assert.throws(()=>installProductCandidate(f.source,f.target,{...opts,move:(from,to)=>{
+    if(to===resolve(f.target,'runtime'))throw Object.assign(Error('persistent runtime lock'),{code:'EACCES'});
+    renameSync(from,to);
+  }}),/自动恢复未完成/);
+  const lock=read(resolve(f.target,'.product-upgrade/active.json'));
+  const journal=read(resolve(f.target,'.product-upgrade',lock.id,'transaction.json'));
+  assert.equal(journal.status,'swapping');assert.equal(journal.failure.code,'EACCES');assert.equal(journal.recovery_failure.code,'EACCES');
+  assert.equal(recoverProductUpgrade(f.target,{...opts,processAlive:()=>false}).status,'recovered');preserved(f);
+  assert.equal(readFileSync(resolve(f.target,'runtime/penguin/PenguinHarness.exe'),'utf8'),'0.1.0-preview.1');
+});
+
+test('CLI error file preserves Unicode paths without depending on the console code page',t=>{
+  const f=fixture(t),out=resolve(f.base,'安装错误.txt'),missing=resolve(f.base,'不存在的候选');
+  const result=spawnSync(process.execPath,[resolve('scripts/product-upgrade.mjs'),missing,f.target,out],{encoding:'utf8'});
+  assert.equal(result.status,1);
+  const error=readFileSync(out,'utf16le');assert.equal(error,result.stderr.trim());assert.ok(error.includes('不存在的候选'));
 });

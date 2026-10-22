@@ -9,6 +9,8 @@ import { independentArtifacts, stageDefinition } from './stage-registry.mjs';
 import { inspectExpectationBasis, expectationBasisRows, basisHeaders } from './expectation-basis.mjs';
 import { usesBrowserArtifacts, browserCoverage } from './browser-lifecycle.mjs';
 import { verifyRecoveredBrowserResults } from './browser-recovery-delivery.mjs';
+import { assertTrackRows } from './test-tracks.mjs';
+import { verifySnapshotReport } from './api-snapshot.mjs';
 export const taskArtifacts = independentArtifacts;
 export const taskResultPath = stage => stageDefinition(stage).task_result;
 export function isIndependent(root, runId) {
@@ -20,7 +22,8 @@ export function taskRequiredArtifacts(stage) {
   return [taskResultPath(stage), ...taskArtifacts[stage]];
 }
 export function usesTaskArtifacts(root,runId,stage) {
-  return isIndependent(root,runId) || usesBrowserArtifacts(root,runId,stage);
+  const manifest=JSON.parse(readRunFile(runDirectory(root,runId),'manifest.json').data);
+  return stage==='api_execution' || (['defects','report'].includes(stage) && manifest.orchestration?.plan?.execution_branches?.includes('api_execution')) || isIndependent(root,runId) || usesBrowserArtifacts(root,runId,stage);
 }
 const assert=(ok,message)=>{if(!ok) throw new CommandUsageError(message);};
 const text=v=>typeof v==='string' && v.trim().length>0;
@@ -48,6 +51,10 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
     assert(strings(task.questions) && strings(task.limitations),'questions/limitations must be arrays of text (empty allowed)');
     assert(strings(task.source_paths) && task.source_paths.length>0,'Cite the actual supplied materials in source_paths');
     const manifest=JSON.parse(readRunFile(dir,'manifest.json').data);
+    if(manifest.test_track && ['defects','report'].includes(stage)) {
+      const execution=manifest.test_track.type==='api'?'api_execution':'execution';
+      if(['failed','blocked','cancelled'].includes(manifest.stages?.[execution]?.status))assert(task.outcome==='partial','Failed typed execution requires a partial defect/report delivery, not a successful test claim');
+    }
     browserFlow=usesBrowserArtifacts(root,runId,stage);
     if(stage==='analysis') for(const event of manifest.orchestration?.events ?? []) {
       if(event.feedback_input) assert(task.source_paths.includes(event.feedback_input.path),'Include the supplied clarification in analysis sources');
@@ -63,6 +70,7 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
       const source=json(path), rows=Array.isArray(source)?source:keys.map(k=>source[k]).find(Array.isArray);
       assert(Array.isArray(rows),`${path}: collection required`);
       const ids=new Set();
+      assertTrackRows(manifest.test_track,rows,{design:['test_points','test_cases'].includes(stage)});
       for(const row of rows) {
         assert(row && text(row[id]) && !ids.has(row[id]),`${path}: missing/duplicate identifier`);ids.add(row[id]);
         for(const key of fields) assert(text(row[key]),`${row[id]}: missing ${key}`);
@@ -127,6 +135,21 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
           assert(isDeepStrictEqual(actual,[basisHeaders,...basisRows]),'Excel expectation basis differs from JSON');
         }
       }
+    }
+    if(stage==='api_execution') {
+      const result=json('execution/api/test_results.json');
+      capture('execution/api/cases.json');capture('execution/api/contract.json');
+      const dispatch=manifest.orchestration.events.filter(e=>e.type==='dispatched' && e.stage===stage).at(-1);
+      assert(result.dispatch_id===dispatch?.dispatch_id && result.run_id===runId && result.layer==='api','API result dispatch mismatch');
+      assert(result.finished_at && result.cases.length>0,'Only a terminal API result may complete the stage');
+      assert(result.summary?.total===result.cases.length,'API case total mismatch');
+      for(const key of ['passed','failed','blocked','skipped']) assert(result.summary[key]===result.cases.filter(c=>c.status===key).length,'API summary mismatch');
+      assert(new Set(result.cases.map(c=>c.case_id)).size===result.cases.length,'Duplicate API result IDs');
+      for(const row of result.cases) assert(row.source_case_id && row.scenario_id && (!row.result_unknown || row.status==='blocked'),'Unknown API writes must remain blocked');
+      for(const evidence of result.evidence ?? []) assert(readRunFile(dir,evidence.path).sha256===evidence.sha256,'API receipt hash mismatch');
+      for(const evidence of result.evidence ?? []) capture(evidence.path);
+      if(result.status==='partial') assert(task.outcome==='partial','API partial outcome must be retained');
+      executionOutcome={status:result.status,unknown_resources:result.unknown_resources ?? [],disposition:'analyze_api_results'};
     }
     if(stage==='execution') {
       const observation=json('execution/exploration.json'), result=json('execution/test_results.json');
@@ -205,9 +228,28 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
       if(browserFlow) for(const failed of json('execution/test_results.json').cases.filter(r=>r.status==='failed')) assert(rows.some(r=>r.related_cases?.includes(failed.case_id) && r.evidence_refs.some(p=>failed.evidence_paths.includes(p))),`Missing evidence-linked failure classification: ${failed.case_id}`);
     }
     if(stage==='report') {
+      const snapshot=verifySnapshotReport(dir,manifest);
+      if(snapshot) {
+        assert(task.outcome==='partial','Snapshot report outcome must remain partial');
+        for(const file of manifest.api_snapshot_report.files)capture(file.path);
+        if(!draft) {
+          const report=json('report/reportable-results.json');
+          assert(report.status==='partial' && report.result_origin==='api_snapshot' && report.finished_at===null && report.snapshot_at===snapshot.snapshot_at,'Snapshot report lost its point-in-time provenance');
+          assert(isDeepStrictEqual(report.summary,snapshot.summary) && report.cases.length===snapshot.cases.length,'Snapshot report changed scope or counts');
+          for(const row of snapshot.cases)assert(report.cases.some(r=>r.case_id===row.case_id && r.status===row.status && r.result_unknown===row.result_unknown && isDeepStrictEqual(r.assertions,row.assertions) && isDeepStrictEqual(r.evidence_paths,row.evidence_paths)),'Snapshot report changed source facts');
+        }
+      }
+      const apiSource=verified.find(f=>f.path==='execution/api/test_results.json');
+      if(apiSource) {
+        const actual=json(apiSource.path), report=json('report/reportable-results.json');
+        assert(readRunFile(dir,apiSource.path).sha256===apiSource.sha256,'API report source changed');
+        if(!draft) for(const row of actual.cases) assert(report.cases.some(r=>r.case_id===row.case_id && r.status===row.status && r.result_unknown===row.result_unknown && isDeepStrictEqual(r.evidence_paths,row.evidence_paths)),'API report omitted or changed source facts');
+        if(actual.status==='partial') assert(task.outcome==='partial','API partial report must retain limits');
+      }
       const earlierDesign=verified.find(f=>f.path==='design/test_cases.json');
       if(earlierDesign) {assert(readRunFile(dir,earlierDesign.path).sha256===earlierDesign.sha256,'Earlier case design changed');capture(earlierDesign.path);}
       const result=json('report/reportable-results.json'), issues=json('report/issues.json');
+      assertTrackRows(manifest.test_track,result.cases??[]);
       if(verified.some(f=>f.path==='execution/test_results.json')) {
         const actual=json('execution/test_results.json');
         if(actual.result_origin==='recovered') {
@@ -221,7 +263,8 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
         const actual=json('execution/test_results.json'),coverage=json('execution/browser-coverage.json');
         for(const row of actual.cases) assert(result.cases?.some(r=>r.case_id===row.case_id && r.status===row.status && isDeepStrictEqual(r.evidence_paths,row.evidence_paths)),`Report changed or omitted browser assertion: ${row.case_id}`);
         if(!draft) assert(isDeepStrictEqual(result.design_coverage,coverage),'Report design coverage is missing or changed; export_report derives it without mixing untested cases into assertion counts');
-        const permitted=new Set(actual.cases.map(r=>r.case_id));
+        const apiRows=verified.some(f=>f.path==='execution/api/test_results.json')?json('execution/api/test_results.json').cases:[];
+        const permitted=new Set([...actual.cases,...apiRows].map(r=>r.case_id));
         assert(result.cases?.every(r=>permitted.has(r.case_id)),'Report contains unsupported browser results');
         if(coverage.untested_cases.length || actual.status==='partial') assert(task.outcome==='partial','Incomplete browser scope must remain partial in report');
       }
@@ -241,8 +284,10 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
       for(const state of ['passed','failed','blocked','skipped']) assert(result.summary[state]===result.cases.filter(r=>r.status===state).length,`Report ${state} mismatch`);
       assert(text(capture('report/test_report.md').toString('utf8')),'Empty report');
       if(!draft) {
-        for(const path of ['report/test_report.docx','report/test_cases.xlsx']) assert(capture(path).subarray(0,2).toString()==='PK',`Invalid package: ${path}`);
-        assert(capture('report/test_report.pdf').subarray(0,5).toString()==='%PDF-','Invalid PDF');
+        assert(capture('report/test_cases.xlsx').subarray(0,2).toString()==='PK','Invalid report workbook');
+        // Older immutable runs may retain Office exports; new exports need HTML only.
+        if(existsSync(resolve(dir,'report/test_report.docx')))assert(capture('report/test_report.docx').subarray(0,2).toString()==='PK','Invalid Word document');
+        if(existsSync(resolve(dir,'report/test_report.pdf')))assert(capture('report/test_report.pdf').subarray(0,5).toString()==='%PDF-','Invalid PDF');
         assert(capture('report/test_report.html').toString('utf8').includes('<!doctype html>'),'Invalid HTML');
         const book=xlsx.read(capture('report/test_cases.xlsx'),{type:'buffer'});
         assert(book.Sheets['测试用例'] && book.Sheets['问题清单'],'Missing report sheets');
@@ -256,6 +301,7 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
         for(const row of rows) if(!ids.has(row[0])) assert(row[8]==='未执行','Unexecuted case marked as executed');
       }
     }
+    if(stage==='analysis' && existsSync(resolve(dir,'analysis/api_contract.json'))) capture('analysis/api_contract.json');
     if(!draft) for(const path of [...taskRequiredArtifacts(stage),...artifacts]) capture(path);
   } catch(error) {errors.push(error.message);inputCorrection=error instanceof CommandUsageError || error instanceof SyntaxError || error.code==='ENOENT';}
   return {version:1,run_id:runId,stage,mode:browserFlow?'browser':'task',status:errors.length?'blocked':'passed',input_correction:inputCorrection,files:[...files.values()].sort((a,b)=>a.path.localeCompare(b.path)),errors,...(dataDiagnostics?{data_diagnostics:dataDiagnostics}:{}),...(expectationDiagnostics?{expectation_diagnostics:expectationDiagnostics}:{}),...(executionOutcome?{execution_outcome:executionOutcome}:{}),...(task?{delivery:{summary:task.summary,outcome:task.outcome,questions:task.questions,limitations:task.limitations,...(executionOutcome?{execution:executionOutcome}:{})}}:{})};

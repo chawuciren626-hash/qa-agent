@@ -16,6 +16,7 @@ import { sealedExecutionOutcome } from './execution-outcome.mjs';
 import { diagnoseTestPoints } from './test-point-diagnosis.mjs';
 import { isIndependent, usesTaskArtifacts, taskRequiredArtifacts, inspectIndependentArtifacts } from './independent-task.mjs';
 import { usesBrowserArtifacts } from './browser-lifecycle.mjs';
+import { assertTrackRows } from './test-tracks.mjs';
 
 import { lifecycleArtifacts } from './stage-registry.mjs';
 export const requiredArtifacts = lifecycleArtifacts;
@@ -71,6 +72,7 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
     const matching = keys.filter(key => Array.isArray(value?.[key]));
     assert(Array.isArray(value) || matching.length === 1, `${path}: expected one supported collection`);
     const rows = Array.isArray(value) ? value : value[matching[0]];
+    assertTrackRows(JSON.parse(readRunFile(dir,'manifest.json').data).test_track,rows,{design:['test_point','test_case'].includes(schema)});
     assert(allowEmpty || rows.length > 0, `${path}: empty collection`);
     const ids = new Set();
     for (const [i, row] of rows.entries()) {
@@ -99,6 +101,7 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
   };
   const points = () => {
     const { rows, ledger, errors: pointErrors } = diagnoseTestPoints(runId, capture);
+    assertTrackRows(JSON.parse(readRunFile(dir,'manifest.json').data).test_track,rows,{design:true});
     assert(!pointErrors.length, pointErrors.join('; '));
     feedbackIncluded(ledger);
     assertAnalysisMarkdown(ledger, capture('analysis/requirement_analysis.md'));
@@ -226,6 +229,7 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
     const required = stageRequiredArtifacts(root,runId,stage,mode);
     [...new Set([...required, ...artifacts])].forEach(capture);
     if (stage === 'analysis') {
+      if (existsSync(resolve(dir, 'analysis/api_contract.json'))) json('analysis/api_contract.json');
       assert(text(capture(required[0]).toString('utf8')), 'Empty analysis text');
       const { ledger } = inspectRequirementLedger(runId, capture);
       feedbackIncluded(ledger);
@@ -315,12 +319,17 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
         assert(metrics.quality_gate.status === gate && sameSet(metrics.quality_gate.reasons, reasons), 'Report quality gate differs from current evidence/defects');
         const markdown = capture('report/test_report.md').toString('utf8');
         assert(markdown.includes(runId) && markdown.includes(metrics.quality_gate.status), 'Report must state run_id and quality gate');
-        assert(zipEntry(capture('report/test_report.docx'), 'word/document.xml').includes('w:document'), 'Invalid Word document');
-        zipEntry(capture('report/test_report.docx'), '[Content_Types].xml');
-        const pdf = capture('report/test_report.pdf');
-        assert(pdf.subarray(0, 5).toString() === '%PDF-' && pdf.subarray(-1024).toString().includes('%%EOF'), 'Invalid PDF header/end marker');
+        if(existsSync(resolve(dir,'report/test_report.docx'))) {
+          assert(zipEntry(capture('report/test_report.docx'), 'word/document.xml').includes('w:document'), 'Invalid Word document');
+          zipEntry(capture('report/test_report.docx'), '[Content_Types].xml');
+        }
+        if(existsSync(resolve(dir,'report/test_report.pdf'))) {
+          const pdf = capture('report/test_report.pdf');
+          assert(pdf.subarray(0, 5).toString() === '%PDF-' && pdf.subarray(-1024).toString().includes('%%EOF'), 'Invalid PDF header/end marker');
+        }
         // Older sealed runs did not export these formats. Capture new deliveries when present.
-        if (existsSync(resolve(dir, 'report/test_report.html'))) capture('report/test_report.html');
+        const html=capture('report/test_report.html').toString('utf8');
+        assert(/<!doctype html>/i.test(html) && /<html[\s>]/i.test(html),'Invalid HTML report');
         if (existsSync(resolve(dir, 'report/test_cases.xlsx'))) {
           const book = xlsx.read(capture('report/test_cases.xlsx'), { type: 'buffer' });
           assert(book.Sheets['测试用例'] && book.Sheets['问题清单'], 'Missing report workbook sheets');
@@ -357,6 +366,7 @@ export function assertDependencyArtifacts(root, runId, manifest, stage) {
     const planned = manifest.orchestration?.plan?.stages?.find(s => s.id === current);
     for (const dependency of planned?.depends_on ?? []) {
       if (manifest.stages?.[dependency]?.status === 'skipped') continue;
+      if(['defects','report'].includes(stage) && (manifest.test_track || manifest.orchestration?.plan?.execution_branches?.includes('api_execution')) && ['execution','api_execution'].includes(dependency) && ['failed','blocked','cancelled'].includes(manifest.stages?.[dependency]?.status)) continue;
       assertCompletedArtifacts(root, runId, manifest, dependency);
       visit(dependency);
     }

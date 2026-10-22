@@ -33,6 +33,26 @@ test('native truncated command output reads only the same session archive and pr
   save(resolve(archiveDir,'exec_command-missing.log'));assert.throws(()=>readSession(root,agent,id));
   const foreign=resolve(root,'foreign-archive');renameSync(archiveDir,foreign);symlinkSync(foreign,archiveDir,process.platform==='win32'?'junction':'dir');save(archive);assert.throws(()=>readSession(root,agent,id),/redirected/);
 });
+test('asynchronous archived poll restores full JSON only for its originating process and preserves failures',()=>{
+  const root=mkdtempSync(resolve(tmpdir(),'qa-poll-')),agent=request.agent,id=request.childId;
+  const dir=resolve(root,agent,'traces/2026-10-09'),archiveDir=resolve(root,agent,'scratchpad',id,'truncated-tool-output');
+  mkdirSync(dir,{recursive:true});mkdirSync(archiveDir,{recursive:true});
+  const archive=resolve(archiveDir,'input_command-abc.log'),file=resolve(dir,`${id}_001.jsonl`);
+  const full=JSON.stringify({status:'completed',exit_code:0,execution_mode:'in_process',launches_child:false,action_receipt:'synthetic',result:{text:'x'.repeat(20000)}});writeFileSync(archive,full);
+  const rows=[
+    {payload:{type:'tool_call',name:'exec_command',tool_call_id:'start',arguments:{cmd:'node project-action.mjs catalog'}}},
+    {payload:{type:'tool_call_output',tool_call_id:'start',stop_reason:'completed',output:'[process running with process_id proc-one; use input_command to send input or poll for output]'}},
+    {payload:{type:'tool_call',name:'input_command',tool_call_id:'poll',arguments:{process_id:'proc-one',kill:true}}},
+    {payload:{type:'tool_call_output',tool_call_id:'poll',stop_reason:'completed',output:`{ truncated JSON\n[output archived: ${archive}]\n[process proc-one had already exited (exit code 0); session removed]`}}
+  ];
+  const save=r=>writeFileSync(file,r.map(JSON.stringify).join('\n'));
+  save(rows);assert.equal(readSession(root,agent,id)[3].payload.output,full);assert.doesNotThrow(()=>assertChildCommands(readSession(root,agent,id)));
+  for(const change of [r=>r[2].payload.arguments.process_id='proc-other',r=>r[3].payload.output=r[3].payload.output.replace('exit code 0','exit code 1'),r=>r[3].payload.output=r[3].payload.output.replace(archive,resolve(root,'input_command-abc.log'))]){
+    const bad=structuredClone(rows);change(bad);save(bad);assert.throws(()=>readSession(root,agent,id));
+  }
+  const failed=structuredClone(rows);failed[3].payload.stop_reason='fatal';save(failed);assert.throws(()=>assertChildCommands(readSession(root,agent,id)));
+});
+
 function trace() {
   return [
     { timestamp: '2026-10-09T02:05:30.804Z', type: 'model_msg', payload: { type: 'tool_call', name: 'run_subagent', tool_call_id: 'call-a', arguments: JSON.stringify({ agent_id: request.agent, prompt: `Analyze ${request.runId}` }) } },

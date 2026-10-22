@@ -164,7 +164,16 @@ export function recomputeRunStatus(manifest) {
   return "in_progress";
 }
 
+export function assertDesignMutable(manifest, stageId) {
+  if(!['analysis','test_points','test_cases'].includes(stageId)) return;
+  if((manifest.orchestration?.events??[]).some(e=>e.type==='dispatched' && ['execution','api_execution'].includes(e.stage) && e.mode!=='prepare'))
+    throw new Error('Design is frozen by an execution dispatch; preserve this run and its evidence. A changed design requires a separate explicit revision run, never overwrite or replay this execution.');
+}
+
 export function assertStageReady(manifest, stageId) {
+  assertDesignMutable(manifest,stageId);
+  if(manifest.test_tracks)throw new Error('Dispatch a typed child run, not the task group');
+  if(manifest.test_track && stageId===(manifest.test_track.type==='api'?'execution':'api_execution'))throw new Error('Execution channel differs from test track');
   assertStageHistory(manifest, stageId);
   const stage = getPlanStage(manifest, stageId);
   if (!stage?.selected) throw new Error(`阶段未在本次运行计划中启用: ${stageId}`);
@@ -172,8 +181,9 @@ export function assertStageReady(manifest, stageId) {
   if (!["planned", "revision_requested"].includes(state)) {
     throw new Error(`阶段 ${stageId} 当前状态为 ${state}，不能派发。`);
   }
+  const partialExecution = dependency => (stageId==='defects' || manifest.test_track && stageId==='report') && (manifest.test_track || manifest.orchestration?.plan?.execution_branches?.includes('api_execution')) && ['execution','api_execution'].includes(dependency) && ['failed','blocked','cancelled'].includes(manifest.stages?.[dependency]?.status);
   const unfinished = (stage.depends_on ?? []).filter((dependency) =>
-    !["completed", "skipped"].includes(manifest.stages?.[dependency]?.status));
+    !["completed", "skipped"].includes(manifest.stages?.[dependency]?.status) && !partialExecution(dependency));
   if (unfinished.length) throw new Error(`阶段 ${stageId} 的前置阶段未完成: ${unfinished.join(", ")}`);
   const unapprovedDependencies = (stage.depends_on ?? []).filter((dependency) => {
     const dependencyPlan = getPlanStage(manifest, dependency);
@@ -188,14 +198,18 @@ export function assertStageReady(manifest, stageId) {
   return stage;
 }
 
-export function assertDispatchScheduling(manifest, stageId, { resumeBrowser = false } = {}) {
+export function assertDispatchScheduling(manifest, stageId, { resumeBrowser = false, resourceKeys = [] } = {}) {
   const active=Object.entries(manifest.stages ?? {}).filter(([,s])=>s.status==='in_progress');
   if(resumeBrowser) return;
+  for(const [id,state] of Object.entries(manifest.stages ?? {})) if(id!==stageId) {
+    if(state.status==='in_progress' && (state.resource_keys ?? []).some(key=>resourceKeys.includes(key))) throw new Error('Execution resource conflict; continue independent work and wait for this resource');
+    if((state.execution_outcome?.unknown_resources ?? []).some(key=>resourceKeys.includes(key))) throw new Error('Resource has an unknown write outcome; no replay or conflicting write authorized');
+  }
   if(manifest.orchestration?.plan?.workflow_mode==='task') {
     if(active.some(([id])=>id===stageId)) throw new Error('This task already has an active dispatch; continue it without dispatching twice');
     return;
   }
-  if(active.length) throw new Error('Another lifecycle stage is active; continue the existing dispatch before scheduling this stage');
+  if(active.length && !(manifest.orchestration?.plan?.execution_branches?.includes(stageId) && active.every(([id])=>id!==stageId && manifest.orchestration.plan.execution_branches.includes(id)))) throw new Error('Another lifecycle stage is active; continue the existing dispatch before scheduling this stage');
 }
 
 export function assertStageHistory(manifest, stageId) {

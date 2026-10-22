@@ -45,10 +45,10 @@ node scripts/sync-penguin-agents.mjs --apply --target-root='D:\PenguinData\agent
 
 执行 `npm run penguin:agents:check` 返回 `in_sync`，仅证明其检查的公开指令、Skill和hook与当前工程一致；不证明模型已加载、宿主补丁已安装或真实业务测试通过。还需分别核对宿主适配与真实会话行为。
 
-新机器还需由维护者准备模型配置、依赖和宿主适配。统一安装器用法见[桌面适配](delivery-interaction.md)；当前适配仅针对已检查的PenguinHarness版本，不是通用一键安装。修改宿主文件前正常退出应用，安装后按需重启；普通文档修改无需重启。任务目录规则见[使用指南](user-guide.md)，当前待办见[状态页](current-status-and-next-steps.md)。
+新机器还需由维护者准备模型配置、依赖和宿主适配。统一安装器用法见[桌面适配](delivery-interaction.md)；当前适配仅针对已检查的PenguinHarness版本，不是通用一键安装。修改宿主文件前正常退出应用，安装后按需重启；普通文档修改无需重启。任务目录规则见[使用指南](user-guide.md)，当前待办见状态页（本地历史记录，不随源码分发）。
 
 ## 补充专业能力与资源检查
 
 新增test-design-methods、qa-investigation、api-testing，角色总数仍为7。它们按需从主Skill/角色指令加载，不更改保存计划中的主skills列表或历史运行。Skill版本保存在frontmatter的metadata.version，保留原版本信息。
 
-维护时先运行`npm run skills:check`检查入口、包内链接、角色/工作流映射及发布清单；运行`npm run skills:contracts`验证完整目录同步。`in_sync`证明源与安装文件一致，不证明模型已读取或业务测试通过。变更详情与验证边界见[本次增强记录](testing-skills-upgrade-2026-10-13.md)。
+维护时先运行`npm run skills:check`检查入口、包内链接、角色/工作流映射及发布清单；运行`npm run skills:contracts`验证完整目录同步。`in_sync`证明源与安装文件一致，不证明模型已读取或业务测试通过。变更详情与验证边界见本次增强记录（本地历史记录，不随源码分发）。

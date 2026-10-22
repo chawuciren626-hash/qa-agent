@@ -205,7 +205,7 @@ test('observed sequence executes once, preserves step receipts and supports unch
   const results=JSON.parse(readFileSync(resolve(f.dir,'execution/test_results.json')));assert.equal(results.cases.length,1);assert.equal(results.cases[0].status,'passed');
 });
 
-for(const recover of [false,true]) test(`lifecycle browser execution ${recover?'recovers after worker exit':'finishes normally'} and hands partial truthful results to defects and Word/PDF reports`,async t=>{
+for(const recover of [false,true]) test(`lifecycle browser execution ${recover?'recovers after worker exit':'finishes normally'} and hands partial truthful results to defects and HTML reports`,async t=>{
   const server=createServer((req,res)=>{res.setHeader('content-type','text/html');res.end('<h1>Lifecycle fixture</h1>');});
   await new Promise(done=>server.listen(0,'127.0.0.1',done));
   t.after(async()=>{server.closeAllConnections();await new Promise(done=>server.close(done));});
@@ -257,7 +257,7 @@ for(const recover of [false,true]) test(`lifecycle browser execution ${recover?'
   const exported=await f.send({action:'export_report'});assert.equal(exported.exit_code,0,JSON.stringify(exported));
   await f.returnChild(report.delegation);
   const delivered=await f.send(report.handoff_template);assert.equal(delivered.exit_code,0,JSON.stringify(delivered));
-  for(const path of ['report/test_report.docx','report/test_report.pdf']) assert.ok(statSync(resolve(f.dir,path)).size>100);
+  assert.ok(statSync(resolve(f.dir,'report/test_report.html')).size>100);
   if(recover) {
     const reportResults=JSON.parse(readFileSync(resolve(f.dir,'report/reportable-results.json')));
     assert.equal(reportResults.result_origin,'recovered');assert.equal(reportResults.status,'partial');assert.equal(reportResults.finished_at,null);
@@ -268,7 +268,7 @@ for(const recover of [false,true]) test(`lifecycle browser execution ${recover?'
   assert.match(inspectIndependentArtifacts(root,f.id,'report').errors.join(' '),/coverage/);
 });
 
-test('independent execution recovers directly into a partial Word/PDF report without design prerequisites',async t=>{
+test('independent execution recovers directly into a partial HTML report without design prerequisites',async t=>{
   const server=createServer((req,res)=>res.end('<h1>Independent recovery fixture</h1>'));
   await new Promise(done=>server.listen(0,'127.0.0.1',done));
   const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
@@ -296,10 +296,9 @@ test('independent execution recovers directly into a partial Word/PDF report wit
   assert.equal(existsSync(resolve(f.dir,'design/test_cases.json')),false);
   const result=JSON.parse(readFileSync(resolve(f.dir,'report/reportable-results.json')));
   assert.equal(result.result_origin,'recovered');assert.equal(result.status,'partial');assert.equal(result.finished_at,null);
-  const archive=xlsx.CFB.read(readFileSync(resolve(f.dir,'report/test_report.docx')),{type:'buffer'});
-  const document=archive.FileIndex[archive.FullPaths.indexOf('Root Entry/word/document.xml')];
-  assert.ok(Buffer.from(document.content).toString('utf8').includes('异常中断后的部分结果'));
-  assert.equal(readFileSync(resolve(f.dir,'report/test_report.pdf')).subarray(0,5).toString(),'%PDF-');
+  assert.ok(readFileSync(resolve(f.dir,'report/test_report.html'),'utf8').includes('异常中断后的部分结果'));
+  for(const ext of ['docx','pdf'])assert.equal(existsSync(resolve(f.dir,'report/test_report.'+ext)),false);
+  assert.match(readFileSync(resolve(f.dir,'report/test_report.html'),'utf8'),/<!doctype html>/i);
 });
 
 test('guarded negative and readonly assertions remain deliverable as partial execution with snapshot limits',async t=>{
@@ -649,6 +648,11 @@ test('interactive task persists login/form state across human handoff, never rep
   assert.equal((await f.send(resume)).status,'rejected','Harness notices cannot confirm human intervention');
   f.append([{timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',text:'Not yet done; wait.'}}]);
   assert.equal((await f.send(resume)).status,'rejected','A native user pause cannot resume the browser');
+  assert.equal((await f.send(resume)).classification,'correction_stalled','Unchanged failed continuation exhausts its correction budget');
+  f.append([{timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',sender:'harness',text:'Done; continue.'}}]);
+  assert.equal((await f.send(resume)).classification,'correction_stalled','Harness trace churn does not replenish the budget');
+  f.append([{timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',text:'Not yet done; wait.'}}]);
+  assert.equal((await f.send(resume)).classification,'correction_stalled','Another negative native reply does not replenish the budget');
   manual=true;await pause(15);
   f.append([{timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',text:'Synthetic manual step completed; continue.'}}]);
   const resumed=await f.send(resume);assert.equal(resumed.exit_code,0,JSON.stringify(resumed));
@@ -873,6 +877,8 @@ test('readonly fill timeout preserves inspection and partial finish without repl
   const server=createServer((req,res)=>res.end('<html><body><h1>Readonly fixture</h1><input id="locked" readonly value="unchanged"></body></html>'));
   await new Promise(done=>server.listen(0,'127.0.0.1',done));
   const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  const extended=await f.send({action:'extend_plan',stages:['report'],reason:'Deliver execution results and limitations'});
+  assert.equal(extended.exit_code,0,JSON.stringify(extended));
   t.after(async()=>{await f.browser({type:'finish',request_id:'cleanup',summary:'Cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
   await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic readonly field',headless:true});
   const started=Date.now();
@@ -898,11 +904,35 @@ test('readonly fill timeout preserves inspection and partial finish without repl
   await withControllerSession(root,f.parent,async()=>({status:'timeout',exit_code:124,evidence_dir:faultDir}),{agentRoot:f.agentRoot});
   assert.equal((await f.browser({type:'health',request_id:'post-timeout-health'})).status,'worker_health');
   assert.equal(readControllerSession(root,f.parent).status,'stopped');
+  const originalFailure=readControllerSession(root,f.parent).failure;
   const check=await f.browser({type:'assert',request_id:'inspect',target:{by:'css',value:'#locked'},condition:'value',value:'unchanged',case_id:'CHECK',title:'Preserved field',expected:'unchanged'});
   assert.equal(check.assertion.status,'passed');
   const done=await f.browser({type:'finish',request_id:'finish',summary:'Stopped uncertain fill',limitations:['No retry']});
   assert.equal(done.partial,true);assert.equal(done.summary.total,1);
-  assert.equal(readControllerSession(root,f.parent).status,'ready');
+  assert.equal(readControllerSession(root,f.parent).status,'stopped');
+  assert.deepEqual(readControllerSession(root,f.parent).failure,originalFailure);
+  const replay=await f.send({action:'browser_task',operation:{type:'fill',request_id:'forbidden-retry',target:{by:'css',value:'#locked'},value:'changed'}});
+  assert.equal(replay.classification,'session_stopped');
+  assert.equal(existsSync(resolve(f.dir,'execution/browser-evidence/forbidden-retry.json')),false);
+  const task=(stage,source_paths)=>({run_id:f.id,stage,outcome:'partial',summary:'Stopped uncertain fill',questions:[],limitations:['No retry; only preserved assertions'],source_paths});
+  writeJson(resolve(f.dir,'execution/execution-task.json'),task('execution',['inputs/request.txt']));
+  await f.returnChild(f.dispatched.delegation);
+  const handed=await f.send(f.dispatched.handoff_template);assert.equal(handed.exit_code,0,JSON.stringify(handed));
+  const report=await f.send(extended.dispatch_templates.find(r=>r.stage==='report'));assert.equal(report.exit_code,0,JSON.stringify(report));
+  const actual=JSON.parse(readFileSync(resolve(f.dir,'execution/test_results.json')));
+  writeJson(resolve(f.dir,'report/reportable-results.json'),{run_id:f.id,cases:actual.cases,summary:actual.summary});
+  writeJson(resolve(f.dir,'report/issues.json'),[]);
+  writeFileSync(resolve(f.dir,'report/test_report.md'),'# Partial synthetic report\nReadonly fill timed out; preserved inspection only.');
+  writeJson(resolve(f.dir,'report/report-task.json'),task('report',['execution/test_results.json']));
+  const exported=await f.send({action:'export_report'});assert.equal(exported.exit_code,0,JSON.stringify(exported));
+  await f.returnChild(report.delegation);
+  const delivered=await f.send(report.handoff_template);assert.equal(delivered.exit_code,0,JSON.stringify(delivered));
+  assert.equal(JSON.parse(readFileSync(resolve(f.dir,'manifest.json'))).stages.report.status,'completed');
+  assert.equal(JSON.parse(readFileSync(resolve(f.dir,'report/reportable-results.json'))).status,'partial');
+  assert.match(readFileSync(resolve(f.dir,'report/test_report.html'),'utf8'),/<!doctype html>/i);
+  for(const ext of ['docx','pdf'])assert.equal(existsSync(resolve(f.dir,'report/test_report.'+ext)),false);
+  assert.equal(readControllerSession(root,f.parent).status,'stopped');
+  assert.deepEqual(readControllerSession(root,f.parent).failure,originalFailure);
 });
 
 test('lost acknowledgement fences new mutations until the original receipt is read',async t=>{
@@ -1037,8 +1067,7 @@ test('independent finish retains actual assertion scope and explicitly untested 
   assert.equal(task.outcome,'partial');assert.deepEqual(task.limitations,done.coverage.untested);
   await f.returnChild(report.delegation);
   const delivered=await f.send(report.handoff_template);assert.equal(delivered.exit_code,0,JSON.stringify(delivered));
-  const archive=xlsx.CFB.read(readFileSync(resolve(f.dir,'report/test_report.docx')),{type:'buffer'});
-  const doc=Buffer.from(archive.FileIndex[archive.FullPaths.indexOf('Root Entry/word/document.xml')].content).toString('utf8');
+  const doc=readFileSync(resolve(f.dir,'report/test_report.html'),'utf8');
   assert.ok(doc.includes('Budget, state and create success path'));assert.ok(doc.includes('预期（非验证结论）'));
 });
 

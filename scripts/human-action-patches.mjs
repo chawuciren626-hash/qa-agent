@@ -12,7 +12,7 @@ export function patchHumanActions(source, moduleUrl, version='0.2.13') {
     source=source.replace(before,after);
   };
   const answer = `async (row, body) => qaAnswerHumanAction({workspace:row.workspace,parent:row.sessionId,runId:body.run_id,actionId:body.action_id,decision:body.decision,
-    send: (child,text,decision) => deps.manager.sendToSubagent(row.sessionId,child,[userText(text),userText(decision === "cancel" ? "用户取消人工等待。保留证据，调用finish结束原浏览器并如实交付partial；不再执行产品操作。" : "用户确认已完成当前人工操作。继续原任务、原派发和原浏览器。第一步使用新的request_id调用snapshot检查当前页面；确认登录确已生效后才继续未执行步骤。若仍需人工操作，重新pause。禁止start、重复登录/提交或重跑已完成断言。", "harness")],{qaHumanContinuation:true})})`;
+    send: (child,text,decision,channel) => deps.manager.sendToSubagent(row.sessionId,child,[userText(text),userText(channel === "api" ? (decision === "cancel" ? "用户取消接口认证等待。调用api_task cancel并收集部分结果，不再发业务请求。" : "用户确认接口认证已准备。继续原子会话和派发，使用本任务新提供的qa-secret引用调用api_task resume，credentials以status返回的credential_key为键。没有凭据引用时只询问真正缺少的认证信息，不猜测登录成功。不启动浏览器、不重复start、不重放已执行请求。") : decision === "cancel" ? "用户取消人工等待。保留证据，调用finish结束原浏览器并如实交付partial；不再执行产品操作。" : "用户确认已完成当前人工操作。继续原任务、原派发和原浏览器。第一步使用新的request_id调用snapshot检查当前页面；确认登录确已生效后才继续未执行步骤。若仍需人工操作，重新pause。禁止start、重复登录/提交或重跑已完成断言。", "harness")],{qaHumanContinuation:true})})`;
   replace(humanActionAnchors[0], `  const qaAnswerCurrentHumanAction = ${answer};
   app.get("/:sessionId/human-actions", (c7) => {
     const row=resolveSession(c7);c7.header("Cache-Control","no-store");

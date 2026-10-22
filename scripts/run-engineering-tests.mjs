@@ -63,7 +63,7 @@ export function engineeringEnvironment(engine, files, env=process.env) {
   const [major,minor]=process.versions.node.split('.').map(Number);
   if(major<20 || (major===20 && minor<11)) throw new Error('Engineering tests require Node.js >=20.11');
   const require=createRequire(resolve(engine,'package.json'));
-  const packages=Object.fromEntries(['@playwright/test','ajv','xlsx','xmind'].map(name=>[name,packageMetadata(engine,name).version]));
+  const packages=Object.fromEntries(['@playwright/test','ajv','xlsx','xmind','yaml'].map(name=>[name,packageMetadata(engine,name).version]));
   const git=spawnSync('git',['--version'],{encoding:'utf8',windowsHide:true,timeout:10000});
   if(git.status!==0) throw new Error('Git is required by engineering fixtures');
   const python=probePython(env);

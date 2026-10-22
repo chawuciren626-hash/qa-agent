@@ -38,7 +38,7 @@ export function prepareReleaseCandidate({stage,installer,evidence,output}){
   const report={version:1,...identity,...review,payload_check:verified,signature_status:manifest.signature_status??'unverified',created_at:new Date().toISOString()};
   writeFileSync(resolve(output,'acceptance.json'),JSON.stringify(report,null,2)+'\n',{flag:'wx'});
   const notes=[`# AITestHarness ${manifest.product_version}`, '', '内部预览发行候选，尚未公开发布。', '',
-    `Windows x64；内置 PenguinHarness ${manifest.host_version}、Node、Python、浏览器与七个测试角色初始化。`,
+    `Windows x64；内置 PenguinHarness ${manifest.host_version}、Node、Python、浏览器与八个测试角色初始化。`,
     '', '安装后从 AITestHarness 入口启动，按首页引导配置自己的模型账号、验证连接并填写示例任务。安装包不含模型额度。',
     '', '升级前退出应用并选择原完整安装目录。仅支持宿主版本和数据版本不变的升级；跨宿主升级及降级会拒绝。卸载默认保留用户数据。',
     '', `签名状态（载荷声明）：${report.signature_status}。尚未达到公开发行验收标准；完成检查后需维护者审核。`,

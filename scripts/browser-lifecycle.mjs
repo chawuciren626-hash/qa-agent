@@ -39,11 +39,11 @@ export function assertBrowserDesignCheck(dir,manifest,check) {
   if(!browserLifecycle(manifest)) return;
   assert(check.case_ref?.source_path==='design/test_cases.json','Lifecycle assertions must reference the authorized design case; retain unmatched observations without inventing passing cases');
   const value=JSON.parse(readRunFile(dir,'design/test_cases.json').data),rows=Array.isArray(value)?value:value.cases ?? value.test_cases;
-  const item=rows.find(row=>row.case_id===check.case_ref.case_id);
+  const item=rows.find(row=>row.case_id===check.case_ref.case_id && row.execution_layer!=='api');
   assert(item && !(item.design_contract?.basis ?? []).some(r=>r.status!=='confirmed') && !(item.design_contract?.assumptions ?? []).some(r=>r.status!=='confirmed'),'Unconfirmed or conflicted case cannot produce a business pass/fail assertion');
 }
 export function browserCoverage(dir,manifest,results) {
-  const file=readRunFile(dir,'design/test_cases.json'),value=JSON.parse(file.data),rows=Array.isArray(value)?value:value.cases ?? value.test_cases;
+  const file=readRunFile(dir,'design/test_cases.json'),value=JSON.parse(file.data),allRows=Array.isArray(value)?value:value.cases ?? value.test_cases,rows=Array.isArray(allRows)?allRows.filter(r=>r.execution_layer!=='api'):allRows;
   assert(file.sha256===currentBrowserAuthorization(manifest)?.design_sha256,'Authorized design changed');
   assert(Array.isArray(rows) && rows.length>0 && new Set(rows.map(r=>r.case_id)).size===rows.length,'Invalid browser design source');
   const linked=new Set(results.cases.filter(row=>!['simulated','simulation_affected'].includes(row.evidence_mode) && row.case_ref?.source_path==='design/test_cases.json' && row.case_ref.source_sha256===file.sha256).map(row=>row.case_ref.case_id));

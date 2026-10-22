@@ -334,7 +334,7 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     if (allowRecovery && result.status === 'completed' && result.action_receipt && verifyRecovery(result)) {
       pending.delete(result.task_key); pending.delete('input_correction'); pending.delete('unbound:request:');
       const key = String(result.task_key ?? '');
-      const validation = /^run-[A-Za-z0-9-]+:validate_artifacts:(?:analysis|test_points|test_cases|execution|defects|report)(?:[a-f0-9-]{36})?$/.test(key) ||
+      const validation = /^run-[A-Za-z0-9-]+:validate_artifacts:(?:analysis|test_points|test_cases|execution|api_execution|defects|report)(?:[a-f0-9-]{36})?$/.test(key) ||
         /^run-[A-Za-z0-9-]+:validate_analysis:(?:[a-f0-9-]{36})?$/.test(key);
       if (result.script === 'validate-artifacts.mjs' && validation) pendingShellProbes = 0;
       if(result.script==='validate-artifacts.mjs' && validation && stageWriteBoundary) {

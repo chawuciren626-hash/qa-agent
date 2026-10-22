@@ -888,7 +888,7 @@ test('draft XMind and Excel export failures can be corrected while preserving or
   }
 });
 
-test('report exports preserve both old formats and recover invalid metrics without changing approval',async()=>{
+test('HTML report exports leave historical formats unchanged and recover invalid metrics without changing approval',async()=>{
   const f=await artifactFixture('report');
   const build=await f.execute({action:'build_report_metrics',run_id:f.run_id});assert.equal(build.exit_code,0,JSON.stringify(build));
   const metrics=resolve(f.dir,'report/quality-metrics.json');const original=readFileSync(metrics);
@@ -896,11 +896,14 @@ test('report exports preserve both old formats and recover invalid metrics witho
   writeFileSync(metrics,'{broken');
   const failed=await f.execute({action:'export_report',run_id:f.run_id});
   assert.equal(failed.recovery?.retry_allowed,true,JSON.stringify(failed));
-  assert.deepEqual(readFileSync(resolve(f.dir,failed.artifact_archive,'before/report/test_report.docx')),docx);
-  assert.deepEqual(readFileSync(resolve(f.dir,failed.artifact_archive,'before/report/test_report.pdf')),pdf);
+  assert.deepEqual(readFileSync(resolve(f.dir,'report/test_report.docx')),docx);
+  assert.deepEqual(readFileSync(resolve(f.dir,'report/test_report.pdf')),pdf);
   writeFileSync(metrics,original);
   const success=await f.execute({action:'export_report',run_id:f.run_id});
   assert.equal(success.exit_code,0,JSON.stringify(success));
+  assert.deepEqual(readFileSync(resolve(f.dir,'report/test_report.docx')),docx);
+  assert.deepEqual(readFileSync(resolve(f.dir,'report/test_report.pdf')),pdf);
+  assert.match(readFileSync(resolve(f.dir,'report/test_report.html'),'utf8'),/<!doctype html>/);
   assert.equal(inspectStageArtifacts(root,f.run_id,'report').status,'passed');
   assert.deepEqual(JSON.parse(readFileSync(f.path)).confirmations,[]);
 });

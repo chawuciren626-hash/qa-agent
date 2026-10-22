@@ -43,10 +43,15 @@ Section "Application"
   File /r "${STAGE}\licenses\*"
   SetOutPath "$PLUGINSDIR"
   DetailPrint "校验安装包、检查兼容性并安装；失败时恢复旧程序。"
-  nsExec::ExecToStack '"$PLUGINSDIR\payload\runtime\tools\node\node.exe" "$PLUGINSDIR\payload\app\engine\scripts\product-upgrade.mjs" "$PLUGINSDIR\payload" "$INSTDIR"'
+  nsExec::ExecToStack '"$PLUGINSDIR\payload\runtime\tools\node\node.exe" "$PLUGINSDIR\payload\app\engine\scripts\product-upgrade.mjs" "$PLUGINSDIR\payload" "$INSTDIR" "$PLUGINSDIR\install-error.txt"'
   Pop $0
   Pop $1
   ${If} $0 != "0"
+    ; Read the explicit Unicode result instead of code-page-decoded Node output.
+    IfFileExists "$PLUGINSDIR\install-error.txt" 0 +4
+    FileOpen $2 "$PLUGINSDIR\install-error.txt" r
+    FileReadUTF16LE $2 $1
+    FileClose $2
     SetErrorLevel 1
     IfSilent +2
     MessageBox MB_ICONSTOP "安装未完成。请查看原因后重试；如提示恢复失败，请保留安装目录。$\r$\n$1"

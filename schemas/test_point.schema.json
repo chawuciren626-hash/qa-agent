@@ -2,19 +2,64 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "TestPoint",
   "type": "object",
-  "required": ["id", "module", "feature", "description", "risk", "coverage_type", "source", "rule_ids"],
+  "required": [
+    "id",
+    "module",
+    "feature",
+    "description",
+    "risk",
+    "coverage_type",
+    "source",
+    "rule_ids"
+  ],
   "properties": {
-    "id": { "type": "string" },
-    "module": { "type": "string" },
-    "feature": { "type": "string" },
-    "description": { "type": "string" },
-    "risk": { "type": "string", "enum": ["高", "中", "低"] },
+    "id": {
+      "type": "string"
+    },
+    "module": {
+      "type": "string"
+    },
+    "feature": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "risk": {
+      "type": "string",
+      "enum": [
+        "高",
+        "中",
+        "低"
+      ]
+    },
     "coverage_type": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
-    "source": { "type": "string" },
-    "rule_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+    "source": {
+      "type": "string"
+    },
+    "rule_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "execution_layer": {
+      "enum": [
+        "ui",
+        "api",
+        "both"
+      ]
+    },
+    "operation_id": {
+      "type": "string"
+    }
   }
 }
-

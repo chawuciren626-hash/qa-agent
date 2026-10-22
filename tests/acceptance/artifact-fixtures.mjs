@@ -39,6 +39,7 @@ export function resultArtifacts(root, id, failed = false) {
   const metrics = JSON.parse(readFileSync(resolve(dir, 'report/quality-metrics.json'), 'utf8'));
   writeFileSync(resolve(dir, 'report/test_report.md'), `Synthetic report ${id} ${metrics.quality_gate.status}`);
   zipFixture(resolve(dir, 'report/test_report.docx'), { 'word/document.xml': '<w:document/>', '[Content_Types].xml': '<Types/>' });
+  writeFileSync(resolve(dir, 'report/test_report.html'), '<!doctype html><html><body>Synthetic report fixture</body></html>');
   // Only a file-signature fixture, not a renderable report or real evidence.
   writeFileSync(resolve(dir, 'report/test_report.pdf'), '%PDF-1.7\nsynthetic structural fixture\n%%EOF');
   return { ...fixture, result, defects, metrics, assessment };

@@ -62,12 +62,14 @@ for(const action of actions) for(const decision of [null,'pending','approved']) 
 
 test('legacy report returns only sealed Word/PDF, never generates or advertises unsealed formats',async t=>{
   const f=fixture(t,'export_report');
-  for(const path of f.definition.outputs.slice(2)) {
+  for(const path of f.definition.outputs) {
     f.contract.files=f.contract.files.filter(file=>file.path!==path);
     unlinkSync(resolve(f.dir,path));
   }
+  const legacy=['report/test_report.docx','report/test_report.pdf'];
+  for(const path of legacy){f.put(path,'Legacy sealed bytes');f.contract.files.push({path,sha256:digest(readFileSync(resolve(f.dir,path)))});}
   f.save();const before=snapshot(f.dir);
-  assert.deepEqual((await f.invoke()).generated_artifacts,f.definition.outputs.slice(0,2));
+  assert.deepEqual((await f.invoke()).generated_artifacts,legacy);
   assert.deepEqual(snapshot(f.dir),before);
 });
 

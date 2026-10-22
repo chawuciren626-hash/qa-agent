@@ -3,10 +3,12 @@ import { dataPath } from './directory-context.mjs';
 import { resolve } from 'node:path';
 import { parseOptions, CommandUsageError } from './command-contracts.mjs';
 import { actionCatalog, executeAction, actionFailureSummary } from './structured-actions.mjs';
+import { bindProductCommandPaths } from './product-layout.mjs';
 
 const root=resolve(import.meta.dirname,'..');
 const [action,...args]=process.argv.slice(2);
 try {
+  bindProductCommandPaths(root);
   let result;
   if ([undefined,'catalog','help','--help'].includes(action)) {
     parseOptions(args,['controller-session']);

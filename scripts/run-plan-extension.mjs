@@ -1,13 +1,31 @@
 import { getRunContext, withRunLock, writeJson, recomputeRunStatus, assertStageHistory, hasApprovedConfirmation } from './orchestration-state.mjs';
+import { assertTrackStage, trackPlan } from './test-tracks.mjs';
 
 export function extendRunPlan(root, project, runId, requested, reason) {
   if (!Array.isArray(requested) || !requested.length || requested.some(id => typeof id !== 'string' || !id.trim()) || new Set(requested).size !== requested.length) throw new Error('Provide unique stage IDs to add');
   if (typeof reason !== 'string' || !reason.trim()) throw new Error('Record the requested continuation scope');
   return withRunLock(root, project, runId, () => {
     const { manifest, manifestPath } = getRunContext(root, project, runId);
+    requested.forEach(stage=>assertTrackStage(manifest,stage));
     if (manifest.run_id !== runId) throw new Error('Manifest run ID mismatch');
     const plan = manifest.orchestration?.plan;
     if (!Array.isArray(plan?.stages) || !plan.stages.length) throw new Error('No existing plan; use plan_run first');
+    if(manifest.test_track) {
+      const future=trackPlan({stages:[...new Set([...plan.stages.filter(s=>s.selected).map(s=>s.id),...requested])],workflow_mode:plan.workflow_mode,review_mode:plan.review_mode,source_mode:plan.source_mode},manifest.test_track.type);
+      for(const stage of plan.stages) {
+        const dependencies=future.stages.find(s=>s.id===stage.id).depends_on;
+        if(JSON.stringify(stage.depends_on)!==JSON.stringify(dependencies)) {
+          if(stage.selected && !['planned','skipped'].includes(manifest.stages[stage.id]?.status))throw new Error('Cannot insert typed prerequisites after downstream work started; preserve the current delivery');
+          stage.depends_on=dependencies;
+        }
+      }
+      plan.execution_branches=future.execution_branches;
+    }
+    if(plan.execution_branches && requested.includes('api_execution') && !plan.execution_branches.includes('api_execution')) {
+      if(plan.workflow_mode==='lifecycle' && ['defects','report'].some(id=>!['planned','skipped'].includes(manifest.stages?.[id]?.status))) throw new Error('Cannot add execution branch after downstream work started');
+      plan.execution_branches.push('api_execution');
+      if(plan.workflow_mode==='lifecycle') plan.stages.find(s=>s.id==='defects').depends_on=[...plan.execution_branches];
+    }
     const definitions = new Map(plan.stages.map(stage => [stage.id, stage]));
     if (definitions.size !== plan.stages.length) throw new Error('Duplicate stage IDs in saved plan');
     const wanted = new Set();

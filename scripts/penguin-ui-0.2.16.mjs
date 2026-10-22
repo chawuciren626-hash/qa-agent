@@ -4,7 +4,7 @@ const replace = (source, before, after) => {
   if (source.split(before).length !== 2) throw new Error(`Unsupported PenguinHarness 0.2.16 UI anchor: ${before.slice(0,100)}`);
   return source.replace(before, after);
 };
-const qaAgents = '["test_agent","requirement_analysis_agent","test_point_agent","test_case_agent","automation_execution_agent","defect_analysis_agent","test_report_agent"]';
+const qaAgents = '["test_agent","requirement_analysis_agent","test_point_agent","test_case_agent","automation_execution_agent","api_automation_agent","defect_analysis_agent","test_report_agent"]';
 
 export function patchDeliveryBundle216(source, revision='1') {
   if(!/^[a-f0-9]+$/.test(revision)) throw new Error('Invalid UI revision');
@@ -46,10 +46,33 @@ export const sidebarTools216 = `function QaSidebarTools({onNavigate}) {
     pinned:groups.pinned.length?s.jsx(ED,{children:groups.pinned.map(row)}):undefined,
     foldable:groups.collapsible.length>0,children:groups.collapsible.map(row)});
 }`;
-const factory = sidebarTools216 + `let qaClientInstance;function qaClient(){return qaClientInstance??=createWorkspaceUI({React:f,useProject:On,useSessions:So,useAuth:Kn,useNavigate:Cr,useLocation:aa,FolderPicker:dm,Modal:pn,AccountMenu:Bse,SidebarTools:QaSidebarTools,notify:kt,reportError:Pe,request:ge,Markdown:Dd})}function PF(props){return s.jsx(qaClient().Sidebar,props)}function QaHero(props){return s.jsx(qaClient().Hero,props)}function QaSessionContext(props){return s.jsx(qaClient().SessionContext,props)}function vqe(){const view=new URLSearchParams(aa().search).get("view");return view==="schedules"||view==="library"?s.jsx(qaClient().SectionPage,{view}):s.jsx(QaNativeChat,{})}`;
+// Keep session actions on the host APIs, native menu and remote-control dialog.
+export const sessionActions216 = `function useQaSessionActions({selectedId,onRemoved}) {
+  const {currentProject}=On(), {user}=Kn(), {locale}=kr(), state=So(), projectId=currentProject?.projectId??null;
+  const [pins,setPins]=f.useState(()=>QP(projectId)), [editing,setEditing]=f.useState(null), [title,setTitle]=f.useState(""),
+    [deleting,setDeleting]=f.useState(null), [remote,setRemote]=f.useState(null), [busy,setBusy]=f.useState(false), [error,setError]=f.useState(null);
+  const lock=f.useRef(false);
+  f.useEffect(()=>{setPins(QP(projectId));setEditing(null);setDeleting(null);setRemote(null)},[projectId]);
+  const run=async action=>{if(lock.current)return;lock.current=true;setBusy(true);setError(null);try{await action()}catch(e){setError(ve(e));Pe(ve(e))}finally{lock.current=false;setBusy(false)}};
+  const save=()=>run(async()=>{const result=await Bh(editing.sessionId,{title:title.trim()});state.replace(result.session);setEditing(null)});
+  const remove=()=>run(async()=>{const id=deleting.sessionId;await Qp(id);state.remove(id);if(user)lc(Xre(user.userId,id));const next=aMe(pins,id);XP(projectId,next);setPins(next);SNe(projectId,id);for(const mode of ["agent","workspace","time"])e_(projectId,mode,gMe(J3(projectId,mode),id));setDeleting(null);if(selectedId===id)onRemoved()});
+  const row=(session,onOpen)=>s.jsx(yVe,{s:session,active:session.sessionId===selectedId,activity:session.status==="running"?"running":null,background:yee(session),scheduled:false,pinned:pins.has(session.sessionId),lastActive:Nd(session.lastActiveAt,locale),locale,onOpen,
+    onTogglePin:item=>{const next=sMe(pins,item.sessionId);XP(projectId,next);setPins(next)},
+    onRename:item=>{setError(null);setTitle(item.title??"");setEditing(item)},onMessaging:setRemote,onDelete:setDeleting,
+    onArchive:item=>run(async()=>{const result=await Bh(item.sessionId,{archived:true});state.replace(result.session);if(selectedId===item.sessionId)onRemoved()})},session.sessionId);
+  const overlays=s.jsxs(s.Fragment,{children:[
+    s.jsx(pn,{open:editing!==null,title:l.chat.renameSession,onClose:()=>{if(!busy)setEditing(null)},footer:s.jsxs(s.Fragment,{children:[s.jsx(ie,{size:"sm",disabled:busy,onClick:()=>setEditing(null),children:l.common.cancel}),s.jsx(ie,{size:"sm",variant:"primary",disabled:busy||!title.trim(),onClick:save,children:l.common.save})]}),children:s.jsx(yt,{size:"sm",label:l.chat.renameSessionLabel,value:title,error:error??undefined,autoFocus:true,maxLength:120,onChange:e=>setTitle(e.target.value),onKeyDown:e=>{if(e.key==="Enter"&&!e.nativeEvent.isComposing&&title.trim()&&!busy){e.preventDefault();save()}}})}),
+    remote&&s.jsx(Dee,{sessionId:remote.sessionId,onClose:()=>setRemote(null),onChanged:(id,channel)=>{const item=state.sessions.find(item=>item.sessionId===id);if(item){const next={...item};if(channel!==null)next.messagingChannel=channel;else delete next.messagingChannel;state.replace(next)}}}),
+    s.jsx(Vt,{open:deleting!==null,title:l.chat.deleteSession,confirmLabel:l.common.delete,cancelLabel:l.common.cancel,busy,onClose:()=>{if(!busy)setDeleting(null)},onConfirm:remove,children:s.jsx("p",{className:"text-sm text-gray-600 dark:text-gray-300",children:deleting?l.chat.deleteSessionConfirm(deleting.title??l.chat.defaultSessionTitle):""})})
+  ]});
+  return {pins,row,overlays};
+}`;
+const factory = sidebarTools216 + sessionActions216 + `let qaClientInstance;function qaClient(){return qaClientInstance??=createWorkspaceUI({React:f,useProject:On,useSessions:So,useAuth:Kn,useNavigate:Cr,useLocation:aa,FolderPicker:dm,Modal:pn,AccountMenu:Bse,SidebarTools:QaSidebarTools,useSessionActions:useQaSessionActions,notify:kt,reportError:Pe,request:ge,Markdown:Dd})}function PF(props){return s.jsx(qaClient().Sidebar,props)}function QaHero(props){return s.jsx(qaClient().Hero,props)}function QaSessionContext(props){return s.jsx(qaClient().SessionContext,props)}function vqe(){const view=new URLSearchParams(aa().search).get("view");return view==="schedules"||view==="library"?s.jsx(qaClient().SectionPage,{view}):s.jsx(QaNativeChat,{})}`;
 
 export function patchClientBundle216(source) {
   const pairs = [
+    ['s.jsx(k_e,{entries:Qt,turnOffset:Fe.outlineOffset,version:Fe.version,scrollRef:nn,running:Fe.taskState!=="idle",fit:En})','s.jsx(qaClient().ConversationNav,{entries:Qt,turnOffset:Fe.outlineOffset,version:Fe.version,scrollRef:nn,fit:En,sessionId:pe?.sessionId,jump:Tre,findActive:Cre,older:Fe.older.hasMore?{...Fe.older,onLoad:Fe.loadOlder}:null})'],
+    ['s.jsx(w_e,{entries:Qt,turnOffset:Fe.outlineOffset,scrollRef:nn,running:Fe.taskState!=="idle"})','s.jsx(qaClient().ConversationNav,{entries:Qt,turnOffset:Fe.outlineOffset,version:Fe.version,scrollRef:nn,sessionId:pe?.sessionId,jump:Tre,findActive:Cre,compact:true,older:Fe.older.hasMore?{...Fe.older,onLoad:Fe.loadOlder}:null})'],
     ['function PF({onNavigate:e,onCollapse:t,initialSearchOpen:n=!1}){', 'function QaLegacySidebar({onNavigate:e,onCollapse:t,initialSearchOpen:n=!1}){'],
     ['function vqe(){', 'function QaNativeChat(){'],
     ['function MFe({projectId:e,models:t,draftId:n,composerRef:r,onWorkspaceChange:a,onAgentChange:o}){', factory+'function MFe({projectId:e,models:t,draftId:n,composerRef:r,onWorkspaceChange:a,onAgentChange:o}){'],

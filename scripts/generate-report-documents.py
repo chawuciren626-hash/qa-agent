@@ -23,6 +23,15 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from report_delivery import markdown_body, markdown_blocks, export_browser_delivery
 
+html_only = '--html-only' in sys.argv
+title_args = [a for a in sys.argv if a.startswith('--title=')]
+if len(title_args) > 1:
+    raise SystemExit('Duplicate report title')
+title_override = title_args[0][8:] if title_args else None
+if title_args:
+    sys.argv.remove(title_args[0])
+if html_only:
+    sys.argv.remove('--html-only')
 if len(sys.argv) not in (6, 7):
     raise SystemExit("用法: python generate-report-documents.py <report.md> <results.json> <bugs.json> <report.docx> <report.pdf> [quality-metrics.json]")
 
@@ -98,6 +107,9 @@ def clean_text(text):
 
 summary = results.get("summary", {})
 report_title = next((clean_text(line[2:].strip()) for line in markdown.splitlines() if line.startswith('# ')), '测试报告')
+if title_override:
+    report_title = title_override
+    markdown = re.sub(r'^# [^\n]*', '# ' + report_title, markdown, count=1, flags=re.MULTILINE)
 run_id = results.get("run_id", "未标识")
 bug_items = bugs if isinstance(bugs, list) else bugs.get("bugs", [])
 governance = metrics.get('governance', {})
@@ -111,6 +123,11 @@ historical_open = governance.get('open_historical')
 history_text = (f"历史未关闭问题: {len(historical_open)}" if isinstance(historical_open, list)
                 else "历史未关闭问题: 未评估") + "；fixed仅表示修复声明，不等于复测通过。"
 gate_reasons = quality_gate.get("reasons", [])
+
+if html_only:
+    export_browser_delivery(os.path.dirname(docx_path), report_title, markdown, results, bug_items, metrics, download_links=False)
+    print(f"已生成: {os.path.join(os.path.dirname(docx_path), 'test_report.html')}")
+    raise SystemExit(0)
 
 doc = Document()
 section = doc.sections[0]

@@ -2,11 +2,12 @@ import { existsSync, mkdirSync, realpathSync, writeFileSync, unlinkSync } from '
 import { resolve } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { readRunFile, runDirectory } from './design-quality.mjs';
-import { assertStageHistory, getPlanStage, recomputeRunStatus, writeJson } from './orchestration-state.mjs';
+import { assertStageHistory, getPlanStage, recomputeRunStatus, writeJson, assertDesignMutable } from './orchestration-state.mjs';
 import { requiredArtifacts, assertCompletedArtifacts, stageRequiredArtifacts } from './artifact-contracts.mjs';
 
 // Caller holds the run lock. A user revision is separate from bounded automatic draft repair.
 export function requestAnalysisRevision(root, runId, manifest, reason, feedback) {
+  assertDesignMutable(manifest,'analysis');
   // Build the next state separately; a failed revision must not mutate the caller's ledger.
   manifest = structuredClone(manifest);
   manifest.confirmations ??= [];

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve, basename, delimiter } from 'node:path';
 import { createHash } from 'node:crypto';
 import Ajv from 'ajv';
@@ -29,6 +29,17 @@ export function resolveProductLayout(value, configFile) {
 }
 export function loadProductLayout(file) {
   return resolveProductLayout(JSON.parse(readFileSync(file,'utf8').replace(/^\uFEFF/,'')),file);
+}
+export function bindProductCommandPaths(engine,env=process.env) {
+  // Host 0.2.16 strips inherited PENGUIN_* variables from agent commands.
+  // Recover only the non-secret trace path from this engine's installation.
+  // Explicit roots remain authoritative for isolated engineering environments.
+  if(env.PENGUIN_AGENT_ROOT!==undefined)return;
+  const file=resolve(engine,'../../installation.json');
+  if(!existsSync(file))return;
+  const layout=loadProductLayout(file);
+  if(layout.paths.engine!==resolve(engine))throw new Error('Command installation engine mismatch');
+  env.PENGUIN_AGENT_ROOT=layout.agent_root;
 }
 export function productEnvironment(layout,env=process.env) {
   const result={...env};

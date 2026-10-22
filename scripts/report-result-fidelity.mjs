@@ -1,11 +1,20 @@
 import { isDeepStrictEqual } from 'node:util';
 
-const fields = ['title','expected','actual_result','error_message','reason','verdict_reason','failure_category','evidence_mode','verification_scope','checked_condition','timing','check_fingerprint','case_ref','recheck_of','expected_basis','observations','expectation_provenance','input_provenance','comparison'];
+const fields = ['source_case_id','scenario_id','layer','attempt','result_unknown','assertions','title','expected','actual_result','error_message','reason','verdict_reason','failure_category','evidence_mode','verification_scope','checked_condition','timing','check_fingerprint','case_ref','recheck_of','expected_basis','observations','expectation_provenance','input_provenance','comparison'];
 const evidence = row => Array.isArray(row.evidence_paths) ? [...row.evidence_paths].sort() : [];
 
 // Restore only uniquely identified source observations; never select the latest by ID.
 export function preserveReportResults(results, index, readSource) {
   const output = structuredClone(results), candidates = [], changes = [];
+  if(index.api_snapshot) {
+    const entry=index.files.find(f=>f.path===index.api_snapshot.result_path && f.kind==='api_snapshot');
+    if(!entry)throw new Error('Snapshot report source is not indexed');
+    const file=readSource(entry.path);if(file.sha256!==entry.sha256)throw new Error('Snapshot report source changed');
+    const source=JSON.parse(new TextDecoder().decode(file.data));
+    output.cases=structuredClone(source.cases);output.summary=structuredClone(source.summary);
+    output.status='partial';output.result_origin='api_snapshot';output.finished_at=null;output.snapshot_at=source.snapshot_at;
+    output.snapshot_source=structuredClone(index.api_snapshot);
+  }
   for (const fact of index.facts ?? []) {
     const entry = index.files.find(file => file.path === fact.source_path);
     if (!entry) continue;
@@ -14,13 +23,21 @@ export function preserveReportResults(results, index, readSource) {
       if (file.sha256 !== entry.sha256) continue;
       const decoded=typeof file.data==='string'?file.data:new TextDecoder('utf-8',{fatal:true}).decode(file.data);
       const source = JSON.parse(decoded.replace(/^\uFEFF/,''));
-      if(entry.path==='execution/test_results.json') {
+      if(['execution/test_results.json','execution/api/test_results.json'].includes(entry.path)) {
         if(source.status==='partial') output.status='partial';
         if(source.coverage) output.coverage=structuredClone(source.coverage);
         else delete output.coverage;
       }
       for (const row of source.cases ?? []) candidates.push({ row, entry, fixture: source.fixture === true || row?.fixture === true });
     } catch { /* Optional source failures remain unknown, not a new approval gate. */ }
+  }
+  if(candidates.some(c=>c.entry.path==='execution/api/test_results.json')) {
+    for(const candidate of candidates.filter(c=>['execution/test_results.json','execution/api/test_results.json'].includes(c.entry.path))) {
+      const i=output.cases.findIndex(r=>r.case_id===candidate.row.case_id);
+      if(i<0) output.cases.push(structuredClone(candidate.row));
+      else if(output.cases[i].status!==candidate.row.status || !isDeepStrictEqual(evidence(output.cases[i]),evidence(candidate.row))) output.cases[i]=structuredClone(candidate.row);
+    }
+    output.summary={total:output.cases.length,...Object.fromEntries(['passed','failed','blocked','skipped'].map(s=>[s,output.cases.filter(r=>r.status===s).length]))};
   }
   for (const row of output.cases) {
     const matches = candidates.filter(item => item.row?.case_id === row.case_id && item.row.status === row.status
@@ -43,7 +60,7 @@ export function preserveReportResults(results, index, readSource) {
       row[field] = structuredClone(source.row[field]);
     }
     row.report_source = {source_path:source.entry.path,source_sha256:source.entry.sha256,
-      kind:source.entry.path.startsWith('inputs/')?'imported':'completed_artifact',fixture:source.fixture,retained_text_fields:retained};
+      kind:source.entry.kind==='api_snapshot'?'api_snapshot':source.entry.path.startsWith('inputs/')?'imported':'completed_artifact',fixture:source.fixture,retained_text_fields:retained};
     changes.push({case_id:row.case_id,status:'source_matched',restored_fields:restored,retained_text_fields:retained});
   }
   return {results:output,changes};
@@ -57,7 +74,7 @@ export function resultFidelityMarkdown(results) {
     '| 记录 | 来源与模式 | 预期（非验证结论） | 实际检查条件 | 实际说明（转写另标） |','| --- | --- | --- | --- | --- |'];
   for (const row of results.cases) {
     const source=row.report_source ?? {};
-    const kind={imported:'导入记录',completed_artifact:'已完成产物',unresolved:'来源未唯一确认'}[source.kind] ?? '来源未记录';
+    const kind={api_snapshot:'接口时点快照（非最终结果）',imported:'导入记录',completed_artifact:'已完成产物',unresolved:'来源未唯一确认'}[source.kind] ?? '来源未记录';
     const mode={real:'真实模式标记（非真实性证明）',simulated:'模拟场景',simulation_affected:'受模拟影响'}[row.evidence_mode] ?? '模式未记录';
     const basis=row.expectation_provenance?`；预期：${{source_located:'引文已定位，语义未自动确认',needs_correction:'引用未核实',not_recorded:'来源未记录，仅条件观察'}[row.expectation_provenance.status] ?? '未核实'}`:'';
     const comparison={exact_text:'；文本精确比较',normalized_text:'；文本空白归一比较',exact_value:'；输入值精确比较'}[row.comparison] ?? '';

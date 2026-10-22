@@ -91,7 +91,7 @@ summary只读聚合当前会话闸门和动作回执：action_attempts是动作�
 
 analysis_summary核验台账来源和生成正文一致后返回精确条目及文件哈希，用于减少口头汇报超出实际记录。它不推断语义覆盖，不创建新交付门槛；流程状态另读run_status。说明与澄清排序原则见[分析摘要与澄清优先级](analysis-summary-and-clarification.md)。
 
-2026-10-10最新验证：129项Node测试通过，最小真实需求分析已正式完成并等待确认；其余旧测试结论按时点保留。详见[连续修复记录](continuous-remediation-2026-10-10.md)。
+2026-10-10最新验证：129项Node测试通过，最小真实需求分析已正式完成并等待确认；其余旧测试结论按时点保留。详见连续修复记录（本地历史记录，不随源码分发）。
 
 目录/catalog、summary是只读查询，不解除闸门。stopped时仅run_status、block/fail按既有诊断/收口规则处理；参数正确也不保证阶段允许收口。身份、审批、语义及工具权限边界沿用原设计。旧CLI保留给未覆盖脚本及维护者，新层不能禁止直接工具绕过，不修改PenguinHarness安装包。
 
@@ -123,4 +123,4 @@ analysis_summary核验台账来源和生成正文一致后返回精确条目及�
 
 历史非受控命令需要工程侧审查，沿用 recover-stage/review-session 的证据和哈希校验，不让总控编造审查或用户业务批准。审查恢复会保留草稿快照，新派发使用独立生成预算，原失败次数保留。
 
-`{"action":"diagnose_analysis","run_id":"<实际run_id>"}` 在无 Markdown 时诊断台账结构与原文引用。外层 completed 不代表草稿通过，必须检查 result.status。仅在 passed 后正式生成并验证；不代替用户确认。read_source.quote_json 提供保留原始换行的 JSON 字符串值。有限返修与本次真实会话限制见 [修复记录](analysis-draft-diagnosis-2026-10-12.md)。
+`{"action":"diagnose_analysis","run_id":"<实际run_id>"}` 在无 Markdown 时诊断台账结构与原文引用。外层 completed 不代表草稿通过，必须检查 result.status。仅在 passed 后正式生成并验证；不代替用户确认。read_source.quote_json 提供保留原始换行的 JSON 字符串值。有限返修与本次真实会话限制见 修复记录（本地历史记录，不随源码分发）。

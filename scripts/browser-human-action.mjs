@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { readRunFile } from './design-quality.mjs';
 import { readSession, findParentDispatch } from './stage-evidence.mjs';
 import { writeJson } from './orchestration-state.mjs';
+import { inspectApiHumanAction } from './api-human-action.mjs';
 
 const agents = () => process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(), '.penguin/data/default_project/agents');
 const uuid = value => /^[a-f0-9-]{36}$/.test(value ?? '');
@@ -14,10 +15,12 @@ export const humanConfirmationText = (id, decision) => `人工操作${decision =
 export const isLoginConfirmation = text => /^(?:已登录|登录完成|已完成登录|登录已完成|已登录完成|验证码已完成|已完成验证|验证完成)(?:[，,、\s]*(?:请)?继续(?:测试|执行)?)?[。.!！\s]*$/u.test(String(text).trim());
 
 // Bind the card to the original native child, never an ID inferred from a dispatch.
-export function inspectHumanAction(workspace, parent, runId, agentRoot = agents()) {
+export function inspectHumanAction(workspace, parent, runId, agentRoot = agents(), actionId) {
   if (!/^run-[A-Za-z0-9-]+$/.test(runId)) throw Error('Invalid run');
   const dir = resolve(workspace, 'output/runs', runId);
   if (realpathSync(dir) !== dir) throw Error('Redirected run');
+  const api=inspectApiHumanAction(workspace,parent,runId,agentRoot);
+  if(api && (!actionId || api.action_id===actionId)) return api;
   const manifest = read(dir, 'manifest.json'), state = read(dir, 'execution/browser-state.json');
   const dispatch = manifest.orchestration?.events?.filter(e => e.type === 'dispatched' && e.stage === 'execution').at(-1);
   if (manifest.stages?.execution?.status !== 'in_progress' || state.status !== 'waiting_human' || state.human_protocol !== 1 ||
@@ -46,8 +49,10 @@ export function listHumanActions(workspace, parent, agentRoot = agents()) {
   const runs = resolve(workspace, 'output/runs');
   if (!existsSync(runs) || realpathSync(runs) !== runs) return [];
   return readdirSync(runs, { withFileTypes: true }).filter(e => e.isDirectory() && /^run-[A-Za-z0-9-]+$/.test(e.name)).flatMap(e => {
-    try { const action = inspectHumanAction(workspace, parent, e.name, agentRoot); return action ? [action] : []; }
-    catch { return []; }
+    const actions=[];
+    try {const api=inspectApiHumanAction(workspace,parent,e.name,agentRoot);if(api)actions.push(api);}catch{}
+    try {const browser=inspectHumanAction(workspace,parent,e.name,agentRoot,'browser');if(browser)actions.push(browser);}catch{}
+    return actions;
   });
 }
 
@@ -56,12 +61,13 @@ export async function answerHumanAction({ workspace, parent, runId, actionId, de
   const key = `${workspace}:${runId}:${actionId}`;
   if (pending.has(key)) return pending.get(key);
   const operation = (async () => {
-    const action = inspectHumanAction(workspace, parent, runId, agentRoot);
+    const action = inspectHumanAction(workspace, parent, runId, agentRoot, actionId);
     if (!action || action.action_id !== actionId) throw Error('This human action has expired; refresh the task.');
     if (decision === 'wait') return { status: action.status, changed: false };
     if (action.status !== 'waiting_human' && action.status !== 'not_sent') return { status: action.status, changed: false };
     const dir = resolve(workspace, 'output/runs', runId);
-    await health(dir);
+    if(action.channel!=='api') await health(dir);
+    else if(decision==='cancel') writeJson(resolve(dir,'execution/api/cancel.json'),{action_id:actionId,at:new Date().toISOString()});
     const file = resolve(dir, receiptPath(actionId));
     mkdirSync(resolve(file, '..'), { recursive: true });
     const receipt = { version: 1, run_id: runId, parent_session: parent, child_session: action.child_session, dispatch_id: action.dispatch_id,
@@ -69,7 +75,7 @@ export async function answerHumanAction({ workspace, parent, runId, actionId, de
     const save = () => writeJson(file, receipt);
     save();
     try {
-      const outcome = await send(action.child_session, humanConfirmationText(actionId, decision), decision);
+      const outcome = await send(action.child_session, humanConfirmationText(actionId, decision), decision, action.channel ?? 'browser');
       if (!['started', 'steered', 'resumed'].includes(outcome)) {
         receipt.status = 'not_sent'; save();
         throw Error('The original child could not resume; no new task or product operation was started.');

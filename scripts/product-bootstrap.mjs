@@ -16,7 +16,8 @@ export async function initializeProductAgents(layout,{fetcher=fetch,serviceCheck
     writeFileSync(fd,JSON.stringify({pid:process.pid,installation_id:layout.installation_id}));
     const state=existsSync(journal)?json(journal):{version:1,installation_id:layout.installation_id,project_id:layout.project_id,status:'initializing',owned:[]};
     if(state.version!==1||state.installation_id!==layout.installation_id||state.project_id!==layout.project_id||!Array.isArray(state.owned))throw new Error('Initialization journal belongs to another installation');
-    if(state.status==='complete'&&state.tool_interface_version===1)return {status:'already_initialized',agents:state.owned.length};
+    const expectedAgents=json(resolve(layout.paths.engine,'penguin/agents.json')).agents.map(a=>a.id);
+    if(state.status==='complete'&&state.tool_interface_version===1&&expectedAgents.every(id=>state.owned.includes(id)))return {status:'already_initialized',agents:state.owned.length};
     const service=await serviceCheck(layout,{fetcher});if(service.status!=='ready')throw new Error('Host must be authenticated and ready before provisioning');
     const token=readFileSync(resolve(layout.paths.host_data,'api-token'),'utf8').trim();
     const base=`http://localhost:${service.port}/api/projects/${encodeURIComponent(layout.project_id)}/agents`;

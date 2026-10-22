@@ -30,7 +30,7 @@ metadata:
 
 源结果转写必须保留已提供的expected、actual_result、evidence_mode、verification_scope、时序及用例关联等字段；最小契约字段不是白名单，不要裁剪为只有编号/状态/证据。当前轮与历史轮不可仅按相同编号合并。工具导出会按编号、状态和证据路径唯一匹配已索引来源，恢复字段并记录来源；歧义不猜测，不要求用户技术解锁。来源未提供实际说明时写未记录，不能用通过状态编造执行描述。导入、合成和模拟属性必须在结果清单和报告中可见；单条模拟通过不代表产品通过。
 
-直接使用提供的有效结果，写report/test_report.md、report/reportable-results.json与report/issues.json。结果包含本run_id、cases和summary，字段与计数按派发契约；已执行结果引用实际证据，无结果就明确未执行。历史材料标为导入，不冒充本Agent执行。用export_report导出HTML、Excel、Word/PDF；不调用build_report_metrics，不补生命周期台账。
+直接使用提供的有效结果，写report/test_report.md、report/reportable-results.json与report/issues.json。结果包含本run_id、cases和summary，字段与计数按派发契约；已执行结果引用实际证据，无结果就明确未执行。历史材料标为导入，不冒充本Agent执行。用export_report导出HTML（执行版 Excel 仅保留内部核查）；不调用build_report_metrics，不补生命周期台账。
 
 仅使用派发输入与available_sources，不检查不存在的可选design/defects文件。issues.json是顶层数组，无问题写`[]`，不是`{"issues":[]}`或`{"bugs":[]}`；诊断指出哪个文件就修哪个文件，不改无关测试结果。先保存当前阶段四份草稿（Markdown、results、issues、task），再diagnose_task、export_report、validate_artifacts。动作放入请求JSON并保存成功后，使用catalog.invocation的execute入口，不用action名称作CLI子命令。
 
@@ -44,13 +44,13 @@ metadata:
 
 ### 通用交付模板
 
-正文包括结论摘要、范围与环境、核心业务流程、问题与证据、测试数据及清理、未覆盖范围与回归建议、交付清单。清理未核验须明确标注，候选缺陷不得写成确认缺陷。export_report 新增 report/test_report.html（搜索及结果筛选）和 report/test_cases.xlsx（用例及问题清单），保留Word/PDF。执行版关联本次结果，保留未执行项，不覆盖设计版。对话回复仅列完成内容、产物链接和真正待决策事项。
+正文包括结论摘要、范围与环境、核心业务流程、问题与证据、测试数据及清理、未覆盖范围与回归建议、交付清单。清理未核验须明确标注，候选缺陷不得写成确认缺陷。export_report 新增 report/test_report.html（搜索及结果筛选）和 report/test_cases.xlsx（用例及问题清单），暂不生成 Word/PDF。执行版关联本次结果，保留未执行项，不覆盖设计版。对话回复仅列完成内容、产物链接和真正待决策事项。
 
 ### 统一产物交付契约
 
 新版运行同时核对当前invocation_id和独立attempt归档完整性。归档被修改、未封存或证据/缺陷仍属于旧批次时，停止正式交付并报告阻塞；不通过编辑哈希或手改当前结果修复。报告应区分历史轮次与当前轮次，列出超时、中断及残留数据风险，参见`docs/execution-attempts.md`。
 
-交付前运行`npm run artifacts:validate -- <run_id> report`，遵循`docs/artifact-contracts.md`。报告必须明确写出run_id和quality_gate.status原始值；统计、分类、通过率及质量门以当前结果与质量指标为准。结构校验检查Word包和PDF标识，但不替代渲染、客户端打开和人工结论审查。最新blocked/running状态的阻塞报告不能复用历史成功统计或旧缺陷分类，应生成当前空结果说明与对应空分类/评估。不得将阻塞报告登记为执行成功。
+交付前运行`npm run artifacts:validate -- <run_id> report`，遵循`docs/artifact-contracts.md`。报告必须明确写出run_id和quality_gate.status原始值；统计、分类、通过率及质量门以当前结果与质量指标为准。结构校验检查 HTML 内容和执行结果，但不替代渲染、客户端打开和人工结论审查。最新blocked/running状态的阻塞报告不能复用历史成功统计或旧缺陷分类，应生成当前空结果说明与对应空分类/评估。不得将阻塞报告登记为执行成功。
 
 ### 适用场景
 
@@ -64,8 +64,7 @@ metadata:
 ### 输出
 
 - 当前 `run_id` 的 `report/test_report.md`
-- 当前 `run_id` 的 `report/test_report.docx`
-- 当前 `run_id` 的 `report/test_report.pdf`
+- 当前 `run_id` 的 `report/test_report.html`
 
 ### 工作步骤
 
@@ -73,7 +72,7 @@ metadata:
 2. 以 `report/quality-metrics.json` 作为执行统计、证据可信度、缺陷统计和质量门的唯一事实源；以 `output/quality/quality-trends.json` 作为跨运行趋势来源。
 3. 汇总测试范围、失败和阻塞、缺陷、待确认项、未覆盖范围和残余风险。
 4. 根据 `quality_gate.status` 给出谨慎结论：`blocked` 不得给出通过结论；`review_required` 必须写明待确认项；`risk_present` 必须列出高风险；`informational` 仍需说明测试范围边界。
-5. 生成Markdown后，通过project-action调用export_report（只需run_id），使用本run的reportable-results和最新度量生成Word/PDF，再validate_artifacts（stage=report）并进行渲染检查。不得直接调用Python导出脚本；入口自动归档旧文件，但结构校验不能代替版式检查。仅按recovery.retry_allowed修正技术错误，不用旧成功结果填补受阻或批次不匹配。详见docs/draft-artifact-recovery.md。
+5. 生成Markdown后，通过project-action调用export_report（只需run_id），使用本run的reportable-results和最新度量生成HTML，再validate_artifacts（stage=report）并进行渲染检查。不得直接调用Python导出脚本；入口自动归档旧文件，但结构校验不能代替版式检查。仅按recovery.retry_allowed修正技术错误，不用旧成功结果填补受阻或批次不匹配。详见docs/draft-artifact-recovery.md。
 6. 不得为了生成报告临时安装 Python、npm、Office 或字体依赖；缺项时保留 Markdown 并报告环境未就绪。
 
 ### 质量标准
@@ -91,9 +90,14 @@ metadata:
 ### 报告规则
 
 - 缺陷当前状态使用最新 `quality-metrics.json` 的 governance 视图，同时保留原始执行事实和历史未解决问题。台账完整性错误必须阻断结论；fixed 只是待复测，不等于关闭。不能因本次全通过而消除历史风险。
-- 生命周期变更使已完成报告进入 revision_requested；重新生成度量、Markdown、Word/PDF，再验证报告契约和登记完成，不手改 manifest。导出器校验台账哈希不替代完整证据重放及渲染检查。旧报告保留为历史，不作为当前正式交付。
+- 生命周期变更使已完成报告进入 revision_requested；重新生成度量、Markdown、HTML，再验证报告契约和登记完成，不手改 manifest。导出器校验台账哈希不替代完整证据重放及渲染检查。旧报告保留为历史，不作为当前正式交付。
 - 报告只统计当前运行中真实执行的用例；未执行的测试点单列为“未覆盖”。
 - 读取当前运行的 bugs.json 和 bugs.md；若 Bug 为待确认，不能写为已确认缺陷。
 - 报告必须给出本次 run_id、执行范围、通过/失败/阻塞统计、风险、待确认项和证据位置。
 - 存在 `needs_review` 时，报告结论必须写为“产品缺陷结论待确认”，并列出关联用例；不得以“无产品缺陷”代替。
-- 报告必须展示质量门状态、证据不足数量、待确认项和残余风险；Word/PDF 与 Markdown 使用相同的质量门状态和核心统计。
+- 报告必须展示质量门状态、证据不足数量、待确认项和残余风险；HTML 与 Markdown 使用相同的质量门状态和核心统计。
+
+
+## 当前用户交付约定
+
+报告默认只生成并交付 HTML，暂不生成 Word/PDF。内部 Markdown、JSON、执行版 Excel 用于证据校验，不作为默认用户交付。标题使用真实功能/模块名称加“功能测试报告”或“接口测试报告”，不要用 run_id 或 test_xxx 当报告标题。内部固定路径供工具使用；总控 handoff 后生成带功能/模块前缀的交付副本，总控只向用户给出 typed_delivery.files 中的命名链接。
