@@ -66,11 +66,10 @@ Thumbs.db
 !/docs/controller-command-session.md
 !/docs/controller-recovery-policy.md
 !/docs/controller-role-boundaries.md
-!/docs/controller-tool-transport-repair.md
+!/docs/controller-tool-interface.md
 !/docs/credential-security.md
 !/docs/defect-and-report-agent-workflow.md
 !/docs/delegation-content-binding.md
-!/docs/delegation-interface-repair.md
 !/docs/delivery-interaction.md
 !/docs/design-quality-gate.md
 !/docs/directory-context.md
@@ -84,7 +83,7 @@ Thumbs.db
 !/docs/independent-professional-tasks.md
 !/docs/independent-task-scheduling.md
 !/docs/index.md
-!/docs/input-and-delivery-repair.md
+!/docs/input-and-delivery.md
 !/docs/interactive-browser-tasks.md
 !/docs/manifest-lock-recovery.md
 !/docs/model-parameter-tuning.md
@@ -108,7 +107,6 @@ Thumbs.db
 !/docs/test-data-ledger.md
 !/docs/test-delivery-template.md
 !/docs/test-point-diagnosis.md
-!/docs/test-point-regeneration-review.md
 !/docs/test-selection-and-efficiency.md
 !/docs/three-agent-test-design-workflow.md
 !/docs/user-guide.md

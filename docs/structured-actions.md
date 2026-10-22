@@ -1,6 +1,6 @@
 # 结构化动作与失败说明
 
-## 2026-10-12目录与身份更新
+## 目录与身份更新
 
 后续补充：catalog.invocation_steps明确先write_file成功、再execute；缺请求文件的hook拒绝提供操作顺序，且不创建猜测请求、不启动动作或解锁会话。handoff成功响应的data.presentation包含run_status快照，analysis阶段另含analysis_summary。status=ready时可直接用于当前回复；unavailable/review_required时检查errors和摘要一致性，不把展示故障当成完成登记失败再次登记。状态或产物后续变化时重新调用只读动作；摘要不批准业务、不保证语义正确。
 
@@ -12,9 +12,9 @@ catalog由CLI传入真实工程根，返回runtime_context中的engine_root、se
 
 dispatch成功还返回delegation（agent_id、description、prompt），供总控直接传给run_subagent。agent_id来自已登记专业角色，不能换成Caller agent或省略。prompt包含真实派发编号、父会话、策略原文和职责边界，可追加业务目标，不应删改这些约束。子任务只交付，父总控在调用返回后才登记complete。返回此对象不是实际子Agent调用，也不是工具层强制拦截；真实父子证据仍须核验。
 
-2026-10-10派发修复：catalog新增field_rules与examples，actions只列允许字段。普通dispatch省略mode，只有execution准备使用prepare；default不合法。非法mode在结构化输入层给出完整纠正提示，不再先提示“只支持prepare”再由底层拒绝非execution。archive_input的source/text二选一，另一字段须省略，不能填空占位。
+catalog新增field_rules与examples，actions只列允许字段。普通dispatch省略mode，只有execution准备使用prepare；default不合法。非法mode在结构化输入层给出完整纠正提示，不再先提示“只支持prepare”再由底层拒绝非execution。archive_input的source/text二选一，另一字段须省略，不能填空占位。
 
-减少模型拼接双层CLI参数导致的误用。动作适配层以固定映射构造参数数组，继续调用原脚本和同一个controller-session闸门。2026-10-10起，明确安全的输入和草稿错误允许限次纠正，见[总控技术恢复](controller-recovery-policy.md)；不跳过阶段审批、不代替专业Agent。
+减少模型拼接双层CLI参数导致的误用。动作适配层以固定映射构造参数数组，继续调用原脚本和同一个controller-session闸门。，明确安全的输入和草稿错误允许限次纠正，见[总控技术恢复](controller-recovery-policy.md)；不跳过阶段审批、不代替专业Agent。
 
 先查看目录：`node scripts/project-action.mjs catalog`。无参数、help、--help也返回目录；帮助查询支持可选controller-session。用文件工具将请求JSON保存到本机output/action-requests内，随后每次仅运行一个命令：
 
@@ -33,7 +33,7 @@ node scripts/project-action.mjs summary --controller-session=<真实总控会话
 {"action":"create_run"}
 ```
 
-2026-10-10补充：create_run省略run_id时由入口生成UUID编号，写入动作回执的generated_run_id和run_id，再调用创建脚本；返回run_id供后续原样使用。只有省略才自动生成，显式非法值仍报错，不偷偷改名。创建不是幂等重试接口：成功后不要再次创建，结果未知先读原回执和运行状态。其余动作仍必须提供真实run_id。显式编号格式为`^run-[A-Za-z0-9-]+$`。
+create_run省略run_id时由入口生成UUID编号，写入动作回执的generated_run_id和run_id，再调用创建脚本；返回run_id供后续原样使用。只有省略才自动生成，显式非法值仍报错，不偷偷改名。创建不是幂等重试接口：成功后不要再次创建，结果未知先读原回执和运行状态。其余动作仍必须提供真实run_id。显式编号格式为`^run-[A-Za-z0-9-]+$`。
 
 ```json
 {"action":"plan_run","run_id":"run-example","stages":["analysis"]}
@@ -91,27 +91,21 @@ summary只读聚合当前会话闸门和动作回执：action_attempts是动作�
 
 analysis_summary核验台账来源和生成正文一致后返回精确条目及文件哈希，用于减少口头汇报超出实际记录。它不推断语义覆盖，不创建新交付门槛；流程状态另读run_status。说明与澄清排序原则见[分析摘要与澄清优先级](analysis-summary-and-clarification.md)。
 
-2026-10-10最新验证：129项Node测试通过，最小真实需求分析已正式完成并等待确认；其余旧测试结论按时点保留。详见连续修复记录（本地历史记录，不随源码分发）。
-
 目录/catalog、summary是只读查询，不解除闸门。stopped时仅run_status、block/fail按既有诊断/收口规则处理；参数正确也不保证阶段允许收口。身份、审批、语义及工具权限边界沿用原设计。旧CLI保留给未覆盖脚本及维护者，新层不能禁止直接工具绕过，不修改PenguinHarness安装包。
 
-本轮工程测试覆盖适配参数、真实CLI请求文件、合成运行创建/归档/规划/状态、错误JSON停机、跨调用拒绝、审计覆盖、输入越界/覆盖拒绝和无派发收口拒绝。全部使用合成父trace，不是PenguinHarness真实Agent复验。历史失败记录不迁移、不补造动作审计。
+工程测试覆盖适配参数、真实CLI请求文件、合成运行创建/归档/规划/状态、错误JSON停机、跨调用拒绝、审计覆盖、输入越界/覆盖拒绝和无派发收口拒绝。全部使用合成父trace，不是PenguinHarness真实Agent复验。历史失败记录不迁移、不补造动作审计。
 
-下一步待确认后进行新会话最小真实复验。本轮不自动解除15:43会话暂停，不执行完整业务测试、不恢复模型评测、不提交GitHub。
-
-2026-10-09验证：106项Node工程测试及7项Python报告逻辑测试通过，新增7项结构化动作测试已纳入全量工程回归。七个角色公开指令同步后差异0，15:43失败清单和会话状态哈希未变。日志为本机output/structured-actions-regression.log；工程测试不能证明真实Agent已正确使用新入口。
-
-## 2026-10-10：同一运行计划增补
+## 同一运行计划增补
 
 下游生成新增export_test_points、export_test_cases、assess_evidence、normalize_defects、build_report_metrics、export_report，仅传run_id。仅当前拥有的专业派发可用，自动保存输入及旧输出快照；具体修正预算、失败边界与验证要求见[下游技术返修](draft-artifact-recovery.md)。生成成功不等于完成登记或批准。
 
 首次计划用plan_run；用户继续同一任务的后续阶段用extend_plan，字段为run_id、stages数组、reason。它只增补目标阶段与依赖，不重置旧结果或确认，重复范围返回unchanged=true。增补不是派发或执行授权，仍按最新run_status、阶段依赖与确认规则继续。详见[运行计划增补](run-plan-extension.md)。
 
-## 2026-10-10：分析用户修订补充
+## 分析用户修订补充
 
 `resolve_confirmation`在`stage=analysis`、`decision=revision_requested`时同时支持待确认与已批准状态，`reason`必须记录用户明确提出的修改意见。自动归档版本并使依赖阶段旧批准失效，返回`archive`和`affected_stages`。随后正常派发分析，`event.revision_context`提供归档与修改信息，新版仍须登记完成并重新确认。不要用此动作冒充用户意图或替代自动技术返修；详见[分析用户修订](analysis-user-revision.md)。
 
-## 草稿诊断补充（2026-10-12）
+## 草稿诊断补充
 
 五个非执行草稿阶段的preview_revision成功资格与revise_stage成功结果现提供revision_budget；受控修订后的生成、导出、validate_artifacts、handoff按新派发隔离动作额度，旧计数保留。不得把ineligible外层completed当作恢复成功，执行阶段不适用。详见[通用有限返修预算](draft-revision-budgets.md)。
 
@@ -123,4 +117,4 @@ analysis_summary核验台账来源和生成正文一致后返回精确条目及�
 
 历史非受控命令需要工程侧审查，沿用 recover-stage/review-session 的证据和哈希校验，不让总控编造审查或用户业务批准。审查恢复会保留草稿快照，新派发使用独立生成预算，原失败次数保留。
 
-`{"action":"diagnose_analysis","run_id":"<实际run_id>"}` 在无 Markdown 时诊断台账结构与原文引用。外层 completed 不代表草稿通过，必须检查 result.status。仅在 passed 后正式生成并验证；不代替用户确认。read_source.quote_json 提供保留原始换行的 JSON 字符串值。有限返修与本次真实会话限制见 修复记录（本地历史记录，不随源码分发）。
+`{"action":"diagnose_analysis","run_id":"<实际run_id>"}` 在无 Markdown 时诊断台账结构与原文引用。外层 completed 不代表草稿通过，必须检查 result.status。仅在 passed 后正式生成并验证；不代替用户确认。read_source.quote_json 提供保留原始换行的 JSON 字符串值。返修策略见[草稿返修与进展控制](draft-revision-budgets.md)。

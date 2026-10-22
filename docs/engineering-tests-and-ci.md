@@ -1,7 +1,5 @@
 # 工程测试入口与CI
 
-日期：2026-10-15。二轮审阅第3项。供开发维护使用，不是测试智能体日常用户的操作前置条件。
-
 ## 入口
 
 ```powershell
@@ -13,8 +11,8 @@ node scripts/run-engineering-tests.mjs tests/acceptance/manifest-lock.test.mjs
 ```
 
 - `test:list`只列出测试，不检查运行时、不启动浏览器、不创建测试目录。
-- `npm test`自动发现`tests/acceptance`第一层的全部`*.test.mjs`，按文件名排序；新测试自动进入默认覆盖范围。本轮39个文件。
-- `test:browser`运行`browser-task.test.mjs`及包含真实URL探索的`independent-task.test.mjs`；`test:core`运行其余37个文件。两者不重叠，合并等于默认全集。新增需要启动浏览器的测试文件时，须同步入口中的浏览器分类及分组测试，默认全集发现规则不变。
+- `npm test`自动发现`tests/acceptance`第一层的全部`*.test.mjs`，按文件名排序；新测试自动进入默认覆盖范围。
+- `test:browser`运行入口中列出的浏览器测试；`test:core`运行其余测试。具体文件用 `test:list -- --suite=browser` 或 `test:list -- --suite=core` 查询。两者不重叠，合并等于默认全集。新增需要启动浏览器的测试文件时，须同步入口中的浏览器分类及分组测试，默认全集发现规则不变。
 - `.test.py`目前由对应Node测试调用（Word输入等），不是单独的发现规则。产品Playwright用例、真实Agent任务和题库评分不由此入口自动运行。
 - 旧的专项npm命令保留，仍通过同一隔离运行器执行。显式文件列表仍可用；拼错、重复、未知选项或混用套件与文件会报错，不静默缩小范围。
 
@@ -24,9 +22,7 @@ node scripts/run-engineering-tests.mjs tests/acceptance/manifest-lock.test.mjs
 
 报告Python沿用`QA_PYTHON`或PATH探测。若现有报告Python较旧，可仅对维护终端设置`QA_SECURITY_PYTHON`指向已安装的3.11以上解释器；无需更换报告环境。环境不足会输出错误和非零退出码，不冒充跳过或测试通过。运行器不自动安装、升级或联网补依赖。
 
-CI采用Windows Server 2022、Node 22、Python 3.12；安装Node锁文件及`requirements-ci.txt`中固定版本。浏览器作业显式安装锁文件对应的Playwright Chromium。工程浏览器实现已有本机Chrome回退，本轮本机测试沿用它；这与CI Chromium不是同一浏览器版本，不宣称环境完全相同。
-
-本轮确认Python依赖固定版本在公开PyPI存在。本机报告解释器3.9.7，凭据审计使用进程级指定的已安装3.12.14，未改系统PATH、宿主模型、代理或凭据。不把该本机绝对路径写入CI。
+CI采用Windows Server 2022、Node 22、Python 3.12；安装Node锁文件及`requirements-ci.txt`中固定版本。浏览器作业显式安装锁文件对应的Playwright Chromium。本机 Chrome 回退与 CI Chromium 可能不是同一版本，验证时应记录实际环境。
 
 ## 隔离和结果
 
@@ -54,16 +50,4 @@ CI采用Windows Server 2022、Node 22、Python 3.12；安装Node锁文件及`req
 - GitHub权限仅contents:read，不使用模型密钥、产品账号、pull_request_target或宿主安装。
 - 执行与本机相同的npm入口，并检查发布资源白名单。失败不掩盖，尽可能上传结果；报告保留7天。
 - 不替代真实模型验收、产品功能测试、客户端文件打开、性能评测或独立exe发布验收。工程回归中的benchmark记录校验不是恢复已暂停的能力评分任务。
-- 配置写入仓库不代表远端已生效；必须提交推送后查看Actions首轮结果。当前未推送，也未设置分支保护；需要在仓库中另行选择这两个检查为合并要求。
-
-## 本轮验证
-
-入口/隔离专项8/8通过，覆盖自动发现、分组完整性、非法参数、列举不依赖Python、依赖错误、失败传播、JUnit/TAP生成和临时目录清理。首轮发现嵌套Node测试上下文输出问题及测试错误消息大小写匹配问题，均已修正并复跑通过，原始失败报告保留。
-
-完整`npm test`执行39个文件、364项：363通过、0失败、1跳过，Node测试耗时244.991秒。跳过项为本机权限不允许创建文件符号链接的凭据防误读测试，目录联接相关测试正常执行。未将跳过算作通过。
-
-结果目录：`output/engineering-tests/2026-10-15T10-08-41-956Z-42692430-a346-4b45-b224-b9205c1220da/`。JUnit通过XML解析核对：364个testcase、0个failure、1个skipped，临时目录已清理。
-
-完整运行后发现独立任务套件也包含浏览器探索，已将它从core改归browser，默认全集不变；同时补充成功/跳过报告测试及日志错误处理。入口与隔离专项最终8/8复验通过，记录在`output/engineering-tests/2026-10-15T10-13-48-000Z-83ff24e7-eac0-4198-b393-28090700b89d/`，不与完整批次累加。分组修订后未再次重跑完整全集。
-
-工作流使用已有Playwright附带YAML解析器做一次性语法及触发/矩阵结构校验，未新增解析依赖；不等同GitHub Actions服务端执行。安装核对in_sync、changes=0，发布资源白名单174项有效，exe_ready=false，修改差异检查通过。GitHub托管环境尚未运行，未提交/推送，不提前宣称远端CI通过；本轮也未重跑真实Agent验收或产品测试。
+- 工作流需提交推送后由 GitHub Actions 执行；远端结果以对应运行记录为准。分支保护中的必需检查由维护者另行配置。

@@ -34,5 +34,3 @@ node scripts/project-command.mjs run node show-run-status.mjs -- <run_id>
 专项回归命令：`npm run status:contracts`。覆盖返修覆盖历史批准、产出完成但未批准、待确认与拒绝、执行准备、状态矛盾、无计划、快照哈希及范围外阶段。工程回归与真实Agent行为验证分别记录，不把合成测试称为端到端实测。
 
 本项完成后待用户确认，下一步建议在PenguinHarness进行最小真实复验，联合验证分析单一来源、停止约束及状态汇报；不自动开展完整业务测试或模型评测。
-
-2026-10-09验证：92项Node工程测试及7项Python报告逻辑测试通过，8项摘要专项已纳入engineering:contracts。历史恢复run只读摘要与清单一致，原文件哈希未变。七个角色指令已同步；未启动新真实Agent流程，未提交GitHub。

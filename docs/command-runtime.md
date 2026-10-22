@@ -10,7 +10,7 @@ Agent常用生命周期操作现优先使用[结构化动作入口](structured-a
 
 真实PenguinHarness调用中，npm脚本包装器报`/usr/bin/env: bash: No such file or directory`；转用`cmd /c`出现交互式命令提示符并持续等待。这不是Playwright、Excel或Word插件需要重新下载的证据。
 
-本轮增加统一原生进程入口，规避该包装器链路，不修改PenguinHarness安装包、系统PATH、系统安全设置或用户应用配置。最外层PenguinHarness工具仍可能经过其默认shell，所以其profile警告不等于已修复；最外层工具被强制杀死时，也不能保证项目清理钩子运行。
+统一原生进程入口，规避该包装器链路，不修改PenguinHarness安装包、系统PATH、系统安全设置或用户应用配置。最外层PenguinHarness工具仍可能经过其默认shell，所以其profile警告不等于已修复；最外层工具被强制杀死时，也不能保证项目清理钩子运行。
 
 ## 用法
 
@@ -53,16 +53,4 @@ node scripts/project-command.mjs run python generate-report-documents.py --contr
 
 ## 验证
 
-专项工程测试使用标记的合成脚本，验证参数完整性、失败码、超时中断、路径/脚本限制、Python错误配置及run内日志归档。它不代替真实PenguinHarness命令冒烟或完整Agent流程。真实冒烟结果在本轮进度记录中单列；尚未完成的恢复链路、业务流程和四格式报告验收不能由doctor通过代替。
-
-### 2026-10-09验证结果
-
-- 工程回归：65项Node测试、7项Python报告测试通过；其中命令入口专项6项。
-- 七个角色指令同步检查：`in_sync`，差异0。
-- 真实PenguinHarness总控会话：`session-2026-10-09-14-41-35-b17d3a42`，模型step-3.7-flash。通过界面发送明确限定的两条诊断命令，结构化工具记录确认顺序执行且没有额外派发。
-- doctor返回ready，发现既有原生Node/Python及三个项目依赖；随后只读运行`show-run-plan.mjs`，completed、exit_code=0，子进程duration_ms=114，termination_confirmed=true。会话整体约23秒，不等于脚本耗时。
-- 实际审计目录：`output/command-runs/643e8448-e76a-4c8b-bfc8-db932307d4d6`，包含`command.json`和`command.log`。真实工具追踪保留在本机PenguinHarness test_agent的同日traces中，不将运行日志提交仓库。
-- 被读取的旧run为`run-acceptance-base-20261009`；清单前后SHA256均为`B4F6EDCF946DFFCE607D4B6CB418E124477E10D73F526895EB74889D49539DFD`，仍blocked。
-- 外层shell仍输出which/locale缺失警告；本轮仅绕开故障包装器，不修复供应商shell。未安装、启动被测浏览器、修改旧run或开展完整测试流程。
-
-本次成功不证明子Agent能自主选择新入口，不证明所有脚本/导出格式均经真实Agent验证，也不解除历史阻塞。后续需完成需求来源治理后再安排恢复链路和完整流程复验。
+专项工程测试使用标记的合成脚本，验证参数完整性、失败码、超时中断、路径/脚本限制、Python错误配置及run内日志归档。它不代替真实PenguinHarness命令冒烟或完整Agent流程。真实冒烟结果应单独记录；尚未完成的恢复链路、业务流程和四格式报告验收不能由doctor通过代替。
