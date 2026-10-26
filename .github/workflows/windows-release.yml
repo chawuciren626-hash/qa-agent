@@ -32,7 +32,7 @@ jobs:
         run: ./packaging/fetch-runtime.ps1 -Cache "$env:RUNNER_TEMP/aitest-downloads"
       - name: Installation, upgrade and onboarding contracts
         shell: pwsh
-        run: node scripts/run-engineering-tests.mjs tests/acceptance/product-upgrade.test.mjs tests/acceptance/product-installation.test.mjs tests/acceptance/model-onboarding.test.mjs tests/acceptance/client-asset-identity.test.mjs tests/acceptance/runtime-installation.test.mjs tests/acceptance/release-maintenance.test.mjs
+        run: node scripts/run-engineering-tests.mjs tests/acceptance/product-upgrade.test.mjs tests/acceptance/product-uninstall.test.mjs tests/acceptance/product-installation.test.mjs tests/acceptance/model-onboarding.test.mjs tests/acceptance/client-asset-identity.test.mjs tests/acceptance/runtime-installation.test.mjs tests/acceptance/release-maintenance.test.mjs
       - name: Stage complete application
         shell: pwsh
         run: |
