@@ -1,5 +1,7 @@
 # 接口执行工具与声明式用例
 
+当前功能与接口链路从需求分析、测试点、用例到执行、缺陷和 HTML 报告均不开展性能测试或安全测试；这两类能力留待独立子Agent建设。混合资料保留相关来源并注明当前能力范围外，不阻塞功能/接口交付；纯性能/安全请求说明能力未建设，不生成空流程。普通登录、认证、业务权限、字段校验按明确功能契约验证，执行授权、脱敏和操作防护继续生效。耗时、超时、并发字段用于运行控制与证据记录，不代表性能验收。
+
 入口：现有 `project-action.mjs execute` 的 `qa_request`，`action=api_task`，`run_id` 为当前派发。独立角色为 `api_automation_agent`，阶段为 `api_execution`。
 
 操作：`inspect_contract {source_path,url?,operations?}`、`prepare {cases_path,contract_path?}`、`start`、`status`、`resume {credentials?}`、`cancel`、`collect {partial?}`。这些字段放在 `operation`，其中 `type` 为操作名称。长请求在独立 worker 中运行，start 不等待网络。resume 为原 worker 提供缺失凭据，不重复启动或重放请求。认证卡片绑定原生子任务，不依赖浏览器；已经发出的 401 请求不会自动重试。

@@ -221,7 +221,8 @@ test('shared policy is compact, model-neutral and keeps task memory separate fro
   const engine = resolve(import.meta.dirname, '../..');
   const runtime = readFileSync(resolve(engine, 'penguin/command-runtime.md'), 'utf8');
   // A source-size regression check, never a runtime task or model budget.
-  assert.ok(runtime.length < 8000, `Shared instructions grew to ${runtime.length} characters`);
+  // Includes the cross-stage capability scope; keep the combined policy bounded.
+  assert.ok(runtime.length < 9000, `Shared instructions grew to ${runtime.length} characters`);
   for (const rule of [
     /task（默认）/, /lifecycle \+ auto/, /显式 staged/, /相同有效批准不重复索取/,
     /未知副作用/, /recovery.retry_allowed/, /stalled=true/, /termination_confirmed/,
@@ -235,6 +236,19 @@ test('shared policy is compact, model-neutral and keeps task memory separate fro
   assert.match(controller, /不要把合同文件正文展开后替换prompt/);
   assert.match(controller, /不为派发而先读专业Skill全文/);
   assert.match(controller, /具体方法与数据结构由专业角色/);
+});
+
+test('functional/API scope applies to every business role without disabling runtime protection', () => {
+  const engine = resolve(import.meta.dirname, '../..');
+  const manifest = JSON.parse(readFileSync(resolve(engine, 'penguin/agents.json')));
+  const runtime = readFileSync(resolve(engine, manifest.shared_instructions), 'utf8');
+  for (const phrase of ['需求分析、测试点、用例、Web/接口执行、缺陷分析和报告', 'scope=out_of_scope', '不列为必答澄清', '不规划空生命周期', '业务权限', '凭据脱敏', '不直接执行或覆盖历史结果']) assert.ok(runtime.includes(phrase), phrase);
+  assert.equal(manifest.agents.length, 8); // No unimplemented performance/security agents registered.
+  for (const path of ['skills/requirement-analysis/SKILL.md', 'skills/test-point-design/SKILL.md', 'penguin/agents/test_point_agent/AGENTS.md']) {
+    const text = readFileSync(resolve(engine, path), 'utf8');
+    assert.match(text, /性能\/安全测试/);
+    assert.doesNotMatch(text, /性能、安全.*不能.*背景|权限、安全、性能/);
+  }
 });
 
 test('sync composes shared policy once and preserves user memories and host configuration', t => {
