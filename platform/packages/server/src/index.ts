@@ -1,0 +1,587 @@
+/**
+ * Server process entry point: the whole startup lifecycle, as one ordered sequence.
+ *
+ * Importing this module STARTS the server — the CLI runs a server in its own process by
+ * `await import("@prismshadow/penguin-server")` and nothing else, so main() is invoked at
+ * module scope rather than exported.
+ *
+ * main() comes first in the file and is the sequence itself: each step is one PenguinServer
+ * method, named after what it does and appearing in the order main() calls it. The order
+ * carries real constraints — the proxy dispatcher before any outbound request, the instance
+ * lock before the database opens, plugins loaded before the platform boots against them,
+ * the platform (and with it the whole business surface) before the first request is
+ * served — so each step documents the constraint it stands on.
+ *
+ * Tests never go through this file (they inject via app.request() instead).
+ */
+import fs from "node:fs";
+import path from "node:path";
+import type { Server as HttpServer } from "node:http";
+import { config as loadDotenv } from "dotenv";
+import { serve } from "@hono/node-server";
+import { bootAppDeps, createApp } from "./app.js";
+import { HmrHost, hmrMain } from "@prismshadow/penguin-hmr";
+import type { Hmr } from "@prismshadow/penguin-hmr";
+import type { Instance } from "@prismshadow/penguin-core/kernel";
+import { packagedPlatform } from "./hmr/platform.js";
+import { startingResponse } from "./hmr/starting.js";
+import type { PlatformApi, ServerHmrHost } from "./hmr/platform.js";
+import type { ServerBoot } from "./app.js";
+import { ADMIN_USER_ID } from "./auth/service.js";
+import { resolveServerConfig, type ServerConfig } from "./config.js";
+import { clearInitialAdminPassword, renderFirstLoginNotice } from "./initial-password.js";
+import { applyProxySettings, installGlobalProxyDispatcher } from "./net/proxy.js";
+import { PluginHost } from "./plugin/host.js";
+import { loadPlugins } from "./plugin/loader.js";
+import { attachTerminalWebSocket } from "./terminal/ws.js";
+import { attachExtensionWebSocket } from "./builtin-browser/extension-ws.js";
+import type { ExtensionGate } from "./builtin-browser/extension-ws.js";
+import { loopbackHostRoles } from "./services/preview-token.js";
+import { acquireServerLock, liveServerLock, releaseServerLock } from "./lock.js";
+import { shellPortOf, wireShellUpdatePort } from "./services/desktop-update-port.js";
+import type { Settings } from "./mechanisms/settings.js";
+import type { Errors } from "./mechanisms/observability.js";
+import type { Auth } from "./mechanisms/identity.js";
+
+/**
+ * The startup lifecycle: one line per step, in the order they have to happen.
+ *
+ * This is the file's table of contents — each call below is a PenguinServer method, and
+ * reading them top to bottom is the whole of what starting a server does.
+ */
+async function main(): Promise<void> {
+  const server = new PenguinServer();
+  server.loadEnv();
+  server.installProxy();
+  server.readConfig();
+  await server.ensureSoleInstance();
+  server.listen();
+  // The HMR layer's entry (packages/hmr's main.ts) owns the frozen operations: which
+  // generation a request goes to, how a push lands, what happens when one fails. The
+  // product hands it the host, what to refresh once a generation is current, and its own
+  // start — everything the platform is comes up inside it.
+  await hmrMain(
+    server.createHost(),
+    (instance) => server.replace(instance),
+    async (hmr) => {
+      await server.loadPlugins();
+      await server.buildDeps(hmr);
+      server.applyPersistedProxy();
+      server.buildApp();
+      await server.seedAdmin();
+      server.installProcessHandlers();
+      await server.printFirstLoginNotice();
+    },
+  );
+  await server.announce();
+}
+
+/**
+ * One server process, one method per lifecycle step.
+ *
+ * The steps are not independent: each reads what the ones before it produced. main() is
+ * the only caller and runs them in order, which is what lets the spine fields below be
+ * read without a null check from the step after the one that assigns them.
+ */
+class PenguinServer {
+  /** Set at seed when this server still has no admin password; printed once the port is known. */
+  private pendingFirstLoginNotice = false;
+
+  /** Assigned by readConfig(); every later step reads it. */
+  private config!: ServerConfig;
+  /** Assigned by loadPlugins(); published to the platform tree by buildDeps(). */
+  private plugins!: PluginHost;
+  /** Assigned by createHost(): the store and the swap, built over the packaged platform. */
+  private host!: ServerHmrHost;
+  /** Assigned by buildDeps(); the merged runtime + business view (see app.ts). */
+  private deps!: ServerBoot;
+  /** Assigned by buildApp(). */
+  private app!: ReturnType<typeof createApp>;
+  /** Assigned by listen(). */
+  private httpServer!: ReturnType<typeof serve>;
+  /** Resolves with the port the OS actually bound, once the listener is up. */
+  private bound!: Promise<number>;
+  private resolveBound!: (port: number) => void;
+
+  /** The `::1` companion listener, when one was opened — see openIpv6Loopback(). */
+  private ipv6Loopback: ReturnType<typeof serve> | null = null;
+
+  private shuttingDown = false;
+
+  /** The current App's auth service — resolved per call, since a hot swap replaces the tree. */
+  private auth(): Auth {
+    return this.deps.tree.api<Auth>("IdentityModule", "Auth");
+  }
+
+  /**
+   * The process-level handlers' record of an error. A tree that cannot answer (mid-swap, a
+   * generation without one) must not turn the record into a second failure: the console
+   * line above the call is the record then, and a rejection stays the localized failure it
+   * was instead of becoming the exception that exits the process.
+   */
+  private recordProcessError(err: Error, code: "uncaught_exception" | "unhandled_rejection"): void {
+    try {
+      this.deps.tree
+        .api<Errors>("ObservabilityModule", "Errors")
+        .record({ source: "process", err, code });
+    } catch (recordErr) {
+      console.error(
+        `[server] the error above could not be recorded: ${recordErr instanceof Error ? recordErr.message : String(recordErr)}`,
+      );
+    }
+  }
+
+  /** `.env` may itself define HTTP_PROXY, so it is loaded before the dispatcher reads one. */
+  loadEnv(): void {
+    loadDotenv({ quiet: true });
+  }
+
+  /**
+   * Outbound proxy support, installed at the earliest point: sets the global dispatcher
+   * the runtime's fetch resolves per call, starting from the defaults (app switch on, no
+   * explicit address). The persisted values can only be read once the database is
+   * open, so they arrive later through applyPersistedProxy() — nothing in between makes an
+   * outbound request. See net/proxy.ts.
+   */
+  installProxy(): void {
+    installGlobalProxyDispatcher();
+  }
+
+  /** Resolves the process configuration, which comes from the environment only (config.ts). */
+  readConfig(): void {
+    this.config = resolveServerConfig();
+  }
+
+  /**
+   * Single instance per data root: web.db is single-writer and the scheduler must not run
+   * twice, so refuse to start when a live server already owns this root — BEFORE opening
+   * the database. The CLI and the desktop shell pre-check the same lock for a friendlier
+   * path (open / attach to the existing instance); this is the in-process backstop.
+   */
+  async ensureSoleInstance(): Promise<void> {
+    const existing = await liveServerLock(this.config.root);
+    if (existing === null) return;
+    console.error(
+      `Another PenguinHarness server is already running on this data root (pid ${existing.pid}).`,
+    );
+    console.error(`Existing instance: http://localhost:${existing.port}/`);
+    process.exit(EXIT_ALREADY_RUNNING);
+  }
+
+  /**
+   * A SHIM, since the platform loads its own (plugin/loader.ts's loadPluginHost, called from
+   * the platform's create()). Which plugins a deployment runs, and how that list is read, is
+   * policy — it ships by push, and a machine whose program predates a new rule must still
+   * learn it. What this keeps working is one case: a platform OLDER than that move, pushed
+   * onto this runtime, which claims the host and never builds one. It goes when no such
+   * platform is worth rolling back to.
+   *
+   * A plugin that fails to load is skipped with a warning instead of taking the server
+   * down: the capability it would have provided stays unavailable, which a deployment can
+   * recover from, whereas a server that refuses to boot serves nobody.
+   */
+  async loadPlugins(): Promise<void> {
+    this.plugins = new PluginHost();
+    const result = await loadPlugins(this.config.root);
+    for (const entry of result.loaded) {
+      // Only held here — the platform boots the modules inside its own tree, per App. A
+      // module name clash is a LOAD failure, isolated per entry like an import failure.
+      try {
+        this.plugins.use(entry);
+      } catch (err) {
+        result.failed.set(entry.specifier, err instanceof Error ? err.message : String(err));
+      }
+    }
+    for (const [specifier, reason] of result.failed) {
+      console.warn(`[plugins] skipped ${specifier}: ${reason}`);
+    }
+  }
+
+  /**
+   * Builds the service graph: opens the database, publishes the runtime capabilities —
+   * the loaded plugin host among them — and boots the platform, whose create() assembles
+   * the whole business surface (services, routes, the scheduler) and delivers the plugin
+   * hooks. The host is handed in rather than registered here because the platform boots
+   * INSIDE bootAppDeps: everything it claims has to be in the registry first, and the
+   * registry is the only way a pushed bundle — compiled standalone — can reach these
+   * plugin objects at all (see plugin/index.ts's pluginHostFrom).
+   */
+  /** The store and the swap, ahead of everything that boots against them (hmrMain takes it first). */
+  createHost(): ServerHmrHost {
+    this.host = new HmrHost<PlatformApi>(this.config.root, packagedPlatform);
+    return this.host;
+  }
+
+  async buildDeps(hmr: Hmr<PlatformApi>): Promise<void> {
+    this.deps = await bootAppDeps(this.config, [], this.plugins, undefined, this.host, hmr);
+  }
+
+  /**
+   * What the layer refreshes once a generation is current (hmrMain's replace): the instance
+   * it resolves nodes from. Everything read through `deps.tree` — the auth for the socket
+   * and the hot-update gate, the settings, the error recorder — is the new generation's from
+   * here; and because `tree` is read off the instance each time, an App that re-assembles
+   * itself inside that instance (a plugin change, no push) is followed too — a snapshot of
+   * the tree would keep answering from the disposed App.
+   */
+  replace(instance: Instance<PlatformApi>): void {
+    if (this.deps !== undefined) this.deps.instance = instance;
+  }
+
+  /**
+   * The database is open now: bring the dispatcher in line with the persisted proxy
+   * settings (absent rows read as the defaults: app switch on, no explicit address) before
+   * the first possible outbound request (update check, LLM calls — all behind HTTP
+   * handlers).
+   */
+  applyPersistedProxy(): void {
+    const settings = this.deps.tree.api<Settings>("SettingsModule", "Settings");
+    applyProxySettings({
+      proxyForApp: settings.getProxyForApp(),
+      proxyUrl: settings.getProxyUrl(),
+    });
+  }
+
+  /**
+   * Assembles the layer's middleware and routes; from here the listening port answers
+   * with them. The terminal stream is a WebSocket upgrade, which never reaches the fetch
+   * handler — it is bound on each Node listener here, once the platform it asks exists.
+   */
+  buildApp(): void {
+    this.app = createApp(this.deps);
+    attachTerminalWebSocket(this.httpServer as unknown as HttpServer, this.terminalWebSocketDeps());
+    attachExtensionWebSocket(
+      this.httpServer as unknown as HttpServer,
+      this.extensionWebSocketDeps(),
+    );
+    if (this.ipv6Loopback !== null) {
+      attachTerminalWebSocket(
+        this.ipv6Loopback as unknown as HttpServer,
+        this.terminalWebSocketDeps(),
+      );
+      attachExtensionWebSocket(
+        this.ipv6Loopback as unknown as HttpServer,
+        this.extensionWebSocketDeps(),
+      );
+    }
+  }
+
+  /**
+   * Built-in admin seed (idempotent): creates admin and adopts default_project when the
+   * users table is empty. The seed password is random, hashed, and discarded — nobody ever
+   * sees it — so a server that still has no admin password of its own prints a one-time
+   * sign-in LINK instead, carrying this boot's first-login token. The notice re-prints on
+   * every start until a password is set, because the link is regenerated every start.
+   *
+   * Nothing is printed in desktop mode: the shell's own window signs in through its one-shot
+   * token, so a link in a log would be a credential nobody needs. Nothing is printed either
+   * when the pinned PENGUIN_SEED_ADMIN_PASSWORD is still the admin's actual password — the
+   * operator knows it. The pin alone is not enough: an offline reset-admin-password replaces
+   * the password with an unknowable one while the pin stays configured, and the rescue flow
+   * IS this link, so the gate verifies the pin against the hash rather than trusting it.
+   *
+   * The sweep runs unconditionally: a root carried over from a build that stored the
+   * plaintext must not keep holding it (see initial-password.ts).
+   */
+  async seedAdmin(): Promise<void> {
+    await this.auth().seedAdmin();
+    clearInitialAdminPassword(this.config.root);
+    if (this.config.desktopToken !== null) return;
+    if (!this.auth().adminPasswordIsInitial()) return;
+    const pinned = this.config.seedAdminPassword;
+    if (pinned !== null && (await this.auth().adminPasswordIs(pinned))) return;
+    this.pendingFirstLoginNotice = true;
+  }
+
+  /**
+   * Opens the HTTP listener. The port is bound before the platform exists: until buildApp()
+   * it answers the starting response, so a client that arrives early sees "starting" —
+   * and, if it is a browser, comes back on its own — rather than a refused connection.
+   * Everything that needs the port the OS actually handed out (PORT=0 asks for an
+   * ephemeral one) waits for onListening().
+   */
+  listen(): void {
+    // The listener's callback records this process as the root's server (the lock); the
+    // root has to exist for that, and the database that used to create it is now opened
+    // later, inside start.
+    fs.mkdirSync(this.config.root, { recursive: true });
+    this.bound = new Promise((resolve) => {
+      this.resolveBound = resolve;
+    });
+    this.httpServer = serve(
+      {
+        // `env` carries the Node request: app.ts sets an event stream's idle timeout on its socket.
+        fetch: (request: Request, env) => this.app?.fetch(request, env) ?? startingResponse(),
+        hostname: this.config.host,
+        port: this.config.port,
+      },
+      (info) => this.onListening(info.port),
+    );
+  }
+
+  /**
+   * Announces the port (PENGUIN_PORT_FILE), the last step of startup. The port is bound
+   * long before this — a client that arrives early is answered rather than refused — but
+   * the announcement means the App is up, because that is what a reader waits for: the
+   * desktop shell opens its window on it. Between the bind and here every request gets the
+   * starting response instead.
+   */
+  async announce(): Promise<void> {
+    if (this.config.portFile === null) return;
+    writePortFile(this.config.portFile, await this.bound);
+  }
+
+  /**
+   * Signals, the desktop quit path and the process-level error fallback. Registered after
+   * listen(), so shutdown() can never fire before there is a listener for it to close.
+   */
+  installProcessHandlers(): void {
+    process.on("SIGINT", () => void this.shutdown("SIGINT"));
+    process.on("SIGTERM", () => void this.shutdown("SIGTERM"));
+
+    // Desktop shell quit path: POST /api/desktop/shutdown lands here — the same graceful
+    // shutdown as the signals, reachable over HTTP because a Windows child kill is a hard
+    // TerminateProcess with no signal delivery.
+    this.deps.desktop?.onShutdownRequest(() => void this.shutdown("desktop-shutdown"));
+
+    // Client-update relay: under the shell this process is an Electron utilityProcess and
+    // carries process.parentPort; wire it to the desktop service so the update routes can
+    // read the shell's updater snapshot and forward check/install. Absent port (a plain
+    // `penguin server|web` run, or tests) wires nothing.
+    if (this.deps.desktop !== null) {
+      const shellPort = shellPortOf(process);
+      if (shellPort !== null) wireShellUpdatePort(this.deps.desktop, shellPort);
+    }
+
+    // Process-level error fallback: once a background fire-and-forget promise (title
+    // generation, Session drive, etc.) throws, the error reaches the process without
+    // passing through any catch — persist it first for a record, then handle each case
+    // according to its nature.
+    process.on("uncaughtException", (err) => {
+      console.error(`[server] Uncaught exception: ${err.stack ?? err.message}`);
+      this.recordProcessError(err, "uncaught_exception");
+      // From this point the process state can't be trusted (the error was never converged
+      // by any catch): don't swallow it — wrap up per existing shutdown semantics and exit
+      // with a nonzero code (equivalent to Node's default crash exit, just with an extra
+      // persist and graceful wrap-up).
+      // Must exit even if shutdown itself errors — never let "caught a fatal error" turn
+      // into "the process limps along in a broken state".
+      void this.shutdown("uncaughtException", 1).catch(() => process.exit(1));
+    });
+    process.on("unhandledRejection", (reason) => {
+      const err = reason instanceof Error ? reason : new Error(String(reason));
+      console.error(`[server] Unhandled promise rejection: ${err.stack ?? err.message}`);
+      this.recordProcessError(err, "unhandled_rejection");
+      // Unlike uncaughtException, this **doesn't** exit: a rejected promise is a localized
+      // failure of some background task, and the process state isn't compromised; dragging
+      // down the entire service for it (Node's default behavior) isn't worth it — persist +
+      // log, then keep serving.
+    });
+  }
+
+  /** Everything derived from the actual bound port, run once the listener is up. */
+  private onListening(port: number): void {
+    console.log(`penguin-server started: http://${this.appHost()}:${port}`);
+    console.log(`Data root: ${this.config.root}`);
+    console.log(`SQLite: ${this.config.dbPath}`);
+    // Named for the same reason the data root is: it is the one path the static tail
+    // serves from when no pushed web version is restored, and the only trace of a wrong
+    // PENGUIN_WEB_DIST or a missing build is otherwise a 404 on every page.
+    console.log(`Web dist: ${this.config.webDist}`);
+    if (!fs.existsSync(path.join(this.config.webDist, "index.html"))) {
+      console.warn(
+        `[server] Web dist has no index.html; the Web App answers 404 unless a pushed web ` +
+          `version is restored. Build packages/web or point PENGUIN_WEB_DIST at a build.`,
+      );
+    }
+    if (this.config.desktopToken !== null) console.log("Desktop mode: enabled");
+    // PORT=0 asked for an ephemeral port: record the real one so everything derived from
+    // the server's own port is correct — Workspace preview URLs above all, which are built
+    // from the bind port on purpose (see resolvePreviewTarget) and would otherwise point at
+    // port 0 and fail to load. deps.config is this same object, so both route call sites
+    // (me.ts, sessions.ts) observe the update.
+    this.config.port = port;
+    // The root exists by now (openDatabase created it), and the pre-start check found no
+    // live owner — record ourselves as this root's server.
+    acquireServerLock(this.config.root, {
+      pid: process.pid,
+      port,
+      startedAt: new Date().toISOString(),
+    });
+    if (this.config.host === "127.0.0.1" || this.config.host === "localhost") {
+      this.openIpv6Loopback(port);
+    }
+    this.resolveBound(port);
+  }
+
+  /**
+   * The one-time sign-in link, last in the startup sequence so it is what a console is
+   * left showing rather than something scrolled past. Minting here rather than at seed
+   * time is what keeps "exists" and "was printed" the same thing for a setup session: the
+   * modes that decline to print never ask for one. The URL needs the port the OS actually
+   * handed out, which PORT=0 only settles once the listener is up.
+   */
+  async printFirstLoginNotice(): Promise<void> {
+    if (!this.pendingFirstLoginNotice) return;
+    const port = await this.bound;
+    const link = this.auth().mintFirstLogin();
+    if (link === null) return;
+    const token = encodeURIComponent(link);
+    console.log(
+      renderFirstLoginNotice(`http://${this.appHost()}:${port}/api/auth/claim?token=${token}`),
+    );
+  }
+
+  /**
+   * On a loopback bind the App is canonicalized onto one name (`localhost`) and its
+   * counterpart is reserved for previews, so advertise the canonical name — the other one
+   * only 302s back here for App routes (see the canonical-host guard in app.ts).
+   */
+  private appHost(): string {
+    // A wildcard bind is not an address anyone can open — `http://0.0.0.0:<port>` fails in a
+    // browser. Whoever reads this console is on the machine, where `localhost` reaches it;
+    // someone connecting from elsewhere substitutes the host they use to reach this box.
+    if (this.config.host === "0.0.0.0" || this.config.host === "::") return "localhost";
+    return loopbackHostRoles(this.config.host)?.app ?? this.config.host;
+  }
+
+  /**
+   * Second loopback listener so the preview origin is actually reachable.
+   *
+   * Workspace HTML previews are served from the loopback counterpart of the host the App
+   * is used on (`127.0.0.1` <-> `localhost`). On most systems `localhost` resolves to
+   * `::1` first, so a server bound only to `127.0.0.1` would leave every preview URL
+   * refusing connections. Binding `::1` as well closes that gap. Failure is non-fatal —
+   * the App keeps working, previews just fall back.
+   *
+   * Takes the ACTUAL bound port rather than resolving the configured one again: with
+   * PORT=0 both listeners resolving 0 independently would land on two different ports and
+   * every preview URL (same port, counterpart host) would refuse connections.
+   */
+  private openIpv6Loopback(port: number): void {
+    const loopback = serve({
+      fetch: (request: Request, env) => this.app?.fetch(request, env) ?? startingResponse(),
+      hostname: "::1",
+      port,
+    });
+    this.ipv6Loopback = loopback;
+    loopback.on("error", (err: NodeJS.ErrnoException) => {
+      console.warn(
+        `[server] IPv6 loopback listener unavailable (${err.code ?? err.message}); previews via localhost may not resolve.`,
+      );
+    });
+    // The terminal stream is bound on every listener in buildApp(), this one included, or
+    // the terminal only works on whichever address the browser happened to resolve; a
+    // loopback opened after buildApp() (never in practice) gets it here.
+    if (this.app !== undefined) {
+      attachTerminalWebSocket(loopback as unknown as HttpServer, this.terminalWebSocketDeps());
+      attachExtensionWebSocket(loopback as unknown as HttpServer, this.extensionWebSocketDeps());
+    }
+  }
+
+  /**
+   * The Chrome extension's WebSocket wiring, beside the terminal's on every listener: the
+   * upgrade is checked here, and the socket handed to the current generation's browser module.
+   */
+  private extensionWebSocketDeps() {
+    const hmr = this.deps.hmr;
+    return {
+      gate: async (): Promise<ExtensionGate | null> => {
+        const platform = await hmr.ensure();
+        const tree = typeof platform.api.business === "function" ? platform.api.business() : null;
+        if (tree === null || !tree.has("BuiltinBrowserModule")) return null;
+        try {
+          return tree.api<ExtensionGate>("BuiltinBrowserModule", "BrowserExtensionGate");
+        } catch {
+          // A pushed platform from before the extension: no gate, so the upgrade is a 503.
+          return null;
+        }
+      },
+      log: (line: string) => console.log(line),
+    };
+  }
+
+  /** Terminal WebSocket wiring, shared by every listener this process opens. */
+  private terminalWebSocketDeps() {
+    const auth = () => this.auth();
+    return {
+      hmr: this.deps.hmr,
+      trustProxy: this.deps.config.trustProxy,
+      // A getter: the upgrade handler asks per handshake, and gets the current generation's.
+      get authService() {
+        return auth();
+      },
+      log: (line: string) => console.log(line),
+    };
+  }
+
+  /**
+   * Graceful shutdown, idempotent across every path that can trigger it: interrupt all
+   * active runs (pending approvals converge to deny), wait ≤5s for wrap-up, then close
+   * HTTP and SQLite.
+   */
+  /**
+   * `exitCode` undefined leaves the code to `process.exitCode`: the platform's restart step
+   * presets core's SERVER_RESTART_EXIT_CODE there and raises SIGTERM, so this same shutdown
+   * is how the process leaves for its supervisor to relaunch (services/process-restart.ts).
+   */
+  private async shutdown(signal: string, exitCode?: number): Promise<void> {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
+    console.log(`Received ${signal}, shutting down…`);
+    // The CURRENT App's graceful drain (manager: interrupt runs, deny approvals, wait ≤5s
+    // for wrap-up) — through the instance the host holds, which a hot swap keeps current;
+    // no registry pointer needed.
+    await (await this.deps.hmr.ensure()).api.shutdown();
+    // Plugin disposables: async-capable and awaited HERE — the one exit path that can
+    // await — under the same ≤5s convention as the manager's wrap-up above. The registry
+    // sweep below would only fire them without awaiting. Idempotent, so the sweep's
+    // fallback firing right after is a no-op.
+    await Promise.race([
+      this.plugins.dispose(),
+      new Promise<void>((resolve) => setTimeout(resolve, 5000).unref()),
+    ]);
+    // Disposing the host drains the App's effects (scheduler stop, manager hard-stop) and
+    // sweeps the resource registry (live ptys).
+    this.deps.hmr.dispose();
+    this.deps.channels.dispose();
+    this.ipv6Loopback?.close();
+    this.httpServer.close(() => {
+      this.deps.db.close();
+      this.cleanupInstanceFiles();
+      process.exit(exitCode);
+    });
+    // Fallback: a long-lived SSE connection may block the close callback, so force exit after 1s.
+    setTimeout(() => {
+      this.cleanupInstanceFiles();
+      process.exit(exitCode);
+    }, 1000).unref();
+  }
+
+  /** Removes the instance lock and port file (best-effort; runs on both exit paths). */
+  private cleanupInstanceFiles(): void {
+    releaseServerLock(this.config.root);
+    if (this.config.portFile === null) return;
+    try {
+      fs.rmSync(this.config.portFile, { force: true });
+    } catch {
+      // Best-effort: a stale port file is rewritten by the next server.
+    }
+  }
+}
+
+/** Exit code for "another server already owns this data root" (see lock.ts). */
+const EXIT_ALREADY_RUNNING = 3;
+
+/** Port announcement (PENGUIN_PORT_FILE): tmp + rename, so a polling reader never sees a partial write. */
+function writePortFile(file: string, port: number): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, `${port}\n`);
+  fs.renameSync(tmp, file);
+}
+
+// Runs on import, which is what starting this server means. It is the last line of the
+// file because main() reaches PenguinServer, whose declaration has to have been evaluated
+// by the time the call happens.
+await main();

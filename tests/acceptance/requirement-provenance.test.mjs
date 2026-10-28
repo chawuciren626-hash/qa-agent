@@ -17,6 +17,21 @@ import { hasApprovedConfirmation, assertStageReady } from '../../scripts/orchest
 
 const root = resolve(import.meta.dirname, '../..');
 
+test('capability exclusions preserve source requirements without blocking functional coverage or defining execution expectations', async () => {
+  const { diagnoseRequirementLedger, testPointCoverage, referencedRule } = await import('../../scripts/requirement-provenance.mjs');
+  const statements = ['登录成功进入首页', '吞吐量达到1000请求每秒', '进行漏洞扫描'];
+  const rules = statements.map((statement, i) => ({id:`R${i}`,statement,kind:'requirement',category:i?'constraint':'functional',scope:i?'out_of_scope':'in_scope',status:'confirmed',citations:[{source_id:'S',quote:statement}],...(i?{reason:'当前能力范围外，待性能/安全独立子Agent建设；原文要求仍保留'}:{})}));
+  const ledger = {version:1,run_id:'run-scope',sources:[{id:'S',kind:'specification',path:'inputs/source.txt',origin:'user',locator:'all'}],rules};
+  const read = path => Buffer.from(path === 'analysis/requirement-ledger.json' ? JSON.stringify(ledger) : statements.join('\n'));
+  assert.equal(diagnoseRequirementLedger('run-scope', read).status, 'passed');
+  assert.deepEqual(rules.map(testPointCoverage), ['required','excluded','excluded']);
+  const indexed = new Map(rules.map(rule=>[rule.id,rule]));
+  assert.doesNotThrow(()=>referencedRule(indexed,'R0',true));
+  for (const id of ['R1','R2']) assert.throws(()=>referencedRule(indexed,id,true));
+  // A keyword is not a semantic category: ordinary functional permission checks remain required.
+  assert.equal(testPointCoverage({...rules[0],statement:'安全中心中管理员可查看已授权菜单'}), 'required');
+});
+
 test('draft diagnosis aggregates citation issues without Markdown or source changes', async () => {
   const { diagnoseRequirementLedger } = await import('../../scripts/requirement-provenance.mjs');
   const source=Buffer.from('First\r\nSecond\r\nThird\n');
@@ -286,6 +301,7 @@ test('source and ledger changes invalidate already captured design receipts', ()
 test('analysis and point contracts enforce ledger and explicit coverage', () => {
   const id = `run-provenance-${randomUUID()}`;
   const f = designArtifacts(root, id);
+  writeJsonFile(resolve(f.dir, 'manifest.json'), {run_id:id, orchestration:{plan:{workflow_mode:'lifecycle'}}});
   assert.equal(inspectStageArtifacts(root, id, 'analysis').status, 'passed');
   const file = resolve(f.dir, 'analysis/requirement-ledger.json');
   const ledger = JSON.parse(readFileSync(file, 'utf8'));
@@ -317,6 +333,7 @@ test('deterministic analysis includes assumptions, questions, context, exclusion
 
 test('analysis gate blocks independent additions, omissions and changed ledger in analysis and downstream', () => {
   const id = `run-analysis-${randomUUID()}`; const f = designArtifacts(root, id);
+  writeJsonFile(resolve(f.dir, 'manifest.json'), {run_id:id, orchestration:{plan:{workflow_mode:'lifecycle'}}});
   const path = resolve(f.dir, 'analysis/requirement_analysis.md'); const original = readFileSync(path, 'utf8');
   for (const content of [original + '\nUnregistered assumption: unlimited budget', original.replace('Synthetic', 'Other'), original.slice(0, 40)]) {
     writeFileSync(path, content);

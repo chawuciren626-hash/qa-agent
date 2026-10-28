@@ -2,10 +2,12 @@
 name: test-point-design
 description: 基于需求分析设计正常、异常和边界场景的测试点。
 metadata:
-  version: '1.1.0'
+  version: '1.2.0'
 ---
 
 # 测试点设计 Skill
+
+两种模式均可按需读取已安装的test-design-methods：复杂条件/状态用方法参考，表单与业务权限用控件场景参考，只有被测产品含AI功能时才用AI功能参考。候选检查项经本次来源和范围筛选后才形成测试点，不固定扩充条数。
 
 ## 分批保存
 
@@ -14,6 +16,8 @@ metadata:
 ## 独立任务（task）
 
 直接从当前材料生成design/test_points.json，条目包含id、module、feature、description；rule_ids可选，不编造台账。用export_test_points导出XMind，不调用diagnose_test_points或要求analysis前置。
+
+用户或派发明确限制用例条数时，测试点总数不得超过该上限：测试点与用例至少一一对应，超限说明设计粒度过细。合并同一规则、同一场景下的字段变体，不新增同义测试点；上游已交付的测试点超限时由本阶段修订，不要求用例角色删减测试点、改用一对多关联或复制用例规避。
 
 按派发的独立契约填写当前阶段*-task.json。草稿用diagnose_task，交付用validate_artifacts，由父总控handoff。source_paths保留实际依据，不生成虚假前序产物；questions不放技术检查、解锁或重复批准要求。任务与确认策略由公共运行指令统一规定，本Skill不新增节点。
 
@@ -30,7 +34,7 @@ metadata:
 
 写好JSON后先通过project-action调用diagnose_test_points（只需run_id），要求result.status=passed，不把外层completed当通过。集中处理全部errors及coverage.missing后才执行下述导出和正式校验；诊断不要求XMind存在、不生成文件、不批准、不重置预算。
 
-必覆盖指范围内未驳回的行为需求及已确认假设。台账明确category=context/environment的规则只作背景/环境前提，不机械生成业务测试点，不放入预期rule_ids；来源仍保留在分析中。没有category的旧需求仍须覆盖。性能、安全、兼容性、运行环境的验收约束属于functional/constraint，不能用背景分类豁免。混合或矛盾分类交回需求角色，不自行改基线以通过校验。观察、范围外及驳回规则不可作为预期；未确认假设不计必测覆盖、不因诊断通过而自动获准执行。详见docs/test-point-diagnosis.md。
+必覆盖指范围内未驳回的行为需求及已确认假设。台账明确category=context/environment的规则只作背景/环境前提，不机械生成业务测试点，不放入预期rule_ids；来源仍保留在分析中。没有category的旧需求仍须覆盖。范围内兼容性、运行环境的功能验收约束属于functional/constraint，不能用背景分类豁免；性能/安全测试按公共能力范围排除，不生成测试点。混合或矛盾分类交回需求角色，不自行改基线以通过校验。观察、范围外及驳回规则不可作为预期；未确认假设不计必测覆盖、不因诊断通过而自动获准执行。详见docs/test-point-diagnosis.md。
 
 ### 适用场景
 
@@ -49,9 +53,9 @@ metadata:
 
 ### 工作步骤
 
-1. 按模块列出功能点。
-2. 为每个功能点设计主流程测试点。
-3. 补充异常流程、边界值、权限、安全、性能和兼容性测试点。
+1. 按模块列出功能点。用户限制用例总数时，测试点总数不得高于该上限。
+2. 为每个功能点设计主流程测试点；同一规则下的字段变体合并为一个测试点，而不是拆成多个同义测试点。
+3. 补充异常流程、边界值、业务权限和范围内兼容性测试点，不扩展为性能或安全测试。
 4. 为每个测试点标记风险等级。
 5. 标记来源和待确认项。
 6. 先输出符合 `schemas/test_point.schema.json` 的 JSON，再通过project-action调用export_test_points（只需run_id）导出脑图，随后validate_artifacts（stage=test_points）。入口自动归档本次输入和旧导出文件；失败仅在recovery.retry_allowed=true时修正未确认草稿再调用，不直接运行底层导出脚本。Markdown展示与JSON保持一致，业务歧义交总控确认，不为让导出通过而更改预期。详见docs/draft-artifact-recovery.md。

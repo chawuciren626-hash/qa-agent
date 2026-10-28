@@ -1,0 +1,276 @@
+/**
+ * Auto-compaction triggered at the **end** of a round: item order is
+ * assistant_text -> task_stats -> compaction, and the compaction row itself is collapsed by
+ * default with the generated summary inside it.
+ *
+ * The ordering used to break the "reply + stats line" pairing, leaving the stats line
+ * orphaned — and since the whole line is transparent by default, being orphaned meant it was
+ * neither visible nor hoverable (the element's own `group` class has no effect on itself:
+ * group-hover is a descendant selector). Now the entire round's AI-side content, stats line
+ * included, is wrapped in the same group, so hovering any content in the round reveals it.
+ *
+ * Trigger mechanism: the mock's usage grows with context length, and the Agent's
+ * `compaction.max_context_length` is pinned between "below the first request" and "above the
+ * second request (which carries the tool result)", so compaction happens once, at the end of
+ * the round. The threshold is set on the **Agent config** rather than derived from the model's
+ * context window: the engine's window-derived cap (`context_window - 2048`, and windows under
+ * 4096 are ignored as implausible) cannot express a threshold this small.
+ */
+import { test, expect } from "@playwright/test";
+import { provisionAndLogin } from "./auth.mjs";
+
+const BASE = process.env.BASE_URL;
+const MOCK = process.env.MOCK_URL;
+const U = "compactuser";
+const P = "password123";
+/** Displayed in the composer's context ring; large enough that only the Agent threshold below decides when compaction fires. */
+const CONTEXT_WINDOW = 240;
+/** Compaction threshold: above the first request's reported usage, below the second's (which carries the tool result). */
+const COMPACT_AT = 180;
+
+test("compaction mid-turn: the reply's stats line is still reachable by hovering the reply", async ({
+  page,
+}) => {
+  await provisionAndLogin(page.request, U, P);
+  const projects = await (await page.request.get(`${BASE}/api/projects`)).json();
+  const projectId = projects.projects[0].projectId;
+  await page.request.put(`${BASE}/api/projects/${projectId}/models`, {
+    data: {
+      defaultModel: { provider: "custom", modelId: "claude-4-8" },
+      models: [
+        {
+          provider: "custom",
+          modelId: "claude-4-8",
+          apiKey: "sk-mock",
+          baseUrl: MOCK,
+          contextWindow: CONTEXT_WINDOW,
+          pricing: { cacheRead: 1, cacheWrite: 5, output: 10 },
+        },
+      ],
+    },
+  });
+  // The compaction threshold lives on the Agent, not the model entry (see the header note).
+  await page.request.put(`${BASE}/api/projects/${projectId}/agents/default_agent/config`, {
+    data: { config: { compaction: { maxContextLength: COMPACT_AT } } },
+  });
+  const sess = await (
+    await page.request.post(`${BASE}/api/projects/${projectId}/agents/default_agent/sessions`, {
+      data: { provider: "custom", modelId: "claude-4-8", approvalMode: "allow-all" },
+    })
+  ).json();
+
+  await page.goto(`${BASE}/chat/${sess.session.sessionId}`);
+  const ta = page.getByPlaceholder(/输入消息/);
+  await ta.waitFor();
+  await ta.fill("Help me set up @theme");
+  await page.getByRole("button", { name: "发送" }).click();
+
+  const reply = page.getByText("Command finished; the result looks as expected.").first();
+  await expect(reply).toBeVisible();
+  // The compaction row is a step banner: a disclosure button titled by its MODE — "压缩" for
+  // this summarize, "清空" for a discard, which drops the context rather than compacting it.
+  const banner = page.locator("button[aria-expanded]").filter({ hasText: "压缩" }).first();
+  await expect(banner).toBeVisible();
+  // A succeeded row writes no outcome text: the title, the wall time and the chevron say it all,
+  // and the summary itself is behind the disclosure.
+  await expect(banner).not.toContainText("已切换到摘要后的新上下文");
+
+  // The row doesn't show Token counts: compaction at round end isn't attributed to this round
+  // (its usage shows up in the Session total and the Trace page's compaction-round card
+  // instead) — the row only states "compaction happened, succeeded or not."
+  await expect(banner).not.toContainText("tokens");
+
+  // Order: reply -> **this round's stats line** -> compaction banner. The stats line is about
+  // this round of conversation; compaction is housekeeping outside this round, listed after this
+  // round's tally. (It used to be the other way around: the banner sat between the reply and the
+  // stats line, making the stats line read like "compaction's stats," and this round's elapsed
+  // time would fold in the entire compaction request — compaction is itself a full LLM request.)
+  const copyBtn = page.getByRole("button", { name: "复制回复" }).first();
+  const statsLine = copyBtn.locator("xpath=..");
+  const yOf = async (l) => (await l.boundingBox()).y;
+  expect(await yOf(statsLine)).toBeGreaterThan(await yOf(reply));
+  expect(await yOf(banner)).toBeGreaterThan(await yOf(statsLine));
+
+  // Transparent by default but space-reserved; hovering **the reply itself** reveals it
+  // (it used to be orphaned -> never revealable).
+  await page.mouse.move(0, 0);
+  await expect(statsLine).toHaveCSS("opacity", "0");
+  await reply.hover();
+  await expect(statsLine).toHaveCSS("opacity", "1");
+  await expect(statsLine.locator("text=/\\d{1,2}:\\d{2}/")).toBeVisible();
+
+  // Compaction succeeded and no ordinary request has reported usage since, so the context ring must
+  // read UNKNOWN (`—`), not 0. Zero would claim the context is empty — but the summary itself costs
+  // tokens; we simply have not measured the new size yet.
+  await expect(page.getByText(`—/${CONTEXT_WINDOW}`)).toBeVisible();
+  await expect(page.getByText(`0/${CONTEXT_WINDOW}`)).toHaveCount(0);
+
+  // —— The summary is collapsed by default, exactly like a thinking block ——
+  // The generated summary must not be on screen until the reader asks for it: the row starts
+  // collapsed and its body is not rendered at all. The mock answers the compaction request
+  // with the same prose it used for the reply, so the summary's presence is counted rather
+  // than matched by text alone (1 = the reply only, 2 = the reply + the expanded summary).
+  const card = banner.locator("xpath=..");
+  const summaryLine = /the result looks as expected/;
+  await expect(banner).toHaveAttribute("aria-expanded", "false");
+  await expect(card.getByText(summaryLine)).toHaveCount(0);
+  await expect(page.getByText(summaryLine)).toHaveCount(1);
+
+  await banner.click();
+  await expect(banner).toHaveAttribute("aria-expanded", "true");
+  await expect(card.getByText(summaryLine).first()).toBeVisible();
+  await expect(page.getByText(summaryLine)).toHaveCount(2);
+
+  // Collapsing puts it away again (the body leaves the DOM, not just the viewport).
+  await banner.click();
+  await expect(banner).toHaveAttribute("aria-expanded", "false");
+  await expect(card.getByText(summaryLine)).toHaveCount(0);
+
+  // —— Trace panel ——
+  // Compaction is its own round: the user round's elapsed time and TPS don't include compaction
+  // (matching the chat page's convention), and the compaction round has **its own TPS** (how
+  // fast the summary was generated), not a "—". The panel opens on this conversation's own
+  // Trace file, so the rounds are on screen with nothing to drill into.
+  await page.getByTestId("dock-toggle-bottom").click();
+  await page
+    .locator("[data-testid='dock'][data-position='bottom']")
+    .getByTestId("dock-pick-trace")
+    .click();
+  const main = page.locator("main");
+  await expect(main.getByText("第 1 轮")).toBeVisible();
+  await expect(main.getByText("第 2 轮")).toBeVisible();
+  // The TPS is in the round's readings panel, behind the button at the end of its row: a pure
+  // compaction round has no context snapshot, so a tokens glyph stands where the ring would.
+  const compactionToggle = main.locator("[data-round='1'] [data-slot='toggle']");
+  await expect(compactionToggle).toContainText("第 2 轮");
+  await main.locator("[data-round='1'] [data-slot='ring']").click();
+  const compactionReadings = page.getByRole("group", { name: "本轮读数" });
+  await expect(compactionReadings).toContainText("tok/s"); // the compaction round has its own TPS
+  await expect(compactionReadings).not.toContainText("—");
+  await page.keyboard.press("Escape");
+  await expect(compactionReadings).toHaveCount(0);
+
+  // Global elapsed time = **the sum of each round's elapsed time (including the compaction
+  // round)**, matching the same scope as the per-round display below — adding up each round
+  // card's elapsed time must equal the total. But it's not "last message - first message" (that
+  // would include the gap while the user was thinking/away between rounds, which isn't the
+  // Agent's working time). Assert this property directly against the API — the elapsed time
+  // shown in the UI is rounded by humanizeDuration, so parsing it back out of the text would be
+  // both fragile and inaccurate.
+  const traces = await (
+    await page.request.get(`${BASE}/api/projects/${projectId}/agents/default_agent/traces`)
+  ).json();
+  const file = traces.dates[0].sessions[0].files[0];
+  const analysis = await (
+    await page.request.get(
+      `${BASE}/api/projects/${projectId}/agents/default_agent/traces/${sess.session.sessionId}/${file.index}/analysis`,
+    )
+  ).json();
+  expect(analysis.tasks).toHaveLength(2);
+
+  // The compaction round is flagged as "compaction" and counts toward the total elapsed time
+  // just like a user round; each has an elapsed time greater than 0.
+  const userTasks = analysis.tasks.filter((t) => t.compaction !== true);
+  const compactionTasks = analysis.tasks.filter((t) => t.compaction === true);
+  expect(userTasks).toHaveLength(1);
+  expect(compactionTasks).toHaveLength(1);
+  const allSum = analysis.tasks.reduce(
+    (acc, t) => acc + (Date.parse(t.endTs) - Date.parse(t.startTs)),
+    0,
+  );
+  expect(analysis.elapsedMs).toBe(allSum);
+  expect(
+    Date.parse(compactionTasks[0].endTs) - Date.parse(compactionTasks[0].startTs),
+  ).toBeGreaterThan(0);
+});
+
+/**
+ * Manual `/compact` between two rounds: reloading the page must **not** rewrite the previous
+ * round's tally.
+ *
+ * The server's startCompact requires the Session to be idle, so manual compaction always falls
+ * outside a round. In the live stream, the previous round already closed at idle, so compaction's
+ * usage and duration never fold into it; but history rebuild has no idle signal, so that round
+ * still looks open — compaction's Token, cost, and elapsed time would get folded wholesale into
+ * the previous round. The symptom: the same reply's stats look fine at first, then after a
+ * reload they flip from "260 tokens · $0.0012 · 401ms" to "510 · $0.0020 · 1.7s".
+ *
+ * The unit test (stream-model) locks down the message sequence, but it can't lock down whether
+ * a real `/compact` actually emits compaction_begin.reason === manual — that's exactly what the
+ * frontend relies on to decide "compaction is outside the round," so this is covered end-to-end
+ * here. Compaction is deliberately delayed by 3 seconds (the user reads the reply, then remembers
+ * to compact): if that gap were counted, the elapsed time would jump from hundreds of
+ * milliseconds to over 3 seconds.
+ */
+test("manual /compact between turns: reloading must not fold the compaction into the previous turn", async ({
+  page,
+}) => {
+  const U2 = "manualcompact";
+  await provisionAndLogin(page.request, U2, P);
+  const projects = await (await page.request.get(`${BASE}/api/projects`)).json();
+  const projectId = projects.projects[0].projectId;
+  await page.request.put(`${BASE}/api/projects/${projectId}/models`, {
+    data: {
+      defaultModel: { provider: "custom", modelId: "claude-4-8" },
+      models: [
+        {
+          provider: "custom",
+          modelId: "claude-4-8",
+          apiKey: "sk-mock",
+          baseUrl: MOCK,
+          // Window large enough that compaction only ever triggers manually via /compact.
+          contextWindow: 200000,
+          pricing: { cacheRead: 1, cacheWrite: 5, output: 10 },
+        },
+      ],
+    },
+  });
+  const sess = await (
+    await page.request.post(`${BASE}/api/projects/${projectId}/agents/default_agent/sessions`, {
+      data: { provider: "custom", modelId: "claude-4-8", approvalMode: "allow-all" },
+    })
+  ).json();
+
+  await page.goto(`${BASE}/chat/${sess.session.sessionId}`);
+  const ta = page.getByPlaceholder(/输入消息/);
+  await ta.waitFor();
+  await ta.fill("Help me set up @theme");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.getByText("Command finished; the result looks as expected.")).toBeVisible();
+
+  // The whole stats line is transparent by default, but innerText still reads fine (no need to hover).
+  const statsText = async () =>
+    (await page.getByRole("button", { name: "复制回复" }).first().locator("xpath=..").innerText())
+      .replace(/\n/g, " ")
+      .trim();
+  const costOf = (t) => t.match(/\$[\d.]+/)?.[0] ?? null;
+  const elapsedMsOf = (t) => {
+    const hit = [...t.matchAll(/(\d+(?:\.\d+)?)(ms|s)(?![\w/])/g)].at(-1);
+    return hit ? Number(hit[1]) * (hit[2] === "s" ? 1000 : 1) : null;
+  };
+
+  const live = await statsText();
+  expect(costOf(live), `stats line should include a cost: ${live}`).not.toBeNull();
+  expect(elapsedMsOf(live)).toBeLessThan(1500);
+
+  // The user reads the reply, then 3 seconds later remembers to compact.
+  await page.waitForTimeout(3000);
+  await ta.fill("/compact");
+  await ta.press("Enter");
+  const banner = page.locator("button[aria-expanded]").filter({ hasText: "压缩" }).first();
+  await expect(banner).toBeVisible();
+  // Collapsed by default here too: a manual compaction reports itself in one line and keeps
+  // its summary behind the disclosure.
+  await expect(banner).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0);
+  expect(await statsText(), "compaction must not touch the already-closed prior turn").toBe(live);
+
+  await page.reload();
+  await ta.waitFor();
+  await expect(page.getByText("Command finished; the result looks as expected.")).toBeVisible();
+  const rebuilt = await statsText();
+  // Cost is derived from Token counts: if compaction's usage were folded in, cost would double out of nowhere.
+  expect(costOf(rebuilt), `cost must survive reload (${live} -> ${rebuilt})`).toBe(costOf(live));
+  // Elapsed time should include neither the 3-second thinking gap nor compaction itself.
+  expect(elapsedMsOf(rebuilt), `elapsed must not eat compaction (${rebuilt})`).toBeLessThan(1500);
+});

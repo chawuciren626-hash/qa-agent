@@ -61,6 +61,16 @@
       ]
     },
     {
+      "id": "android_test_agent",
+      "prompt": "penguin/agents/android_test_agent/AGENTS.md",
+      "skills": ["android-execution"]
+    },
+    {
+      "id": "miniprogram_test_agent",
+      "prompt": "penguin/agents/miniprogram_test_agent/AGENTS.md",
+      "skills": ["miniprogram-execution"]
+    },
+    {
       "id": "defect_analysis_agent",
       "prompt": "penguin/agents/defect_analysis_agent/AGENTS.md",
       "skills": [

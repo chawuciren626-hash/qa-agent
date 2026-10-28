@@ -1,0 +1,326 @@
+/**
+ * The thinking-level pickers (features/chat/thinking-level.ts) and the tier names in both
+ * dictionaries.
+ *
+ * - The pickers offer exactly the tiers core accepts as a chat default; every stored level,
+ *   a legacy "none" included, is named in both locales.
+ * - The zh trigger shows a Chinese name with no wire value, while every menu row, in either
+ *   language, shows the wire value once.
+ * - A non-level ("" for no override, a legacy "default", an unknown value, nothing) has no
+ *   label; a level missing from the name table shows its raw value.
+ * - The draft picker resolves the Agent's explicit level, then the Project's chat default, then
+ *   medium, the chain core applies.
+ * - The provider's prefix cache is at risk once there is history, unless the transcript ends in
+ *   a successful compaction.
+ * - A mid-chat pick asks for confirmation only when history exists and the pick differs from
+ *   the displayed level (or that level is unknown), never right after a successful compaction.
+ * - After "compact, then switch", the wait settles on the compaction started by that choice
+ *   (completed, failed or still running), and the pick is applied once it settles, even when
+ *   the compaction failed or never started.
+ * - The in-session picker follows the Agent config until a level is pinned on the Session.
+ */
+import { describe, expect, it } from "vitest";
+import { DEFAULT_CHAT_THINKING_LEVELS } from "@prismshadow/penguin-core";
+import { en } from "../src/lib/strings-en";
+import { zh } from "../src/lib/strings";
+import {
+  SELECTABLE_THINKING_LEVELS,
+  THINKING_LEVELS,
+  compactionSettledSince,
+  compactionTally,
+  effectiveThinkingLevel,
+  heldThinkingSwitch,
+  needsThinkingSwitchConfirm,
+  prefixCacheAtRisk,
+  sessionThinkingLevel,
+  thinkingLevelLabel,
+} from "../src/features/chat/thinking-level";
+import type { ThinkingSwitchItem } from "../src/features/chat/thinking-level";
+
+/** Mirrors the shape of S.chat.thinkingLevelNames. */
+const NAMES: Readonly<Record<string, string>> = {
+  none: "none",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  max: "max",
+};
+
+describe("tier names track core, and the trigger/menu split holds", () => {
+  const dictionaries: ReadonlyArray<readonly [string, typeof zh]> = [
+    ["zh", zh],
+    ["en", en],
+  ];
+
+  it("offers exactly the tiers core accepts as a chat default", () => {
+    expect([...SELECTABLE_THINKING_LEVELS]).toEqual([...DEFAULT_CHAT_THINKING_LEVELS]);
+  });
+
+  it("names every stored level in both locales — a new tier cannot ship unlabelled", () => {
+    for (const [locale, dict] of dictionaries) {
+      // THINKING_LEVELS ⊇ DEFAULT_CHAT_THINKING_LEVELS: the extra "none" is never offered
+      // but still has to display, so the table has to cover it too.
+      for (const level of THINKING_LEVELS) {
+        const name = dict.chat.thinkingLevelNames[level];
+        expect(name, `${locale} has no name for the ${level} tier`).toBeTruthy();
+      }
+    }
+  });
+
+  it("keeps the wire value off the zh trigger, and shows it once on every menu row", () => {
+    for (const level of THINKING_LEVELS) {
+      const zhName = zh.chat.thinkingLevelNames[level] ?? "";
+      // The maintainer's rule for the trigger: Chinese only — no latin letters, no parens.
+      expect(zhName, `zh ${level} must not carry the wire value`).not.toMatch(/[A-Za-z()]/);
+      for (const [locale, dict] of dictionaries) {
+        const name = dict.chat.thinkingLevelNames[level] ?? "";
+        const row = dict.chat.thinkingLevelMenuName(name, level);
+        expect(row.split(level).length - 1, `${locale} ${level} menu row`).toBe(1);
+      }
+    }
+  });
+});
+
+describe("thinkingLevelLabel", () => {
+  it("returns null for non-levels: '' (untouched/no override), a legacy meta's 'default', unknown, null", () => {
+    expect(thinkingLevelLabel(NAMES, "")).toBeNull();
+    expect(thinkingLevelLabel(NAMES, "default")).toBeNull();
+    expect(thinkingLevelLabel(NAMES, "ultra")).toBeNull();
+    expect(thinkingLevelLabel(NAMES, null)).toBeNull();
+    expect(thinkingLevelLabel(NAMES, undefined)).toBeNull();
+  });
+
+  it("falls back to the raw value if the name table misses a level (defensive)", () => {
+    expect(thinkingLevelLabel({}, "medium")).toBe("medium");
+  });
+});
+
+describe("effectiveThinkingLevel (draft picker display — mirrors core agent.ts)", () => {
+  it("resolves Agent explicit > project default_chat > built-in medium, the same chain core applies", () => {
+    // Agent's explicit level always wins — including over a set project default.
+    expect(effectiveThinkingLevel("high", "low")).toBe("high");
+    expect(effectiveThinkingLevel("none", "low")).toBe("none"); // a stored legacy "none" is explicit too
+    // No explicit agent level ("") -> the project default.
+    expect(effectiveThinkingLevel("", "low")).toBe("low");
+    // Neither -> the built-in "medium" (the documented Agent default).
+    expect(effectiveThinkingLevel("", undefined)).toBe("medium");
+  });
+});
+
+/** Stream-item stubs for the mid-chat switch guard (structural ThinkingSwitchItem subset). */
+const user: ThinkingSwitchItem = { kind: "user_text" };
+const reply: ThinkingSwitchItem = { kind: "assistant_text" };
+const stats: ThinkingSwitchItem = { kind: "task_stats" };
+const compactionDone: ThinkingSwitchItem = {
+  kind: "compaction",
+  running: false,
+  status: "completed",
+};
+const compactionFailed: ThinkingSwitchItem = {
+  kind: "compaction",
+  running: false,
+  status: "failed",
+};
+const compactionRunning: ThinkingSwitchItem = { kind: "compaction", running: true };
+
+describe("prefixCacheAtRisk (issue #310 — provider prefix cache over the existing history)", () => {
+  it("empty transcript: nothing cached provider-side yet", () => {
+    expect(prefixCacheAtRisk([])).toBe(false);
+  });
+
+  it("any conversation history puts the prefix cache at risk", () => {
+    expect(prefixCacheAtRisk([user])).toBe(true);
+    expect(prefixCacheAtRisk([user, reply, stats])).toBe(true);
+  });
+
+  it("a transcript ending in a successful compaction is safe (compact-then-switch is not re-warned)", () => {
+    expect(prefixCacheAtRisk([user, reply, stats, compactionDone])).toBe(false);
+  });
+
+  it("a failed or still-running trailing compaction leaves the old context — still at risk", () => {
+    expect(prefixCacheAtRisk([user, reply, compactionFailed])).toBe(true);
+    expect(prefixCacheAtRisk([user, reply, compactionRunning])).toBe(true);
+  });
+
+  it("a failed retry after a successful trailing compaction changed nothing — still safe", () => {
+    expect(prefixCacheAtRisk([user, reply, compactionDone, compactionFailed])).toBe(false);
+  });
+
+  it("new turns after a compaction re-arm the guard (only a TRAILING compaction is safe)", () => {
+    expect(prefixCacheAtRisk([user, reply, compactionDone, user, reply])).toBe(true);
+  });
+
+  it("a transcript that ends in a model switch is safe: the context it opened has not been sent yet", () => {
+    const modelChange: ThinkingSwitchItem = { kind: "model_change" };
+    expect(prefixCacheAtRisk([user, reply, stats, compactionDone, modelChange])).toBe(false);
+    // A switch away from a context that had not answered runs no compaction: the marker
+    // stands alone, and the context behind it is just as new.
+    expect(prefixCacheAtRisk([user, modelChange])).toBe(false);
+    // Conversation since re-arms the guard.
+    expect(prefixCacheAtRisk([user, modelChange, user, reply])).toBe(true);
+  });
+
+  it("the connect row a compacted context opened with changes nothing either", () => {
+    const connect: ThinkingSwitchItem = {
+      kind: "mcp_connect",
+      running: false,
+      status: "completed",
+    };
+    expect(prefixCacheAtRisk([user, reply, stats, compactionDone, connect])).toBe(false);
+    expect(prefixCacheAtRisk([user, reply, connect])).toBe(true);
+  });
+});
+
+describe("needsThinkingSwitchConfirm (mid-chat switch guard for the session picker)", () => {
+  const history = [user, reply, stats];
+
+  it("no dialog on a brand-new/empty session — the initial selection is free", () => {
+    expect(needsThinkingSwitchConfirm([], "medium", "high")).toBe(false);
+    expect(needsThinkingSwitchConfirm([], "", "high")).toBe(false);
+  });
+
+  it("dialog when history exists and the pick differs from the displayed level", () => {
+    expect(needsThinkingSwitchConfirm(history, "medium", "high")).toBe(true);
+  });
+
+  it("re-picking the displayed level only pins it — never a dialog, history or not", () => {
+    expect(needsThinkingSwitchConfirm(history, "high", "high")).toBe(false);
+  });
+
+  it("unknown displayed level ('' — config unset/still loading) with history: warn rather than silently invalidate", () => {
+    expect(needsThinkingSwitchConfirm(history, "", "medium")).toBe(true);
+  });
+
+  it("no dialog right after a successful compaction (the advised flow: /compact, then switch)", () => {
+    expect(needsThinkingSwitchConfirm([...history, compactionDone], "medium", "high")).toBe(false);
+  });
+});
+
+describe("compactionSettledSince (has the compaction we started finished?)", () => {
+  const history = [user, reply, stats];
+  /** The tally taken when the user picks "compact, then switch". */
+  const at = (items: ThinkingSwitchItem[]) => compactionTally(items);
+
+  it("counts settled compactions and their completed subset (a running one is not settled yet)", () => {
+    expect(compactionTally([])).toEqual({ settled: 0, completed: 0 });
+    expect(compactionTally([user, reply])).toEqual({ settled: 0, completed: 0 });
+    expect(compactionTally([user, compactionRunning])).toEqual({ settled: 0, completed: 0 });
+    expect(compactionTally([user, compactionFailed, reply, compactionDone])).toEqual({
+      settled: 2,
+      completed: 1,
+    });
+  });
+
+  it("pending while the compaction is still running", () => {
+    const baseline = at(history);
+    expect(compactionSettledSince(history, baseline)).toBe("pending");
+    expect(compactionSettledSince([...history, compactionRunning], baseline)).toBe("pending");
+  });
+
+  it("completed once one finishes", () => {
+    const baseline = at(history);
+    expect(compactionSettledSince([...history, compactionDone], baseline)).toBe("completed");
+  });
+
+  it("failed when one ends without completing (failed / aborted)", () => {
+    const baseline = at(history);
+    expect(compactionSettledSince([...history, compactionFailed], baseline)).toBe("failed");
+    expect(
+      compactionSettledSince(
+        [...history, { kind: "compaction", running: false, status: "aborted" }],
+        baseline,
+      ),
+    ).toBe("failed");
+  });
+
+  it("compactions already on record when the choice was made don't settle the wait", () => {
+    // A failed compaction sitting in the transcript is exactly why the dialog opened
+    // (prefixCacheAtRisk stays true) — it must not be read as "our compaction failed".
+    const before = [...history, compactionFailed];
+    const baseline = at(before);
+    expect(compactionSettledSince(before, baseline)).toBe("pending");
+    expect(compactionSettledSince([...before, compactionDone], baseline)).toBe("completed");
+  });
+
+  it("a failed retry after our compaction completed still reads as completed", () => {
+    const baseline = at(history);
+    expect(compactionSettledSince([...history, compactionDone, compactionFailed], baseline)).toBe(
+      "completed",
+    );
+  });
+
+  it("items appended after the completed compaction (e.g. a queued follow-up) don't hide it", () => {
+    const baseline = at(history);
+    expect(compactionSettledSince([...history, compactionDone, user, reply], baseline)).toBe(
+      "completed",
+    );
+  });
+});
+
+describe("heldThinkingSwitch (releasing the pick behind 'compact, then switch')", () => {
+  const history = [user, reply, stats];
+  const compacting = {
+    phase: "compacting",
+    level: "high",
+    baseline: compactionTally(history),
+  } as const;
+
+  it("waits while the dialog is open", () => {
+    expect(heldThinkingSwitch({ phase: "ask", level: "high" }, history)).toEqual({ act: "wait" });
+  });
+
+  it("waits while the compaction is still running", () => {
+    expect(heldThinkingSwitch(compacting, [...history, compactionRunning])).toEqual({
+      act: "wait",
+    });
+  });
+
+  it("applies the pick after a completed compaction, announcing the cheap path", () => {
+    expect(heldThinkingSwitch(compacting, [...history, compactionDone])).toEqual({
+      act: "apply",
+      level: "high",
+      notice: "compacted",
+    });
+  });
+
+  it("STILL applies the pick when the compaction failed — the user asked to switch", () => {
+    expect(heldThinkingSwitch(compacting, [...history, compactionFailed])).toEqual({
+      act: "apply",
+      level: "high",
+      notice: "compaction-failed",
+    });
+    expect(
+      heldThinkingSwitch(compacting, [
+        ...history,
+        { kind: "compaction", running: false, status: "aborted" },
+      ]),
+    ).toEqual({ act: "apply", level: "high", notice: "compaction-failed" });
+  });
+
+  it("applies the pick when the compaction never started (the server refused it)", () => {
+    // The refusal toast already said why, so there is no notice of our own.
+    expect(heldThinkingSwitch({ phase: "settle", level: "low" }, history)).toEqual({
+      act: "apply",
+      level: "low",
+      notice: "none",
+    });
+  });
+});
+
+describe("sessionThinkingLevel (what the in-session picker shows and sends)", () => {
+  it("a brand-new session follows the Agent config", () => {
+    expect(sessionThinkingLevel("", "medium")).toBe("medium");
+  });
+
+  it("a level pinned on the Session wins, so a later Agent-config edit cannot move it", () => {
+    expect(sessionThinkingLevel("high", "medium")).toBe("high");
+    // The pin is read back off the Session row, so a reload computes this same value —
+    // that is what makes the picked level survive a refresh.
+    expect(sessionThinkingLevel("high", "low")).toBe("high");
+  });
+
+  it("nothing pinned and no config yet (still loading): no level to display", () => {
+    expect(sessionThinkingLevel("", "")).toBe("");
+  });
+});

@@ -24,6 +24,15 @@ import { assertStageReady } from '../../scripts/orchestration-state.mjs';
 import { assertExecutionAuthorized } from '../../scripts/execution-authorization.mjs';
 const root=resolve(import.meta.dirname,'../..');
 const contractText = dispatch => readFileSync(dispatch.delegation_contract_path,'utf8');
+
+test('catalog declares the same functional/API capability scope for every stage', () => {
+  const catalog = actionCatalog();
+  assert.deepEqual(catalog.testing_scope.included, ['functional', 'api']);
+  assert.deepEqual(catalog.testing_scope.deferred, ['performance', 'security']);
+  assert.match(catalog.testing_scope.policy, /task and lifecycle/);
+  assert.match(catalog.testing_scope.policy, /without planning an empty lifecycle/);
+  assert.match(catalog.analysis_contract.scope, /capability-exclusion reason/);
+});
 test('unrelated actions do not evaluate execution preparation artifacts',()=>{
   assert.deepEqual(actionCommand({action:'create_run',run_id:'run-safe'},'session-2026-10-09-00-00-00-aaaa').args,['--run-id=run-safe']);
   assert.deepEqual(actionCommand({action:'run_status',run_id:'run-safe'},'session-2026-10-09-00-00-00-aaaa').args,['run-safe']);
@@ -1166,6 +1175,8 @@ test('native text and Chinese Word attachment are captured before task and lifec
     assert.ok(dispatched.source_paths.includes(extracted.data.text_path));
     assert.deepEqual(dispatched.input_context,ctx);
     const prompt=dispatched.delegation_contract_path?readFileSync(dispatched.delegation_contract_path,'utf8'):dispatched.delegation.prompt;
+    assert.match(prompt,/catalog.testing_scope/);
+    assert.match(prompt,/performance\/security/);
     assert.match(prompt,/统一任务输入记录/);assert.ok(prompt.includes(ctx.user_messages[0].path));
     assert.equal(readFileSync(resolve(run,ctx.user_messages[0].path),'utf8'),text);
   }

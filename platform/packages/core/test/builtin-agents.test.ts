@@ -1,0 +1,194 @@
+/**
+ * Built-in agent provisioning and skill library install policy: the general agent
+ * default_agent comes pre-installed with the library's preinstalled skill set (skills marked
+ * `preinstall: false` stay manual-install), an ordinary newly created agent starts with zero
+ * skills, and the default AGENTS.md is an empty file; provisionProjectAgents is idempotent and
+ * never overwrites existing config. The default Project gets a support Agent with its workbench;
+ * other Projects do not, and reprovisioning preserves user edits to the support files.
+ */
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { libraryPlugin, librarySkill, loadPreinstalledPlugins } from "../src/index.js";
+import {
+  agentsMdPath,
+  assembleSystemPrompt,
+  BUILTIN_AGENT_IDS,
+  DEFAULT_AGENT_ID,
+  DEFAULT_PROJECT_ID,
+  SUPPORT_AGENT_ID,
+  listInstalledSkills,
+  loadAgentState,
+  provisionProjectAgents,
+  skillsDir,
+} from "../src/state/index.js";
+/** The skill names the preinstalled plugins ship, sorted — what default_agent's skills/ holds after initialization. */
+function preinstalledSkillNames(): string[] {
+  return loadPreinstalledPlugins()
+    .flatMap((p) => p.skills.map((s) => s.name))
+    .sort();
+}
+
+let tmpRoot: string;
+let prevHome: string | undefined;
+
+beforeEach(async () => {
+  prevHome = process.env.PENGUIN_HOME;
+  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "penguin-builtin-"));
+  process.env.PENGUIN_HOME = tmpRoot;
+});
+
+afterEach(async () => {
+  if (prevHome === undefined) {
+    delete process.env.PENGUIN_HOME;
+  } else {
+    process.env.PENGUIN_HOME = prevHome;
+  }
+  await fs.rm(tmpRoot, { recursive: true, force: true });
+});
+
+const skillMdPath = (agentId: string, skillName: string): string =>
+  path.join(skillsDir(tmpRoot, DEFAULT_PROJECT_ID, agentId), skillName, "SKILL.md");
+
+describe("Skill installation policy", () => {
+  it("a plain new Agent preinstalls no Skills and AGENTS.md is an empty file (guidance lives in the template's Suggested workflows)", async () => {
+    const state = await loadAgentState({ init: {}, agentId: "some_agent" });
+    expect(await listInstalledSkills(tmpRoot, DEFAULT_PROJECT_ID, "some_agent")).toEqual([]);
+
+    // The default AGENTS.md is empty: it carries no preset guidance (delegation and task
+    // conventions live in the default template's Suggested workflows section, and skill
+    // metadata is injected via {{SKILL_METADATA}}).
+    expect(state.agentsMd).toBe("");
+    const onDisk = await fs.readFile(
+      agentsMdPath(tmpRoot, DEFAULT_PROJECT_ID, "some_agent"),
+      "utf8",
+    );
+    expect(onDisk).toBe("");
+  });
+
+  it("a default_agent created directly without a preset (e.g. first CLI run) likewise gets the library's preinstalled set", async () => {
+    await loadAgentState({ init: {}, agentId: DEFAULT_AGENT_ID });
+    const names = (await listInstalledSkills(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID)).map(
+      (s) => s.name,
+    );
+    expect(names).toEqual(preinstalledSkillNames());
+    // Skills of `preinstall: false` plugins stay out of the preinstalled set (manual install only).
+    for (const [plugin, skill] of [
+      ["use-claude-code", "remote-claude-code"],
+      ["humanizer", "humanizer"],
+    ]) {
+      expect(libraryPlugin(plugin!)?.preinstall, plugin).toBe(false);
+      expect(names, skill).not.toContain(skill);
+    }
+  });
+});
+
+describe("provisionProjectAgents", () => {
+  it("default_agent installs the library's preinstalled Skills, AGENTS.md is empty", async () => {
+    const ids = await provisionProjectAgents();
+    expect(ids).toEqual([DEFAULT_AGENT_ID, SUPPORT_AGENT_ID]);
+    expect(BUILTIN_AGENT_IDS).toContain(SUPPORT_AGENT_ID);
+
+    // name/description are written into system_config; AGENTS.md is an empty file.
+    const state = await loadAgentState({ init: {}, agentId: DEFAULT_AGENT_ID });
+    expect(state.systemConfig.name).toBe("General Agent");
+    expect(state.systemConfig.description).toBeTruthy();
+    expect(state.agentsMd).toBe("");
+
+    const installed = await listInstalledSkills(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID);
+    expect(installed.map((s) => s.name).sort()).toEqual(preinstalledSkillNames());
+    // On-disk content matches the library's SKILL.md verbatim (install copies the full text).
+    const sdkMd = await fs.readFile(skillMdPath(DEFAULT_AGENT_ID, "penguin-sdk"), "utf8");
+    expect(sdkMd).toBe(librarySkill("penguin-sdk")!.skill.content);
+  });
+
+  it("provision is idempotent: running it again does not change the result", async () => {
+    await provisionProjectAgents();
+    const ids = await provisionProjectAgents();
+    expect(ids).toEqual([DEFAULT_AGENT_ID, SUPPORT_AGENT_ID]);
+    const md = await fs.readFile(
+      agentsMdPath(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID),
+      "utf8",
+    );
+    expect(md).toBe("");
+    const installed = await listInstalledSkills(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID);
+    expect(installed.map((s) => s.name).sort()).toEqual(preinstalledSkillNames());
+  });
+
+  it("an existing Agent is not overwritten (the preset only applies at initialization)", async () => {
+    const custom = "# AGENTS.md\n\nContent the user edited themselves\n";
+    await loadAgentState({ init: {}, agentId: DEFAULT_AGENT_ID });
+    await fs.writeFile(agentsMdPath(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID), custom, "utf8");
+
+    await provisionProjectAgents();
+
+    const after = await fs.readFile(
+      agentsMdPath(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID),
+      "utf8",
+    );
+    expect(after).toBe(custom);
+  });
+});
+
+describe("support Agent provisioning", () => {
+  it("seeds the default Project's editable workbench once and preserves user edits", async () => {
+    await provisionProjectAgents();
+    const base = path.join(tmpRoot, DEFAULT_PROJECT_ID, "agents", SUPPORT_AGENT_ID);
+    const file = path.join(base, "workbenches/support/ui/index.html");
+    expect((await fs.readFile(file, "utf8")).length).toBeGreaterThan(0);
+    const config = await loadAgentState({ agentId: SUPPORT_AGENT_ID });
+    expect(config.agentsMd).toContain("penguin-support");
+    expect(await fs.readFile(skillMdPath(SUPPORT_AGENT_ID, "penguin-support"), "utf8")).toContain(
+      "https://penguin.ooo/docs/",
+    );
+    await fs.writeFile(file, "My support page");
+    await provisionProjectAgents();
+    expect(await fs.readFile(file, "utf8")).toBe("My support page");
+  });
+  it("does not add a product support Agent to other Projects", async () => {
+    await provisionProjectAgents({ root: tmpRoot, projectId: "team" });
+    await expect(
+      fs.stat(path.join(tmpRoot, "team/agents", SUPPORT_AGENT_ID)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
+describe("App Data Dir / Agent ID placeholders", () => {
+  it("assembleSystemPrompt injects App Data Dir and Agent ID (Skill lookup uses app-data-dir-relative paths, no .penguin dependency)", async () => {
+    const state = await loadAgentState({ init: {}, agentId: "env_agent" });
+    // Skill data provided (an empty list) so the {{SKILLS}} section — home of the skill
+    // lookup path convention this test pins — renders.
+    const prompt = assembleSystemPrompt(
+      state,
+      {
+        sessionId: "session-x",
+        cwd: "/tmp/ws",
+        agentId: "env_agent",
+        projectDir: "/tmp/proj",
+        provider: "deepseek",
+        modelId: "deepseek-v4-pro",
+        platform: "linux",
+        osVersion: "test",
+        shell: "bash",
+        date: "2026-07-08",
+      },
+      undefined,
+      [],
+    );
+    expect(prompt).toContain("Agent ID: env_agent");
+    expect(prompt).toContain("App Data Dir: /tmp/proj");
+    expect(prompt).not.toContain("{{AGENT_ID}}");
+    expect(prompt).not.toContain("{{PROJECT_DIR}}");
+    // Skill execution conventions are built from app-data-dir-relative paths (no longer reference .penguin).
+    expect(prompt).not.toContain(".penguin");
+    // Agent State, scratchpad and Skills are addressed under the App Data Dir's agents/ container.
+    expect(prompt).toContain("<app_data_dir>/agents/<agent_id>/agent_state/");
+    expect(prompt).toContain("<app_data_dir>/agents/<agent_id>/agent_state/skills/");
+    // The pre-agents/ layout (an agent directly under the data root) must never be handed to the model.
+    expect(prompt).not.toContain("<app_data_dir>/<agent_id>/");
+    // The value stays the project dir, but the confusing "Project Dir" label must not.
+    expect(prompt).not.toContain("<project_dir>");
+    expect(prompt).not.toContain("Project Dir:");
+  });
+});

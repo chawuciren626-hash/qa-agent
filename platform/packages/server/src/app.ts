@@ -1,0 +1,817 @@
+/**
+ * The HMR layer's app assembly.
+ *
+ * `bootAppDeps(config)` builds the process's core (database, channels, HmrHost), publishes
+ * it into the resource registry (see hmr/capabilities.ts), boots the platform — which builds
+ * the business surface over what it claims there — and returns the boot. `createApp(boot)`
+ * mounts the layer's HTTP surface: the network guards, `/api/hmr`, the platform seam, and
+ * static hosting. Neither listens on a port: tests inject requests via `app.request()`, and
+ * the startup entry point is index.ts.
+ *
+ * Every other route is the platform's (http/app.ts, `HttpModule`), assembled at every App
+ * creation from `platformImpl.create` (hmr/platform.ts), so it travels with the platform
+ * version rather than with this build. Swap semantics for anything the platform holds that
+ * is not parked is a HARD STOP: approvals deny, runs abort, the scheduler dies with its App.
+ */
+import { createHash } from "node:crypto";
+import zlib from "node:zlib";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import path from "node:path";
+import { Hono } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
+import type { HttpBindings } from "@hono/node-server";
+import { bodyLimit } from "hono/body-limit";
+import { bodyLimitBytes, toAttachmentLimits } from "./services/attachment-limits.js";
+import type { DatabaseSync } from "node:sqlite";
+import type { Instance, ModuleTree } from "@prismshadow/penguin-core/kernel";
+import type { ServerConfig } from "./config.js";
+import { applyProxySettings, mergedNoProxy } from "./net/proxy.js";
+import {
+  HMR_INTERFACES,
+  HMR_INTERFACES_RESOURCE_ID,
+  HMR_AUTH_STATE_RESOURCE_ID,
+  HMR_CHANNELS_RESOURCE_ID,
+  HMR_CONFIG_RESOURCE_ID,
+  HMR_DB_RESOURCE_ID,
+  HMR_DESKTOP_RESOURCE_ID,
+  HMR_HOST_RESOURCE_ID,
+  HMR_CONTROL_RESOURCE_ID,
+  HMR_OVERRIDES_RESOURCE_ID,
+  HMR_TEST_PLUGINS_RESOURCE_ID,
+  type Replacements,
+  HMR_PROXY_RESOURCE_ID,
+  HmrCapabilities,
+  ConsoleLog,
+  type Log,
+  type ProxyControl,
+} from "./hmr/capabilities.js";
+import { ensureCliShim } from "./services/cli-shim.js";
+import { openDatabase } from "./db/database.js";
+import { MachinesRepo } from "./db/repos/machines.js";
+import { ErrorsRepo } from "./db/repos/errors.js";
+import { MessagingBindingsRepo } from "./db/repos/messaging-bindings.js";
+import { SchedulesRepo } from "./db/repos/schedules.js";
+import { ServerSettingsRepo } from "./db/repos/server-settings.js";
+import { SessionsRepo } from "./db/repos/sessions.js";
+import { UiPrefsRepo } from "./db/repos/ui-prefs.js";
+import { UsersRepo } from "./db/repos/users.js";
+import type { UserRow } from "./db/repos/users.js";
+import { jsonOnlyWrites, sameOriginWrites } from "./auth/middleware.js";
+import { AMSP_PREFIX, amspAllowOrigin } from "./amsp/cors.js";
+import { mintApiToken, storeApiToken } from "./auth/api-token.js";
+import type { Identity } from "./terminal/identity.js";
+import { terminalRoutes } from "./terminal/routes.js";
+import type { TerminalManager } from "./terminal/manager.js";
+import { PLUGINS_RESOURCE_ID, type PluginHost } from "./plugin/host.js";
+import type { AppEnv } from "./auth/middleware.js";
+import { AuthService } from "./auth/service.js";
+import { newAuthRuntimeState } from "./auth/runtime-state.js";
+import { AuthSessionsRepo } from "./db/repos/auth-sessions.js";
+import { ensureInstallId } from "./install-id.js";
+import { handleError, HttpError, errorBody } from "./http/errors.js";
+import { attributedProjectId } from "./http/attribution.js";
+import { STREAM_IDLE_MS } from "./http/sse.js";
+import { installRoutes } from "./http/routes/install.js";
+import { ChannelHub } from "./runtime/channel.js";
+import { ErrorRecorder } from "./runtime/error-recorder.js";
+import {
+  createCoreSessionLoader,
+  SessionLoader,
+  SessionManager,
+} from "./runtime/session-manager.js";
+import { SessionSources } from "./runtime/session-sources.js";
+import { Scheduler } from "./runtime/scheduler.js";
+import { MessagingBridge } from "./runtime/messaging/bridge.js";
+import { FeishuConnector } from "./runtime/messaging/feishu-connector.js";
+import { createLarkSdk } from "./runtime/messaging/feishu-sdk.js";
+import type { FeishuSdk } from "./runtime/messaging/feishu-sdk.js";
+import { TelegramConnector } from "./runtime/messaging/telegram-connector.js";
+import { createTelegramTransport } from "./runtime/messaging/telegram-api.js";
+import type { TelegramTransport } from "./runtime/messaging/telegram-api.js";
+import { QQConnector } from "./runtime/messaging/qq-connector.js";
+import { createQQTransport } from "./runtime/messaging/qq-api.js";
+import type { QQTransport } from "./runtime/messaging/qq-api.js";
+import { QQScanService, createQQScanTransport } from "./runtime/messaging/qq-scan.js";
+import { WeChatConnector } from "./runtime/messaging/wechat-connector.js";
+import { createWeChatTransport } from "./runtime/messaging/wechat-api.js";
+import type { WeChatTransport } from "./runtime/messaging/wechat-api.js";
+import { WeChatScanService, createWeChatScanTransport } from "./runtime/messaging/wechat-scan.js";
+import type { WeChatScanTransport } from "./runtime/messaging/wechat-scan.js";
+import type { QQScanTransport } from "./runtime/messaging/qq-scan.js";
+import { TitleGenerator, TitleNotifier } from "./runtime/title-generator.js";
+import { AdminService } from "./services/admin-service.js";
+import { DesktopService } from "./services/desktop-service.js";
+import { AgentConfigService } from "./services/agent-config-service.js";
+import { MemoryService } from "./services/memory-service.js";
+import { AgentService } from "./services/agent-service.js";
+import { BenchmarkService } from "./services/benchmark-service.js";
+import { SnapshotService } from "./services/snapshot-service.js";
+import { ProjectConfigService } from "./services/project-config-service.js";
+import { ModelOAuthService } from "./services/model-oauth-service.js";
+import { ProjectService } from "./services/project-service.js";
+import { SessionService } from "./services/session-service.js";
+import { TraceIndexService } from "./services/trace-index.js";
+import { TraceService } from "./services/trace-service.js";
+import { UpdateCheckService } from "./services/update-check-service.js";
+import { UpdateJobService } from "./services/update-job.js";
+import { UsageService } from "./services/usage-service.js";
+import { WorkspaceFilesService } from "./services/workspace-files-service.js";
+import { HmrHost, hmrControl } from "@prismshadow/penguin-hmr";
+import type { Hmr } from "@prismshadow/penguin-hmr";
+import type { PlatformApi, ServerHmrHost } from "./hmr/platform.js";
+import { packagedPlatform } from "./hmr/platform.js";
+import { platformHttpSeam } from "./hmr/http-seam.js";
+import {
+  createPreviewTokenSigner,
+  hostOnly,
+  loopbackHostRoles,
+  requestAuthority,
+} from "./services/preview-token.js";
+import type { PreviewTokenSigner } from "./services/preview-token.js";
+
+import type { ControlEnvContext, ProxyEnvPolicy, SpawnConfiner } from "@prismshadow/penguin-core";
+import { declined } from "./hmr/hono-seam.js";
+import { AgentsRepo } from "./db/repos/agents.js";
+import { MembersRepo } from "./db/repos/members.js";
+import { ProjectsRepo } from "./db/repos/projects.js";
+import { TraceIndexRepo } from "./db/repos/trace-index.js";
+import { UsageRepo } from "./db/repos/usage.js";
+import { adminUsersRoutes } from "./http/routes/admin.js";
+import { adminSettingsRoutes } from "./http/routes/admin-settings.js";
+import type { ServerEvent } from "./api/types.js";
+import { meRoutes } from "./http/routes/me.js";
+import { eventsRoutes, userChannelKey } from "./http/routes/events.js";
+import { projectsRoutes } from "./http/routes/projects.js";
+import { membersRoutes } from "./http/routes/members.js";
+import { modelsRoutes } from "./http/routes/models.js";
+import { modelOAuthCallbackRoutes, modelOAuthRoutes } from "./http/routes/model-oauth.js";
+import { chatDefaultsRoutes } from "./http/routes/chat-defaults.js";
+import { commandPolicyRoutes } from "./http/routes/command-policy.js";
+import { vaultRoutes } from "./http/routes/vault.js";
+import { memoryRoutes } from "./http/routes/memory.js";
+import { scheduleRoutes } from "./http/routes/schedules.js";
+import { benchmarksRoutes } from "./http/routes/benchmarks.js";
+import { agentSkillsRoutes } from "./http/routes/skills.js";
+import { agentHooksRoutes } from "./http/routes/hooks.js";
+import { agentPluginsRoutes, pluginLibraryRoutes } from "./http/routes/plugins.js";
+import { agentTransferRoutes } from "./http/routes/agent-transfer.js";
+import { agentsRoutes } from "./http/routes/agents.js";
+import { dirsRoutes } from "./http/routes/dirs.js";
+import { directorySkillsRoutes } from "./http/routes/directory-skills.js";
+import { agentConfigRoutes } from "./http/routes/agent-config.js";
+import { agentTracesRoutes } from "./http/routes/agent-traces.js";
+import { usageRoutes } from "./http/routes/usage.js";
+import { agentSessionsRoutes, sessionsRoutes } from "./http/routes/sessions.js";
+import { sessionMessagingRoutes } from "./http/routes/messaging.js";
+import { versionRoutes } from "./http/routes/version.js";
+import { machinesRoutes } from "./http/routes/machines.js";
+import { UsageRecorder } from "./runtime/usage-recorder.js";
+import { previewRoutes } from "./http/routes/preview.js";
+import { MachinesService } from "./machines/service.js";
+import { wire } from "@prismshadow/penguin-core/kernel";
+import type { Settings } from "./mechanisms/settings.js";
+import type { Errors } from "./mechanisms/observability.js";
+import type { Access } from "./mechanisms/projects.js";
+import type { Auth, Admin, Users, AuthSessions } from "./mechanisms/identity.js";
+import { AccountClient } from "./auth/account-client.js";
+import type { AuthState } from "./hmr/capabilities.js";
+import type { LiveStreams } from "./auth/live-streams.js";
+
+/**
+ * What the runtime process holds after boot: the capabilities it owns for the process
+ * lifetime, and the module tree the platform built over them (src/modules). There is no
+ * flat bag of services here any more — a module names what it needs in its manifest.
+ */
+export interface ServerBoot {
+  config: ServerConfig;
+  db: DatabaseSync;
+  channels: ChannelHub;
+  hmr: ServerHmrHost;
+  /** The frozen operations over `hmr` (packages/hmr's main.ts): the seam and the upgrade route drive it, nothing drives the host directly. */
+  control: Hmr<PlatformApi>;
+  desktop: DesktopService | null;
+  /**
+   * The current platform instance: re-pointed by the replace hooks at every push. The
+   * instance outlives an App re-assembly (a plugin change rebuilds the tree INSIDE it, see
+   * hmr/platform.ts), which is why `tree` is derived from it on every read rather than held.
+   */
+  instance: Instance<PlatformApi>;
+  /**
+   * The tree the running App serves — read through `instance` each time, so a plugin
+   * change's re-assembly is seen without any push. A generation that has no tree to answer
+   * with (a bare kernel, a swap mid-flight) keeps the last one resolved, as createApp's
+   * per-node resolvers do.
+   */
+  readonly tree: ModuleTree;
+}
+
+/** The boot's tree accessor: the instance's business tree of the moment, the last known one while it has none. */
+function liveTree(boot: Omit<ServerBoot, "tree">, initial: ModuleTree): ServerBoot {
+  let last = initial;
+  return Object.defineProperty(boot, "tree", {
+    enumerable: true,
+    get(): ModuleTree {
+      const next =
+        typeof boot.instance.api.business === "function" ? boot.instance.api.business() : null;
+      if (next !== null) last = next;
+      return last;
+    },
+  }) as ServerBoot;
+}
+
+/**
+ * Assemble the runtime core, publish its capabilities, boot the platform (which builds
+ * the business surface — see app.ts), and return the merged view. Shared
+ * by production and tests; tests pass dbPath=":memory:" and a temp root.
+ *
+ * `plugins` is what index.ts's loadPlugins shim imported — handed in rather than registered
+ * by the caller because the platform boots inside this function, and everything it claims has
+ * to be in the registry first. The platform builds its own host from the Projects' closure
+ * either way (plugin/loader.ts); this only lets it reuse objects already imported, and lets a
+ * platform older than that move find a host at all.
+ *
+ * `testPlugins` is the other half of that: entries a TEST stands up in process, which no
+ * closure could name because they were never on disk. Kept apart from the line above so the
+ * production path stays "what the Projects ask for, imported", with no way for a fake to
+ * enter it.
+ */
+export async function bootAppDeps(
+  config: ServerConfig,
+  replacements: Replacements = [],
+  plugins?: PluginHost,
+  testPlugins?: PluginHost,
+  host?: ServerHmrHost,
+  control?: Hmr<PlatformApi>,
+): Promise<ServerBoot> {
+  const db = openDatabase(config.dbPath);
+
+  const usersRepo = wire(UsersRepo, { db: db });
+
+  // Hoisted above the services so its registry can be populated before anything boots
+  // against it. index.ts builds both and hands them in (hmrMain owns them there); a test
+  // that boots without an entry gets the same pair here.
+  const hmr = host ?? new HmrHost<PlatformApi>(config.root, packagedPlatform);
+  // The default replace does what index.ts's does: point the boot at the new generation's
+  // instance, so what createApp resolves from `boot.tree` is the current generation's.
+  let booted: ServerBoot | null = null;
+  const ctl =
+    control ??
+    hmrControl(hmr, (instance) => {
+      if (booted !== null) booted.instance = instance;
+    });
+
+  // Channel idle reclamation must skip active Sessions, but "is this session busy" is a
+  // business question: the App installs the answer itself via setActivityProbe at every
+  // create (see hmr/platform.ts) — ordinary use of the claimed capability, re-installed
+  // by each generation. Until the first App boots, nothing is active.
+  const channels = new ChannelHub();
+
+  // Authentication itself is business behaviour and is built per App (buildAppDeps), so a
+  // change to it ships by push. Only the values that must survive a push live out here.
+  const authState = newAuthRuntimeState();
+
+  // Local API token: minted per boot, persisted at <root>/api-token (0600) and published on
+  // the runtime auth state, so authMiddleware accepts it as the admin for this process's
+  // whole life — across hot swaps too, since the App that verifies it is rebuilt but the
+  // file on disk is not rewritten. Local filesystem access to the data root is admin
+  // authority (the reset-admin-password rule); see auth/api-token.ts.
+  const apiToken = mintApiToken();
+  storeApiToken(config.root, apiToken);
+  authState.apiToken = apiToken;
+
+  // Install identity: minted here so a root gets its name the first time it is used rather
+  // than on the first browser request, which keeps `<root>/install-id` alongside the other
+  // files a boot creates and makes the id observable to the CLI and to tests. The return
+  // value is deliberately unused — GET /api/install re-reads the file per request (see
+  // http/routes/install.ts); this call exists for the minting side effect. Nothing fails
+  // when it cannot be persisted: the browser then simply never sweeps.
+  ensureInstallId(config.root);
+
+  // The `penguin` an Agent's commands resolve: this harness's own CLI, written into the
+  // data root for every Session to put at the front of PATH (see services/cli-shim.ts).
+  // Here rather than per App, for the same reason the two above are: it is a fact about
+  // this PROCESS's installation, and a hot-pushed platform — compiled somewhere else
+  // entirely — has no way to work out where the CLI it should point at lives.
+  // Pre-boot, so the Log mechanism is not up yet: a ConsoleLog replacement (the double a
+  // test hands the tree) is honoured here too, and the process's own console otherwise.
+  const logDouble = replacements.find(([cls]) => cls === ConsoleLog)?.[1] as Log | undefined;
+  const shimLog = (line: string): void => (logDouble ?? new ConsoleLog()).line(line);
+  const shim = ensureCliShim(config.root, config.cliEntry ?? null, {
+    execArgs: config.cliLaunch?.execArgs ?? [],
+    unavailable: config.cliLaunch?.unavailable ?? null,
+    dbPath: config.dbPath,
+  });
+  if (shim.kind === "written") {
+    // The whole command the shim runs, loader included: which CLI `penguin` is, said once.
+    const command = [...shim.execArgs, shim.entry].join(" ");
+    shimLog(`Agent CLI: ${path.join(shim.dir, "penguin")} -> ${command}`);
+  } else if (shim.kind === "stub") {
+    shimLog(
+      `Agent CLI: this checkout's CLI cannot run, so ${path.join(shim.dir, "penguin")} says why ` +
+        `instead of running another installation's: ${shim.reason}`,
+    );
+  } else if (shim.kind === "absent") {
+    shimLog(
+      "Agent CLI: no CLI entry found; commands an Agent runs resolve `penguin` on their own PATH.",
+    );
+  } else {
+    console.warn(`[server] could not write the penguin CLI shim: ${shim.reason}`);
+  }
+
+  // What buildAppDeps claims (see hmr/capabilities.ts) — every entry must be in place before
+  // ensure() below performs the first boot. The interface descriptor leads: it is what a
+  // bundle's handshake reads before trusting any of the rest.
+  hmr.resources.register(HMR_INTERFACES_RESOURCE_ID, HMR_INTERFACES);
+  hmr.resources.register(HMR_CONFIG_RESOURCE_ID, config);
+  hmr.resources.register(HMR_DB_RESOURCE_ID, db);
+  hmr.resources.register(HMR_AUTH_STATE_RESOURCE_ID, authState);
+  hmr.resources.register(HMR_CHANNELS_RESOURCE_ID, channels);
+  hmr.resources.register(HMR_PROXY_RESOURCE_ID, applyProxySettings);
+  hmr.resources.register(HMR_HOST_RESOURCE_ID, hmr);
+  hmr.resources.register(HMR_CONTROL_RESOURCE_ID, ctl);
+  hmr.resources.register(HMR_OVERRIDES_RESOURCE_ID, replacements);
+  const desktop = config.desktopToken !== null ? new DesktopService(config.desktopToken) : null;
+  hmr.resources.register(HMR_DESKTOP_RESOURCE_ID, desktop);
+  // The registry sweep only STARTS plugin disposal (its disposers are sync) — the
+  // fallback for exit paths that skip the graceful shutdown. The graceful path awaits
+  // host.dispose() itself, bounded (index.ts); dispose is idempotent, so both may fire.
+  if (plugins !== undefined) {
+    hmr.resources.register(PLUGINS_RESOURCE_ID, plugins, () => void plugins.dispose());
+  }
+  if (testPlugins !== undefined) {
+    hmr.resources.register(HMR_TEST_PLUGINS_RESOURCE_ID, testPlugins);
+  }
+
+  // Boot the platform now rather than on the first request: the business surface —
+  // services, routes, the scheduler — is assembled inside its create(). The check reads
+  // the in-process api member, not a registry entry: the instance IS the current App.
+  const instance = await hmr.ensure();
+  const tree = instance.api.business();
+  if (tree === null) {
+    throw new Error("the packaged platform built no business surface");
+  }
+  // Callers that outlive swaps (index.ts, the runtime app) may only touch the swap-stable
+  // members: the runtime singletons published above, and `tree` — which follows the
+  // instance of the moment, so a re-assembly (a plugin change, no push) is never missed.
+  // Per-request business dispatch rides the seam.
+  booted = liveTree({ config, db, channels, hmr, control: ctl, desktop, instance }, tree);
+  return booted;
+}
+
+/**
+ * The layer's log handle: whichever platform is current writes the line, and the console
+ * does before there is one. Resolved per line through the host, so a swap changes where the
+ * lines go without the layer holding any generation's object.
+ */
+export function platformLog(hmr: ServerHmrHost): (line: string) => void {
+  return (line) => {
+    void hmr
+      .ensure()
+      .then((instance) => {
+        if (typeof instance.api.log === "function") instance.api.log(line);
+        else console.log(line);
+      })
+      .catch(() => console.log(line));
+  };
+}
+
+/** Assembles the Hono app (does not listen on a port). */
+export function createApp(boot: ServerBoot): Hono<AppEnv> {
+  // Resolved on use, from the CURRENT generation's tree — the entry's replace hook points
+  // `boot.tree` at each new one — so a node is never the first generation's for the life
+  // of the process. A generation that has no tree to resolve from (a pushed fixture, a
+  // bare kernel, a tree mid-dispose) keeps the last one resolved, as a captured node did.
+  const current = <T>(resolve: () => T): (() => T) => {
+    let last = resolve();
+    return () => {
+      try {
+        last = resolve();
+      } catch {
+        // The tree is mid-swap or belongs to a generation without one: the last node stands.
+      }
+      return last;
+    };
+  };
+  const errors = current(() => boot.tree.api<Errors>("ObservabilityModule", "Errors"));
+  const log = platformLog(boot.hmr);
+  const settings = current(() => boot.tree.api<Settings>("SettingsModule", "Settings"));
+  const access = current(() => boot.tree.api<Access>("ProjectsModule", "Access"));
+  const authService = current(() => boot.tree.api<Auth>("IdentityModule", "Auth"));
+  const deps = {
+    config: boot.config,
+    desktop: boot.desktop,
+    get authService() {
+      return authService();
+    },
+    hmr: boot.hmr,
+    control: boot.control,
+    channels: boot.channels,
+  };
+  const app = new Hono<AppEnv>();
+
+  // Error recording is layered in a lambda wrapping onError: handleError stays a
+  // pure function with unchanged behavior (HttpError is mapped as-is, unknown
+  // exceptions are logged with a stack trace and collapsed to 500), and recording
+  // to the DB is just a side-effect layered on top.
+  app.onError((err, c) => {
+    const projectId = attributedProjectId(c, { access: access() });
+    errors().record({
+      source: "http",
+      err,
+      ...(projectId !== undefined ? { ctx: { projectId } } : {}),
+    });
+    return handleError(err, c);
+  });
+  app.notFound((c) => c.json(errorBody("not_found", "Endpoint does not exist."), 404));
+
+  // Request logging: a minimal one-liner (method path status ms).
+  app.use("*", async (c, next) => {
+    const start = performance.now();
+    await next();
+    const ms = Math.round(performance.now() - start);
+    log(`${c.req.method} ${c.req.path} ${c.res.status} ${ms}ms`);
+  });
+
+  // An event stream's socket that sends nothing for STREAM_IDLE_MS is destroyed (Node lets the
+  // first expiry pass while a write is pending, so a stuck write is cut within two). A live
+  // stream pings every 20 s; it goes that quiet only when its peer stopped reading and a write
+  // never completes, and then only the socket can end it: the stream's own close queues behind
+  // that write. The abort runs the stream's teardown. Only the host holds the socket (`c.env`,
+  // passed by index.ts), hence here.
+  app.use("*", async (c, next) => {
+    await next();
+    const socket = (c.env as Partial<HttpBindings> | undefined)?.incoming?.socket;
+    if (socket && c.res.headers.get("content-type")?.startsWith("text/event-stream")) {
+      socket.setTimeout(STREAM_IDLE_MS, () => socket.destroy());
+    }
+  });
+
+  // Canonical-host guard (loopback binds only): the App is served on one loopback name and
+  // previews on its counterpart, but the SAME process answers on both. Without this, Agent-
+  // written preview HTML on the preview host could call /api same-origin and — if a session
+  // cookie had ever been set on that host — act as the user. So the preview host serves ONLY
+  // /preview/*: /api answers 401 (it never sets or honors a cookie there, closing both the
+  // login and the stale-cookie paths), and everything else 302s to the canonical App host.
+  // Off when PENGUIN_PREVIEW_ORIGIN is set: previews then
+  // use that origin rather than the loopback counterpart, so 127.0.0.1 is an ordinary App
+  // access point and must not be locked down — deployments enforce the equivalent at the
+  // reverse proxy (route only /preview/* to the App on the preview origin).
+  const previewRoles = deps.config.previewOrigin ? null : loopbackHostRoles(deps.config.host);
+  if (previewRoles) {
+    app.use("*", async (c, next) => {
+      const host = hostOnly(requestAuthority(c.req.url, c.req.header("host"))).toLowerCase();
+      if (host === previewRoles.preview && !c.req.path.startsWith("/preview/")) {
+        if (c.req.path.startsWith("/api/")) {
+          throw new HttpError(401, "unauthorized", "The API is not served on the preview host.");
+        }
+        const url = new URL(c.req.url);
+        url.hostname = previewRoles.app;
+        return c.redirect(url.toString(), 302);
+      }
+      await next();
+    });
+  }
+
+  // API common defenses: request body size cap (20MB) and write-request Content-Type (one of the CSRF MVP defenses).
+  //
+  // The cap has to be measured, not read: a chunked request carries no `content-length` at all,
+  // so a header check alone passes a body of any size — the sinks behind it (task input images,
+  // file attachments, Trace import) then decode whatever arrives. hono's bodyLimit keeps the
+  // header fast path when the length is declared and otherwise counts bytes off the stream,
+  // aborting the moment the total crosses the cap.
+  //
+  // The cap is DERIVED from the admin-settable attachment budget rather than fixed, because the
+  // two must not disagree in either direction: a cap below the budget would reject a request whose
+  // every attachment was individually legal (and with a body-shaped error, not a size-shaped one),
+  // while a cap permanently sized for the largest budget an admin *could* set would keep accepting
+  // 300MB bodies on a server whose limits were left at 10MB. It is re-derived per request, so an
+  // admin's change takes effect immediately; the middleware itself is memoized on the resulting
+  // size so the steady state allocates nothing.
+  //
+  // The Agent API is called from browsers too: its CORS header (amsp/cors.ts) has to reach these
+  // two refusals, which answer before its group runs, or a caller reads a CORS failure, not the code.
+  app.use(`${AMSP_PREFIX}/*`, amspAllowOrigin);
+  let capped: { size: number; mw: MiddlewareHandler } | null = null;
+  app.use("/api/*", (c, next) => {
+    const size = bodyLimitBytes(settings().getAttachmentLimitsMb());
+    if (capped === null || capped.size !== size) {
+      capped = {
+        size,
+        mw: bodyLimit({
+          maxSize: size,
+          // Its default is a bare text/plain 413; throw the App's own error instead so the
+          // response stays the documented `payload_too_large` body that every client handles.
+          onError: () => {
+            throw new HttpError(
+              413,
+              "payload_too_large",
+              `Request body exceeds the ${Math.floor(size / (1024 * 1024))}MB limit.`,
+            );
+          },
+        }),
+      };
+    }
+    return capped.mw(c, next);
+  });
+  app.use("/api/*", sameOriginWrites(deps.config.trustProxy));
+  app.use("/api/*", jsonOnlyWrites(deps.config.trustProxy));
+
+  if (deps.config.accountClient) {
+    const bridge = new AccountClient({ config: deps.config, db: boot.db,
+      localRequest: (userId,request) => boot.tree.api<import("./http/app.js").Http>("HttpModule","http").fetchAs(userId,request),
+      auth: authService,
+      users: () => boot.tree.api<Users>("IdentityModule", "Users"),
+      sessions: () => boot.tree.api<AuthSessions>("IdentityModule", "AuthSessions"),
+      admin: () => boot.tree.api<Admin>("IdentityModule", "Admin"),
+      streams: () => boot.tree.api<LiveStreams>("IdentityModule", "LiveStreams"),
+    });
+    boot.tree.api<AuthState>("RuntimeModule", "AuthState").accountClient = bridge;
+    app.use("*", bridge.middleware(token => deps.desktop?.redeemLoginToken(token) === true));
+  } else app.get("/api/account-client/config", c => c.json({enabled:false}));
+
+  // THE seam: every route is one the platform may take over by push — the upgrade channel
+  // included, which the platform declares and contributes like any other group
+  // (hmr/routes.ts; a generation without it is refused before commit, see packages/hmr's
+  // admitsUpgradeRoute). Declining costs one property read and lands on the layer's own
+  // tail below, which is what a platform without an `http` handler does.
+  app.use("*", platformHttpSeam(deps.control));
+
+  // Every route but /api/hmr is the platform's, served through the seam above. What follows
+  // is the layer's own tail: static hosting and the SPA fallback.
+
+  // Static hosting (production): serves the frontend build output with SPA fallback to
+  // index.html. The source resolves per request — the hot host can point it at a
+  // freshly pushed/restored web dist (in memory) without a restart; when nothing has
+  // been pushed, it falls back to the configured webDist. `hmr.ensure()` is awaited
+  // FIRST: web is only restored from harness.json as part of the platform+cli+web
+  // version's lazy first boot (see HmrHost.restore()), which nothing else here
+  // triggers — without this, a request landing right after a restart (before any
+  // /api/hmr/* call warms the host up) would miss a restored version entirely and
+  // silently fall back to the packaged webDist.
+  registerStaticRoutes(app, async () => {
+    await deps.hmr.ensure();
+    return deps.hmr.resolveWebSource() ?? { kind: "dir", dir: deps.config.webDist };
+  });
+
+  return app;
+}
+
+const CONTENT_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".ico": "image/x-icon",
+  ".map": "application/json",
+  ".txt": "text/plain; charset=utf-8",
+  ".woff2": "font/woff2",
+};
+
+/** Where registerStaticRoutes reads a request's bytes from, resolved fresh per request. */
+export type WebSource = { kind: "mem"; files: Map<string, Buffer> } | { kind: "dir"; dir: string };
+
+/**
+ * The SPA's caching contract, without which a hot-pushed web is invisible to returning
+ * clients until they happen to hard-refresh:
+ *
+ * - Vite's `assets/*` files are content-hashed, so their bytes can never change under
+ *   their name → cache forever, never revalidate.
+ * - Everything else — `index.html` above all, including every SPA-fallback answer — must
+ *   revalidate on each navigation (`no-cache` means "store, but ask first"), and the ETag
+ *   makes that ask a 304 instead of a re-download. A web push changes the ETag, so the
+ *   very next load anywhere picks the new app up.
+ */
+function cacheControlFor(servedPath: string): string {
+  return servedPath.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-cache";
+}
+
+/** Content ETags for the in-memory dist, computed once per Buffer (pushes swap the Buffers). */
+const memEtags = new WeakMap<Buffer, string>();
+
+function etagOfBuffer(content: Buffer): string {
+  let etag = memEtags.get(content);
+  if (etag === undefined) {
+    etag = `"${createHash("sha256").update(content).digest("base64url").slice(0, 16)}"`;
+    memEtags.set(content, etag);
+  }
+  return etag;
+}
+
+/**
+ * Whether `If-None-Match` claims this exact representation, per RFC 9110's rules rather than
+ * by string equality — both of which a real deployment hits:
+ *
+ * - It is a LIST. A client holding several validators sends `"a", "b"`.
+ * - Comparison is WEAK, so `W/"x"` and `"x"` are the same tag. A proxy that re-encodes a
+ *   response (nginx's gzip module is the common one) downgrades a strong ETag to weak on the
+ *   way out, and the client sends back what it was given.
+ *
+ * Getting this wrong costs only 304s — the bytes are still correct — which is exactly why it
+ * would never be noticed, and why it is worth a few lines rather than a string compare.
+ */
+function ifNoneMatchHits(header: string | undefined, etag: string): boolean {
+  if (header === undefined) return false;
+  const bare = (tag: string) => tag.trim().replace(/^W\//, "");
+  // `*` means "any current representation": for a resource that exists, that is a match.
+  if (header.trim() === "*") return true;
+  const want = bare(etag);
+  return header.split(",").some((tag) => bare(tag) === want);
+}
+
+/**
+ * Extensions worth compressing. Everything absent is either already compressed (png, woff2,
+ * ico) or too small for the round trip to pay for the CPU — recompressing a PNG spends time
+ * to make the response slightly larger.
+ */
+const COMPRESSIBLE = new Set([".html", ".js", ".css", ".json", ".svg", ".map", ".txt"]);
+
+/**
+ * Below this, compression is not worth doing: a few hundred bytes rarely shrink past the
+ * gzip header, and the transfer was never the cost at that size.
+ */
+const COMPRESS_MIN_BYTES = 1024;
+
+/**
+ * The best encoding this client accepts, or null for none.
+ *
+ * Brotli first — on the app bundle it is meaningfully smaller than gzip, and everything that
+ * speaks it also speaks gzip, so the fallback is free. Parsed rather than substring-matched
+ * because `q=0` means REFUSED: a client that sends `gzip;q=0` is saying "not gzip", and a
+ * naive `includes("gzip")` reads that as consent and returns bytes it cannot decode.
+ */
+function pickEncoding(header: string | undefined): "br" | "gzip" | null {
+  if (header === undefined) return null;
+  const accepted = new Set<string>();
+  for (const part of header.split(",")) {
+    const [rawToken, ...params] = part.split(";");
+    const token = (rawToken ?? "").trim().toLowerCase();
+    const q = params.map((p) => /^\s*q=([0-9.]+)\s*$/i.exec(p)).find((m) => m !== null)?.[1];
+    if (q !== undefined && Number.parseFloat(q) === 0) continue;
+    accepted.add(token);
+  }
+  if (accepted.has("br")) return "br";
+  if (accepted.has("gzip")) return "gzip";
+  return null;
+}
+
+/**
+ * Compressed bodies, keyed by `<encoding> <etag>` — the ETag already identifies one exact
+ * representation, so it is the only key this needs, and it changes when the bytes do.
+ *
+ * Cached because the alternative is compressing the same 1.2 MB bundle on every page load.
+ * Bounded and insertion-ordered (oldest evicted first): a dist is tens of files, but a hot
+ * push replaces all of them, and nothing should grow without a ceiling across a long uptime.
+ */
+const COMPRESSED_CACHE_ENTRIES = 128;
+const compressedCache = new Map<string, Buffer>();
+
+function compressedBody(content: Buffer, encoding: "br" | "gzip", etag: string): Buffer {
+  const key = `${encoding} ${etag}`;
+  const hit = compressedCache.get(key);
+  if (hit !== undefined) return hit;
+  const body =
+    encoding === "br"
+      ? zlib.brotliCompressSync(content, {
+          params: {
+            // Text mode and the real size let brotli pick its window; quality 5 is the knee
+            // of the curve — near-max ratio for a fraction of the time of 11, which on a
+            // megabyte is the difference between imperceptible and a visible stall.
+            [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT,
+            [zlib.constants.BROTLI_PARAM_QUALITY]: 5,
+            [zlib.constants.BROTLI_PARAM_SIZE_HINT]: content.byteLength,
+          },
+        })
+      : zlib.gzipSync(content, { level: 6 });
+  if (compressedCache.size >= COMPRESSED_CACHE_ENTRIES) {
+    const oldest = compressedCache.keys().next();
+    if (!oldest.done) compressedCache.delete(oldest.value);
+  }
+  compressedCache.set(key, body);
+  return body;
+}
+
+/** The static response for one resolved file: 304 on an ETag match, the bytes otherwise. */
+function staticResponse(
+  c: Context<AppEnv>,
+  content: Buffer,
+  servedPath: string,
+  etag: string,
+): Response {
+  const ext = path.extname(servedPath).toLowerCase();
+  const mayCompress = COMPRESSIBLE.has(ext) && content.byteLength >= COMPRESS_MIN_BYTES;
+  // Chosen BEFORE the 304, because it decides which representation is being talked about —
+  // and a 304 has to carry the validator of the one the client would have got.
+  const encoding = mayCompress ? pickEncoding(c.req.header("accept-encoding")) : null;
+  // Weakened when compressed, as a re-encoding proxy would: those bytes are a different
+  // representation of the same thing, and a weak validator is exactly the claim "equivalent,
+  // not identical". Revalidation matches either spelling — ifNoneMatchHits compares weakly.
+  const responseEtag = encoding !== null && !etag.startsWith("W/") ? `W/${etag}` : etag;
+  const headers: Record<string, string> = {
+    "Cache-Control": cacheControlFor(servedPath),
+    ETag: responseEtag,
+  };
+  // Announced whenever the answer COULD have varied — on the 304 too, and even when this
+  // particular client took no encoding: a shared cache keys on what the header says, so
+  // leaving it off is how one client's gzip reaches another that cannot read it.
+  if (mayCompress) headers["Vary"] = "Accept-Encoding";
+  if (ifNoneMatchHits(c.req.header("if-none-match"), etag)) {
+    return new Response(null, { status: 304, headers });
+  }
+  headers["Content-Type"] = CONTENT_TYPES[ext] ?? "application/octet-stream";
+  if (encoding === null) {
+    return new Response(new Uint8Array(content), { status: 200, headers });
+  }
+  headers["Content-Encoding"] = encoding;
+  return new Response(new Uint8Array(compressedBody(content, encoding, etag)), {
+    status: 200,
+    headers,
+  });
+}
+
+/**
+ * Minimal static file server (avoiding an extra dependency): path traversal
+ * protection + SPA fallback, over either an in-memory pushed/restored dist (the
+ * hot host's primary path — no filesystem at all) or the packaged webDist
+ * directory on disk. Serves the caching contract above, so pushes take effect
+ * on the next navigation and hashed assets stop re-downloading.
+ */
+function registerStaticRoutes(app: Hono<AppEnv>, resolveSource: () => Promise<WebSource>): void {
+  app.get("*", async (c) => {
+    const reqPath = decodeURIComponent(c.req.path);
+    if (reqPath.startsWith("/api/")) {
+      return c.json(errorBody("not_found", "Endpoint does not exist."), 404);
+    }
+    const rel = reqPath.replace(/^\/+/, "") || "index.html";
+    // Resolved per request: the hot host may retarget it between requests.
+    const source = await resolveSource();
+
+    if (source.kind === "mem") {
+      // No filesystem involved, so no traversal guard is needed: an unknown
+      // key simply isn't in the map, same as a missing file on disk.
+      const servedPath = source.files.has(rel) ? rel : "index.html"; // SPA fallback
+      const content = source.files.get(servedPath);
+      if (content === undefined) {
+        return c.json(errorBody("not_found", "Resource does not exist."), 404);
+      }
+      return staticResponse(c, content, servedPath, etagOfBuffer(content));
+    }
+
+    const webDist = source.dir;
+    if (!fs.existsSync(webDist)) {
+      return c.json(errorBody("not_found", "Resource does not exist."), 404);
+    }
+    const resolved = path.resolve(webDist, rel);
+    // Guard against path traversal: once resolved, it must still be inside webDist.
+    const base = path.resolve(webDist);
+    const target =
+      resolved === base || resolved.startsWith(base + path.sep)
+        ? resolved
+        : path.join(base, "index.html");
+    let file = target;
+    try {
+      const stat = await fsp.stat(file);
+      if (stat.isDirectory()) file = path.join(file, "index.html");
+      await fsp.access(file);
+    } catch {
+      file = path.join(base, "index.html"); // SPA fallback
+    }
+    let content: Buffer;
+    let mtimeMs = 0;
+    try {
+      // ONE handle for both, not stat-then-read: a handle names an inode, so the validator
+      // is guaranteed to describe the bytes being sent. Read and stat as separate lookups
+      // can straddle a file replacement and tag old bytes with a new mtime — after which
+      // the client revalidates, matches, and keeps the stale copy indefinitely.
+      const handle = await fsp.open(file, "r");
+      try {
+        mtimeMs = (await handle.stat()).mtimeMs;
+        content = await handle.readFile();
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      return c.json(errorBody("not_found", "Resource does not exist."), 404);
+    }
+    // A weak size+mtime validator, the classic disk-file shape — hashing every
+    // response would cost more than the 304s save.
+    const etag = `W/"${content.byteLength}-${Math.round(mtimeMs)}"`;
+    return staticResponse(c, content, path.relative(base, file).split(path.sep).join("/"), etag);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The business surface: everything below travels with the platform version.
+// Called from hmr/platform.ts's create() at every App creation — see the module doc.
+// ---------------------------------------------------------------------------
+
+/**
+ * Assembles the business service graph over the claimed runtime capabilities.
+ *
+ * The db handle, auth service, channel hub, config object and hmr host come from the
+ * claim — one live instance per process, shared with the runtime. Everything else is
+ * built fresh per App, which is exactly what makes it hot-swappable.
+ */

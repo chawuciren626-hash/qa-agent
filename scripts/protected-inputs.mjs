@@ -77,7 +77,17 @@ export function createProtectedInputs(base,{wrap=bytes=>dpapi(bytes),unwrap=byte
           if(parsed && typeof parsed==='object') {const changed=visit(parsed);return JSON.stringify(changed)===JSON.stringify(parsed)?text:JSON.stringify(changed);}
         }
         let result=text;
-        for(const [secret,ref] of known.get(owner) ?? []) if(secret.length>=4) result=result.split(/(qa-secret:\/\/session-[0-9a-f-]+\/[0-9a-f-]{36})/g).map(part=>referencePattern.test(part)?part:part.split(secret).join(ref)).join('');
+        for(const [secret,ref] of known.get(owner) ?? []) {
+          // Short word credentials can also be ordinary identifier fragments (test_cases,
+          // tester). Mask complete tokens, not substrings of unrelated tool vocabulary.
+          // Explicit sensitive fields are always protected, including one-character values.
+          const shortWord=/^[A-Za-z0-9_]{1,8}$/.test(secret);
+          if(secret.length<4 && !shortWord) continue;
+          const replace=part=>shortWord
+            ? part.replace(new RegExp(`(?<![\\p{L}\\p{N}_])${secret}(?![\\p{L}\\p{N}_])`,'gu'),()=>ref)
+            : part.split(secret).join(ref);
+          result=result.split(/(qa-secret:\/\/session-[0-9a-f-]+\/[0-9a-f-]{36})/g).map(part=>referencePattern.test(part)?part:replace(part)).join('');
+        }
         result=result.replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+\/-]+=*/gi,raw=>this.put(owner,raw));
         return result.replace(/(["']?(?:password|passwd|api[_ -]?key|access[_ -]?token|client[_ -]?secret|密码|口令|密钥|令牌)["']?\s*[:=：]\s*)("([^"\r\n]+)"|'([^'\r\n]+)'|([^\s,;，；<>]+))/gi,(all,prefix,quoted,double,single,bare)=>{
           const raw=double ?? single ?? bare;

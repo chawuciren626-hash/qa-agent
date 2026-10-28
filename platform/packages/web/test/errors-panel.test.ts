@@ -1,0 +1,173 @@
+/**
+ * The cost center's error table and its clear action.
+ *
+ * Two properties a type checker cannot see. The action is offered only where it can succeed —
+ * the route is owner-only, so showing it to a member would be an affordance whose only outcome
+ * is a 403 — and only while there are rows to take.
+ *
+ * The other is the confirmation's wording, which is the whole safety mechanism here: the delete
+ * is scoped to the filter on screen, so a dialog that named the Project's whole history, or
+ * only the visible page, would send someone into an irreversible action describing the wrong
+ * set. That sentence is a pure function for exactly this reason — this package's vitest runs in
+ * `node`, deliberately, so an opened dialog is not something a test can read.
+ */
+import { afterEach, describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import type { UsageErrorItem, UsageErrors } from "@prismshadow/penguin-server/api";
+import { ErrorsPanel, errorsClearScopeText } from "../src/features/usage/errors-panel";
+import type { ErrorsFilters } from "../src/features/usage/errors-panel";
+import { formatDateTime } from "../src/lib/format";
+import { S, setActiveStrings, zh } from "../src/lib/strings";
+import { en } from "../src/lib/strings-en";
+
+afterEach(() => setActiveStrings(zh));
+
+const item = (code: string): UsageErrorItem => ({
+  ts: "2026-08-27T10:00:00.000Z",
+  source: "http",
+  code,
+  kind: "unexpected",
+  message: `${code} went wrong`,
+  count: 1,
+  firstTs: "2026-08-27T10:00:00.000Z",
+});
+
+function errorsOf(items: UsageErrorItem[]): UsageErrors {
+  const total = items.reduce((sum, e) => sum + e.count, 0);
+  return {
+    total,
+    unexpected: total,
+    topCode: null,
+    recent: items,
+    rows: items.length,
+  };
+}
+
+const FILTERS: ErrorsFilters = { from: "2026-08-01", to: "2026-08-27" };
+
+function render(
+  opts: {
+    items?: UsageErrorItem[];
+    canClear?: boolean;
+    filters?: ErrorsFilters;
+  } = {},
+): string {
+  const items = opts.items ?? [item("internal")];
+  return renderToStaticMarkup(
+    createElement(ErrorsPanel, {
+      errors: errorsOf(items),
+      projectId: "p1",
+      filters: opts.filters ?? FILTERS,
+      canClear: opts.canClear ?? true,
+      onCleared: () => {},
+    }),
+  );
+}
+
+describe("ErrorsPanel clear action", () => {
+  it("is offered to the Project owner only", () => {
+    expect(render({ canClear: true })).toContain(S.usage.errorsClear);
+    // A member reads the panel; the route refuses the delete, so the button is not there to
+    // promise otherwise.
+    expect(render({ canClear: false })).not.toContain(S.usage.errorsClear);
+  });
+
+  it("is absent while the filtered table is empty", () => {
+    const empty = render({ items: [] });
+    expect(empty).toContain(S.usage.errorsEmpty);
+    expect(empty).not.toContain(S.usage.errorsClear);
+  });
+
+  it("is absent while a date bound is blank: the sentence could not describe that delete", () => {
+    // A cleared date input sends no bound, which the route reads as unbounded on that side —
+    // wider than anything the confirmation's "records outside that range are kept" can promise.
+    expect(render({ filters: { from: "", to: "2026-08-27" } })).not.toContain(S.usage.errorsClear);
+  });
+
+  it("keeps the pager independent of it: rows but one page shows the action alone", () => {
+    const onePage = render({ items: [item("internal")] });
+    expect(onePage).toContain(S.usage.errorsClear);
+    expect(onePage).not.toContain(S.usage.errorsOlder);
+  });
+});
+
+describe("ErrorsPanel rows", () => {
+  it("a row standing for several records says how many after its message, and when the first was", () => {
+    const folded: UsageErrorItem = {
+      ...item("messaging_connect_failed"),
+      message: "gateway stopped acknowledging heartbeats",
+      count: 3,
+      firstTs: "2026-08-27T06:00:00.000Z",
+    };
+    const html = render({ items: [folded] });
+    expect(html).toContain("×3");
+    expect(html).toContain(
+      `data-tooltip="${S.usage.errorsFirstAt(formatDateTime(folded.firstTs))}"`,
+    );
+    // The time shown is the latest one.
+    expect(html).toContain(formatDateTime(folded.ts));
+  });
+
+  it("a single record says nothing more than it did", () => {
+    const html = render({ items: [item("internal")] });
+    expect(html).not.toContain("×1");
+    expect(html).not.toContain(S.usage.errorsFirstAt(formatDateTime(item("internal").ts)));
+  });
+
+  it("pages by rows, while the stats above count records", () => {
+    // Ten rows on this page out of 25, standing for 40 records.
+    const recent = Array.from({ length: 10 }, (_, i) => item(`code_${i}`));
+    const html = renderToStaticMarkup(
+      createElement(ErrorsPanel, {
+        errors: { total: 40, unexpected: 40, topCode: null, recent, rows: 25 },
+        projectId: "p1",
+        filters: FILTERS,
+        canClear: true,
+        onCleared: () => {},
+      }),
+    );
+    expect(html).toContain(S.usage.errorsPageOf(1, 3, 25));
+    expect(html).toContain(">40<");
+  });
+});
+
+describe("errorsClearScopeText", () => {
+  for (const [locale, dict] of Object.entries({ zh, en })) {
+    it(`${locale}: a custom range is named by its dates, and the Agent when one is selected`, () => {
+      setActiveStrings(dict);
+      const ranged = errorsClearScopeText(FILTERS, undefined, 12);
+      expect(ranged).toContain("2026-08-01");
+      expect(ranged).toContain("2026-08-27");
+      expect(ranged).toContain("12");
+      // No Agent filter: the sentence must not claim one, or it describes a narrower delete
+      // than the one about to run.
+      expect(ranged).not.toContain("agent-7");
+
+      const perAgent = errorsClearScopeText({ ...FILTERS, agentId: "agent-7" }, undefined, 3);
+      expect(perAgent).toContain("agent-7");
+      expect(perAgent).toContain("2026-08-01");
+      expect(perAgent).toContain("3");
+    });
+
+    it(`${locale}: a quick preset is named as the picker names it, never as the dates behind it`, () => {
+      setActiveStrings(dict);
+      for (const preset of ["1h", "1d", "7d", "30d", "90d"] as const) {
+        const text = errorsClearScopeText(FILTERS, preset, 12);
+        expect(text).toContain(dict.usage.errorsClearRangePreset(preset));
+        expect(text).not.toContain("2026-08-01");
+        expect(text).not.toContain("2026-08-27");
+        expect(text).toContain("12");
+      }
+      const perAgent = errorsClearScopeText({ ...FILTERS, agentId: "agent-7" }, "7d", 3);
+      expect(perAgent).toContain("agent-7");
+      expect(perAgent).toContain(dict.usage.errorsClearRangePreset("7d"));
+    });
+  }
+
+  it("an empty agentId is no filter at all (the panel's own spelling of 'all agents')", () => {
+    expect(errorsClearScopeText({ ...FILTERS, agentId: "" }, "7d", 4)).toBe(
+      errorsClearScopeText(FILTERS, "7d", 4),
+    );
+  });
+});

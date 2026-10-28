@@ -47,6 +47,22 @@ test('first labeled input and JSON file-tool arguments use the same protected va
   assert.equal(f.store.protect(owner,{authorization:'user allowed login'}).authorization,'user allowed login');
 });
 
+test('short credentials do not corrupt action identifiers or nested case drafts',t=>{
+  const f=fixture(t),ref=f.store.put(owner,'test');
+  const draft={action:'export_test_cases',stage:'test_cases',test_data:{username:'tester',password:'test'},note:'credential test; test_cases and tester remain identifiers'};
+  const protectedDraft=JSON.parse(f.store.protect(owner,JSON.stringify(draft)));
+  assert.equal(protectedDraft.action,draft.action);
+  assert.equal(protectedDraft.stage,draft.stage);
+  assert.equal(protectedDraft.test_data.username,'tester');
+  assert.equal(protectedDraft.test_data.password,ref);
+  assert.equal(protectedDraft.note,`credential ${ref}; test_cases and tester remain identifiers`);
+  assert.deepEqual(f.store.protect(owner,protectedDraft),protectedDraft);
+  const one=f.store.put(owner,'x');
+  assert.equal(f.store.protect(owner,{password:'x',note:'value x, export'}).note,`value ${one}, export`);
+  const long=f.store.put(owner,'Synthetic-only-secret-7362');
+  assert.equal(f.store.protect(owner,'prefixSynthetic-only-secret-7362suffix'),`prefix${long}suffix`);
+});
+
 test('host boundary protects the live message before trace and shares parent ownership in a child',t=>{
   const f=fixture(t);let now=0;
   const boundary=createHostBoundary(f.workspace,other,{store:()=>f.store,clock:()=>now,processIdentity:'a'.repeat(36)});

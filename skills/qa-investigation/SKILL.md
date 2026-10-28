@@ -3,7 +3,7 @@ name: qa-investigation
 description: 对具体失败进行基于证据的根因调查，区分故障频率、产品/脚本/环境/数据原因和未确认问题；用于多步骤失败分析，不直接修复产品、启动复测或关闭缺陷。
 license: MIT; see LICENSE.txt
 metadata:
-  version: '1.0.0'
+  version: '1.1.0'
   source: fugazi/test-automation-skills-agents
   revision: 65a72d5e74def3c23143bef8757e72cb68e91032
   adapted-from: qa-investigation
@@ -12,6 +12,8 @@ metadata:
 # 失败根因调查
 
 先查已有证据，再提出可验证假设；目标是解释失败，不是使报告变绿。简单错误可直接给出有依据的分析，不强制创建长调查日志。
+
+遇到超时、偶发失败、页面与接口结论不一致或疑似重复缺陷时，按需读[失败分类与区分证据](references/failure-patterns.md)，不凭现象直接指定根因。
 
 ## 调查步骤
 

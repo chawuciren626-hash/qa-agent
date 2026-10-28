@@ -1,3 +1,4 @@
+import {toolOutcome} from './trace-outcome.mjs';
 import { existsSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { dataPath } from './directory-context.mjs';
@@ -32,13 +33,13 @@ export function inspectPreparationSafety(root, dir, runId, parentId, dispatch, c
     const outputs = child.slice(index + 1).filter(item => item.payload?.type === 'tool_call_output' && item.payload.tool_call_id === call.tool_call_id);
     assert(outputs.length === 1, 'Preparation tool has no unique terminal response');
     const output = outputs[0].payload;
-    if (output.stop_reason === 'aborted') {
+    if (toolOutcome(output) === 'aborted') {
       const denied = child.slice(index + 1, child.indexOf(outputs[0])).some(item => item.type === 'event_msg' && item.payload?.type === 'approval_decision' && item.payload.tool_call_id === call.tool_call_id && item.payload.decision === 'deny');
       assert(denied && String(output.output).startsWith('Tool call denied by the qa-stage-boundary hook:'), 'Unverified tool interruption');
       continue;
     }
     if (call.name !== 'exec_command') {
-      assert(output.stop_reason === 'completed', 'Preparation file operation outcome is unknown');
+      assert(toolOutcome(output) === 'completed', 'Preparation file operation outcome is unknown');
       continue;
     }
     const args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments;
@@ -46,7 +47,7 @@ export function inspectPreparationSafety(root, dir, runId, parentId, dispatch, c
     const raw = String(output.output);
     const result = JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1));
     if (/\s+catalog\s*$/.test(args.cmd)) {
-      assert(result.status === 'help' && output.stop_reason === 'completed', 'Catalog lookup did not finish');
+      assert(result.status === 'help' && toolOutcome(output) === 'completed', 'Catalog lookup did not finish');
       continue;
     }
     const base = dataPath(root, 'output/action-audit', parentId);

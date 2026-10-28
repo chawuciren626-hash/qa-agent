@@ -1,3 +1,4 @@
+import {toolOutcome} from './trace-outcome.mjs';
 import { dataPath } from './directory-context.mjs';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -37,7 +38,7 @@ for (let index=0;index<sessions.length;index++) {
     if (p?.type!=='tool_call_output') continue;
     const raw=typeof p.output==='string'?p.output:JSON.stringify(p.output);
     if (/\/etc\/profile/.test(raw)) report.warning_outputs++;
-    if (p.stop_reason!=='fatal') continue;
+    if (toolOutcome(p)!=='fatal') continue;
     const [category]=categories.find(([,pattern])=>pattern.test(raw)) ?? ['other_tool_failure'];
     report.failures.push({session_id:session.id,agent:session.agent,at:row.timestamp,tool_call_id:p.tool_call_id,tool:calls.get(p.tool_call_id)?.name ?? 'unknown',category});
   }

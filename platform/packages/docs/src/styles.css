@@ -1,0 +1,16 @@
+/**
+ * Docs site styles: a Tailwind CSS 4 entry over the public sites' shared page base
+ * (site-page.css) and components and article prose (site.css), both from
+ * @prismshadow/penguin-ui — the landing page's visual language minus its marketing effects, so
+ * doc pages stay calm and readable. Dark theme is toggled via the html.dark class.
+ */
+@import "tailwindcss";
+@import "@prismshadow/penguin-ui/site-page.css";
+@import "@prismshadow/penguin-ui/site.css";
+
+@source "../../ui/src/components/site";
+@source "../../ui/src/components/overlays/dropdown";
+@source "../../ui/src/components/overlays/menu";
+@source "../../ui/src/components/overlays/menu-panel";
+@source "../../ui/src/components/layout/fold";
+@source "../../ui/src/components/icons/marks";

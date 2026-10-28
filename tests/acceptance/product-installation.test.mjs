@@ -110,6 +110,11 @@ test('first-run tools require explicit child targets and preserve unrelated sche
   assert.ok(controller[0].parameters.properties.qa_request);assert.ok(controller[1].parameters.required.includes('agent_id'));assert.equal(controller[1].parameters.properties.unknown,undefined);
   assert.deepEqual(controller[2],tools[2]);assert.equal(tools[0].parameters.properties.qa_request,undefined);
   assert.deepEqual(productAgentTools(controller,'test_agent'),controller);
+  const child=productAgentTools(tools,'test_case_agent');
+  assert.deepEqual(productAgentTools(child,'test_case_agent'),child);
+  const sourceDefault=structuredClone(tools);
+  sourceDefault[0].parameters.properties.qa_request={type:'object',description:'AITestHarness structured action object. The QA pre-tool hook saves this exact request before project-action.mjs execute. Omit for ordinary shell commands.'};
+  assert.deepEqual(productAgentTools(sourceDefault,'android_test_agent')[0].parameters.properties.qa_request,child[0].parameters.properties.qa_request);
   const custom=structuredClone(tools);custom[0].parameters.properties.qa_request={type:'string'};assert.throws(()=>productAgentTools(custom,'test_agent'),/Custom/);
 });
 test('active first-run agents prevent tool configuration writes',async()=>{

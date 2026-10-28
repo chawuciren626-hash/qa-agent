@@ -1,0 +1,389 @@
+/**
+ * Human-friendly formatting utilities.
+ *
+ * Token and duration abbreviation conventions exactly match the CLI
+ * (packages/cli/src/render.ts): `4k`, `1.2k`, `1.5M`, `17.7B`, `820ms`, `5.1s`,
+ * `2m10s`; deltas are explicitly signed (`+1k` / `-1k`). Also provides
+ * display formats for cost (USD), byte counts, and dates, reused by the
+ * stats page and Trace page.
+ */
+
+/** Keep one decimal place but drop a trailing `.0` (same convention as the CLI). */
+function trimZero(v: number): string {
+  const s = v.toFixed(1);
+  return s.endsWith(".0") ? s.slice(0, -2) : s;
+}
+
+/** Abbreviate a token count for humans: 1234→1.2k, 1500000→1.5M, 1.77e10→17.7B, <1000 unchanged. */
+export function humanizeTokens(n: number): string {
+  const abs = Math.abs(n);
+  if (abs < 1000) return `${n}`;
+  if (abs < 1_000_000) return `${trimZero(n / 1000)}k`;
+  if (abs < 1_000_000_000) return `${trimZero(n / 1_000_000)}M`;
+  return `${trimZero(n / 1_000_000_000)}B`;
+}
+
+/**
+ * Convert milliseconds to a human-readable duration: `820ms`, `2.3s`, `1m3s`.
+ * `compact` (narrow screens): seconds from 10s up drop the tenths (`12s`, not `12.7s` — at that
+ * scale the decimal no longer carries information worth the width); below 10s the tenth is
+ * significant and stays (`1.7s`), ms and minute forms are already whole-numbered.
+ */
+export function humanizeDuration(ms: number, opts?: { compact?: boolean }): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = ms / 1000;
+  if (s < 60 && !(opts?.compact && s >= 10)) return `${trimZero(s)}s`;
+  // Every whole-second form rounds the total before splitting it: rounding the remainder
+  // while flooring the minutes lets 119.7s print as `1m60s` instead of `2m0s`.
+  const whole = Math.round(s);
+  if (whole < 60) return `${whole}s`;
+  return `${Math.floor(whole / 60)}m${whole % 60}s`;
+}
+
+/**
+ * Duration format for a still-running timer: whole seconds only (`0s`, `7s`, `1m3s`),
+ * counting up (floor, never showing a second early). Decimals are reserved for settled
+ * durations (humanizeDuration above) — a live timer showing tenths reads as jitter.
+ */
+export function humanizeDurationLive(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m${s % 60}s`;
+}
+
+/** Add an explicit sign to a delta string: non-negative gets `+`, negative already has `-` (negative when context shrinks after compaction). */
+export function signedDelta(formatted: string): string {
+  return formatted.startsWith("-") ? formatted : `+${formatted}`;
+}
+
+/**
+ * Output TPS = output tokens ÷ LLM generation seconds (generation duration is
+ * the `request_begin`–`request_end` wall clock, including tool-argument
+ * generation but excluding tool execution); returns null when `llmMs ≤ 0`
+ * (no timing) to avoid division by zero. The chat page and Trace page share
+ * this same computation so the two TPS values are comparable.
+ */
+export function computeTps(outputTokens: number, llmMs: number): number | null {
+  return llmMs > 0 ? outputTokens / (llmMs / 1000) : null;
+}
+
+/**
+ * Output TPS display: `< 1000` keeps one decimal place (dropping a trailing
+ * `.0`, e.g. `42.5 tok/s` / `120 tok/s` — TPS is usually in the 20~200 range,
+ * so rounding to an integer would lose precision); `≥ 1000` abbreviates by
+ * k / M magnitude (`37.8k tok/s` / `1.2M tok/s`), matching humanizeTokens so
+ * four-digit-plus values don't blur together. null (no LLM timing) or a
+ * non-finite value → `—`.
+ */
+export function formatTps(tps: number | null | undefined): string {
+  if (tps == null || !Number.isFinite(tps)) return "—";
+  const v = Math.abs(tps) < 1000 ? trimZero(tps) : humanizeTokens(tps);
+  return `${v} tok/s`;
+}
+
+/**
+ * Cache hit rate = cacheRead ÷ (cacheRead + cacheWrite): the share of cached
+ * input actually served from cache; null when the denominator is 0 (no cache
+ * activity — the rate is undefined, callers omit the stat or let
+ * formatPercent render `—`). The single formula shared by the Trace page's
+ * turn/global summaries and the Cost center's cacheRead bubble, so the two pages can never drift apart.
+ */
+export function cacheHitRate(cacheRead: number, cacheWrite: number): number | null {
+  const total = cacheRead + cacheWrite;
+  return total > 0 ? cacheRead / total : null;
+}
+
+/**
+ * Ratio display (rounded to a whole percent): `0.714` → `71%`; null
+ * (denominator is 0, undefined) or a non-finite value → `—`.
+ * Used with cacheHitRate above (Trace page and the Cost center's cacheRead bubble) and similar cases.
+ */
+export function formatPercent(ratio: number | null | undefined): string {
+  if (ratio == null || !Number.isFinite(ratio)) return "—";
+  return `${Math.round(ratio * 100)}%`;
+}
+
+/**
+ * Average display for a "total ÷ count" figure (the Trace summary's tool calls
+ * per round): one decimal place, kept even when it is `.0`, so an average is
+ * never mistaken for the whole count printed beside it. A count of 0 leaves the
+ * average undefined → `—`, the same mark formatMoney and formatTps use for a
+ * figure that is not available, so an empty Trace reads the same way in every
+ * column.
+ */
+export function formatAverage(total: number, count: number): string {
+  const avg = total / count;
+  return count > 0 && Number.isFinite(avg) ? avg.toFixed(1) : "—";
+}
+
+/**
+ * Cost display (converted to the selected currency; prices are stored in
+ * USD): null/undefined → `—`; 1 USD ≈ 7 CNY; decimal places scale with
+ * magnitude (≥100 rounds to an integer, ≥1 uses two places, otherwise four).
+ * `compact` (narrow screens): sub-unit amounts keep 2 significant digits
+ * instead of 4 fixed decimals (`$0.1234` → `$0.12`, `$0.0012` stays
+ * `$0.0012`) — significant digits, not fixed decimals, so a nonzero cost is
+ * never rounded down to zero; amounts ≥ 1 are already short and unchanged.
+ */
+export function formatMoney(
+  usd: number | null | undefined,
+  currency: "USD" | "CNY" = "USD",
+  opts?: { compact?: boolean },
+): string {
+  if (usd == null) return "—";
+  const symbol = currency === "CNY" ? "¥" : "$";
+  const v = currency === "CNY" ? usd * 7 : usd;
+  if (v === 0) return `${symbol}0`;
+  const abs = Math.abs(v);
+  if (opts?.compact && abs < 1) return `${symbol}${Number(v.toPrecision(2))}`;
+  const digits = abs >= 100 ? 0 : abs >= 1 ? 2 : 4;
+  return `${symbol}${v.toFixed(digits)}`;
+}
+
+/** Benchmark score display: integers unchanged, decimals keep up to the stored two places. */
+export function formatScore(n: number): string {
+  return Number.isInteger(n) ? `${n}` : n.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+/** True while the one-decimal rendering of `v` still fits its unit: 1023.9 does, 1023.99 does not. */
+function fitsUnit(v: number): boolean {
+  return Number(v.toFixed(1)) < 1024;
+}
+
+/** Abbreviate a byte count: `812B`, `3.4KB`, `1.2MB`. */
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n}B`;
+  // The unit is picked from the rounded value, not the raw one: 1048570 renders as `1024.0`
+  // KB at one decimal, which has to carry into `1MB` rather than print an out-of-range unit.
+  const kb = n / 1024;
+  if (fitsUnit(kb)) return `${trimZero(kb)}KB`;
+  const mb = kb / 1024;
+  if (fitsUnit(mb)) return `${trimZero(mb)}MB`;
+  return `${trimZero(mb / 1024)}GB`;
+}
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : `${n}`;
+}
+
+/**
+ * A Date as the viewer's local calendar date, `yyyy-mm-dd` — the shape `formatMonthDay`
+ * reads. It takes the date part of its input verbatim, so an instant has to be converted
+ * here, on the Date; handing it a `...Z` timestamp would name the UTC day instead.
+ */
+export function localYmd(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** ISO timestamp → local `yyyy-MM-dd HH:mm` display; returns the input unchanged if parsing fails. */
+export function formatDateTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/**
+ * ISO timestamp → local `MM-dd HH:mm`: `formatDateTime` without the year, for a time said beside
+ * how long ago it was (a week at most), where the year goes without saying. Returns the input
+ * unchanged if parsing fails.
+ */
+export function formatShortDateTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/** English month abbreviations for the date formatters below (Intl-free — see formatMonthDay). */
+const EN_MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+] as const;
+
+/**
+ * `yyyy-mm-dd` (or a full ISO timestamp — only the date part is read) → localized
+ * month + day, no year: en `Jul 26`, zh `7月26日` (the version footer's "last
+ * updated" date, product-specified wording — the zh form keeps the CJK/numeral
+ * spacing the owner asked for, which `Intl` would drop). The fields are read
+ * straight from the string rather than via `new Date()` + local-zone formatting:
+ * the input is a UTC calendar date (core's stamped BUILD_DATE, a release's
+ * publish timestamp), and round-tripping it through the viewer's timezone would
+ * render the previous day west of UTC. Unparsable or out-of-range input returns
+ * unchanged (same convention as formatDateTime).
+ */
+export function formatMonthDay(iso: string, locale: "zh" | "en"): string {
+  const m = /^\d{4}-(\d{2})-(\d{2})(?:$|T)/.exec(iso);
+  if (!m) return iso;
+  const month = Number(m[1]);
+  const day = Number(m[2]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return iso;
+  // zh writes the date without spaces (8月30日), the way the message-time format does;
+  // en keeps the abbreviated month (Aug 30).
+  return locale === "en" ? `${EN_MONTHS[month - 1]} ${day}` : `${month}月${day}日`;
+}
+
+/**
+ * `yyyy-mm-dd` (or a full ISO timestamp — only the date part is read) → localized date with
+ * the year: en `Sep 15, 2026`, zh `2026年9月15日` (a release's date in the release notes, whose
+ * entries span years). Read straight from the string for the same reason as formatMonthDay;
+ * unparsable or out-of-range input returns unchanged.
+ */
+export function formatYearMonthDay(iso: string, locale: "zh" | "en"): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/.exec(iso);
+  if (!m) return iso;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return iso;
+  return locale === "en"
+    ? `${EN_MONTHS[month - 1]} ${day}, ${year}`
+    : `${year}年${month}月${day}日`;
+}
+
+/**
+ * Millisecond timestamp → human-readable message time: en `Jul 2, 2:58 PM` /
+ * zh `7月2日 14:58`; returns an empty string for an invalid value.
+ *
+ * Follows the UI language instead of hardcoding English: date formatting is
+ * a localization concern, and `Jul 2` would look jarring in a Chinese UI.
+ * Includes month and day (not just `HH:mm:ss`) — when scrolling back through
+ * old messages, "what time" is less useful than "what day, what time".
+ */
+export function formatMessageTime(ms: number, locale: "zh" | "en"): string {
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString(locale === "en" ? "en-US" : "zh-CN", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/** Milliseconds at local calendar-day midnight (shared by relative-day calculations). */
+function startOfDayMs(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+/**
+ * ISO timestamp → relative days (used by the Agents card's "last modified"):
+ * same day → "今天/today", one day back → "昨天/yesterday", earlier → local
+ * calendar-day difference as "n 天前 / n days ago"; a future time (clock
+ * skew) falls back to the absolute time, and parse failures return the
+ * input unchanged.
+ */
+export function formatRelativeDays(iso: string, locale: "zh" | "en"): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const days = Math.round((startOfDayMs(new Date()) - startOfDayMs(d)) / 86_400_000);
+  if (days < 0) return formatDateTime(iso);
+  if (days === 0) return locale === "en" ? "today" : "今天";
+  if (days === 1) return locale === "en" ? "yesterday" : "昨天";
+  return locale === "en" ? `${days} days ago` : `${days} 天前`;
+}
+
+/**
+ * ISO timestamp → semantic update time (skill card metadata): zh "今天更新/
+ * 昨天更新/n 天前更新", en "updated today/yesterday/n days ago"; a future
+ * time (clock skew) falls back to the date itself, and parse failures
+ * return the input unchanged (without the "updated" wording).
+ */
+export function formatRelativeDate(iso: string, locale: "zh" | "en"): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const days = Math.round((startOfDayMs(new Date()) - startOfDayMs(d)) / 86_400_000);
+  if (days < 0) return iso;
+  if (days === 0) return locale === "en" ? "updated today" : "今天更新";
+  if (days === 1) return locale === "en" ? "updated yesterday" : "昨天更新";
+  return locale === "en" ? `updated ${days} days ago` : `${days} 天前更新`;
+}
+
+/**
+ * ISO timestamp → compact "how long ago from now" for narrow rows (the sidebar's
+ * per-conversation time): under a minute zh 「刚刚」 / en "now", then minute / hour /
+ * day steps — zh keeps the dictionary wording (`5 分钟前`), en stays ultra-short
+ * (`5m`, `3h`, `2d`) per the CLI-style abbreviation register. A week or older — or a
+ * future time (clock skew) — falls back to the absolute month-day of the viewer's own
+ * calendar day (formatMonthDay over localYmd, not the raw timestamp: the instant is a
+ * `...Z` stamp, and reading its date part would name the UTC day — a row last active at
+ * 07:00 on the 31st in UTC+8 would read as the 30th); an unparsable value yields "" so
+ * callers hide the slot rather than show garbage.
+ */
+export function formatRelativeShort(iso: string, locale: "zh" | "en"): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const diffMs = Date.now() - d.getTime();
+  if (diffMs < 0) return formatMonthDay(localYmd(d), locale);
+  const min = Math.floor(diffMs / 60_000);
+  if (min < 1) return locale === "en" ? "now" : "刚刚";
+  if (min < 60) return locale === "en" ? `${min}m` : `${min} 分钟前`;
+  const hours = Math.floor(min / 60);
+  if (hours < 24) return locale === "en" ? `${hours}h` : `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return locale === "en" ? `${days}d` : `${days} 天前`;
+  return formatMonthDay(localYmd(d), locale);
+}
+
+/** `n unit(s) ago`, singular for one. */
+function agoEn(n: number, unit: string): string {
+  return `${n} ${unit}${n === 1 ? "" : "s"} ago`;
+}
+
+/**
+ * ISO timestamp → how long ago, in words a sentence can hold — the long form of
+ * `formatRelativeShort`, for a fact in a dialog rather than a narrow row: under a minute zh
+ * 「刚刚」 / en "just now", then minutes, hours and days (`3 分钟前` / `3 minutes ago`) up to a
+ * week. A week or older — or a future time (clock skew) — is the absolute `formatDateTime`; an
+ * unparsable value yields "". `now` is the clock it measures from.
+ */
+export function formatRelativeLong(
+  iso: string,
+  locale: "zh" | "en",
+  now: number = Date.now(),
+): string {
+  const at = new Date(iso).getTime();
+  if (Number.isNaN(at)) return "";
+  const diffMs = now - at;
+  if (diffMs < 0) return formatDateTime(iso);
+  const min = Math.floor(diffMs / 60_000);
+  if (min < 1) return locale === "en" ? "just now" : "刚刚";
+  if (min < 60) return locale === "en" ? agoEn(min, "minute") : `${min} 分钟前`;
+  const hours = Math.floor(min / 60);
+  if (hours < 24) return locale === "en" ? agoEn(hours, "hour") : `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return locale === "en" ? agoEn(days, "day") : `${days} 天前`;
+  return formatDateTime(iso);
+}
+
+/**
+ * A span of time in words a sentence can hold — how long something has lasted, or how long until
+ * it happens: whole seconds under a minute (at least one), then whole minutes, hours and days
+ * (`3 分钟` / `3 minutes`), each rounded down. Always led by its number, so a sentence puts the
+ * same space before it in either language.
+ */
+export function formatSpan(ms: number, locale: "zh" | "en"): string {
+  const unit = (n: number, zh: string, en: string) =>
+    locale === "en" ? `${n} ${en}${n === 1 ? "" : "s"}` : `${n} ${zh}`;
+  const min = Math.floor(Math.max(0, ms) / 60_000);
+  if (min < 1) return unit(Math.max(1, Math.floor(Math.max(0, ms) / 1000)), "秒", "second");
+  if (min < 60) return unit(min, "分钟", "minute");
+  const hours = Math.floor(min / 60);
+  if (hours < 24) return unit(hours, "小时", "hour");
+  return unit(Math.floor(hours / 24), "天", "day");
+}
+
+/** ISO timestamp → local `HH:mm:ss` (inline display in the Trace timeline); returns the input unchanged if parsing fails. */
+export function formatTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}

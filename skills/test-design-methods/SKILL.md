@@ -3,7 +3,7 @@ name: test-design-methods
 description: 根据需求选择等价类、边界值、决策表和状态迁移方法，评审覆盖与可验证预期；用于需求审查、测试点和用例设计，不执行测试或替换交付契约。
 license: MIT; see LICENSE.txt
 metadata:
-  version: '1.0.0'
+  version: '1.1.0'
   source: fugazi/test-automation-skills-agents
   revision: 65a72d5e74def3c23143bef8757e72cb68e91032
   adapted-from: qa-manual-istqb
@@ -24,6 +24,8 @@ metadata:
 | 材料不完整或新界面 | 有时间和范围边界的探索 | 观察、疑问、风险；不把观察升级为业务预期 |
 
 设计时读[方法与示例](references/design-techniques.md)；评审需求或已有用例时读[语义与覆盖检查](references/review-checklist.md)。只加载相关参考。
+
+涉及表单、列表、弹窗、业务权限或功能开关时，按需读[控件与业务状态场景](references/component-and-permission-scenarios.md)；被测对象本身包含对话、意图路由或知识问答时，读[AI功能场景](references/ai-functional-scenarios.md)。这些资料只帮助选择本次范围内的检查点，不为普通页面增加移动端、AI、性能或安全专项。
 
 ## 输出与边界
 

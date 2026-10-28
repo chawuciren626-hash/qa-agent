@@ -1,3 +1,4 @@
+import {toolOutcome} from './trace-outcome.mjs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { stageWriteRules, isControlledStageEvidence } from './stage-registry.mjs';
 import { isSafeArtifactAction } from './recovery-policy.mjs';
@@ -20,7 +21,7 @@ function isDirectBypass(command) {
 }
 
 function isSuccessfulLiteralCount(command, response) {
-  if(response.stop_reason!=='completed') return false;
+  if(toolOutcome(response)!=='completed') return false;
   // Recognize only a literal-only grammar and its exact output; never evaluate code.
   const outer=/^\s*node(?:\.exe)?\s+-e\s+"([^"\\`$%\r\n]+)"\s*$/.exec(String(command));
   if(!outer || outer[1].length>12000) return false;
@@ -76,7 +77,7 @@ export function isPermittedChildShell(command) {
 }
 
 function wasRedirectedBeforeExecution(rows,index,response,callId) {
-  if(response.payload.stop_reason!=='aborted' || !String(response.payload.output).startsWith('Tool call denied by the qa-stage-boundary hook: QA shell redirect:')) return false;
+  if(toolOutcome(response.payload)!=='aborted' || !String(response.payload.output).startsWith('Tool call denied by the qa-stage-boundary hook: QA shell redirect:')) return false;
   const decisions=rows.slice(index+1,rows.indexOf(response)).filter(row=>row.type==='event_msg' && row.payload?.type==='approval_decision' && row.payload.tool_call_id===callId);
   return decisions.length===1 && decisions[0].payload.decision==='deny';
 }
@@ -137,7 +138,7 @@ export function toolWasNotExecuted(rows,index) {
   if(outputs.length===1) {
     const output=outputs[0];
     const decisions=rows.slice(index+1,rows.indexOf(output)).filter(row=>row.type==='event_msg' && row.payload?.type==='approval_decision' && row.payload.tool_call_id===call.tool_call_id);
-    return output.payload.stop_reason==='aborted' &&
+    return toolOutcome(output.payload)==='aborted' &&
       String(output.payload.output).startsWith('Tool call denied by the qa-stage-boundary hook: QA stage boundary:') &&
       decisions.length===1 && decisions[0].payload.decision==='deny';
   }
@@ -194,7 +195,7 @@ function isSuccessfulReportHeaderInspection(command, output) {
 function entryModuleMissing(output) {
   const value = String(output ?? '');
   return /Error: Cannot find module/.test(value) && /code:\s*'MODULE_NOT_FOUND'/.test(value) &&
-    /requireStack:\s*\[\s*\]/.test(value) && /Function\.executeUserEntryPoint/.test(value);
+    /requireStack:\s*\[\s*\]/.test(value) && /(?:Function|Module)\.executeUserEntryPoint/.test(value);
 }
 
 function terminalCommandOutput(rows, index, initial, allowRecovery) {
@@ -213,7 +214,7 @@ function terminalCommandOutput(rows, index, initial, allowRecovery) {
     const outputs = rows.slice(i + 1).filter(row => row.payload?.type === 'tool_call_output' && row.payload.tool_call_id === call.payload.tool_call_id);
     if (outputs.length !== 1) throw new Error('Child process poll has unknown terminal response');
     const output = outputs[0];
-    if (String(output.payload.output ?? '').trim() === `[process still running with process_id ${processId}]` && output.payload.stop_reason === 'completed') continue;
+    if (String(output.payload.output ?? '').trim() === `[process still running with process_id ${processId}]` && toolOutcome(output.payload) === 'completed') continue;
     if (terminal) throw new Error('Child process has multiple terminal responses');
     terminal = output;
   }
@@ -234,7 +235,7 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
       let args;try {args=parseToolArguments(row);} catch { /* A later valid native read may still correct this read-only detour. */ }
       const outputs=rows.slice(index+1).filter(item=>item.payload?.type==='tool_call_output' && item.payload.tool_call_id===row.payload.tool_call_id);
       const calls=rows.filter(item=>item.payload?.type==='tool_call' && item.payload.tool_call_id===row.payload.tool_call_id);
-      if(typeof args?.file_path==='string' && row.payload.tool_call_id && calls.length===1 && outputs.length===1 && outputs[0].payload.stop_reason==='completed') {
+      if(typeof args?.file_path==='string' && row.payload.tool_call_id && calls.length===1 && outputs.length===1 && toolOutcome(outputs[0].payload)==='completed') {
         const target=/^[a-z]:[\\/]/i.test(args.file_path) || isAbsolute(args.file_path) ? args.file_path : stageWriteBoundary && resolve(stageWriteBoundary.workspace,args.file_path);
         if(pendingInspection?.nativeRead && index>pendingInspection.failedAt && target && normalizedInspectionPath(target)===pendingInspection.path) pendingInspection=null;
         if(!stageWriteBoundary) continue;
@@ -258,21 +259,30 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
       if (requireControlledCommands && isDirectBypass(args?.cmd)) throw new Error('Child bypassed the controlled project entry; file existence cannot prove compliant delivery');
       const recoverableDetour=allowRecovery && !isSafeInspection(args?.cmd) && isRecoverableReadOnlyShellDetour(args?.cmd);
       if (requireControlledCommands && !isSafeInspection(args?.cmd) && !isSuccessfulReportHeaderInspection(args?.cmd,response.payload.output) && !recoverableDetour) throw new Error('Child used an uncontrolled shell command; stage delivery requires the project entry point');
-      if (recoverableDetour && response.payload.stop_reason === 'fatal') pendingShellProbes++;
-      if (response.payload.stop_reason === 'fatal') {
+      if (recoverableDetour && toolOutcome(response.payload) === 'fatal') pendingShellProbes++;
+      if (toolOutcome(response.payload) === 'fatal') {
         const path = inspectedPath(args?.cmd);
         if (recoverableDetour) {}
         else if (allowRecovery && isSafeInspection(args?.cmd) && isSingleFileRead(args?.cmd) && path && !pendingInspection) pendingInspection = {path,nativeRead:true,failedAt:rows.indexOf(response)};
         else if (allowRecovery && isHarmlessShellProbe(args?.cmd, response.payload.output)) pendingShellProbes++;
         else if (!allowRecovery || !isSafeInspection(args?.cmd) || !path || pendingInspection) throw new Error('Child command failed');
         else pendingInspection = {path,nativeRead:isSingleFileRead(args?.cmd),failedAt:rows.indexOf(response)};
-      } else if (pendingInspection && isSafeInspection(args?.cmd) && inspectedPath(args?.cmd) === pendingInspection.path && response.payload.stop_reason === 'completed') pendingInspection = null;
-      if (allowRecovery && response.payload.stop_reason === 'completed' && isSuccessfulReportHeaderInspection(args?.cmd, response.payload.output)) pendingShellProbes = 0;
+      } else if (pendingInspection && isSafeInspection(args?.cmd) && inspectedPath(args?.cmd) === pendingInspection.path && toolOutcome(response.payload) === 'completed') pendingInspection = null;
+      if (allowRecovery && toolOutcome(response.payload) === 'completed' && isSuccessfulReportHeaderInspection(args?.cmd, response.payload.output)) pendingShellProbes = 0;
       continue;
     }
     const raw = response.payload.output;
-    if (allowRecovery && isCatalogLookup(args?.cmd) && response.payload.stop_reason === 'fatal' && entryModuleMissing(raw)) {
+    if (allowRecovery && isCatalogLookup(args?.cmd) &&
+      (toolOutcome(response.payload) === 'fatal' || toolOutcome(response.payload) === 'completed' && /\[exit code: 1\]\s*$/.test(String(raw))) && entryModuleMissing(raw)) {
       pendingCatalog = true;
+      continue;
+    }
+    // Catalog is read-only help, never evidence of a business action. AMSP may
+    // archive its middle section; do not demand valid JSON from that preview.
+    if (allowRecovery && isCatalogLookup(args?.cmd) && toolOutcome(response.payload)==='completed' &&
+      /^\s*\{\s*"status"\s*:\s*"help"\s*,/.test(String(raw)) &&
+      /\[output archived: [^\r\n]+\]\s*$/.test(String(raw)) && !/\[exit code: [^0\]]/.test(String(raw))) {
+      pendingCatalog=false;
       continue;
     }
     let result;
@@ -329,7 +339,7 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     if (allowRecovery && result?.exit_code !== 0 && correctionStatus && result?.recovery?.retry_allowed === true && ['input_correction','artifact_revision','read_correction','request_correction'].includes(result.recovery.category) && ((result.recovery.policy==='progress_based' && Number.isInteger(result.recovery.failure_number) && result.recovery.failure_number>0) || [1,2].includes(result.recovery.failure_number)) && verifyRecovery(result)) { pending.add(result.recovery.key); continue; }
     // A verified partial browser delivery preserves failed commands; it never turns them into passes.
     if(allowRecovery && verifyPartialBrowserFailure(result,row)) continue;
-    if (!result || response.payload.stop_reason === 'fatal' || !['completed', 'ready', 'help'].includes(result.status) || (result.exit_code !== undefined && result.exit_code !== 0)) throw new Error('Child command failed or was rejected; cannot complete this dispatch after retry');
+    if (!result || toolOutcome(response.payload) === 'fatal' || !['completed', 'ready', 'help'].includes(result.status) || (result.exit_code !== undefined && result.exit_code !== 0)) throw new Error('Child command failed or was rejected; cannot complete this dispatch after retry');
     if (pendingCatalog && isCatalogLookup(args?.cmd) && result.status === 'help') pendingCatalog = false;
     if (allowRecovery && result.status === 'completed' && result.action_receipt && verifyRecovery(result)) {
       pending.delete(result.task_key); pending.delete('input_correction'); pending.delete('unbound:request:');

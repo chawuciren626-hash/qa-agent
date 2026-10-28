@@ -6,6 +6,19 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { createExecutionCases, extractCases } from './execution-plan.mjs';
 import { inspectRequirementLedger, referencedRule } from './requirement-provenance.mjs';
 import { CommandUsageError } from './command-contracts.mjs';
+import { directoryContext } from './directory-context.mjs';
+import { isProtectedInput, protectedInputs } from './protected-inputs.mjs';
+
+export function sameProtectedStatement(left, right, owner, store = protectedInputs()) {
+  const reveal = value => {
+    return value.replace(/qa-secret:\/\/session-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-[a-f0-9]+\/[a-f0-9-]{36}/g, ref => {
+      if (!isProtectedInput(ref)) return ref;
+      if (!owner) throw new Error('Protected statement has no task session binding');
+      return store.get(owner, ref);
+    });
+  };
+  return reveal(left) === reveal(right);
+}
 
 export function assertConfirmedExecutionCases(rows) {
   const unresolved=rows.filter(row=>(row.design_contract?.basis??[]).some(r=>r.status!=='confirmed') || (row.design_contract?.assumptions??[]).some(r=>r.status!=='confirmed'));
@@ -126,6 +139,7 @@ export function inspectDesign({ root, runId, source, selectedIds, execution = tr
   let selected = [];
   let provenanceSha256;
   const runDir = runDirectory(root, runId);
+  const owner = directoryContext(root).session_id;
   const capture = file => {
     const value = readRunFile(runDir, file);
     files.set(value.path, { path: value.path, sha256: value.sha256 });
@@ -161,7 +175,7 @@ export function inspectDesign({ root, runId, source, selectedIds, execution = tr
         if (execution && basis.status !== 'confirmed') fail('Pending or conflicted rule cannot enter execution');
         try {
           const rule = referencedRule(rules, basis.rule_id, execution);
-          if (basis.rule !== rule.statement || basis.status !== rule.status || !rule.source_paths.includes(basis.source)) throw new Error('Basis differs from ledger statement, status or source');
+          if (!sameProtectedStatement(basis.rule, rule.statement, owner) || basis.status !== rule.status || !rule.source_paths.includes(basis.source)) throw new Error('Basis differs from ledger statement, status or source');
         } catch (error) { fail(error.message); }
         try { capture(basis.source); } catch (error) { fail(`Rule source: ${error.message}`); }
       }
@@ -174,7 +188,7 @@ export function inspectDesign({ root, runId, source, selectedIds, execution = tr
             if (!text(assumption.confirmation_ref)) throw new Error('Confirmation evidence required');
             capture(assumption.confirmation_ref);
             const rule = referencedRule(rules, assumption.rule_id, true);
-            if (rule.kind !== 'assumption' || rule.statement !== assumption.statement || !rule.confirmation_paths.includes(assumption.confirmation_ref)) throw new Error('Confirmed assumption must match ledger and confirmation source');
+            if (rule.kind !== 'assumption' || !sameProtectedStatement(rule.statement, assumption.statement, owner) || !rule.confirmation_paths.includes(assumption.confirmation_ref)) throw new Error('Confirmed assumption must match ledger and confirmation source');
           } catch (error) { fail(`Assumption: ${error.message}`); }
         }
       }

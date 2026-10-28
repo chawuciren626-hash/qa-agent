@@ -1,0 +1,166 @@
+/**
+ * POST /api/sessions/:id/retry-now: "retry now" on the reconnect countdown, which skips the
+ * backoff wait in progress.
+ *
+ * - Given an idle Session, the route answers a benign 200 `{skipped:false}` and never pokes
+ *   the runtime (a timing race must not surface as an error).
+ * - Given a running Session parked in a wait, it answers `{skipped:true}` and the skip reaches
+ *   the runtime.
+ * - A foreign or unknown Session is a 404, as on every other Session route.
+ *
+ * Beside it, POST /api/sessions/:id/retry — "Retry" on a run that ended in an error or that the
+ * user stopped:
+ *
+ * - Given a run the user stopped, whose turn the Session now holds, the route answers 202 and the
+ *   Session runs once more with no input, and no user message is published a second time.
+ * - Given a Session holding no input to resend, it refuses with 409 `nothing_to_retry` and
+ *   starts nothing.
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  abortEvent,
+  approvalDecision,
+  assistantText,
+  toolCall,
+  userText,
+} from "@prismshadow/penguin-core";
+import type { ApproveFn, AmspRecord } from "@prismshadow/penguin-core";
+import type { RetryNowResponse, TaskCreateResponse } from "../src/api/types.js";
+import { adoptSession, fakeSession, uniqueSessionId } from "./fixtures/session.js";
+import { apiClient, createTestApp, provisionUser, waitFor } from "./helpers.js";
+import type { TestApp } from "./helpers.js";
+
+describe("retry-now route", () => {
+  let t: TestApp;
+  let api: ReturnType<typeof apiClient>;
+  let outsider: ReturnType<typeof apiClient>;
+  let sid: string;
+  let skips: number;
+
+  beforeAll(async () => {
+    t = await createTestApp();
+    api = apiClient(t.app, (await provisionUser(t.app, "retrier")).cookie);
+    outsider = apiClient(t.app, (await provisionUser(t.app, "outsider_r")).cookie);
+  });
+  afterAll(async () => {
+    await t.cleanup();
+  });
+
+  // A Session that parks on one approval (keeping its Task running) and reports every skip as
+  // one that interrupted a reconnect wait.
+  beforeEach(() => {
+    sid = uniqueSessionId();
+    skips = 0;
+    const session = fakeSession(sid, {
+      skipReconnectWait: () => {
+        skips += 1;
+        return true;
+      },
+      async *run(_input: AmspRecord[], opts: { approve: ApproveFn; signal: AbortSignal }) {
+        const tc = toolCall({ name: "exec_command", arguments: "{}", toolCallId: "tc-retry" });
+        yield tc;
+        yield approvalDecision(await opts.approve(tc), "tc-retry");
+        yield assistantText("done");
+      },
+    });
+    adoptSession(t.deps, session, {
+      projectId: "retrier-default_project",
+      approvalMode: "always-ask",
+    });
+  });
+
+  it("idle → benign 200 {skipped:false}; the runtime is never poked", async () => {
+    const res = await api.post(`/api/sessions/${sid}/retry-now`, {});
+    expect(res.status).toBe(200);
+    expect((await res.json()) as RetryNowResponse).toEqual({ skipped: false });
+    expect(skips).toBe(0);
+  });
+
+  it("running (parked in a wait) → 200 {skipped:true}, the skip reaches the runtime", async () => {
+    await t.deps.manager.startTask(sid, [userText("go")]);
+    await waitFor(() => t.deps.manager.pendingApprovalCount(sid) === 1);
+
+    const res = await api.post(`/api/sessions/${sid}/retry-now`, {});
+    expect(res.status).toBe(200);
+    expect((await res.json()) as RetryNowResponse).toEqual({ skipped: true });
+    expect(skips).toBe(1);
+
+    t.deps.manager.decideApproval(sid, "tc-retry", "allow");
+    await waitFor(() => t.deps.manager.statusOf(sid) === "idle");
+  });
+
+  it("foreign and unknown sessions → 404 (same auth semantics as the other session routes)", async () => {
+    expect((await outsider.post(`/api/sessions/${sid}/retry-now`, {})).status).toBe(404);
+    expect((await api.post(`/api/sessions/session-ghost/retry-now`, {})).status).toBe(404);
+    expect(skips).toBe(0);
+  });
+
+  it("retry after the user stopped a run → 202, one more run with no input, no user message republished", async () => {
+    // Stands in for core's carry-over: a stopped run leaves its turn held until the next run.
+    let held = false;
+    const runs: AmspRecord[][] = [];
+    const stopped = uniqueSessionId();
+    adoptSession(
+      t.deps,
+      fakeSession(stopped, {
+        hasPendingInput: () => held,
+        async *run(input: AmspRecord[], opts: { signal: AbortSignal }) {
+          runs.push(input);
+          held = false;
+          if (runs.length > 1) {
+            yield assistantText("picked up where it stopped");
+            return;
+          }
+          yield assistantText("half a reply");
+          await new Promise((resolve) => opts.signal.addEventListener("abort", resolve));
+          held = true;
+          yield abortEvent("user_abort");
+        },
+      }),
+      { projectId: "retrier-default_project" },
+    );
+    const published: AmspRecord[] = [];
+    const unsubscribe = t.deps.channels.get(stopped).subscribe((evt) => {
+      if (evt.event === undefined) published.push(JSON.parse(evt.data) as AmspRecord);
+    });
+
+    await api.post(`/api/sessions/${stopped}/tasks`, { input: [{ type: "text", text: "go" }] });
+    await waitFor(() => runs.length === 1);
+    await api.post(`/api/sessions/${stopped}/abort`, {});
+    await waitFor(() => t.deps.manager.statusOf(stopped) === "idle");
+
+    const res = await api.post(`/api/sessions/${stopped}/retry`, {});
+    expect(res.status).toBe(202);
+    expect((await res.json()) as TaskCreateResponse).toEqual({ sessionId: stopped, queued: false });
+    await waitFor(() => t.deps.manager.statusOf(stopped) === "idle" && runs.length === 2);
+    unsubscribe();
+
+    expect(runs[1]).toEqual([]);
+    const userTexts = published.filter(
+      (m) => (m.payload as { type?: string; role?: string }).role === "user",
+    );
+    expect(userTexts.map((m) => (m.payload as { text?: string }).text)).toEqual(["go"]);
+  });
+
+  it("retry with nothing held → 409 nothing_to_retry, and no Task starts", async () => {
+    let runs = 0;
+    const idle = uniqueSessionId();
+    adoptSession(
+      t.deps,
+      fakeSession(idle, {
+        hasPendingInput: () => false,
+        // eslint-disable-next-line require-yield
+        async *run() {
+          runs += 1;
+        },
+      }),
+      { projectId: "retrier-default_project" },
+    );
+
+    const res = await api.post(`/api/sessions/${idle}/retry`, {});
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("nothing_to_retry");
+    // A launched Task would have started the run before the response went out.
+    expect(runs).toBe(0);
+  });
+});

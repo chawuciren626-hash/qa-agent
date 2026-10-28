@@ -1,3 +1,4 @@
+import {toolOutcome} from './trace-outcome.mjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -62,7 +63,7 @@ export function profileAgentTrace(rows) {
       pending.delete(p.tool_call_id);
       const item=byTool[call.name]??={calls:0,failed_stop:0,intervals:[]};
       item.calls++;item.intervals.push([call.start,t]);tools.push([call.start,t]);
-      if(['fatal','aborted'].includes(p.stop_reason)) {item.failed_stop++;failedTools++;}
+      if(['fatal','aborted'].includes(toolOutcome(p))) {item.failed_stop++;failedTools++;}
     }
   }
   if(requestStart!==null) warnings.push('unclosed_request');

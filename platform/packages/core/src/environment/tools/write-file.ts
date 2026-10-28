@@ -1,0 +1,228 @@
+/**
+ * write_file — whole-file writing tool, a builtin tool implementation (BuiltinTool).
+ *
+ * Writes `content` to a file, creating it (including missing parent directories) or
+ * overwriting it entirely; an empty string is a valid content (creates an empty file).
+ * The output distinguishes "Created" from "Overwrote" and reports the size written, so
+ * the model notices when it clobbered an existing file; an overwrite additionally shows a
+ * git-style unified diff against the previous content when the change is small, and a
+ * one-line `+X/−Y lines` summary otherwise (created files carry no diff — the model just
+ * supplied the content). The write is atomic (temp file + rename, preserving an
+ * overwritten file's permission bits), so a crash mid-write cannot leave the target
+ * half-written; a symlinked path is followed to the file it names, so the link survives
+ * and the content lands where it points. Relative paths resolve against the Workspace;
+ * absolute paths are allowed. Every file-system effect goes through the Session's port
+ * (see fs-port.ts): a confined Session's sandboxed helper, so the sandbox bounds this tool
+ * as it bounds the shell tool; unconfined, this process, with the user's full permissions. The write is serialized against edit_file and other write_file calls on the
+ * same file in this process (see internal/file-lock.ts), so a concurrent edit of that file
+ * applies either to the content this call replaced or to the content it wrote — never
+ * computed from the one and written over the other.
+ * For surgical changes to an existing file, edit_file is the better tool — this one
+ * replaces the whole content.
+ *
+ * Division of responsibility with Environment (see environment.ts): non-streaming — yields
+ * one final text delta; failures (path is a directory, permission errors) are explanatory
+ * text finalized as `failed`; anything unexpected that still throws is caught by
+ * Environment and likewise finalized as failed. If interrupted, only reports `aborted` —
+ * the interruption note is appended by Environment.
+ * Docs: /docs/tools § "File tools".
+ */
+import path from "node:path";
+import { fileLockKey, withFileLock } from "../../internal/file-lock.js";
+import { describeFsError, localFsPort, resolveWriteTargetThrough } from "./fs-port.js";
+import type { FsPort } from "./fs-port.js";
+import { buildLineDiffHunks, renderHunk } from "./diff.js";
+import { partialToolCallOutput } from "@prismshadow/amsp/records";
+import type { AmspRecord } from "@prismshadow/amsp/records";
+import type { ToolDefinitionConfig } from "../../interfaces/index.js";
+import type { BuiltinTool, ToolExecutionContext, ToolResult } from "./types.js";
+import { describeArgumentError } from "./tool-arguments.js";
+
+/** Tool name constant (used only within this tool module, never exposed to Environment). */
+export const WRITE_FILE_NAME = "write_file";
+
+/** Max bytes of previous content read back for the overwrite diff; larger files get no diff. */
+const DIFF_SOURCE_CAP_BYTES = 1024 * 1024;
+
+/** Max rendered diff lines (headers included) shown inline; larger diffs collapse to a +X/−Y summary. */
+const MAX_DIFF_DISPLAY_LINES = 60;
+
+/** Output-budget headroom kept below the tool's maxOutputLength when appending the diff. */
+const NOTE_RESERVE = 120;
+
+/** Fallback output budget when the definition carries no maxOutputLength (mirrors the default config entry). */
+const DEFAULT_OUTPUT_BUDGET = 16000;
+
+/** Counts content lines the way `cat -n` numbers them: a trailing newline ends the last line instead of adding an empty one. */
+function countLines(content: string): number {
+  if (content === "") return 0;
+  const lines = content.split("\n");
+  return lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+}
+
+/** What the locked section leaves for the generator to report once the file's lock is released. */
+type WriteOutcome =
+  | { kind: "fatal"; text: string }
+  | { kind: "aborted" }
+  | { kind: "ok"; existed: boolean; previous: string | null };
+
+/**
+ * The locked half of one write: decide created-vs-overwrote, read the previous content back
+ * for the diff, create the parent directory and write the content atomically. It returns an
+ * outcome instead of yielding because it runs while the file's mutex is held — the diff is
+ * rendered afterwards, against the content that was actually replaced.
+ */
+async function applyWrite(params: {
+  resolved: string;
+  filePath: string;
+  content: string;
+  /** The file system to work through (see fs-port.ts), and whether it is the sandboxed helper. */
+  fs: FsPort;
+  sandboxed: boolean;
+  signal?: AbortSignal;
+}): Promise<WriteOutcome> {
+  const { resolved, filePath, content, fs, sandboxed, signal } = params;
+  // Determine created-vs-overwrote before writing; also reject directories up front
+  // (writeFile's raw EISDIR is not model-friendly).
+  let existed = false;
+  let fileMode: number | undefined;
+  let previous: string | null = null; // Previous content, for the overwrite diff
+  try {
+    const st = await fs.stat(resolved);
+    if (st.isDirectory) {
+      return { kind: "fatal", text: `Cannot write "${filePath}": it is a directory.` };
+    }
+    existed = true;
+    fileMode = st.mode & 0o777; // Preserved across the atomic temp-file + rename write
+    // Read the old content back for the diff — bounded: a huge or unreadable/binary
+    // previous file simply gets no diff (never a failure).
+    if (st.size <= DIFF_SOURCE_CAP_BYTES) {
+      const bytes = await fs.readFile(resolved);
+      if (!bytes.includes(0)) previous = bytes.toString("utf8");
+    }
+  } catch {
+    // Missing file (or unstatable path): proceed to create; real write errors surface below.
+  }
+  if (signal?.aborted) return { kind: "aborted" };
+
+  try {
+    // The parent to create is the one holding the file that will actually be written:
+    // through a symlink that is the target's directory, not the link's (a link pointing
+    // into a directory that does not exist yet is created the way `>` would).
+    await fs.mkdir(path.dirname(await resolveWriteTargetThrough(fs, resolved)));
+    await fs.writeFileAtomic(resolved, Buffer.from(content, "utf8"), {
+      ...(fileMode !== undefined ? { mode: fileMode } : {}),
+      followSymlinks: true,
+    });
+  } catch (err) {
+    if (signal?.aborted) return { kind: "aborted" };
+    return {
+      kind: "fatal",
+      text: `Failed to write "${filePath}": ${describeFsError(err, sandboxed)}`,
+    };
+  }
+
+  return { kind: "ok", existed, previous };
+}
+
+/**
+ * write_file builtin tool: creates parent directories as needed and writes the full
+ * content, reporting created/overwrote plus the written size.
+ * `definition` is overridden by Environment at construction time with the same-named entry
+ * from ToolConfig (description/arguments/permissions/limits).
+ */
+export function createWriteFileTool(definition: ToolDefinitionConfig): BuiltinTool {
+  return {
+    name: definition.name,
+    definition,
+    async *execute(
+      args: Record<string, unknown>,
+      ctx: ToolExecutionContext,
+    ): AsyncGenerator<AmspRecord, ToolResult | void> {
+      const { toolCallId, signal } = ctx;
+      const delta = (output: string): AmspRecord =>
+        partialToolCallOutput({ eventType: "delta", output, toolCallId });
+
+      const filePath = args["file_path"];
+      if (typeof filePath !== "string" || filePath.length === 0) {
+        yield delta(
+          describeArgumentError(definition, args, { argument: "file_path", kind: "missing" }),
+        );
+        return { status: "fatal" };
+      }
+      // An empty string is valid content (creates an empty file); only a missing/non-string
+      // value is an argument error.
+      const content = args["content"];
+      if (typeof content !== "string") {
+        yield delta(
+          describeArgumentError(definition, args, { argument: "content", kind: "missing" }),
+        );
+        return { status: "fatal" };
+      }
+
+      const resolved = path.resolve(ctx.workspaceDir, filePath);
+      // Every file-system effect goes through the Session's port: its sandboxed helper
+      // when the Session is confined, this process otherwise (see fs-port.ts).
+      const fs = ctx.fs ?? localFsPort;
+      const { sandboxed } = fs;
+      // One file, one writer at a time: the previous content this call reads back and the
+      // content it writes are a single critical section, so a concurrent edit of the same
+      // file is applied either before this write or on top of it.
+      const key = await fileLockKey(resolved);
+      const outcome = await withFileLock(
+        key,
+        () => applyWrite({ resolved, filePath, content, fs, sandboxed, signal }),
+        signal,
+      ).catch((err: unknown): WriteOutcome => {
+        // Interrupted while queued behind another writer on the same file — the same
+        // `aborted` the write itself reports, reached one step earlier.
+        if (signal?.aborted || (err as { name?: string } | null)?.name === "AbortError") {
+          return { kind: "aborted" };
+        }
+        throw err;
+      });
+      if (outcome.kind === "aborted") return { status: "aborted" };
+      if (outcome.kind === "fatal") {
+        yield delta(outcome.text);
+        return { status: "fatal" };
+      }
+      const { existed, previous } = outcome;
+
+      const lines = countLines(content);
+      const bytes = Buffer.byteLength(content, "utf8");
+      const out: string[] = [
+        `${existed ? "Overwrote" : "Created"} "${filePath}" (${lines} line${lines === 1 ? "" : "s"}, ${bytes} byte${bytes === 1 ? "" : "s"}).`,
+      ];
+      // Overwrites show what changed, Claude Code style: a small unified diff inline, a
+      // one-line +X/−Y summary otherwise. Self-budgeted below the tool's output cap so
+      // the leading summary line always survives Environment's front-keep truncation.
+      if (existed && previous !== null) {
+        const diff = buildLineDiffHunks(previous, content);
+        if (diff.kind === "identical") {
+          out.push("(content unchanged)");
+        } else if (diff.kind === "too-large") {
+          out.push(
+            `+${diff.plus}/−${diff.minus} lines vs the previous content (diff too large to show)`,
+          );
+        } else {
+          const rendered = diff.hunks.map(renderHunk);
+          const budget =
+            definition.maxOutputLength !== undefined && definition.maxOutputLength > 0
+              ? definition.maxOutputLength
+              : DEFAULT_OUTPUT_BUDGET;
+          const totalLines = rendered.reduce((acc, h) => acc + h.split("\n").length, 0);
+          const totalChars = rendered.reduce((acc, h) => acc + h.length + 1, out[0]!.length);
+          if (totalLines > MAX_DIFF_DISPLAY_LINES || totalChars > budget - NOTE_RESERVE) {
+            out.push(
+              `+${diff.plus}/−${diff.minus} lines vs the previous content (diff too large to show)`,
+            );
+          } else {
+            out.push(...rendered);
+          }
+        }
+      }
+      yield delta(out.join("\n"));
+      return;
+    },
+  };
+}

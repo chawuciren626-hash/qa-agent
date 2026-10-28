@@ -54,6 +54,28 @@ test('child hook derives the parent workspace context from verified subagent tra
   assert.equal(context.session_root,workspace);assert.equal(context.session_id,parent);
   assert.throws(()=>bindChildHookContext(child,'test_case_agent',agentRoot));
 });
+test('child hook recovers a rotated retry trace only with matching host timing and parent index',t=>{
+  const selected=mkdtempSync(resolve(tmpdir(),'qa-retry-hook-')),parent=id();
+  const workspace=bindWorkspace(state,{workspaceDir:selected},parent,selected);
+  const child=id(),agent='test_case_agent',agentRoot=resolve(selected,'agents');
+  const trace=resolve(agentRoot,agent,'traces',child.slice(8,18));mkdirSync(trace,{recursive:true});
+  const parentTrace=resolve(agentRoot,'test_agent','traces',parent.slice(8,18));mkdirSync(parentTrace,{recursive:true});
+  writeFileSync(resolve(parentTrace,`${parent}_001.jsonl`),[
+    {type:'session_meta',payload:{session_id:parent,agent_state:resolve(agentRoot,'test_agent','agent_state'),workspace}},
+    {type:'model_msg',payload:{type:'tool_call',name:'run_subagent',arguments:JSON.stringify({agent_id:agent,prompt:'synthetic dispatch'})}},
+    {type:'event_msg',payload:{type:'subagent',session_id:child}}
+  ].map(JSON.stringify).join('\n')+'\n');
+  const file=resolve(trace,`${child}_002.jsonl`);
+  const row=owner=>({type:'event_msg',payload:{type:'request_begin'},qa_timing:{version:1,owner_session_id:owner,session_id:child,process_id:randomUUID(),offset_ms:1}});
+  const prior=process.env.QA_DIRECTORY_CONTEXT;
+  t.after(()=>{if(prior===undefined) delete process.env.QA_DIRECTORY_CONTEXT;else process.env.QA_DIRECTORY_CONTEXT=prior;rmSync(selected,{recursive:true,force:true});});
+  writeFileSync(file,JSON.stringify(row(parent))+'\n');
+  assert.equal(bindChildHookContext(child,agent,agentRoot).session_root,workspace);
+  writeFileSync(file,JSON.stringify(row(id()))+'\n');
+  assert.throws(()=>bindChildHookContext(child,agent,agentRoot),/binding is missing/);
+  writeFileSync(file,JSON.stringify({...row(parent),qa_timing:{...row(parent).qa_timing,session_id:id()}})+'\n');
+  assert.throws(()=>bindChildHookContext(child,agent,agentRoot),/identity mismatch/);
+});
 test('runtime patch refuses unknown or already patched code',()=>{
   assert.throws(()=>patchServer('different runtime','file:///adapter.mjs'),/not unique/);
   assert.throws(()=>patchServer('qaWorkspaceBind','file:///adapter.mjs'),/already present/);

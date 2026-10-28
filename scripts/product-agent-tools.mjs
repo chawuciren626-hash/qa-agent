@@ -3,11 +3,22 @@ import {controllerTools} from './sync-controller-tool-interface.mjs';
 import {childInlineTools} from './sync-child-tool-interface.mjs';
 
 const initialInline={type:'object',description:'QA controller or dispatched professional child: complete structured action JSON. With project-action.mjs execute --controller-session=<parent> --request=output/action-requests/<unique>.json, the installed QA hook saves this exact body before execution. No separate write_file is needed. Existing different contents are never overwritten. Omit for other commands; dispatch, authorization and stage guards still apply.'};
+const sourceDefault={type:'object',description:'AITestHarness structured action object. The QA pre-tool hook saves this exact request before project-action.mjs execute. Omit for ordinary shell commands.'};
 export function productAgentTools(tools,id) {
   const source=structuredClone(tools);
   const exec=Array.isArray(source)?source.find(t=>t.name==='exec_command'):null;
-  // Only the exact installed adapter default may be specialized. Unknown custom schemas still fail.
-  if(isDeepStrictEqual(exec?.parameters?.properties?.qa_request,initialInline))delete exec.parameters.properties.qa_request;
+  const properties=exec?.parameters?.properties;
+  const existing=properties?.qa_request;
+  if(existing) {
+    if(isDeepStrictEqual(existing,initialInline)||isDeepStrictEqual(existing,sourceDefault)) delete properties.qa_request;
+    else {
+      const probe=structuredClone(source);
+      delete probe.find(t=>t.name==='exec_command').parameters.properties.qa_request;
+      const expected=(id==='test_agent'?controllerTools(probe):childInlineTools(probe))
+        .find(t=>t.name==='exec_command').parameters.properties.qa_request;
+      if(!isDeepStrictEqual(existing,expected)) throw new Error('Custom qa_request retained; interface compatibility review needed');
+    }
+  }
   return id==='test_agent'?controllerTools(source):childInlineTools(source);
 }
 export async function configureProductAgentTools(layout,ids,request) {

@@ -2,10 +2,12 @@
 name: test-report-writing
 description: 根据真实测试结果和缺陷记录生成测试报告与风险建议。
 metadata:
-  version: '1.6.3'
+  version: '1.7.0'
 ---
 
 # 测试报告生成 Skill
+
+组织摘要、覆盖说明或上线建议时，按需读[报告结论与统计口径](references/conclusion-and-coverage.md)。该参考适用于两种模式，沿用现有统计事实源与HTML导出，不增加交付门槛。
 
 ## 证据解释（所有模式）
 

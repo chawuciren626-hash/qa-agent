@@ -21,6 +21,11 @@ import { assertTrackRows } from './test-tracks.mjs';
 import { lifecycleArtifacts } from './stage-registry.mjs';
 export const requiredArtifacts = lifecycleArtifacts;
 export function stageRequiredArtifacts(root, runId, stage, mode = 'execute') {
+  if(stage==='execution' && mode!=='prepare') {
+    const manifest=JSON.parse(readRunFile(runDirectory(root,runId),'manifest.json').data);
+    const platform=manifest.orchestration?.plan?.execution_platform;
+    if(['android','miniprogram'].includes(platform)) return ['execution/execution-task.json',`execution/${platform}-results.json`,'execution/test_results.json'];
+  }
   if (usesTaskArtifacts(root,runId,stage)) return [...taskRequiredArtifacts(stage),...(stage==='execution' && usesBrowserArtifacts(root,runId,stage)?['execution/browser-coverage.json']:[])];
   if (mode === 'prepare') return ['execution/execution-plan.json'];
   if (stage === 'execution') {

@@ -1,0 +1,1727 @@
+import {
+  qaEnabled,
+  qaAssertProjectReady,
+  qaApplies,
+  qaBindWorkspace,
+  qaWorkspaceEnv,
+} from "./integrations/qa-runtime.js";
+/**
+ * Agent and the `createAgent` entry point.
+ *
+ * `createAgent` is the unified way to create/load an Agent: it initializes Agent State
+ * if the directory is empty, otherwise loads by agentId.
+ * An Agent has exactly one Agent State and can run multiple times; the
+ * Workspace is determined when a Session is created.
+ *
+ * A Session runs on **model contexts**, each assembled from the Agent State as it is on disk
+ * the moment the context opens — Session creation, the context a completed compaction opens,
+ * a resume that finds its context closed — and fixed until the context closes (see
+ * `assembleContext`). The model is a fact of the context too: every rotation keeps the
+ * closing context's model except the one a user's in-session switch drives, which opens the
+ * next context on the model they picked (see `Session.switchModel`). The Agent object's own
+ * `state` is the load-time snapshot, used for identity and initialization; no Session runs on
+ * it.
+ */
+import fs from "node:fs/promises";
+import path from "node:path";
+import { parse as parseYaml } from "yaml";
+import {
+  assertValidId,
+  assembleSystemPrompt,
+  buildToolConfig,
+  selectBuiltinToolsForModel,
+  DEFAULT_COMPACTION_PROMPT,
+  formatModelRef,
+  getModel,
+  listInstalledSkills,
+  listScheduleNames,
+  loadAgentState,
+  loadAgentVault,
+  loadProjectConfig,
+  listInstalledHooks,
+  projectDir,
+  resolveSessionMemory,
+  providerConnectionShape,
+  resolveEntryCredential,
+  resolveModelRef,
+  sameModelRef,
+  sessionScratchpadDir,
+  systemConfigPath,
+  tracesDir,
+  type AgentState,
+  type CompactionConfig,
+  type InstalledHook,
+  type ModelRef,
+  type ModelEntry,
+  type ProjectConfig,
+  type SystemConfig,
+} from "./state/index.js";
+import {
+  DEFAULT_MAX_CONTEXT_LENGTH,
+  GenerativeModel,
+  ToolCallIdAllocator,
+  effectiveMaxContextLength,
+} from "./llm/index.js";
+import { Environment } from "./environment/index.js";
+import {
+  Writer,
+  findLatestTraceFile,
+  latestSessionId as latestTraceSessionId,
+  readTraceTolerant,
+  resumeTrace,
+} from "./trace/index.js";
+import { ModelSwitchRefusedError, Session } from "./session.js";
+import { scriptPreToolUseHook, scriptStopHook, scriptUserPromptHook } from "./hooks/script-hook.js";
+import type { ScriptHookOptions } from "./hooks/script-hook.js";
+import type { HookSubagentRequest, SessionHooks } from "./hooks/stop-hook.js";
+import { predatesEveryPromptHooks, userPromptTrigger } from "./plugins/index.js";
+import type {
+  ModelSwitchSupport,
+  SessionConfig,
+  SessionOpenContextOptions,
+  SessionOpenedContext,
+} from "./session.js";
+import {
+  createTempWorkspace,
+  formatSessionId,
+  isSessionIdToken,
+  mcpConnectOutcome,
+  sessionEnvironment,
+} from "./internal/session-support.js";
+import {
+  compactionEnd,
+  isSessionMeta,
+  mcpConnectBegin,
+  mcpConnectEnd,
+  normalizeSessionSource,
+  sessionMeta,
+  toolListReady,
+  userText,
+  withOrigin,
+} from "@prismshadow/amsp/records";
+import type {
+  MessageOrigin,
+  AmspRecord,
+  SessionMetaPayload,
+  SessionSource,
+  ToolCallPayload,
+} from "@prismshadow/amsp/records";
+import { SUBAGENT_NAME } from "./environment/tools/run-subagent.js";
+import { INPUT_SUBAGENT_NAME } from "./environment/tools/input-subagent.js";
+import type { CompactionSettings, OpenContextOptions } from "./engine/context-engine.js";
+import type {
+  ApproveFn,
+  CommandPolicyConfig,
+  GenerativeModelConfig,
+  ProxyEnvPolicy,
+  SpawnConfiner,
+  SubagentHandle,
+  SubagentRunner,
+  ThinkingLevelName,
+  ToolConfig,
+  ToolDefinition,
+  VisionDescriberService,
+} from "./interfaces/index.js";
+
+/**
+ * Maximum subagent spawn depth. Currently capped at 1 level (a subagent cannot spawn
+ * another subagent); the depth mechanism is designed to support multiple levels —
+ * raise this constant to allow deeper nesting.
+ */
+const MAX_SUBAGENT_DEPTH = 1;
+
+export interface CreateAgentOptions {
+  agentId?: string;
+  projectId?: string;
+  /** Local data root directory; defaults to `resolveRoot()` (PENGUIN_HOME or ~/.penguin/data). */
+  root?: string;
+  /**
+   * Proxy policy for exec_command subprocess environments of every Session this Agent
+   * creates or resumes — and of its subagents' Sessions, which inherit the getter (see
+   * {@link ProxyEnvPolicy}: strip the proxy variables, inject an explicit proxy over the
+   * inherited env, or null = pass through). The Web server threads its admin-level proxy
+   * settings through here; the getter is re-read at every command spawn, so a settings
+   * change needs no restart. Absent = pass through (SDK/CLI standalone use follows the
+   * user's own shell environment).
+   */
+  proxyEnv?: () => ProxyEnvPolicy | null;
+  /**
+   * Harness-control variables for the command subprocesses of every Session this Agent
+   * creates or resumes. The hosting server passes a policy getter here; core evaluates it
+   * with each Session's own coordinates (subagent Sessions get their own agent/session
+   * ids — a child Agent inherits the getter like `proxyEnv`, and its Sessions call it with
+   * their own context). The returned entries override vault entries of the same name (see
+   * {@link EnvironmentConfig.controlEnv}). Absent = nothing is injected (SDK/CLI
+   * standalone use).
+   */
+  controlEnv?: (ctx: ControlEnvContext) => Record<string, string>;
+  /**
+   * Directories put at the FRONT of PATH for the command subprocesses — and the hook
+   * scripts — of every Session this Agent creates or resumes, and of its subagents'
+   * Sessions, which inherit the getter like `proxyEnv`. The Web server points it at the
+   * shim directory holding its own `penguin`, so a command an Agent runs reaches the CLI
+   * of the harness that is running it rather than whatever is installed globally. Re-read
+   * at every spawn. Absent = PATH is untouched (SDK/CLI standalone use).
+   */
+  pathPrepend?: () => string[];
+  /**
+   * Sandbox-confinement seam for the command subprocesses of every Session this Agent
+   * creates or resumes — and of its subagents' Sessions, which inherit the getter (see
+   * {@link SpawnConfiner}). Host policy exactly like `proxyEnv`: re-read at every
+   * spawn, so the hosting server can swap the active confiner without restarting
+   * Sessions. Evaluated with the Session's coordinates, like `controlEnv`, so a host can
+   * keep a policy per Session. Absent = commands spawn unconfined.
+   */
+  confineSpawn?: (ctx: ControlEnvContext) => SpawnConfiner | null;
+  /**
+   * What a host adds to every Session this Agent assembles — see {@link AgentAssembly}.
+   * Host policy like
+   * `proxyEnv`: inherited by subagents' Agents, re-read at every Session creation so a
+   * hot push that changes the set reaches the next Session without a restart.
+   */
+  assembly?: AgentAssembly;
+}
+
+/**
+ * The host's contributions to Session assembly. Everything an Agent's own folder
+ * decides (system prompt, tool selection, MCP servers, model, compaction, memory) stays
+ * in its config; this is what the HOSTING PROCESS adds on top, for every Agent.
+ */
+export interface AgentAssembly {
+  /**
+   * Sections appended to the assembled system prompt, in order, each as `# <title>` +
+   * text. Empty = the prompt is exactly the Agent's own.
+   */
+  promptSections?(): readonly PromptSection[];
+  /**
+   * Resolves a model credential immediately before an upstream request. Hosting processes can
+   * rotate short-lived credentials here; core neither knows nor interprets the provider.
+   */
+  resolveModelApiKey?(context: ModelRequestContext): Promise<string | undefined>;
+}
+
+export interface ModelRequestContext {
+  projectId: string;
+  agentId?: string;
+  sessionId?: string;
+  provider: string;
+  modelId: string;
+}
+
+export interface PromptSection {
+  /** The `# ` heading the section is appended under. */
+  title: string;
+  text: string;
+}
+
+/** The Session coordinates a {@link CreateAgentOptions.controlEnv} policy is evaluated with. */
+export interface ControlEnvContext {
+  projectId: string;
+  agentId: string;
+  sessionId: string;
+}
+
+export interface CreateSessionOptions {
+  /** Workspace for this run; if unspecified, a temporary Workspace is created under the Agent directory. */
+  workspaceDir?: string;
+  /**
+   * Model used for this Session (upstream model_id); must be given together with `provider`.
+   * Omit both to use the Project's default Model.
+   */
+  modelId?: string;
+  /**
+   * Provider grouping for `modelId`: the two together form the paired reference. It is never
+   * inferred, so it's "both or neither" — either half alone is an error, not a lookup.
+   */
+  provider?: string;
+  /**
+   * Thinking level for this Session — a tri-state:
+   * - a `ThinkingLevelName` pins the level;
+   * - `undefined` (omitted) falls back to the config chain: the Agent's explicit
+   *   `model.thinking_level` > the Project's `default_chat.thinking_level` > the built-in
+   *   `"medium"` (see `configuredThinkingLevel`), read again for every model context the
+   *   Session opens;
+   * - `null` means "no thinking level": the config fallback is suppressed entirely
+   *   (nothing goes into the LLM config).
+   * Subagent spawning passes the parent Session's effective level (its level, or `null`
+   * when the parent has none) unless the spawn requests an explicit level (`run_subagent`'s
+   * `thinking_level`) — either way a child Session never falls back to the child Agent's
+   * own config.
+   */
+  thinkingLevel?: ThinkingLevelName | null;
+  /**
+   * Explicit credentials; if unspecified, falls back to the credentials in the Project config,
+   * then to what MMSP's routed client does with no key: it reads its vendor's `*_API_KEY` for
+   * its own default endpoint, and refuses any other base URL, which reaches the caller as a
+   * ModelCredentialError at creation; see resolveEntryCredential.
+   */
+  apiKey?: string;
+  baseUrl?: string;
+  /** Internal use: this Session's depth in the subagent spawn chain (0 at the top level), used to cap spawn depth. */
+  subagentDepth?: number;
+  /**
+   * What kind of conversation this is, recorded in session_meta; absent = `user`, a person's.
+   * The subagent spawn site passes `subagent`; a host passes the source its caller stands for
+   * (the server: `schedule` for a scheduled task, `cli` for `penguin run`, `api` for the Agent API,
+   * `company` for company mode's desk and ticket Sessions).
+   */
+  source?: SessionSource;
+  /**
+   * The id to create the Session under; absent, a new one is minted. For a host that recorded a
+   * Session before its first run and has lost the runtime object since (a process restart): such
+   * a Session has no Trace to resume from, and recreating it under a new id would orphan
+   * everything the host keyed by the old one. The id must consist of letters, digits, `-` and
+   * `_` (every minted id does), and must have no Trace under this Agent yet: one that has is
+   * resumed with `resumeSession`, never created again.
+   */
+  sessionId?: string;
+}
+
+export interface ResumeSessionOptions {
+  /** Id of the Session to resume. */
+  sessionId: string;
+  /** Explicit credentials; if unspecified, falls back to the Project config, then to the vendor's environment variable on the same terms as CreateSessionOptions.apiKey. */
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+/**
+ * The facts fixed for a Session's lifetime — every model context of the Session is opened
+ * against them. Everything else a context runs with — the model included — comes from the
+ * Agent State and the Project config as they are on disk when the context opens (see
+ * `Agent.assembleContext`).
+ */
+interface SessionSpec {
+  sessionId: string;
+  workspaceDir: string;
+  /** The model the Session was created on (or resumed on). The model a context runs on is the context's own fact (see AssembledContext.modelEntry); this one only says which entry the credentials below were given for. */
+  creationRef: ModelRef;
+  /**
+   * Explicit credentials the SDK caller gave (CreateSessionOptions / ResumeSessionOptions
+   * `apiKey` / `baseUrl`). They were given for `creationRef` and apply to that entry alone: a
+   * context an in-session switch opens on another model runs on that entry's own configured
+   * credentials (a key handed in for one vendor must never be sent to another).
+   */
+  credentialOverride: { apiKey: string | undefined; baseUrl: string | undefined };
+  /**
+   * The Session's thinking-level pin, the tri-state of {@link CreateSessionOptions.thinkingLevel}:
+   * a value pins every context opened from now on; `null` runs them without a level;
+   * `undefined` reads the Agent config's default when each context opens. Fixed at
+   * creation: a mid-session change (`Session.thinkingLevel`) is engine state — it rides
+   * requests but reshapes no context and never lands here.
+   */
+  thinkingLevel: ThinkingLevelName | null | undefined;
+  subagentDepth: number;
+  source: SessionSource;
+}
+
+/**
+ * A Session's runtime components, assembled once by `buildRuntime` (shared by createSession
+ * and resumeSession) around the context the Session starts in.
+ */
+interface SessionRuntime {
+  /** Session-lifetime Environment, equipped with the initial context's toolset and vault (a later context re-equips it — see openNextContext). */
+  environment: Environment;
+  /**
+   * Opens the Session's FIRST context, lazily at the start of the first run: resolves the
+   * toolset (the Environment's first listTools connects any configured MCP Servers,
+   * published through `opts.emit` as the connect pair, then the toolset record) and builds
+   * that context's LLM object. Kept out of createSession on purpose — Session creation
+   * stays instant and the records stream on the run. The same opening procedure as
+   * `openNextContext`: only what is being opened differs.
+   */
+  bootstrap: (opts: OpenContextOptions) => Promise<{ llm: GenerativeModel }>;
+  /**
+   * Opens the context that follows a completed compaction (see ContextEngineDeps.openNextContext):
+   * the whole configuration assembled anew from the Agent State, the Environment re-equipped
+   * with it, then the same opening procedure as `bootstrap` — and the session_meta recording
+   * the context alongside its engine settings, with the hooks the context runs with.
+   */
+  openNextContext: (opts: SessionOpenContextOptions) => Promise<SessionOpenedContext>;
+  /** The running context's command policy — follows the rotation (see SessionConfig.commandPolicy). */
+  commandPolicy: () => CommandPolicyConfig | undefined;
+  /** The running context's model window — follows the rotation, so the live compaction reader caps the threshold against the model that is running (see `compactionReader`). */
+  contextWindow: () => number | undefined;
+  /** The composition layer's half of an in-session model switch (see SessionConfig.modelSwitch). */
+  modelSwitch: ModelSwitchSupport;
+
+  createBareLLM: () => GenerativeModel;
+  /** The child-session runner the run_subagent tool uses; sessionHooks' subagent spawner shares it. */
+  subagentRunner: SubagentRunner;
+}
+
+/**
+ * What one model context runs with, assembled from the Agent State as it was on disk at the
+ * moment the context opened; immutable for the context's lifetime.
+ */
+interface AssembledContext {
+  /** The model this context runs on: its entry as resolved from the Project config when the context opened — reference, credentials, window and per-model annotations. */
+  modelEntry: ModelEntry;
+  systemPrompt: string;
+  /** The vault's values, for the Environment's command subprocesses; only the key names enter the prompt. */
+  vault: Record<string, string>;
+  toolConfig: ToolConfig;
+  /** The Project's command policy as read when this context opened (`[command_policy]` of `.project_config.toml`) — Project-owned rather than Agent State, rotated on the same strict-tier schedule. */
+  commandPolicy: CommandPolicyConfig | undefined;
+  /** The context's effective thinking level: the Session's pin, or the config default read now. */
+  thinkingLevel: ThinkingLevelName | undefined;
+  maxTokens: number | undefined;
+  requestTimeoutMs: number | undefined;
+  /** `system_config.max_turns`; the engine treats absent as unlimited (-1). */
+  maxTurns: number | undefined;
+  compaction: CompactionSettings;
+  /**
+   * The hook packages this context consults: the ones installed in `agent_state/hooks/`
+   * when it opened. Empty with `hooks.enabled: false` — the one switch over all of them,
+   * the packages stay installed — and for a child Session, which carries no hooks: a
+   * subagent's work belongs to its parent's Trace, and a child could not spawn a subagent
+   * anyway.
+   */
+  hookPackages: InstalledHook[];
+  /** The session_meta describing this context: the prompt and the model it runs with, and the Session-fixed facts. */
+  meta: SessionMetaPayload;
+}
+
+// Compaction-threshold derivation (`effectiveMaxContextLength`) lives with the rest of the
+// window arithmetic in llm/context-limits.ts; re-exported by llm/index.js.
+
+/**
+ * The Session's compaction settings as they follow from a `compaction` section: defaults
+ * filled in, the threshold capped by what the model's window leaves room for, and an unknown
+ * mode read as the default `summarize`.
+ *
+ * Stated once because two callers need the same answer from the same input — the context
+ * assembly below, and the live re-reader every checkpoint calls (see `compactionReader`). Two
+ * copies of the rule would let a running Session compact at a threshold no rotation would
+ * have chosen.
+ */
+function resolveCompaction(
+  config: CompactionConfig | undefined,
+  contextWindow: number | undefined,
+): CompactionSettings {
+  return {
+    maxContextLength: effectiveMaxContextLength(
+      config?.max_context_length ?? DEFAULT_MAX_CONTEXT_LENGTH,
+      contextWindow,
+    ),
+    maxSessionTurns: config?.max_session_turns ?? -1,
+    mode: config?.mode === "discard" ? "discard" : "summarize",
+    prompt: config?.prompt ?? DEFAULT_COMPACTION_PROMPT,
+  };
+}
+
+/**
+ * The credential and protocol a Session's (or a describer's) client is built with for a model
+ * entry: the explicit override, else the entry's own fields, else its group's
+ * `[providers.<id>]` table — the file's values only, never the catalog's
+ * (resolveEntryCredential) — and nothing for a field none of them sets, which MMSP's routed
+ * client then fills in by its own rule.
+ */
+function entryCredential(
+  entry: ModelEntry,
+  config: ProjectConfig,
+  opts: { apiKey?: string | undefined; baseUrl?: string | undefined },
+): { apiKey?: string; baseUrl?: string; clientType?: string } {
+  return resolveEntryCredential(
+    entry,
+    providerConnectionShape(config.providers?.[entry.provider]),
+    opts,
+  );
+}
+
+/**
+ * Builds, and discards, the client a Session on this entry would get, so that whatever its
+ * construction refuses surfaces before the Session leaves anything on disk: MMSP's refusal of a
+ * keyless base URL (a ModelCredentialError) or a provider SDK's own missing credential — both of
+ * which hosts file as a missing credential (the server's `isMissingCredential`). Nothing is
+ * sent.
+ */
+function checkEntryClient(
+  entry: ModelEntry,
+  config: ProjectConfig,
+  opts: { apiKey?: string | undefined; baseUrl?: string | undefined },
+): void {
+  void new GenerativeModel({
+    modelId: entry.model_id,
+    ...entryCredential(entry, config, opts),
+    tools: [],
+  });
+}
+
+/** The message for a model reference that names no entry in the Project config. */
+function modelNotConfigured(ref: ModelRef): string {
+  return `Model is not in the Project config: ${formatModelRef(ref)}. Use \`penguin config model list\` to see the configured models, or \`penguin config model add\` to add one.`;
+}
+
+/**
+ * Output cap for meta requests (title generation / vision describing): these carry their own
+ * small hardcoded budget, tightened further by the entry's per-model `max_tokens` when that is
+ * smaller — a cap the user pinned below the budget must bind every request to that model. The
+ * budget is never raised. A non-positive cap (-1 = uncapped) never tightens: Math.min against
+ * it would send max_tokens -1 on the wire, and meta requests must keep their small budget.
+ */
+export function metaMaxTokens(budget: number, modelCap: number | undefined): number {
+  return modelCap !== undefined && modelCap > 0 ? Math.min(budget, modelCap) : budget;
+}
+
+/** The assembled prompt plus the host's sections, each under its own heading. */
+function withPromptSections(prompt: string, sections: readonly PromptSection[]): string {
+  if (sections.length === 0) return prompt;
+  return [prompt, ...sections.map((s) => `# ${s.title}\n${s.text}`)].join("\n\n");
+}
+
+/** Create or load an Agent (the one init-enabled use of `loadAgentState`). */
+export async function createAgent(opts: CreateAgentOptions = {}): Promise<Agent> {
+  const state = await loadAgentState({
+    ...(opts.agentId !== undefined ? { agentId: opts.agentId } : {}),
+    ...(opts.projectId !== undefined ? { projectId: opts.projectId } : {}),
+    ...(opts.root !== undefined ? { root: opts.root } : {}),
+    init: {},
+  });
+  const projectConfig = await loadProjectConfig(state.root, state.projectId);
+  return new Agent(
+    state,
+    projectConfig,
+    opts.proxyEnv,
+    opts.controlEnv,
+    opts.pathPrepend,
+    opts.confineSpawn,
+    opts.assembly,
+  );
+}
+
+export class Agent {
+  constructor(
+    readonly state: AgentState,
+    /** The Project config as this Agent last read it from disk (see `projectConfig`). */
+    private config: ProjectConfig,
+    /** See {@link CreateAgentOptions.proxyEnv}; forwarded into every Session's Environment. */
+    private readonly proxyEnv?: () => ProxyEnvPolicy | null,
+    /** See {@link CreateAgentOptions.controlEnv}; evaluated per Session with that Session's coordinates. */
+    private readonly controlEnv?: (ctx: ControlEnvContext) => Record<string, string>,
+    /** See {@link CreateAgentOptions.pathPrepend}; forwarded into every Session's Environment and hooks. */
+    private readonly pathPrepend?: () => string[],
+    /** See {@link CreateAgentOptions.confineSpawn}; evaluated per Session with that Session's coordinates. */
+    private readonly confineSpawn?: (ctx: ControlEnvContext) => SpawnConfiner | null,
+    /** See {@link CreateAgentOptions.assembly}; read at every Session creation. */
+    private readonly assembly?: AgentAssembly,
+  ) {}
+
+  /**
+   * The Project config as this Agent last read it from disk: when it was created, and again
+   * whenever a model switch resolved its target (see `modelEntryOnDisk`). Session creation
+   * and resumption resolve their model against it.
+   */
+  get projectConfig(): ProjectConfig {
+    return this.config;
+  }
+
+  /**
+   * A Session's default thinking level when no explicit per-session level is given — the
+   * resolution chain (the single rule, keep both sites on it): the Agent's explicit
+   * `model.thinking_level` > the Project's `default_chat.thinking_level` > the built-in
+   * `"medium"` (the documented Agent default). Read against the Agent State and the Project
+   * config a context is assembled from, so the default follows both files into each new
+   * context. Mirrored by
+   * the web draft picker's DISPLAY (web features/chat/thinking-level.ts
+   * `effectiveThinkingLevel`): the picker shows this effective value, and a pick writes
+   * through to the AGENT config — the project default is only ever a fallback, never
+   * overwritten from there.
+   */
+  private configuredThinkingLevel(
+    state: AgentState,
+    projectConfig: ProjectConfig,
+  ): ThinkingLevelName {
+    return (
+      state.systemConfig.model?.thinking_level ??
+      projectConfig.default_chat?.thinking_level ??
+      "medium"
+    );
+  }
+
+  /**
+   * Assembles what a model context runs with, from the Agent State as it is on disk **now**:
+   * `system_config.yaml` in full — the prompt template with its section prompts and toggles,
+   * the builtin tool entries and MCP Servers, the compaction settings, `max_turns`, the
+   * model defaults — plus `AGENTS.md`, the vault, the installed Skills' metadata, the
+   * installed hook packages, the Memory indexes, the schedule roster and the Environment
+   * values (the date included). Every
+   * context opener goes through here — createSession, the context a completed compaction
+   * opens (buildRuntime's openNextContext) and a resume that finds its context closed — so an
+   * edit made during one context, by the user or by the model working on its own
+   * configuration, lands in the next context and never in the one that is running. What
+   * stays fixed is the Session itself (`spec`): id, Workspace, origin, depth and the
+   * thinking-level pin. The model is the caller's to name: `modelEntry` is the entry the
+   * context runs on — the closing context's for an ordinary rotation, the one the user picked
+   * for a switch (see `modelEntryOnDisk`).
+   *
+   * The vault's values go to the Environment's command subprocesses and only its **key
+   * names** enter the prompt (so the model knows which API keys are available); Skills only
+   * inject metadata (name and description) and the model reads the body on demand via shell;
+   * Memory likewise injects only its index; Schedules inject only task names.
+   *
+   * `systemPrompt`, when given, is used instead of assembling it: a
+   * resume of an open context keeps the prompt its Trace recorded, since the history
+   * replayed into it was produced under that request prefix.
+   * Docs: /docs/agent-loop § "Compaction".
+   */
+  private async assembleContext(
+    spec: SessionSpec,
+    modelEntry: ModelEntry,
+    opts: { systemPrompt?: string } = {},
+  ): Promise<AssembledContext> {
+    const { root, projectId, agentId } = this.state;
+    const state = await loadAgentState({ root, projectId, agentId });
+    const vault = await loadAgentVault(root, projectId, agentId);
+    // Strict-tier alongside the Agent State even though it is Project-owned: the command
+    // policy this context runs under (and the Project half of the thinking-level chain) is
+    // the one on disk at its open.
+    const projectConfig = await loadProjectConfig(root, projectId);
+    const commandPolicy = projectConfig.command_policy;
+    // Hook packages are not part of the request prefix, and are read on the same schedule
+    // all the same: a package the model wrote during one context is consulted from the next.
+    const child = spec.subagentDepth > 0 || spec.source === "subagent";
+    const hookPackages =
+      (!qaEnabled && child) || (!child && state.systemConfig.hooks?.enabled === false)
+        ? []
+        : await listInstalledHooks(root, projectId, agentId);
+    let systemPrompt = opts.systemPrompt;
+    if (systemPrompt === undefined) {
+      const installedSkills = await listInstalledSkills(root, projectId, agentId);
+      // Schedule task names for the {{SCHEDULES}} roster (names only; the files' contents are
+      // the server-side scheduler's concern).
+      const scheduleNames = await listScheduleNames(root, projectId, agentId);
+      // Memory for this Session: null when the Agent has Memory off; a temporary Workspace
+      // gets the user scope only (nothing written against it could ever be read back).
+      const memory = await resolveSessionMemory({
+        root,
+        projectId,
+        agentId,
+        workspaceDir: spec.workspaceDir,
+        enabled: state.systemConfig.memory?.enabled !== false,
+      });
+      systemPrompt = withPromptSections(
+        assembleSystemPrompt(
+          state,
+          sessionEnvironment(spec.workspaceDir, spec.sessionId, {
+            agentId,
+            projectDir: projectDir(root, projectId),
+            provider: modelEntry.provider,
+            modelId: modelEntry.model_id,
+          }),
+          Object.keys(vault),
+          installedSkills,
+          memory,
+          scheduleNames,
+        ),
+        this.assembly?.promptSections?.() ?? [],
+      );
+    }
+
+    // Tool exposure is capped by depth: a (leaf) child Agent that has reached the max spawn
+    // depth no longer gets run_subagent or input_subagent (the latter depends on the
+    // subagent_id produced by the former, so exposing it alone is meaningless). Tool entries
+    // are also selected by the context model's type through their forModel annotation
+    // (entries without it are unaffected — the built-in set carries none; read_file decides
+    // per model at runtime through the injected vision describer), and a model that views
+    // images gets read_file without the `prompt` it would put to the vision model.
+    const canSpawn = spec.subagentDepth < MAX_SUBAGENT_DEPTH;
+    const baseToolConfig = buildToolConfig(state);
+    const modelVision = modelEntry.vision !== false;
+    let customTools = selectBuiltinToolsForModel(baseToolConfig.customTools, modelVision);
+    if (!canSpawn) {
+      customTools = customTools.filter(
+        (d) =>
+          d.name !== SUBAGENT_NAME &&
+          d.name !== INPUT_SUBAGENT_NAME &&
+          // Legacy entry still present in stale stored configs; the registry no longer
+          // assembles it, this just keeps the leaf filter symmetrical.
+          d.name !== "kill_subagent",
+      );
+    }
+    const toolConfig: ToolConfig = { ...baseToolConfig, customTools };
+
+    // The context's base thinking level — the Session's tri-state pin: a value wins over
+    // every config; `null` — how subagent spawning says "the parent has none" — suppresses
+    // the config fallback entirely; only `undefined` (no pin) reads the config chain,
+    // against this context's State (Agent explicit > Project default_chat > built-in
+    // "medium", see configuredThinkingLevel). A per-request parameter, not part of the
+    // prefix: this is only the base the Session's live pin overrides; `session_meta` does not
+    // record it (each request's `request_begin` records the level it went out at).
+    const pin = spec.thinkingLevel;
+    const thinkingLevel =
+      pin === null ? undefined : (pin ?? this.configuredThinkingLevel(state, projectConfig));
+
+    // Compaction config: this context's baseline. It is no longer the last word — the engine
+    // re-reads the section at every compaction checkpoint through `compactionReader` — but a
+    // context still opens on the configuration that was on disk when it opened.
+    const compaction = resolveCompaction(state.systemConfig.compaction, modelEntry.context_window);
+
+    // session_meta: this context's runtime configuration — the assembled prompt goes both to
+    // the LLM and in here, so the Trace can audit the actual effective value and a resume
+    // rebuilds the same request prefix; the toolset travels as the tool_list_ready event (it
+    // is only known once the context's MCP Servers connected).
+    const meta: SessionMetaPayload = {
+      session_id: spec.sessionId,
+      provider: modelEntry.provider,
+      model_id: modelEntry.model_id,
+      model_context_window: modelEntry.context_window ?? "unknown",
+      system_prompt: systemPrompt,
+      agent_state: state.stateDir,
+      workspace: spec.workspaceDir,
+      source: spec.source,
+    };
+
+    return {
+      modelEntry,
+      systemPrompt,
+      vault,
+      toolConfig,
+      commandPolicy,
+      thinkingLevel,
+      // Configured output cap: the entry's per-model annotation wins over the Agent's
+      // system_config value; unset inherits the Agent value. This is a ceiling, not the
+      // literal wire value: GenerativeModel clamps each request's effective cap to what the
+      // entry's context window can still fit (see llm/context-limits.ts, issue #218), so the
+      // seeded per-Agent default (32000) no longer needs a manual per-model override to work
+      // against e.g. a 32768-token window — setting the entry's `context_window` is enough.
+      maxTokens: modelEntry.max_tokens ?? state.systemConfig.model?.max_tokens,
+      requestTimeoutMs: state.systemConfig.model?.timeoutMs,
+      // Max turns is an Agent runtime parameter (system_config), not a Session option.
+      maxTurns: state.systemConfig.max_turns,
+      compaction,
+      hookPackages,
+      meta,
+    };
+  }
+
+  /**
+   * The entry `ref` names in the Project config **as it is on disk**, or undefined: the user
+   * picks a switch target from the models configured now, and a long-lived Agent must not
+   * answer from the ones configured when it loaded. The Agent's own copy follows the read, so
+   * what is resolved against it afterwards — a subagent spawned on the model just switched to,
+   * the vision model a text-only target describes images with — sees the same config.
+   */
+  private async modelEntryOnDisk(ref: ModelRef): Promise<ModelEntry | undefined> {
+    this.config = await loadProjectConfig(this.state.root, this.state.projectId);
+    return getModel(this.config, ref);
+  }
+
+  /**
+   * Create a Session in the specified (or a temporary) Workspace.
+   * Docs: /docs/sessions-and-traces § "Run model".
+   */
+  async createSession(opts: CreateSessionOptions = {}): Promise<Session> {
+    qaAssertProjectReady(this.state);
+    // Model is validated first (before creating the Workspace, so failure leaves no
+    // temporary workspace behind): the reference must be the complete (provider, model_id)
+    // pair — the config's unique key — and must name an entry in the Project config; a
+    // reference outside the config throws immediately rather than passing silently,
+    // otherwise credentials, pricing, and the context window would all be unavailable.
+    // Half a reference is always an error: the missing half is never inferred, since a
+    // guessed provider would send the entry's credential to a vendor nobody named.
+    if ((opts.modelId === undefined) !== (opts.provider === undefined)) {
+      throw new Error(
+        "A model reference must be given as a (provider, model_id) pair: both must be specified, or neither (to use the Project's default model).",
+      );
+    }
+    let ref: ModelRef;
+    if (opts.modelId !== undefined && opts.provider !== undefined) {
+      // Pair validation only (resolveModelRef): the pair either names a configured entry or errors.
+      ref = resolveModelRef(this.projectConfig, opts.modelId, opts.provider);
+    } else if (this.projectConfig.default_model) {
+      ref = this.projectConfig.default_model;
+    } else {
+      throw new Error(
+        "No modelId was specified and the Project config has no default_model. Use `penguin config model add/default` to set the default model.",
+      );
+    }
+    const modelEntry = getModel(this.projectConfig, ref);
+    if (!modelEntry) throw new Error(modelNotConfigured(ref));
+    // Credentials are inlined on the model entry (single config file); an explicit
+    // argument takes priority. With neither, MMSP's routed client decides what a missing key
+    // means, at construction: a client built here refuses a keyless base URL its environment
+    // key may not go to before the Workspace or the Trace exists. Built for that refusal alone:
+    // each context's clients resolve the credential of the entry the context runs on (see
+    // buildRuntime's `credentialsFor`).
+    checkEntryClient(modelEntry, this.projectConfig, opts);
+    // A given id is checked before the Workspace for the same reason as the model: a refusal
+    // must leave no temporary workspace behind.
+    if (opts.sessionId !== undefined) await this.checkRecreatedSessionId(opts.sessionId);
+
+    // An explicit Workspace must already exist as a directory: if it
+    // doesn't, throw rather than auto-create (to avoid a typo silently working in
+    // the wrong location); a temporary workspace is only created when unspecified.
+    let workspaceDir: string;
+    if (qaApplies(this.state, opts)) {
+      workspaceDir = opts.workspaceDir ?? "";
+    } else if (opts.workspaceDir) {
+      workspaceDir = path.resolve(opts.workspaceDir);
+      let stat;
+      try {
+        stat = await fs.stat(workspaceDir);
+      } catch {
+        throw new Error(
+          `Workspace does not exist: ${workspaceDir}. Specify an existing directory, or omit the Workspace to use a temporary workspace.`,
+        );
+      }
+      if (!stat.isDirectory()) {
+        throw new Error(`Workspace is not a directory: ${workspaceDir}.`);
+      }
+    } else {
+      workspaceDir = await createTempWorkspace(
+        this.state.root,
+        this.state.projectId,
+        this.state.agentId,
+      );
+    }
+    const sessionId = opts.sessionId ?? formatSessionId();
+    workspaceDir = qaBindWorkspace(this.state, opts, sessionId, workspaceDir);
+    const spec: SessionSpec = {
+      sessionId,
+      workspaceDir,
+      creationRef: ref,
+      credentialOverride: { apiKey: opts.apiKey, baseUrl: opts.baseUrl },
+      thinkingLevel: opts.thinkingLevel,
+      subagentDepth: opts.subagentDepth ?? 0,
+      source: opts.source ?? "user",
+    };
+    // The first context: assembled from the Agent State on disk now (never from this Agent
+    // object's load-time snapshot — a long-lived Agent, a self-spawned subagent's for
+    // instance, would otherwise start Sessions on stale configuration).
+    const context = await this.assembleContext(spec, modelEntry);
+    const rt = this.buildRuntime(spec, context);
+
+    const trace = new Writer({
+      tracesDir: tracesDir(this.state.root, this.state.projectId, this.state.agentId),
+      qaWorkspace: spec.workspaceDir,
+      sessionId,
+    });
+
+    return this.newSession(spec, context, rt, trace);
+  }
+
+  /**
+   * The id a host recreates a Session under (CreateSessionOptions.sessionId) must name Trace
+   * files inside the Trace directory, and must have none yet: a second Writer under the id of a
+   * Session that has a Trace would write a new opening into a history it never read.
+   */
+  private async checkRecreatedSessionId(sessionId: string): Promise<void> {
+    if (!isSessionIdToken(sessionId)) {
+      throw new Error(
+        `Cannot create a Session under the id ${JSON.stringify(sessionId)}: an id may contain only letters, digits, "-" and "_".`,
+      );
+    }
+    const dir = tracesDir(this.state.root, this.state.projectId, this.state.agentId);
+    if ((await findLatestTraceFile(dir, sessionId)) !== null) {
+      throw new Error(
+        `Session ${sessionId} already has a Trace, so it cannot be created again; resume it instead.`,
+      );
+    }
+  }
+
+  /**
+   * Resume an existing Session and continue the conversation.
+   *
+   * The resume source is the Session's **latest-index** Trace file: the Session-fixed facts
+   * are read from its `session_meta` (the Workspace carries over from the original Session and
+   * cannot be changed), the model is the one that file's `session_meta` records — a model switch
+   * opens its new context's file at once, so the latest file always names the model the Session
+   * runs on — and the context is assembled from the current Agent State, keeping the recorded
+   * system prompt when the file's context is still open (see below). A resume never changes the
+   * model on its own; switching goes through `Session.switchModel`. The replayed,
+   * already-committed history is injected once via MMSP's
+   * setHistory (used only on resume); any leftover input is rebuilt as carry-over (paired
+   * fallback placeholders are synthesized in memory only, never written to the Trace).
+   * Messages after resume continue in the original Trace file (the file follows the
+   * context, not the date), and Token / turn-count stats carry over from their original
+   * values.
+   * Docs: /docs/sessions-and-traces § "Session recovery".
+   */
+  async resumeSession(opts: ResumeSessionOptions): Promise<Session> {
+    qaAssertProjectReady(this.state);
+    const { sessionId } = opts;
+    const dir = tracesDir(this.state.root, this.state.projectId, this.state.agentId);
+    const located = await findLatestTraceFile(dir, sessionId);
+    if (!located) {
+      throw new Error(
+        `Session does not exist: ${sessionId} (no matching Trace file found under ${dir}).`,
+      );
+    }
+    const resumed = resumeTrace(await readTraceTolerant(located.path));
+    if (!resumed.meta) {
+      throw new Error(`Trace is missing session_meta and cannot be resumed: ${located.path}`);
+    }
+    const meta = resumed.meta.payload;
+    // Model reference is stored as a pair in session_meta; a missing provider means legacy data (no migration since the product hasn't shipped yet).
+    if (typeof meta.provider !== "string") {
+      throw new Error(
+        `Trace is from legacy data (session_meta is missing provider; the model reference is not split into separate fields): ${located.path}. Delete the data directory and recreate the Session.`,
+      );
+    }
+
+    // The Workspace carries over from the original Session and must still exist (throw if missing, never auto-create).
+    const workspaceDir = meta.workspace;
+    let stat;
+    try {
+      stat = await fs.stat(workspaceDir);
+    } catch {
+      throw new Error(
+        `The original Session's Workspace no longer exists: ${workspaceDir}; cannot resume.`,
+      );
+    }
+    if (!stat.isDirectory()) {
+      throw new Error(
+        `The original Session's Workspace is not a directory: ${workspaceDir}; cannot resume.`,
+      );
+    }
+
+    // The Model carries over from the Trace (the latest file's paired reference) and must still
+    // be present in the Project config.
+    const ref: ModelRef = { provider: meta.provider, model_id: meta.model_id };
+    const modelEntry = getModel(this.projectConfig, ref);
+    if (!modelEntry) {
+      throw new Error(
+        `The original Session's Model is not in the Project config: ${formatModelRef(ref)}. Use \`penguin config model add\` to configure it again before resuming.`,
+      );
+    }
+    // Same check as createSession (see checkEntryClient): a key deleted since the Session was
+    // created surfaces here, at resume.
+    checkEntryClient(modelEntry, this.projectConfig, opts);
+
+    // No level at resume: the host re-applies its stored value (Session.thinkingLevel) when it holds one,
+    // and contexts opened without a pin read the Agent config's chain (the same chain
+    // createSession uses). The source carries over from the original session_meta (a
+    // resumed subagent / scheduled / CLI Session stays what it was); the on-disk value is
+    // untrusted and is narrowed (a Trace from before the source was required reads as
+    // `user`, the retired `benchmark` as `cli`, junk as `user`).
+    const spec: SessionSpec = {
+      sessionId,
+      workspaceDir,
+      creationRef: ref,
+      credentialOverride: { apiKey: opts.apiKey, baseUrl: opts.baseUrl },
+      thinkingLevel: undefined,
+      subagentDepth: 0,
+      source: normalizeSessionSource(meta.source),
+    };
+    // The context follows the Trace. A context a completed compaction closed is opened here
+    // for the first time — nothing was produced under any configuration yet — so it is
+    // assembled from the current Agent State exactly as the compaction would have opened it,
+    // and the rotation deferred to the first write records its meta at the new file's head.
+    // An open context keeps the system prompt its file recorded — the history replayed into
+    // it was produced under that request prefix — while its tools, Environment, vault and
+    // run parameters can only come from the current Agent State: the Trace records no
+    // executable configuration (tool definitions travel with every Request and are not part
+    // of the history). The thinking level is a per-request parameter, not part of the
+    // recorded prefix: it resolves from the pin and the config like on any other open.
+    const context = await this.assembleContext(
+      spec,
+      modelEntry,
+      resumed.contextClosed ? {} : { systemPrompt: meta.system_prompt },
+    );
+    const rt = this.buildRuntime(spec, context);
+
+    // History is injected once into the freshly built context object as part of the lazy
+    // bootstrap (setHistory is only used on resume); Session cumulative Token counts carry
+    // over the same way. The wrap keeps the descriptive error: bad tool arguments in the
+    // history (e.g. truncated JSON written by a third-party OpenAI-compatible endpoint)
+    // throw a raw SyntaxError during conversion, and the message must indicate Trace
+    // history corruption rather than a regular runtime error. With the bootstrap being
+    // lazy, that corruption now surfaces on the first run instead of at resume time —
+    // the price of a resume that no longer blocks on MCP connects.
+    const bootstrap: typeof rt.bootstrap = async (opts) => {
+      const r = await rt.bootstrap(opts);
+      if (resumed.history.length > 0) {
+        try {
+          r.llm.setHistory(resumed.history);
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          throw new Error(
+            `Resume failed: the Trace history could not be injected (records may be corrupted, e.g. invalid tool-argument JSON): ${detail}`,
+          );
+        }
+      }
+      return r;
+    };
+
+    // Continue writing to the original Trace file (the Trace only records real messages; synthesized paired placeholders are re-emitted in memory alongside carry-over).
+    const trace = new Writer({
+      tracesDir: dir,
+      qaWorkspace: spec.workspaceDir,
+      sessionId,
+      dateDir: located.dateDir,
+      startIndex: located.index,
+    });
+
+    // A compaction the user quit out of (a compaction_begin with no end — the process died
+    // mid-request) is simply a **failed** compaction: close the span with a `failed`
+    // compaction_end before any new record lands, and discard whatever half-summary it had
+    // written — nothing is reconstructed from it (the original context is intact and the
+    // standing threshold makes the compaction up at the next trigger). Closing the span is
+    // what keeps the rest of the conversation visible: readers treat messages between the
+    // paired events as compaction-internal, so an unclosed span would hide everything the
+    // user sends afterwards, and tool outputs whose calls it swallowed would render as
+    // "unknown tool" cards (issue #288). Best-effort like every Trace write: a failure here
+    // must not block the resume itself.
+    if (resumed.danglingCompaction) {
+      try {
+        await trace.write(compactionEnd({ ...resumed.danglingCompaction, status: "retryable" }));
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[trace] interrupted-compaction closure failed: ${detail}\n`);
+      }
+    }
+
+    return this.newSession(spec, context, rt, trace, {
+      bootstrap,
+      // session_meta is already in the original Trace file, so it isn't rewritten; on the first write after a compaction-triggered rotation, the file is split first.
+      metaAlreadyWritten: true,
+      initialEngineState: {
+        carryOver: resumed.carryOver,
+        ...(resumed.pendingSummary ? { pendingSummary: resumed.pendingSummary } : {}),
+        ...(resumed.openingSummary ? { openingSummary: resumed.openingSummary } : {}),
+        sessionTurns: resumed.sessionTurns,
+        sessionTokens: resumed.sessionTokens,
+        lastRequestTotal: resumed.lastRequestTotal,
+        pendingTraceRotation: resumed.contextClosed,
+        // A closed context is one a completed compaction opened: the same fact drives the
+        // deferred Trace rotation above and the "just compacted" compaction reason, but they
+        // are separate meanings and stay separate fields. A file past the first was opened by
+        // a compaction too, so one with no completed turn yet — a model switch's eagerly opened
+        // file, or any new context the process died in before its first answer — is just as
+        // freshly compacted (read structurally, from the index, never from its records).
+        fromCompaction: resumed.contextClosed || (located.index > 1 && resumed.sessionTurns === 0),
+      },
+      resumedHistory: resumed.renderMessages,
+    });
+  }
+
+  /**
+   * The Session's live compaction reader: what takes `compaction` out of the set of settings
+   * a model context freezes when it opens. The engine calls it at every compaction checkpoint,
+   * so a threshold, turn count, mode or prompt saved to the Agent's `system_config.yaml`
+   * reaches the conversation that is running instead of waiting for the next rotation.
+   *
+   * Cached by the file's identity on disk, so an unchanged file costs one `stat` per checkpoint
+   * and nothing else. Three fields, because no one of them is enough: the inode number changes
+   * whenever the config is saved through `atomicWriteFile` (a temp file renamed over the name,
+   * which is also why a reader never sees a half-written config), while an in-place rewrite
+   * keeps the inode and is caught by the nanosecond mtime — `mtimeMs` alone cannot separate two
+   * saves inside the same millisecond, and a threshold dragged in the Web App can produce
+   * exactly that. Size is the cheap third opinion for a filesystem with a coarse clock.
+   *
+   * Only the `compaction` section is honoured here. Everything else in the config is strict
+   * tier and belongs to the context that was assembled from it; reading the file is not
+   * licence to apply the rest of it mid-context.
+   *
+   * The model's context window comes from the running context's entry (`contextWindow`, a
+   * getter because an in-session model switch moves it), so one reader serves every context
+   * the Session opens and caps the threshold against the model that is running. A parse that
+   * fails throws: the engine keeps the settings in force and warns once, which is the right
+   * answer for a file being rewritten badly.
+   */
+  private compactionReader(
+    contextWindow: () => number | undefined,
+  ): () => Promise<CompactionSettings> {
+    const { root, projectId, agentId } = this.state;
+    const configPath = systemConfigPath(root, projectId, agentId);
+    let cachedKey: string | null = null;
+    let cached: CompactionSettings | null = null;
+    return async (): Promise<CompactionSettings> => {
+      const stat = await fs.stat(configPath, { bigint: true });
+      const window = contextWindow();
+      const key = `${stat.mtimeNs}:${stat.size}:${stat.ino}:${window ?? "unknown"}`;
+      if (cached !== null && key === cachedKey) return cached;
+      const parsed = parseYaml(await fs.readFile(configPath, "utf8")) as unknown;
+      if (parsed === null || typeof parsed !== "object") {
+        throw new Error(`Invalid Agent State config: ${configPath} is empty or corrupted.`);
+      }
+      cached = resolveCompaction((parsed as SystemConfig).compaction, window);
+      cachedKey = key;
+      return cached;
+    };
+  }
+
+  /**
+   * Constructs the Session for `spec` running on `context` — the one assembly behind
+   * createSession and resumeSession, so initialization and resumption cannot drift apart.
+   * `extras` carries the resume-only fields (its history-injecting bootstrap wrapper, the
+   * replay-derived engine state); spread last, so an override there wins.
+   */
+  private newSession(
+    spec: SessionSpec,
+    context: AssembledContext,
+    rt: SessionRuntime,
+    trace: Writer,
+    extras: Partial<SessionConfig> = {},
+  ): Session {
+    const { root, projectId, agentId } = this.state;
+    return new Session({
+      meta: context.meta,
+      bootstrap: rt.bootstrap,
+      cancelBootstrap: () => rt.environment.cancelMcpConnect(),
+      environment: rt.environment,
+      trace,
+      openNextContext: rt.openNextContext,
+      // The first context's hooks; each context `openNextContext` opens brings its own.
+      hooks: this.sessionHooks(rt.subagentRunner, context.hookPackages, spec),
+
+      createBareLLM: rt.createBareLLM,
+      compaction: context.compaction,
+      // Live tier: the baseline above is what this context opened on, and this is how every
+      // checkpoint after it asks the disk again.
+      readCompaction: this.compactionReader(rt.contextWindow),
+      // Where an input image lands when it becomes a path line (see SessionConfig.imagesDir).
+      imagesDir: sessionScratchpadDir(root, projectId, agentId, spec.sessionId),
+      modelHasVision: context.modelEntry.vision !== false,
+      modelSwitch: rt.modelSwitch,
+      ...(context.maxTurns !== undefined ? { maxTurns: context.maxTurns } : {}),
+      // Sandbox command policy, strict-tier like the rest of the context (though
+      // Project-owned, never Agent State): read from disk when each context opens, so an
+      // edit applies at the Session's next rotation. Absent config means the factory rule
+      // set, on. Tool permissions need no seam of their own: Session.toolPermission
+      // answers from the Environment's toolset, which each rotation re-equips.
+      commandPolicy: rt.commandPolicy,
+      ...extras,
+    });
+  }
+
+  /** Id of the most recent Session under the current Agent (determined by the timestamp in session_id); returns null if there is no Session. */
+  async latestSessionId(): Promise<string | null> {
+    return latestTraceSessionId(
+      tracesDir(this.state.root, this.state.projectId, this.state.agentId),
+    );
+  }
+
+  /**
+   * Assembles a Session's runtime components (shared by createSession and resumeSession)
+   * around the context it starts in — see {@link SessionRuntime} for what each part does.
+   */
+  private buildRuntime(spec: SessionSpec, initial: AssembledContext): SessionRuntime {
+    const { sessionId, workspaceDir, subagentDepth } = spec;
+    // The context the Session is running: the initial one, then whatever `openNextContext` last
+    // opened (or a never-run Session's model switch re-assembled, see `modelSwitch` below). Its
+    // model entry is the model the Session is on.
+    let current = initial;
+    // The host's per-request credential resolver for one entry (see
+    // AgentAssembly.resolveModelApiKey), when the host supplies one.
+    const apiKeyResolverFor = (entry: ModelEntry): Pick<GenerativeModelConfig, "resolveApiKey"> =>
+      this.assembly?.resolveModelApiKey
+        ? {
+            resolveApiKey: () =>
+              this.assembly!.resolveModelApiKey!({
+                projectId: this.state.projectId,
+                agentId: this.state.agentId,
+                sessionId,
+                provider: entry.provider,
+                modelId: entry.model_id,
+              }),
+          }
+        : {};
+    // The credentials and protocol a context's LLM objects run on: the caller's explicit
+    // override for the entry it was given for (the creation model), every other entry's own
+    // configured connection, else its group's table — the file's, never the catalog's (see
+    // entryCredential) — plus the host's resolver for that entry. A keyless base URL MMSP
+    // refuses throws when the context's client is built.
+    const credentialsFor = (
+      entry: ModelEntry,
+    ): Pick<GenerativeModelConfig, "apiKey" | "baseUrl" | "clientType" | "resolveApiKey"> => ({
+      ...entryCredential(
+        entry,
+        this.projectConfig,
+        sameModelRef(entry, spec.creationRef) ? spec.credentialOverride : {},
+      ),
+      ...apiKeyResolverFor(entry),
+    });
+    // Child-Agent runner: injected into the run_subagent tool so it doesn't need to
+    // depend on Agent/Session (breaking a circular dependency). The model can
+    // optionally choose agentId (omitted = call the current Agent), the child
+    // Session's model (omitted = the parent Session's model), and its thinking level
+    // (omitted = the parent Session's effective level); an explicit model reference
+    // is forwarded to createSession as-is and must be a complete (provider, model_id)
+    // pair — half a reference is rejected there rather than being guessed here. Precheck
+    // errors (depth limit exceeded / agent doesn't exist) are expressed as throws, which
+    // the Environment collapses to failed.
+    // Docs: /docs/interfaces § "Subagent interfaces"
+    const parentAgent = this;
+    const { root, projectId, agentId: parentAgentId } = this.state;
+    const subagentRunner: SubagentRunner = {
+      // Spawn and run are separate: the same child Session can run for multiple turns
+      // (continuing via input_subagent appending a prompt); resource cleanup is
+      // consolidated in handle.dispose (called by the managing ManagedSubagentSession).
+      async spawn({ agentId, modelId, provider, thinkingLevel: spawnThinkingLevel }) {
+        if (subagentDepth >= MAX_SUBAGENT_DEPTH) {
+          throw new Error(
+            `subagent depth limit ${MAX_SUBAGENT_DEPTH} reached; not spawning another subagent`,
+          );
+        }
+        if (agentId !== undefined && agentId !== parentAgentId) {
+          try {
+            assertValidId("agent_id", agentId);
+            await fs.access(systemConfigPath(root, projectId, agentId));
+          } catch {
+            throw new Error(
+              `subagent error: agent "${agentId}" does not exist or is not accessible`,
+            );
+          }
+        }
+        const childAgent =
+          agentId !== undefined && agentId !== parentAgentId
+            ? await createAgent({
+                root,
+                projectId,
+                agentId,
+                // A child Agent loads its own vault/config, but the proxy-env, control-env
+                // and spawn-confinement getters are host policy, not Agent state: the
+                // subagent's commands run in the same serving process, so they follow the
+                // same settings as the parent's — controlEnv is then evaluated with the
+                // child Session's own coordinates.
+                ...(parentAgent.proxyEnv ? { proxyEnv: parentAgent.proxyEnv } : {}),
+                ...(parentAgent.controlEnv ? { controlEnv: parentAgent.controlEnv } : {}),
+                ...(parentAgent.pathPrepend ? { pathPrepend: parentAgent.pathPrepend } : {}),
+                ...(parentAgent.confineSpawn ? { confineSpawn: parentAgent.confineSpawn } : {}),
+                ...(parentAgent.assembly ? { assembly: parentAgent.assembly } : {}),
+              })
+            : parentAgent;
+        // The child Session follows the PARENT Session, never the Project default: with the
+        // model pair fully omitted it reuses the parent's CURRENT (provider, model_id) — the
+        // model the parent's running context is on, after any in-session switch — the same
+        // Project-config entry, so max_tokens / context_window / vision follow
+        // automatically. An explicit pair still wins, and half a pair is forwarded as-is so
+        // createSession rejects it (never silently completed from the parent's here).
+        const childModel =
+          modelId === undefined && provider === undefined
+            ? { modelId: current.modelEntry.model_id, provider: current.modelEntry.provider }
+            : {
+                ...(modelId !== undefined ? { modelId } : {}),
+                ...(provider !== undefined ? { provider } : {}),
+              };
+        // An explicit spawn-time level (run_subagent's `thinking_level`) pins the child;
+        // otherwise the parent Session's creation-time level, else the base its running
+        // context opened with, is passed down as a tri-state: `null` when the parent has
+        // none, so the child never falls back to its own Agent config (which would apply on
+        // a cross-agent spawn). A mid-session `Session.thinkingLevel` assignment is engine
+        // state and is not inherited — the spawn argument exists for explicit control.
+        const parentLevel =
+          spec.thinkingLevel === undefined ? current.thinkingLevel : spec.thinkingLevel;
+        const childSession = await childAgent.createSession({
+          workspaceDir,
+          ...childModel,
+          thinkingLevel: spawnThinkingLevel ?? parentLevel ?? null,
+          subagentDepth: subagentDepth + 1,
+          source: "subagent",
+        });
+        return subagentHandleFor(childSession);
+      },
+      // Revival: a RELEASED child session resumes with its own history, model and Workspace
+      // (resumeSession semantics) — reached by the panel and by input_subagent on a released
+      // id alike. The owning Agent comes from the caller's record (the host's session
+      // registry, or the spawn-time tombstone); omitted or self-owned reuses the parent
+      // Agent instance.
+      async resume({ agentId, sessionId }) {
+        if (agentId !== undefined) assertValidId("agent_id", agentId);
+        const childAgent =
+          agentId === undefined || agentId === parentAgentId
+            ? parentAgent
+            : await createAgent({
+                root,
+                projectId,
+                agentId,
+                ...(parentAgent.proxyEnv ? { proxyEnv: parentAgent.proxyEnv } : {}),
+                ...(parentAgent.controlEnv ? { controlEnv: parentAgent.controlEnv } : {}),
+                ...(parentAgent.pathPrepend ? { pathPrepend: parentAgent.pathPrepend } : {}),
+                ...(parentAgent.confineSpawn ? { confineSpawn: parentAgent.confineSpawn } : {}),
+                ...(parentAgent.assembly ? { assembly: parentAgent.assembly } : {}),
+              });
+        const childSession = await childAgent.resumeSession({ sessionId });
+        return subagentHandleFor(childSession);
+      },
+    };
+
+    /**
+     * Wraps a child Session as a SubagentHandle — shared by spawn and resume. All
+     * child-session messages are tagged with an origin (the child Session id, prepended as
+     * one hop from outer to inner); the first turn forwards the child's session_meta first
+     * (including agent_state and other metadata) so the parent frontend can recognize the
+     * nested session (for rendering, stats, approval visibility); the parent Trace skips
+     * these accordingly (the child Session has its own Trace, linked by session id).
+     */
+    function subagentHandleFor(childSession: Session): SubagentHandle {
+      const hop: MessageOrigin = childSession.sessionId;
+      let metaSent = false;
+      return {
+        sessionId: hop,
+        abortChildren() {
+          return childSession
+            .listBackgroundSubagents()
+            .map((c) => childSession.abortBackgroundSubagentRun(c.sessionId))
+            .some(Boolean);
+        },
+        // One-shot upfront meta for background launches (see SubagentHandle.takeMeta):
+        // shares metaSent with run, so the meta reaches the parent stream exactly once
+        // whichever side sends it first.
+        takeMeta() {
+          if (metaSent) return null;
+          metaSent = true;
+          return withOrigin(childSession.metaMessage, hop);
+        },
+        async *run({ messages, signal, approve }) {
+          if (!metaSent) {
+            metaSent = true;
+            yield withOrigin(childSession.metaMessage, hop);
+          }
+          // Pass through the parent's approval callback: the child Session inherits
+          // the parent Agent's approval mode (with no callback, the child engine
+          // defaults to deny). The tool_call received for approval also carries the
+          // origin, so the approval UI can identify which tool a subagent is calling.
+          const childApprove = approve
+            ? (tc: AmspRecord<ToolCallPayload>) => approve(withOrigin(tc, hop))
+            : undefined;
+          // The engine writes a run's input to the CHILD's own Trace but never replays
+          // it to its consumer (a session's normal caller typed that input itself) —
+          // here the consumer is the PARENT, whose frontend has never seen the child's
+          // prompt. Forward the input messages themselves (origin-tagged) right behind the
+          // run's first record — its Task's `task_begin`, which precedes the input in the
+          // child's own Trace too — so the live nested view shows the child's user side
+          // exactly like a reloaded one (history expansion splices the child Trace, which
+          // carries these same messages, in this order). The parent engine drops origin
+          // messages from the parent Trace, so replay never duplicates them. Later rounds
+          // (input_subagent follow-up prompts, a host panel's message) come through this
+          // same generator and are forwarded the same way.
+          // The caller owns each message's `sender` — "parent_agent" for the model's own
+          // dispatch, none for a human's message from a host panel — so the child's Trace
+          // records who actually spoke.
+          // Manual iteration so the child run's return value — whether the round was cut
+          // off — propagates to the handle's own return for the parent's round report.
+          const it = childSession.run(messages, {
+            ...(signal ? { signal } : {}),
+            ...(childApprove ? { approve: childApprove } : {}),
+          });
+          let inputForwarded = false;
+          for (;;) {
+            const res = await it.next();
+            if (res.done) return res.value;
+            // The child streams its own session_meta when it writes one (its first run's, a
+            // compaction's). The parent's stream carries the child's meta once, as sent above
+            // or by takeMeta: it identifies the nested Session, and each copy reaching the
+            // parent engine would record another `subagent` pointer.
+            if (isSessionMeta(res.value) && !res.value.origin?.length) continue;
+            yield withOrigin(res.value, hop);
+            if (!inputForwarded) {
+              inputForwarded = true;
+              for (const input of messages) yield withOrigin(input, hop);
+            }
+          }
+        },
+        // Mid-run steering rides the child Session's own steering queue — the same
+        // mechanism a user steers the main session with. The queued message keeps its
+        // caller-chosen sender ("parent_agent" from input_subagent, none from a human
+        // panel), and the delivered [user_steering] message streams back out through
+        // `run` with the origin hop like every other child message.
+        steer(messages) {
+          return childSession.steer(messages);
+        },
+        setThinkingLevel(level) {
+          childSession.thinkingLevel = level;
+        },
+        dispose() {
+          childSession.dispose();
+        },
+      };
+    }
+
+    // When a context's model doesn't support images (vision=false): inject a vision model
+    // service for read_file's image branch — images are described by the Project config's
+    // vision_model (a paired reference), and the tool returns text instead of image content.
+    // Even when unconfigured or invalid, it is still injected (modelId=null): its presence is
+    // what tells read_file the session model cannot view images; the tool then finishes with a
+    // failed explanation, and images are never allowed into that session's history. Decided
+    // per context (a model switch can move to or from a text-only model): the Environment is
+    // handed the answer for each context it is equipped for.
+    const visionDescriberFor = (entry: ModelEntry): VisionDescriberService | undefined => {
+      if (entry.vision !== false) return undefined;
+      const visionRef = this.projectConfig.vision_model;
+      const visionEntry = visionRef ? getModel(this.projectConfig, visionRef) : undefined;
+      if (!visionEntry || visionEntry.vision === false) return { modelId: null };
+      return {
+        // The model attribution in the tool output matches the request's source: both are the entry's upstream model_id.
+        modelId: visionEntry.model_id,
+        // Resolved on each call rather than once here: the same credential rule as the
+        // session model (a keyless entry pointed away from its vendor is refused), and a
+        // refusal is a failed read_file, not a failed Session.
+        createLLM: () =>
+          new GenerativeModel({
+            modelId: visionEntry.model_id,
+            ...entryCredential(visionEntry, this.projectConfig, {}),
+            ...apiKeyResolverFor(visionEntry),
+            tools: [],
+            thinkingLevel: "none",
+            // The describing budget, tightened by the vision entry's own pinned cap when smaller.
+            maxTokens: metaMaxTokens(2048, visionEntry.max_tokens),
+            // Same window derivation as ordinary requests (a formality here: the meta
+            // budget is far below any real window, so the clamp never binds).
+            ...(visionEntry.context_window !== undefined
+              ? { contextWindow: visionEntry.context_window }
+              : {}),
+            sessionId,
+            requestTimeoutMs: 60_000,
+          }),
+      };
+    };
+    const visionDescriber = visionDescriberFor(initial.modelEntry);
+
+    // Environment binds the Workspace for the Session's lifetime and is equipped with the
+    // initial context's tool config and vault (a later context re-equips it, see
+    // openNextContext). The toolset is resolved lazily by the bootstrap below (Session's first
+    // run), not here — its first listTools connects any configured MCP Servers, and that
+    // wait belongs on the run stream (bracketed by mcp_connect events), not inside
+    // createSession. Vault environment variables are injected into command subprocesses; a
+    // child Agent loads **its own** vault via createAgent rather than inheriting the
+    // parent's.
+    const environment = new Environment({
+      workspaceDir,
+      toolConfig: initial.toolConfig,
+      // The Session's generic scratchpad root; Environment derives its truncated-tool-output
+      // recovery directory from it.
+      sessionScratchpadDir: sessionScratchpadDir(
+        this.state.root,
+        this.state.projectId,
+        this.state.agentId,
+        sessionId,
+      ),
+      services: { subagentRunner, ...(visionDescriber ? { visionDescriber } : {}) },
+      ...(Object.keys(initial.vault).length > 0 ? { vault: initial.vault } : {}),
+      ...(this.proxyEnv ? { proxyEnv: this.proxyEnv } : {}),
+      // The control-env policy is bound to THIS Session's coordinates here (sessionId is
+      // final by now); the getter shape keeps it re-evaluated at every command spawn, so
+      // the host can rotate what it injects (e.g. its API token) without a rebuild.
+      controlEnv: () => ({
+        ...this.controlEnv?.({
+          projectId: this.state.projectId,
+          agentId: this.state.agentId,
+          sessionId,
+        }),
+        ...qaWorkspaceEnv(workspaceDir, sessionId, spec.source),
+      }),
+      ...(this.pathPrepend ? { pathPrepend: this.pathPrepend } : {}),
+      // Bound to THIS Session's coordinates like controlEnv: the host may confine each
+      // Session under its own policy, and the getter is still re-read at every spawn.
+      ...(this.confineSpawn
+        ? {
+            confineSpawn: () =>
+              this.confineSpawn!({
+                projectId: this.state.projectId,
+                agentId: this.state.agentId,
+                sessionId,
+              }),
+          }
+        : {}),
+    });
+
+    // The tool_call_id uniqueness registry is shared by every context's LLM object: its
+    // uniqueness scope is the Session's whole render span, so same-named tool calls after
+    // compaction don't collide with earlier cards' ids.
+    const toolCallIds = new ToolCallIdAllocator();
+    // The LLM object of one context: the context's model entry and its credentials, plus the
+    // context's prompt, toolset and model defaults. The model id sent to MMSP is always
+    // the entry's upstream `model_id` (routed by the effective client type — the row's, else
+    // its group's, else MMSP's routing by id; see credentialsFor);
+    // session_meta, Trace, usage, pricing, and catalog matching all use the (provider,
+    // model_id) pair as the primary key.
+    const buildLLM = (context: AssembledContext, tools: ToolDefinition[]): GenerativeModel => {
+      const entry = context.modelEntry;
+      return new GenerativeModel({
+        modelId: entry.model_id,
+        toolCallIds,
+        ...credentialsFor(entry),
+        tools,
+        systemPrompt: context.systemPrompt,
+        ...(entry.context_window !== undefined ? { contextWindow: entry.context_window } : {}),
+        ...(context.maxTokens !== undefined ? { maxTokens: context.maxTokens } : {}),
+        // Fast mode is a session-request annotation: it rides every context's LLM object,
+        // while the bare/meta LLM below and the vision describer deliberately skip it — their
+        // background requests gain nothing user-facing from a premium tier, and skipping
+        // keeps them working (titles included) even while the annotation is enabled on a
+        // model that rejects it.
+        ...(entry.fast_mode === true ? { fastMode: true } : {}),
+        ...(context.thinkingLevel !== undefined ? { thinkingLevel: context.thinkingLevel } : {}),
+        sessionId,
+        ...(context.requestTimeoutMs !== undefined
+          ? { requestTimeoutMs: context.requestTimeoutMs }
+          : {}),
+      });
+    };
+
+    // THE opening procedure — behind the first run's bootstrap and every post-compaction
+    // openNextContext alike, so initialization and rotation cannot drift apart: connects
+    // whatever MCP Servers are still pending on the Environment (publishing the connect
+    // pair around the wait when there are any — at the first open that is every configured
+    // server), resolves the toolset, publishes the toolset record, and builds the context's
+    // LLM object. The caller's `emit` decides where the records go live (the Session's
+    // first-run pump, or the engine's rotation pump).
+    const openAssembled = async (
+      context: AssembledContext,
+      emit: OpenContextOptions["emit"],
+    ): Promise<{ llm: GenerativeModel }> => {
+      const pending = environment.pendingMcpServerNames();
+      if (pending.length > 0) emit(mcpConnectBegin(pending));
+      const tools = await environment.listTools();
+      if (pending.length > 0) {
+        emit(mcpConnectEnd(mcpConnectOutcome(environment.mcpConnectResults())));
+      }
+      emit(toolListReady(tools));
+      return { llm: buildLLM(context, tools) };
+    };
+
+    // The first context's opener (see SessionRuntime.bootstrap).
+    const bootstrap = async (opts: OpenContextOptions): Promise<{ llm: GenerativeModel }> =>
+      openAssembled(current, opts.emit);
+
+    // Equips the Environment for a context: its toolset (selected for its model's type), its
+    // vault, and the vision answer read_file needs.
+    const equip = (context: AssembledContext): void =>
+      environment.reconfigure({
+        toolConfig: context.toolConfig,
+        vault: context.vault,
+        visionDescriber: visionDescriberFor(context.modelEntry) ?? null,
+      });
+    // What an assembled context tells the Session and its engine beyond its LLM (see
+    // SessionOpenedContext): its meta and engine settings, its vision answer, and the hooks
+    // it runs with.
+    const contextFacts = (context: AssembledContext): Omit<SessionOpenedContext, "llm"> => ({
+      sessionMeta: sessionMeta(context.meta),
+      maxTurns: context.maxTurns ?? -1,
+      compaction: context.compaction,
+      modelHasVision: context.modelEntry.vision !== false,
+      hooks: this.sessionHooks(subagentRunner, context.hookPackages, spec),
+    });
+    // A switch target's entry once the switch is under way (the opener, or the never-run
+    // re-assembly): validated a moment ago, so one that is gone by now is a failure, not the
+    // refusal `modelSwitch.validate` answers with.
+    const switchTargetEntry = async (ref: ModelRef): Promise<ModelEntry> => {
+      const entry = await this.modelEntryOnDisk(ref);
+      if (!entry) throw new Error(modelNotConfigured(ref));
+      return entry;
+    };
+
+    // The context that follows a completed compaction: assembled anew from the Agent State
+    // as it is now — an edit the model (or the user) made during the old context to
+    // AGENTS.md, system_config.yaml, the vault, the Skills or the MCP Servers lands here —
+    // on the model the closing context ran on, or on the one a model switch names
+    // (`modelRef`, resolved against the Project config on disk). The Environment is
+    // re-equipped with the new toolset and vault, then the context is opened by the same
+    // procedure as the first one — the engine yields the published records live and writes
+    // them at the head of the rotated Trace file. An Agent State that cannot be assembled (a
+    // config that no longer parses) throws: the run fails with that error and the engine
+    // keeps the old context. So does this layer when the open itself fails: `current` moves
+    // only once the context is open, and the Environment goes back to the running one.
+    const openNextContext = async ({
+      emit,
+      modelRef,
+    }: SessionOpenContextOptions): Promise<SessionOpenedContext> => {
+      const entry = modelRef ? await switchTargetEntry(modelRef) : current.modelEntry;
+      const next = await this.assembleContext(spec, entry);
+      equip(next);
+      let llm: GenerativeModel;
+      try {
+        ({ llm } = await openAssembled(next, emit));
+      } catch (err) {
+        equip(current);
+        throw err;
+      }
+      current = next;
+      return { llm, ...contextFacts(next) };
+    };
+
+    // Bare LLM for one-off out-of-band requests (meta requests like generateTitle): the
+    // running context's Model/credentials (or the given entry's), no tools, no system prompt,
+    // thinking disabled, a small output cap, and an independent timeout.
+    const createBareLLM = (entry: ModelEntry = current.modelEntry): GenerativeModel =>
+      new GenerativeModel({
+        modelId: entry.model_id,
+        ...credentialsFor(entry),
+        tools: [],
+        thinkingLevel: "none",
+        // The meta budget, tightened by the entry's pinned per-model cap when smaller.
+        maxTokens: metaMaxTokens(300, entry.max_tokens),
+        // Same window derivation as ordinary requests (a formality here: the meta budget
+        // is far below any real window, so the clamp never binds).
+        ...(entry.context_window !== undefined ? { contextWindow: entry.context_window } : {}),
+        sessionId,
+        requestTimeoutMs: 30_000,
+      });
+
+    // Credential validation stays at Session-creation time even though the session LLM is
+    // built lazily now: provider SDKs throw at **client construction** when a credential
+    // is missing (e.g. OpenAI-protocol models without apiKey/OPENAI_API_KEY), and hosts
+    // map that into their clean "credential missing" error before any Session or Trace
+    // exists. Constructing the bare LLM (same credentials, no tools, no network) keeps
+    // that throw here; the instance is discarded.
+    createBareLLM();
+
+    // The composition layer's half of an in-session model switch (see Session.switchModel):
+    // the target is validated exactly as a creation model is — configured on disk, credential
+    // present at client construction — before anything is sent or recorded; a Session that
+    // never ran has its first context assembled again on the target, which the bootstrap then
+    // opens like any first context.
+    const modelSwitch: ModelSwitchSupport = {
+      validate: async (ref) => {
+        const entry = await this.modelEntryOnDisk(ref);
+        if (!entry)
+          throw new ModelSwitchRefusedError("model_not_configured", modelNotConfigured(ref));
+        try {
+          createBareLLM(entry);
+        } catch (err) {
+          // A configured target whose client cannot be built — a missing credential foremost:
+          // a refusal with the loader's own wording, not a failure of the switch.
+          throw new ModelSwitchRefusedError(
+            "model_unavailable",
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      },
+      reassembleInitialContext: async (ref) => {
+        const next = await this.assembleContext(spec, await switchTargetEntry(ref));
+        equip(next);
+        current = next;
+        return contextFacts(next);
+      },
+    };
+
+    return {
+      environment,
+      bootstrap,
+      openNextContext,
+      commandPolicy: () => current.commandPolicy,
+      contextWindow: () => current.modelEntry.context_window,
+      modelSwitch,
+
+      createBareLLM,
+      subagentRunner,
+    };
+  }
+
+  /**
+   * The hooks a model context runs with, built from the hook packages it was assembled with
+   * (see AssembledContext.hookPackages): each command run as a script (hooks/script-hook.ts),
+   * plus the spawner that honors a stop hook's `subagent` answer — a detached child Session
+   * of this Agent (or the one it names) whose stream is dropped (its own Trace is the
+   * record) and which inherits the run's approval callback.
+   *
+   * Always a whole set, empty lists included: the Session replaces its hooks with it when
+   * the context opens, which is how uninstalling the last package reaches a conversation
+   * that is running. This is the one place a Session's hooks are assembled.
+   */
+  private sessionHooks(
+    runner: SubagentRunner,
+    installed: readonly InstalledHook[],
+    spec: SessionSpec,
+  ): SessionHooks {
+    const { root, projectId, agentId } = this.state;
+    const ctx: ControlEnvContext = { projectId, agentId, sessionId: spec.sessionId };
+    // A hook script is spawned the way a command is: the same PATH front (see
+    // CreateAgentOptions.pathPrepend — only the environment half applies, a hook is run
+    // as `node <script>` with no shell to re-order PATH afterwards), and the same sandbox
+    // (CreateAgentOptions.confineSpawn, bound to this Session's coordinates and re-read
+    // at every run), with the Session's Workspace and scratchpad as its scope.
+    const options: ScriptHookOptions = {
+      ...(this.pathPrepend ? { pathPrepend: this.pathPrepend } : {}),
+      ...(this.confineSpawn ? { confineSpawn: () => this.confineSpawn!(ctx) } : {}),
+      scope: {
+        workspaceDir: spec.workspaceDir,
+        scratchpadDir: sessionScratchpadDir(root, projectId, agentId, spec.sessionId),
+      },
+    };
+    const withTimeout = (timeoutS: number | undefined): ScriptHookOptions => ({
+      ...options,
+      ...(timeoutS !== undefined ? { timeoutS } : {}),
+    });
+    if (qaEnabled && (spec.subagentDepth > 0 || spec.source === "subagent")) {
+      return {
+        stop: [],
+        userPrompt: [],
+        preToolUse: installed
+          .filter((h) => h.name === "qa-stage-boundary")
+          .flatMap((h) =>
+            h.pre_tool_use.map((cmd) =>
+              scriptPreToolUseHook(h.name, h.dir, cmd.command, withTimeout(cmd.timeout)),
+            ),
+          ),
+      };
+    }
+    const stop = installed.flatMap((hook) =>
+      hook.stop.map((cmd) =>
+        scriptStopHook(hook.name, hook.dir, cmd.command, withTimeout(cmd.timeout)),
+      ),
+    );
+    const preToolUse = installed.flatMap((hook) =>
+      hook.pre_tool_use.map((cmd) =>
+        scriptPreToolUseHook(hook.name, hook.dir, cmd.command, withTimeout(cmd.timeout)),
+      ),
+    );
+    const userPrompt = installed.flatMap((hook) => {
+      remindToUpdate(hook);
+      return hook.user_prompt.map((cmd) =>
+        scriptUserPromptHook(hook.name, hook.dir, cmd.command, {
+          ...withTimeout(cmd.timeout),
+          trigger: userPromptTrigger(hook.version, cmd),
+        }),
+      );
+    });
+    return {
+      stop,
+      preToolUse,
+      userPrompt,
+      spawnSubagent: async (request: HookSubagentRequest, approve?: ApproveFn) => {
+        const handle = await runner.spawn({
+          ...(request.agentId !== undefined ? { agentId: request.agentId } : {}),
+        });
+        // The child's upfront session_meta goes back to the Session, which streams it behind
+        // the hook event so a host registers the child session (a row, a place in the
+        // subagent listing) the way it does a tool-spawned one; the detached run then skips
+        // its own meta forwarding.
+        const meta = handle.takeMeta?.() ?? null;
+        runDetached(handle, [userText(request.prompt, "harness")], approve);
+        return { sessionId: handle.sessionId, meta };
+      },
+    };
+  }
+}
+
+/** Package directories already named by {@link remindToUpdate} in this process. */
+const remindedPackages = new Set<string>();
+
+/**
+ * COMPAT (remove at 0.3.0 release preparation, together with the rule it reports — see
+ * plugins' userPromptTrigger): says once per process, per package directory, that an
+ * installed package predates `user_prompt` commands running on every Prompt and is being
+ * read the old way. The user-facing reminder is the plugin library's update notice; this
+ * line is for whoever reads the host's log.
+ */
+function remindToUpdate(hook: InstalledHook): void {
+  if (!predatesEveryPromptHooks(hook.version)) return;
+  if (!hook.user_prompt.some((cmd) => cmd.trigger === undefined)) return;
+  if (remindedPackages.has(hook.dir)) return;
+  remindedPackages.add(hook.dir);
+  process.stderr.write(
+    `[hooks] ${hook.name} ${hook.version} (${hook.dir}) predates user_prompt hooks running on every prompt: its user_prompt commands run only when the host starts them by name. Update the package from the plugin library; this compatibility reading ends with 0.3.0.\n`,
+  );
+}
+
+/** Drives a hook-spawned child to completion in the background, dropping its stream (its own Trace is the record), and releases it. */
+function runDetached(handle: SubagentHandle, messages: AmspRecord[], approve?: ApproveFn): void {
+  void (async () => {
+    try {
+      const it = handle.run({ messages, ...(approve ? { approve } : {}) });
+      for (;;) {
+        const res = await it.next();
+        if (res.done) break;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[hooks] subagent ${handle.sessionId} failed: ${message}\n`);
+    } finally {
+      handle.dispose();
+    }
+  })();
+}

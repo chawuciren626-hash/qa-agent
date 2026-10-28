@@ -1,0 +1,148 @@
+/**
+ * `session_state` on the user channel: the run-state flip a Session list can act on.
+ *
+ * The per-Session `task_state` event is session-scoped and deliberately carries no id, so it
+ * only ever reaches the one conversation a client has subscribed to (sse-stream.test.ts pins
+ * its shape). This is its user-channel counterpart, named by `sessionId` and carrying the row
+ * stamp, and what these tests pin is its SCOPE.
+ *
+ * - A run's running → idle flips reach the Project's owner and its members, and no other user,
+ *   not even one with a live channel of their own.
+ * - The event names the Session and its Project, and carries the row stamp a list fetch would
+ *   return.
+ * - It carries hasTrace true from the first flip of a Session that had never run.
+ * - It carries none of the composer state the Session channel owns.
+ * - A member removed from the Project stops hearing about its Sessions.
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { assistantText } from "@prismshadow/penguin-core";
+import type { ServerEvent } from "../src/api/types.js";
+import { userChannelKey } from "../src/http/routes/events.js";
+import { adoptSession, fakeSession, uniqueSessionId } from "./fixtures/session.js";
+import { apiClient, createTestApp, provisionUser, waitFor } from "./helpers.js";
+import type { TestApp } from "./helpers.js";
+
+const PROJECT = "owner-default_project";
+/** Comfortably before the run: the run-end stamp must be visibly later than this. */
+const INSERTED_AT = "2026-08-19T09:00:00.000Z";
+
+/** Everything one user's channel received, as a connected client would see it. */
+function inbox(t: TestApp, userId: string) {
+  const events: ServerEvent[] = [];
+  // `get`, not `peek`: this stands in for a client that has opened GET /api/events, which is
+  // exactly the condition the publish side checks for.
+  t.deps.channels.get(userChannelKey(userId)).subscribe((evt) => {
+    if (evt.event === "server_event") events.push(JSON.parse(evt.data) as ServerEvent);
+  });
+  const states = () => events.flatMap((e) => (e.type === "session_state" ? [e] : []));
+  return { events, states, run: () => states().map((e) => e.state) };
+}
+
+describe("session_state on the user channel", () => {
+  let t: TestApp;
+  let owner: { cookie: string };
+  let SID: string;
+  let boxes: { owner: ReturnType<typeof inbox>; member: ReturnType<typeof inbox> };
+  let stranger: ReturnType<typeof inbox>;
+
+  beforeAll(async () => {
+    t = await createTestApp();
+    owner = await provisionUser(t.app, "owner");
+    await provisionUser(t.app, "member");
+    // A logged-in user with their own Project and their own live channel, granted nothing here.
+    await provisionUser(t.app, "stranger");
+    expect(
+      (
+        await apiClient(t.app, owner.cookie).post(`/api/projects/${PROJECT}/members`, {
+          userId: "member",
+        })
+      ).status,
+    ).toBe(201);
+  });
+  afterAll(async () => {
+    await t.cleanup();
+  });
+
+  beforeEach(() => {
+    // A Session that answers once and returns, so a run is one clean running → idle pair,
+    // indexed without has_trace exactly as a freshly created conversation is.
+    SID = uniqueSessionId();
+    adoptSession(
+      t.deps,
+      fakeSession(SID, {
+        async *run() {
+          yield assistantText("done");
+        },
+      }),
+      { projectId: PROJECT, createdAt: INSERTED_AT, lastActiveAt: INSERTED_AT },
+    );
+    // Subscribe before anything runs: `peek` on the publish side means a channel that does not
+    // exist is skipped, so the test has to be listening the way a real client would be.
+    boxes = { owner: inbox(t, "owner"), member: inbox(t, "member") };
+    stranger = inbox(t, "stranger");
+  });
+
+  const runTask = async () => {
+    const res = await apiClient(t.app, owner.cookie).post(`/api/sessions/${SID}/tasks`, {
+      input: [{ type: "text", text: "go" }],
+    });
+    expect(res.status).toBe(202);
+    await waitFor(() => boxes.owner.run().at(-1) === "idle");
+  };
+
+  it("reaches the Project's owner and its members, and no other user", async () => {
+    await runTask();
+    expect(boxes.owner.run()).toEqual(["running", "idle"]);
+    expect(boxes.member.run()).toEqual(["running", "idle"]);
+    // The stranger's channel exists and is being listened to — it simply is never published to.
+    expect(stranger.events).toEqual([]);
+  });
+
+  it("names the Session and its Project, and carries the row stamp a list fetch would return", async () => {
+    await runTask();
+    // Every flip names the Project: a list of another Project skips it without a request, and a
+    // list of this one that holds no row for the Session knows it has a row to fetch.
+    expect(boxes.owner.states().map((e) => e.projectId)).toEqual([PROJECT, PROJECT]);
+    const settled = boxes.owner.states().at(-1)!;
+    expect(settled.sessionId).toBe(SID);
+    expect(settled.state).toBe("idle");
+    // Read back from the DB, not reconstructed: a client can trust this against its read
+    // marker, which is what makes "finished while I was elsewhere" legible as unread.
+    expect(settled.lastActiveAt).toBe(t.deps.sessionsRepo.findById(SID)!.lastActiveAt);
+    expect(Date.parse(settled.lastActiveAt)).toBeGreaterThan(Date.parse(INSERTED_AT));
+  });
+
+  it("carries hasTrace true from the very first flip of a Session that had never run", async () => {
+    // The row is inserted without has_trace, exactly as a freshly created conversation is. The
+    // "running" flip is published by startTask BEFORE drive's markDriven sets the column, so
+    // the raw cache would say false at that moment; the event reports the truth instead. A
+    // client that believed the raw flag would draw the hourglass and then nothing at all.
+    expect(t.deps.sessionsRepo.findById(SID)!.hasTrace).toBe(false);
+    await runTask();
+    expect(boxes.owner.states().map((e) => e.hasTrace)).toEqual([true, true]);
+    expect(t.deps.sessionsRepo.findById(SID)!.hasTrace).toBe(true);
+  });
+
+  it("says nothing about the composer state the Session channel owns", async () => {
+    await runTask();
+    // queued / pendingSteering / pendingFollowUps belong to the conversation being watched,
+    // not to a list row.
+    for (const e of boxes.owner.states()) {
+      expect(e).not.toHaveProperty("queued");
+      expect(e).not.toHaveProperty("pendingSteering");
+      expect(e).not.toHaveProperty("pendingFollowUps");
+    }
+  });
+
+  it("a member removed from the Project stops hearing about its Sessions", async () => {
+    const api = apiClient(t.app, owner.cookie);
+    expect((await api.delete(`/api/projects/${PROJECT}/members/member`)).status).toBe(204);
+    try {
+      await runTask();
+      expect(boxes.owner.run()).toEqual(["running", "idle"]);
+      expect(boxes.member.events).toEqual([]);
+    } finally {
+      await api.post(`/api/projects/${PROJECT}/members`, { userId: "member" });
+    }
+  });
+});

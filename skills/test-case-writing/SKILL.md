@@ -2,14 +2,18 @@
 name: test-case-writing
 description: 根据测试点生成符合项目 JSON Schema 的结构化测试用例。
 metadata:
-  version: '1.2.0'
+  version: '1.3.0'
 ---
 
 # 测试用例编写 Skill
 
+两种模式均可按需读取已安装的test-design-methods中的控件、业务权限或AI功能场景参考。检查清单只用于查漏；预期仍须有当前有效依据，未确认建议不进入expected，不为套模板扩大平台、条数或执行范围。
+
 ## 分批保存
 
 大批量用例使用公共运行规则中的draft_records：inspect获取当前sha256；按case_id分批upsert，每批1至20条完整用例。修订仅提交问题ID，不重写已有正确用例。samples可按指定Unicode码点生成test_data长度样本，测量口径不代替需求依据。复用inputs中的用例可seed初始化缺失草稿，旧规则引用仍须按本任务核验，不继承批准。批次保存后继续剩余设计，最终统一diagnose_test_cases、export_test_cases、validate_artifacts，不对每批增加人工确认或整套导出。
+
+用户或派发限制用例条数时，最终条数不得超过上限，且每条用例只关联一个测试点。上游测试点数量多于上限说明测试点粒度过细：先要求总控修订测试点、合并同一规则下的变体，再按合并后的测试点设计；不通过一对多关联、复制用例或自行删减测试点规避，也不为凑上限删掉必要的异常或边界预期。
 
 ## 数据与来源表达（两种模式共用）
 

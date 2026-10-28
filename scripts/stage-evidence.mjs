@@ -1,3 +1,4 @@
+import {toolOutcome} from './trace-outcome.mjs';
 import { dataPath, assertContextSession, sessionWorkspaces } from './directory-context.mjs';
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { resolve, basename, isAbsolute } from 'node:path';
@@ -20,7 +21,7 @@ export function draftHandoffReconciliation(root,runId,manifest,stage,parentId,ag
   if(!dispatch || !['blocked','failed'].includes(block?.type) || block['dispatch-id']!==dispatch.dispatch_id || dispatch['parent-session-id']!==parentId) throw new Error('Current blocked or failed dispatch required');
   const child=resolveDispatchedChild(root,runId,stage,parentId,agentRoot);
   const rows=readSession(agentRoot ?? process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(),'.penguin/data/default_project/agents'),dispatch.agent,child.child_session);
-  const unexecuted=rows.filter((row,index)=>row.payload?.type==='tool_call' && row.payload.stop_reason==='retryable' && toolWasNotExecuted(rows,index)).map(row=>row.payload.tool_call_id);
+  const unexecuted=rows.filter((row,index)=>row.payload?.type==='tool_call' && toolOutcome(row.payload)==='retryable' && toolWasNotExecuted(rows,index)).map(row=>row.payload.tool_call_id);
   return {kind:'current_dispatch_revalidation',previous_stage:structuredClone(manifest.stages[stage]),child_session:child.child_session,
     dispatch_id:dispatch.dispatch_id,binding:child.binding,unexecuted_tool_calls:unexecuted,
     product_actions_replayed:false,approval_granted:false};
@@ -150,9 +151,9 @@ export function findParentDispatch(parent, { runId, agent, childId, dispatchedAt
       returned=results[0].payload;
     }
   }
-  const failed=returned.stop_reason==='fatal' && /(?:^|\n)\[subagent failed:[^\r\n]*\](?: \[subagent idle[^\r\n]*\])?\s*$/.test(String(returned.output));
-  const interrupted=returned.stop_reason==='aborted' && !String(returned.output).startsWith('Tool call denied');
-  if (returned.stop_reason !== 'completed' && !(includeFailed && failed) && !(includeInterrupted && interrupted)) return null;
+  const failed=toolOutcome(returned)==='fatal' && /(?:^|\n)\[subagent failed:[^\r\n]*\](?: \[subagent idle[^\r\n]*\])?\s*$/.test(String(returned.output));
+  const interrupted=toolOutcome(returned)==='aborted' && !String(returned.output).startsWith('Tool call denied');
+  if (toolOutcome(returned) !== 'completed' && !(includeFailed && failed) && !(includeInterrupted && interrupted)) return null;
   let args;
   try { args = typeof call.row.payload.arguments === 'string' ? JSON.parse(call.row.payload.arguments) : call.row.payload.arguments; } catch { return null; }
   if (args?.agent_id !== agent || typeof args.prompt !== 'string' || !args.prompt.split(/[^A-Za-z0-9-]+/).includes(runId)) return null;
@@ -211,9 +212,9 @@ export function recordedChildHandle(rows, dispatch, runId) {
   const call = calls[0], outputs = rows.filter(row => row.type === 'model_msg' && row.payload?.type === 'tool_call_output' && row.payload.tool_call_id === call.payload.tool_call_id && Date.parse(row.timestamp) >= Date.parse(call.timestamp));
   if (outputs.length !== 1) return absent;
   const output=outputs[0].payload;
-  const interrupted=output.stop_reason==='aborted';
-  const ended={...absent,status:interrupted?'interrupted':output.stop_reason==='completed'?'returned':'failed',next_action:interrupted?'原工具已中断，没有可用原生句柄；需要宿主恢复原子会话，不等待旧回执，不重复派发。':'原工具已返回；使用resolve_child核对交付或失败，不反复等待。'};
-  if(!['completed','aborted'].includes(output.stop_reason)) return ended;
+  const interrupted=toolOutcome(output)==='aborted';
+  const ended={...absent,status:interrupted?'interrupted':toolOutcome(output)==='completed'?'returned':'failed',next_action:interrupted?'原工具已中断，没有可用原生句柄；需要宿主恢复原子会话，不等待旧回执，不重复派发。':'原工具已返回；使用resolve_child核对交付或失败，不反复等待。'};
+  if(!['completed','aborted'].includes(toolOutcome(output))) return ended;
   // Only use the host's returned running marker, never derive a handle from IDs.
   const matches = [...String(output.output).matchAll(/(?:^|\n)\[subagent (?:retained|running(?: in background)?) with subagent_id (subagent-[A-Za-z0-9-]+);[^\]\r\n]*\]/g)];
   const handles=[...new Set(matches.map(match=>match[1]))];

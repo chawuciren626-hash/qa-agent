@@ -1,0 +1,1234 @@
+import { ManagedResourceSection } from "../../components/managed-resource-section";
+/**
+ * The plugin market: every plugin as one card (plugin-card.tsx) — the library's plugins
+ * (Skills and/or a hook package, loaded by core from the @penguinharness/* packages and
+ * installed on Agents) and the server modules a Project can ask for (the Agent Sandbox backends
+ * and whatever the registry lists, installed on the server by an admin). Cards sit in
+ * collapsible sections, by category unless the reader picks another grouping — status,
+ * contents, or none — in the select beside the header's search box, which narrows the cards.
+ * The grouping and which sections are folded are remembered per browser (plugin-groups.ts); the
+ * search is not. Settings › Plugins can narrow the list to the plugins this build cannot fully
+ * run, also per browser (incompatible-only.ts), and while it does a notice under the title says
+ * so. Clicking a card opens its detail dialog (plugin-detail.tsx); the status rules are
+ * plugin-status.ts.
+ *
+ * - A library plugin is installed per Agent, by any member, through its card's "manage
+ *   installs" dialog; the update nudge appears when the server lists some Agent's copy as
+ *   behind (`AgentSummary.pluginUpdates` — the page never compares versions itself), and the
+ *   notice under the title updates every outdated plugin at once. Installed means the whole
+ *   plugin: every one of its skills in the Agent's installed skills, its hook package (when it
+ *   ships one) in the Agent's installed hooks, and each of its MCP servers among the Agent's
+ *   servers as an entry it installed — which is why the page reads the three lists per Agent
+ *   (agent-installs.ts). Uninstall takes it apart the same way: one DELETE per skill, one for the
+ *   hook package and one per MCP server. The dialog lists this server's Agents and each machine's
+ *   own in one list, in the Agents page's order (lib/machine-agent-lists.ts `mixAgents`): a
+ *   machine's Agent is installed on, read back from and updated on that machine, from that
+ *   machine's library, and counts towards the card's "used by" and status — with what the
+ *   machine last answered while it is out of reach. The update notice and the nav badge it
+ *   answers are this server's alone.
+ * - A server module is installed on the whole server for every Project, by an admin only (a
+ *   member sees the card read-only). Installing or removing one re-assembles the App, which stops
+ *   the agent runs in progress in every Project, so the confirm says what the install does and,
+ *   in small type below, what it costs.
+ *
+ * Every read the page makes keeps its last answer (lib/read-store.ts): coming back to the page
+ * shows what it showed, an answer is read again behind it, and a status, a count or a row's state
+ * changes only when an answer says something different — never because a read is in flight,
+ * failed, or a machine dropped out of reach. Until this server has answered at least once, the
+ * card's status and "used by" are placeholders (plugin-card.tsx).
+ */
+import { useEffect, useMemo, useRef, useState } from "react";
+import { QaPersonalResources } from "../qa/personal-resources";
+import { QaSkillMarket, useQaSkillMarket } from "../qa/skill-market";
+import "./plugin-market.css";
+import { rowTitle } from "./plugin-marks";
+import { useNavigate } from "react-router";
+import type { AgentSummary, PluginItem, QuickStartItem } from "@prismshadow/penguin-server/api";
+import {
+  Button,
+  CollapsibleSection,
+  ConfirmModal,
+  GlyphIcon,
+  ICONS,
+  Notice,
+  PageFrame,
+  PageHeader,
+  SearchInput,
+  Select,
+  Skeleton,
+  SkeletonCard,
+  TodoNotice,
+  toastError,
+  toastSuccess,
+} from "@prismshadow/penguin-ui";
+import * as api from "../../api/endpoints";
+import { ApiError } from "../../api/client";
+import { S } from "../../lib/strings";
+import { apiErrorText } from "../../lib/api-error";
+import { useDocumentTitle } from "../../lib/use-document-title";
+import { useUpdateBadges } from "../../lib/use-update-badges";
+import { dismissTodo } from "../../lib/todo-dismissals";
+import { bulkOutcome, failedList, firstFailure, noticeCounts } from "../../lib/bulk-update";
+import { useAuth } from "../../state/auth";
+import { useLocale } from "../../state/locale";
+import { agentDisplayName, useProject } from "../../state/project";
+import { useMachines } from "../../state/machines";
+import { useSessions } from "../../state/sessions";
+import { agentKey } from "../../lib/agent-location";
+import { mixAgents, useMachineAgents } from "../../lib/machine-agent-lists";
+import { readKey, useRead } from "../../lib/read-store";
+import { MachinePicker, type MachineChoice } from "../machines/machine-picker";
+import { DRAFT_SESSION_ID } from "../chat/chat-page";
+import { draftKey, loadDraft, saveDraft } from "../chat/draft-cache";
+import { prepareNewChatDraft } from "../chat/new-chat";
+import { localizedText } from "../chat/skill-use";
+import { usePluginRepair } from "./plugin-repair";
+import { samePluginTarget, viewedMachine } from "./viewed-machine";
+import { SettingsDialog } from "../settings/settings-dialog";
+import { pickDefaultAgent } from "../ai-create";
+import { toneInk } from "../../lib/tone";
+import { ModuleApplyBody, PluginCard, libraryQuickStart } from "./plugin-card";
+import type { InstallTarget } from "./plugin-card";
+import {
+  INDEX_KEY,
+  LIBRARY_KEY,
+  installedPlugins,
+  installedPluginsKey,
+  pluginIndex,
+  pluginLibrary,
+} from "./plugin-reads";
+import {
+  agentInstalls,
+  installsKey,
+  rereadInstalls,
+  useAgentInstalls,
+  withoutPlugin,
+  type InstallsTarget,
+} from "./agent-installs";
+import { StdioDisclosure, StdioInstallBody } from "./plugin-mcp";
+import { ImportPluginModal } from "./plugin-import-modal";
+import { usePluginsIncompatibleOnly, writePluginsIncompatibleOnly } from "./incompatible-only";
+import {
+  PLUGIN_GROUP_BYS,
+  foldKey,
+  groupRows,
+  initialFoldedGroups,
+  initialPluginsGroupBy,
+  moduleParts,
+  pluginCategories,
+  pluginRows,
+  rowMatches,
+  storeFoldedGroups,
+  storePluginsGroupBy,
+  type PluginGroupBy,
+  type PluginRow,
+  type PluginView,
+} from "./plugin-groups";
+import {
+  installNeedsConfirm,
+  libraryUsage,
+  pluginComplete,
+  pluginStatus,
+  type AgentInstalls,
+  type InstalledMap,
+  type LibraryUsage,
+  type PluginStatus,
+} from "./plugin-status";
+
+const NO_INSTALLS: AgentInstalls = { skills: new Map(), hooks: new Map(), mcp: new Map() };
+
+/** How soon the registry is read again while the server is still reading one of its sources. */
+export const INDEX_RECHECK_MS = 3_000;
+
+/** This server's reads are read again on every visit, however recent the last answer. */
+const EVERY_VISIT = { minAgeMs: 0 };
+
+/** The picker's value for this server until its id is read: no machine id is empty. */
+const SELF_PENDING = "";
+
+/**
+ * What updating EVERY outdated plugin on this page would write, grouped the way it is sent.
+ *
+ * Read off `AgentSummary.pluginUpdates` — the same field the plugins gate counts — so the plan
+ * and the notice above the button cannot describe different work. One request per Agent rather
+ * than one per (Agent, plugin): the install endpoint already takes a list of names, and an Agent
+ * behind on four plugins is one overwrite either way.
+ *
+ * `plugins` is the distinct library plugins across the whole plan, sorted, which is what the
+ * confirmation lists and what the notice counts — the page shows the library once, so an update
+ * touching five Agents is still one plugin to the reader.
+ */
+export interface PluginUpdatePlan {
+  perAgent: { agentId: string; names: string[] }[];
+  plugins: string[];
+}
+
+export function pluginUpdatePlan(
+  agents: ReadonlyArray<Pick<AgentSummary, "agentId" | "pluginUpdates">>,
+): PluginUpdatePlan {
+  const perAgent: { agentId: string; names: string[] }[] = [];
+  const plugins = new Set<string>();
+  for (const agent of agents) {
+    const names = agent.pluginUpdates.map((u) => u.name).sort();
+    if (names.length === 0) continue;
+    perAgent.push({ agentId: agent.agentId, names });
+    for (const name of names) plugins.add(name);
+  }
+  return { perAgent, plugins: [...plugins].sort() };
+}
+
+export function PluginsPage() {
+  useDocumentTitle(S.nav.plugins);
+  const navigate = useNavigate();
+  const { locale } = useLocale();
+  const { user } = useAuth();
+  const userId = user?.userId ?? null;
+  const { currentProject, agents, agentsLoading, currentAgent, setCurrentAgentId, reloadAgents } =
+    useProject();
+  const { repair, modal: repairModal } = usePluginRepair(agents);
+  const projectId = currentProject?.projectId ?? null;
+
+  /** The plugins trail's raised badge, or undefined — the notice under the title acts on it or clears it. */
+  const todo = useUpdateBadges().todos.plugins;
+  /** The bulk update's confirmation is open (null = closed); it holds the plan it will run. */
+  const [pendingBulk, setPendingBulk] = useState<PluginUpdatePlan | null>(null);
+  const [bulkRunning, setBulkRunning] = useState(false);
+
+  /** The library, as last answered; a failed read shows only while there is no answer at all. */
+  const library = useRead(
+    pluginLibrary,
+    LIBRARY_KEY,
+    () => api.getPluginLibrary(null),
+    EVERY_VISIT,
+  );
+  const groups = library.value?.groups ?? null;
+  const error = groups === null ? library.error : null;
+  // A return to the same Project is a new visit, not permission for an old reply: a write that
+  // answers in a later visit is not taken (its Project's list is read again on entry anyway).
+  const projectVisit = useRef({ projectId, generation: 0 });
+  if (projectVisit.current.projectId !== projectId) {
+    projectVisit.current = { projectId, generation: projectVisit.current.generation + 1 };
+  }
+  const visit = projectVisit.current;
+  const isCurrentVisit = () => projectVisit.current === visit;
+  /** What this Project asks for of the module plugins, and which of those this server runs. */
+  const deploymentKey = projectId === null ? null : installedPluginsKey(projectId, null);
+  const deploymentRead = useRead(
+    installedPlugins,
+    deploymentKey,
+    () => api.getInstalledPlugins(projectId!, null),
+    EVERY_VISIT,
+  );
+  const deployment = deploymentRead.value;
+  /** The registry, as last answered; a failed re-read keeps the rows it listed. */
+  const registry = useRead(pluginIndex, INDEX_KEY, () => api.getPluginIndex(), EVERY_VISIT);
+  const index = registry.value?.plugins ?? (registry.error !== null ? [] : null);
+  /**
+   * Sources that answered with nothing. A published index that is down shortens the list
+   * instead of emptying it (the server merges tolerantly), so the page has to say so — a
+   * silently shorter list reads as "that plugin does not exist".
+   */
+  const indexFailures = registry.value?.failures ?? [];
+  /**
+   * How many sources the server was still reading when it last answered. It answers without a
+   * published index that is slow to arrive (on a network that cannot reach it, that is every
+   * retry the fetch is allowed), so the shipped entries list at once, and the page reads again
+   * until the source has answered or failed. A re-read that failed stops the reading.
+   */
+  const indexPending = registry.error === null ? (registry.value?.pending?.length ?? 0) : 0;
+  /** The specifier whose install or removal is running: the list is written one verb at a time. */
+  const [pendingSpecifier, setPendingSpecifier] = useState<string | null>(null);
+  const isAdmin = user?.isAdmin === true;
+  const isOwner = currentProject?.role === "owner";
+  const canManageLibrary = !document.documentElement.hasAttribute("data-qa-client") || isAdmin;
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  /** The import dialog (admin) is open. */
+  const [importOpen, setImportOpen] = useState(false);
+  /** Free text over names, descriptions and keywords. */
+  const [query, setQuery] = useState("");
+  const [marketTab, setMarketTab] = useState<"plugins" | "skills" | "mcp">("plugins");
+  const [category, setCategory] = useState("");
+  const qaMarket = document.documentElement.hasAttribute("data-qa-client");
+  const skillMarket = useQaSkillMarket(qaMarket);
+  /** Only the plugins this build cannot fully run: switched in Settings › Plugins. */
+  const incompatibleOnly = usePluginsIncompatibleOnly();
+  const [groupBy, setGroupBy] = useState<PluginGroupBy>(() => initialPluginsGroupBy());
+  const [folded, setFolded] = useState<ReadonlySet<string>>(() => initialFoldedGroups());
+
+  const chooseGroupBy = (by: PluginGroupBy) => {
+    setGroupBy(by);
+    storePluginsGroupBy(by);
+  };
+  const toggleFold = (key: string) =>
+    setFolded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      storeFoldedGroups(next);
+      return next;
+    });
+
+  const { machineIds, machineLabels } = useSessions();
+  /** Every machine of the Project with its Agents, reachable or not (lib/machine-agent-lists.ts). */
+  const { lists: machineLists, reload: reloadMachineAgents } = useMachineAgents(projectId);
+  /** The machine picked in the header; null until one is, which views this server. */
+  const [pickedMachine, setPickedMachine] = useState<string | null>(null);
+  /** Installs written on an Agent and not answered yet, by target key: what the dialog shows meanwhile. */
+  const [writing, setWriting] = useState<ReadonlyMap<string, AgentInstalls>>(() => new Map());
+  useEffect(() => {
+    setPickedMachine(null);
+    setPendingSpecifier(null);
+    setPendingApply(null);
+    setWriting((m) => (m.size === 0 ? m : new Map()));
+  }, [visit]);
+  const selfId = deployment?.machineId;
+  /** The Project's machines as the machine list has them: alias, and whether each can be asked now. */
+  const listedMachine = (machineId: string) =>
+    machineLists.find((list) => list.machine.machineId === machineId)?.machine;
+  const nameOf = (machineId: string) =>
+    machineId === selfId
+      ? S.plugins.thisServer
+      : (listedMachine(machineId)?.label ?? machineLabels.get(machineId) ?? machineId);
+  /** A machine of the list that cannot be asked right now (one only a table names is not known to be). */
+  const outOfReach = (machineId: string) => {
+    const link = listedMachine(machineId)?.link;
+    return link !== undefined && link !== "connected";
+  };
+  // The picker offers this server, then every machine of the Project — reachable or not — and
+  // any a table names; a deployment with none has one machine, and no picker. A machine that
+  // drops out of reach keeps its place in the list, so the picker never leaves the header.
+  const otherMachines = [
+    ...new Set([
+      ...machineLists.map((list) => list.machine.machineId),
+      ...machineIds,
+      ...(deployment?.plugins ?? []).flatMap((p) => p.machines ?? []),
+    ]),
+  ].filter((id) => id !== selfId);
+  /** The machine the page shows and edits — undefined only until this server's id is read. */
+  const viewMachine = viewedMachine(
+    pickedMachine,
+    [selfId ?? SELF_PENDING, ...otherMachines],
+    selfId,
+  );
+  /**
+   * The header's choices: this server first — standing in under {@link SELF_PENDING} until its id
+   * is read, so the picker takes its place at once — then the other machines. One out of reach
+   * says so in its entry; the one in view keeps its plain name, so the picker's own text and
+   * width never move with a machine's link.
+   */
+  const machineChoices: MachineChoice[] = [
+    { value: selfId ?? SELF_PENDING, label: S.plugins.thisServer },
+    ...otherMachines.map((id) => ({
+      value: id,
+      label:
+        id !== viewMachine && outOfReach(id) ? S.plugins.machineOutOfReach(nameOf(id)) : nameOf(id),
+    })),
+  ];
+  /**
+   * What the viewed machine answered itself — or why it could not — when it is not this server.
+   * Its last answer stands while it is asked again, so a row reads "not on that machine" only
+   * when an answer of the machine's lacks it.
+   */
+  const remoteKey =
+    projectId !== null && viewMachine !== undefined && viewMachine !== selfId
+      ? installedPluginsKey(projectId, viewMachine)
+      : null;
+  const remote = useRead(installedPlugins, remoteKey, () =>
+    api.getInstalledPlugins(projectId!, viewMachine!),
+  );
+  const view: PluginView | undefined =
+    viewMachine === undefined
+      ? undefined
+      : { machineId: viewMachine, remote: remoteKey === null ? null : remote.value };
+  /** Whether the machine in view is this server itself. */
+  const viewingHere = viewMachine === selfId;
+  /**
+   * The module rows' state is not known yet: this server's tables have not answered, or the
+   * machine in view has not answered once. Their status is a placeholder until then.
+   */
+  const modulesPending =
+    (deployment === null && deploymentRead.error === null) ||
+    (remoteKey !== null && remote.value === null && remote.error === null);
+
+  // While a source of the registry is still being read, it is read again every
+  // INDEX_RECHECK_MS until it has answered or failed; the rows already listed stay meanwhile.
+  useEffect(() => {
+    if (registry.reading || indexPending === 0) return;
+    const recheck = setTimeout(() => pluginIndex.invalidate(INDEX_KEY), INDEX_RECHECK_MS);
+    return () => clearTimeout(recheck);
+  }, [registry.reading, indexPending]);
+
+  /**
+   * A server module change waiting for its confirmation (null = none). Applying one
+   * re-assembles the App, which stops the agent runs in flight in EVERY Project — the same
+   * cost a hot push has — so it is said before it is done.
+   */
+  const [pendingApply, setPendingApply] = useState<{
+    specifier: string;
+    name: string;
+    install: boolean;
+    projectId: string;
+    machineId: string;
+  } | null>(null);
+
+  /**
+   * Installs the package into the data root (fetched from npm unless this build ships it) and
+   * lists it for this Project — writing the list alone would name a package that is not on
+   * the machine, which is exactly the state the row would then have to report as broken. The
+   * server re-assembles the App where it can, so the row's state afterwards is what the
+   * running process has — including a load that failed, which is reported as such rather than
+   * toasted as installed; otherwise the row waits for a restart.
+   */
+  const runDeploymentInstall = async (target: NonNullable<typeof pendingApply>) => {
+    // A confirmation names the target that opened it, never a later picker or Project.
+    if (pendingSpecifier !== null) return;
+    if (!samePluginTarget(target, { projectId, machineId: viewMachine })) {
+      setPendingApply(null);
+      return;
+    }
+    const { specifier, install } = target;
+    setPendingSpecifier(specifier);
+    try {
+      const next = install
+        ? await api.installPlugin(target.projectId, specifier, target.machineId)
+        : await api.uninstallPlugin(target.projectId, specifier, target.machineId);
+      // A write that answers in a later visit is not taken: that visit read the list itself.
+      if (!isCurrentVisit()) return;
+      if (target.machineId !== selfId) {
+        // The machine in view is handed its part in the background: its row keeps the state it
+        // has until the machine is asked again, then shows what the machine reports — the
+        // tables' new answer is taken together with the machine's, never ahead of it.
+        const machineKey = installedPluginsKey(target.projectId, target.machineId);
+        installedPlugins.invalidate(machineKey);
+        // A machine that cannot answer keeps its last answer; the tables' answer is taken anyway.
+        await installedPlugins
+          .read(machineKey, () => api.getInstalledPlugins(target.projectId, target.machineId))
+          .catch(() => undefined);
+        if (!isCurrentVisit()) return;
+      }
+      installedPlugins.accept(installedPluginsKey(target.projectId, null), next);
+      const row = next.plugins.find((p) => p.specifier === specifier);
+      if (install && row?.error !== undefined) {
+        toastError(S.plugins.deploymentFailedToast(specifier, row.error));
+      } else {
+        toastSuccess(install ? S.plugins.deploymentInstalledToast(specifier) : S.common.saved);
+      }
+    } catch (e) {
+      if (isCurrentVisit()) toastError(apiErrorText(e));
+    } finally {
+      if (isCurrentVisit()) {
+        setPendingSpecifier(null);
+        setPendingApply(null);
+      }
+    }
+  };
+
+  /**
+   * What the server holds changed (an import, a delete): the library, the registry and the
+   * Project's list are read again, each standing on screen until its answer lands.
+   */
+  const reloadServerPlugins = () => {
+    pluginLibrary.invalidate(LIBRARY_KEY);
+    pluginIndex.invalidate(INDEX_KEY);
+    if (deploymentKey !== null) installedPlugins.invalidate(deploymentKey);
+  };
+
+  /**
+   * Every Agent a library plugin can be installed on: this server's and each machine's own, in
+   * one list in the Agents page's order, keyed so that two servers' Agents of one id stay two
+   * (lib/agent-location.ts). A machine out of reach keeps its Agents as it last listed them —
+   * its rows held, its installs counted as last seen — so a machine that blinks changes no row
+   * and no count.
+   */
+  const placed = mixAgents(agents, machineLists);
+  const targets: InstallTarget[] = placed.map(({ agent, on }) =>
+    on === null
+      ? { key: agent.agentId, agent, machine: null }
+      : {
+          key: agentKey(on.machine.machineId, agent.agentId),
+          agent,
+          machine: {
+            machineId: on.machine.machineId,
+            label: on.machine.label,
+            live: on.live,
+            reason: on.reason,
+          },
+        },
+  );
+  const installsTargets: InstallsTarget[] = placed.map(({ agent, on }) => ({
+    key: on === null ? agent.agentId : agentKey(on.machine.machineId, agent.agentId),
+    agentId: agent.agentId,
+    machineId: on?.machine.machineId ?? null,
+    readable: on === null || on.machine.link === "connected",
+  }));
+  // A machine that leaves the Project's list takes what was read from it along: its Agents'
+  // installs and the modules it ran are forgotten, here and in storage. Only a list that has
+  // answered counts: the empty one a Project switch passes through is not every machine leaving.
+  const machinesState = useMachines().state;
+  const listedMachines =
+    machinesState === null ? null : machineLists.map((list) => list.machine.machineId).join(",");
+  const lastListed = useRef<{ projectId: string; ids: string[] } | null>(null);
+  useEffect(() => {
+    if (projectId === null || listedMachines === null) return;
+    const ids = listedMachines === "" ? [] : listedMachines.split(",");
+    const before = lastListed.current;
+    lastListed.current = { projectId, ids };
+    if (before === null || before.projectId !== projectId) return;
+    for (const gone of before.ids.filter((id) => !ids.includes(id))) {
+      const prefix = readKey(projectId, gone);
+      for (const key of agentInstalls.keys(prefix)) agentInstalls.forget(key);
+      for (const key of installedPlugins.keys(prefix)) installedPlugins.forget(key);
+    }
+  }, [projectId, listedMachines]);
+  const targetOf = (key: string) => targets.find((t) => t.key === key);
+  /** The machine an install target lives on; null for this server. */
+  const machineOfTarget = (key: string) => targetOf(key)?.machine?.machineId ?? null;
+  /** A target's own Agent id: the key minus its machine. */
+  const agentIdOf = (key: string) => targetOf(key)?.agent.agentId ?? key;
+  /** After a change to one target: the list its counts and update marks are read from, again. */
+  const reloadTargetAgents = (key: string) => {
+    const machineId = machineOfTarget(key);
+    if (machineId === null) void reloadAgents();
+    else reloadMachineAgents(machineId);
+  };
+
+  // Installed skills, hook packages and MCP servers of every install target, each read on the
+  // server it lives on and kept across visits (agent-installs.ts). An Agent not answered yet, or
+  // whose read failed, is unknown — never "nothing installed" — and counts for nothing.
+  const {
+    installed: known,
+    unknown,
+    failed: unreadable,
+  } = useAgentInstalls(projectId, installsTargets);
+  /** What the page shows: the known installs, with a write in flight shown as it will be. */
+  const installed: InstalledMap = useMemo(
+    () => (writing.size === 0 ? known : new Map([...known, ...writing])),
+    [known, writing],
+  );
+  /**
+   * This server has not said yet what its own Agents hold: its Agent list is not in, or an
+   * Agent of it has neither answered nor failed. Machines never hold this up.
+   */
+  const libraryPending =
+    agentsLoading ||
+    targets.some((t) => t.machine === null && unknown.has(t.key) && !unreadable.has(t.key));
+
+  /** Reads one target's lists again (Set up wrote its vault): what its MCP servers wait for moved. */
+  const refreshAgentMcp = (key: string) => {
+    if (!projectId) return;
+    rereadInstalls(projectId, machineOfTarget(key), agentIdOf(key));
+  };
+
+  /**
+   * One Agent's snapshot entry with a plugin marked present — each part at the library's own
+   * version of it — or absent: its skills, its hook package when it ships one and its MCP
+   * servers, all at once. A server marked present waits for nothing yet: the install's answer
+   * says what it really waits for.
+   */
+  const withPlugin = (installs: AgentInstalls, plugin: PluginItem, on: boolean): AgentInstalls => {
+    const skills = new Map(installs.skills);
+    const hooks = new Map(installs.hooks);
+    const mcp = new Map(installs.mcp);
+    const workbenches = new Map(installs.workbenches);
+    for (const w of plugin.workbenches ?? []) {
+      if (on) workbenches.set(w.name, { plugin: plugin.name, version: w.version });
+      else if (workbenches.get(w.name)?.plugin === plugin.name) workbenches.delete(w.name);
+    }
+    for (const skill of plugin.skills) {
+      if (on) skills.set(skill.name, skill.version);
+      else skills.delete(skill.name);
+    }
+    if (plugin.hooks.length > 0) {
+      if (on) hooks.set(plugin.name, plugin.hookVersion ?? "");
+      else hooks.delete(plugin.name);
+    }
+    for (const server of plugin.mcpServers) {
+      if (on) {
+        mcp.set(server.name, {
+          name: server.name,
+          transport: server.transport,
+          target: server.target,
+          plugin: plugin.name,
+          missingKeys: [],
+          signIn: server.signIn,
+        });
+      } else if (mcp.get(server.name)?.plugin === plugin.name) mcp.delete(server.name);
+    }
+    return { skills, hooks, mcp, workbenches };
+  };
+
+  /**
+   * Install / uninstall on one Agent (any member can do this): optimistic update, a
+   * confirmation toast on success, rollback plus a toast on failure — a server name the Agent
+   * already has from someone else is the server's refusal, named in the toast. Install is one
+   * request for the whole plugin; uninstall takes it apart — one DELETE per skill, one for the
+   * hook package and one per MCP server the plugin installed — since the server offers no
+   * plugin-level delete, and a plugin's parts are what an Agent actually holds. The Agent list is re-read afterwards either way: the card's counts
+   * and its `pluginUpdates` moved, and both are read off that list.
+   */
+  const toggleInstall = async (key: string, plugin: PluginItem, on: boolean) => {
+    if (!projectId) return false;
+    const prev = installed.get(key) ?? NO_INSTALLS;
+    const target = targetOf(key);
+    const agentId = agentIdOf(key);
+    /** Every part goes to the server the Agent lives on. */
+    const machineId = machineOfTarget(key);
+    const storeKey = installsKey(projectId, machineId, agentId);
+    // Shown as it will be while the write runs; dropped once the answer is in the store (or
+    // the write failed, which leaves the store as it was).
+    const optimistic = withPlugin(prev, plugin, on);
+    setWriting((m) => new Map(m).set(key, optimistic));
+    const written = () =>
+      setWriting((m) => {
+        if (m.get(key) !== optimistic) return m;
+        const next = new Map(m);
+        next.delete(key);
+        return next;
+      });
+    // A machine's Agent is named with its machine, as the dialog lists it.
+    const agentName =
+      target === undefined
+        ? agentId
+        : target.machine === null
+          ? agentDisplayName(target.agent)
+          : `${agentDisplayName(target.agent)} ${S.chat.machineTag(target.machine.label)}`;
+    try {
+      if (on) {
+        const res = await api.installAgentPlugins(projectId, agentId, [plugin.name], machineId);
+        agentInstalls.accept(storeKey, res);
+        toastSuccess(
+          `${S.plugins.installedToast(plugin.name, agentName)}${S.agent.takesEffectSuffix}`,
+        );
+      } else {
+        // A 404 on a part means "was already not installed": the target state is already
+        // reached for that part, so it does not fail the uninstall (otherwise the row would be
+        // stuck at "Installed" whenever this page's snapshot is stale).
+        const gone = (e: unknown) => {
+          if (e instanceof ApiError && e.status === 404) return;
+          throw e;
+        };
+        await Promise.all([
+          ...(plugin.workbenches ?? [])
+            .filter((w) => prev.workbenches?.get(w.name)?.plugin === plugin.name)
+            .map((w) => api.removeWorkbench(projectId, agentId, w.name, machineId).catch(gone)),
+          ...plugin.skills.map((skill) =>
+            api.removeAgentSkill(projectId, agentId, skill.name, machineId).catch(gone),
+          ),
+          ...(plugin.hooks.length > 0
+            ? [api.uninstallAgentHook(projectId, agentId, plugin.name, machineId).catch(gone)]
+            : []),
+          // Only the entries the plugin installed: a server the user added under one of its
+          // names is the user's.
+          ...plugin.mcpServers
+            .filter((server) => prev.mcp.get(server.name)?.plugin === plugin.name)
+            .map((server) =>
+              api.uninstallAgentMcpServer(projectId, agentId, server.name, machineId).catch(gone),
+            ),
+        ]);
+        // What the DELETEs left is known; the Agent is read again to confirm it.
+        const before = agentInstalls.get(storeKey).value;
+        if (before !== null) agentInstalls.accept(storeKey, withoutPlugin(before, plugin));
+        rereadInstalls(projectId, machineId, agentId);
+        toastSuccess(
+          `${S.plugins.uninstalledToast(plugin.name, agentName)}${S.agent.takesEffectSuffix}`,
+        );
+      }
+    } catch (e) {
+      written();
+      toastError(apiErrorText(e));
+      return false;
+    }
+    written();
+    reloadTargetAgents(key);
+    return true;
+  };
+
+  /**
+   * Update reminder action: reinstall the current library copy on every outdated Agent
+   * (install-again-is-update semantics). One success toast for the whole batch; on partial
+   * failure the succeeded Agents keep their calibrated state and the first error is toasted.
+   */
+  const updateOutdated = async (name: string, keys: string[]) => {
+    if (!projectId || keys.length === 0) return;
+    const results = await Promise.allSettled(
+      keys.map(async (key) => {
+        const agentId = agentIdOf(key);
+        const machineId = machineOfTarget(key);
+        const res = await api.installAgentPlugins(projectId, agentId, [name], machineId);
+        agentInstalls.accept(installsKey(projectId, machineId, agentId), res);
+      }),
+    );
+    const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (!failed) toastSuccess(S.plugins.updatedToast(name, keys.length));
+    else toastError(apiErrorText(failed.reason));
+    // The outdated marks and the nav badge are both read off `AgentSummary.pluginUpdates`,
+    // which this page's install map does not feed: without reloading the Agent list the dot
+    // would survive the very update it led the user to. Runs after a partial failure too —
+    // some Agent moved. A machine's Agents are read from that machine again.
+    for (const machineId of new Set(keys.map(machineOfTarget))) {
+      if (machineId === null) void reloadAgents();
+      else reloadMachineAgents(machineId);
+    }
+  };
+
+  /**
+   * The notice's bulk action: reinstall the library copy of every outdated plugin, on every
+   * Agent behind on it — the per-card update, over the whole page. The per-card and per-Agent
+   * controls are untouched and remain the way to update just one.
+   *
+   * `Promise.allSettled` over one request per Agent, the shape the per-plugin update already
+   * uses, and the same reload afterwards: the gate reads `AgentSummary.pluginUpdates`, which
+   * this page's install map does not feed, so without it the dot would survive the very update
+   * it led the user to. What is new is that a partial failure NAMES the Agents that did not take
+   * it — on a control whose whole point is "all of them at once", a first-error toast leaves the
+   * user unable to tell which half they are looking at.
+   */
+  const runBulkUpdate = async (plan: PluginUpdatePlan) => {
+    if (!projectId || plan.perAgent.length === 0) return;
+    setBulkRunning(true);
+    const labels = plan.perAgent.map(({ agentId }) => {
+      const agent = agents.find((a) => a.agentId === agentId);
+      return agent ? agentDisplayName(agent) : agentId;
+    });
+    const results = await Promise.allSettled(
+      plan.perAgent.map(async ({ agentId, names }) => {
+        // The plan is built from this server's Agents, as the update badge counts them.
+        const res = await api.installAgentPlugins(projectId, agentId, names, null);
+        agentInstalls.accept(installsKey(projectId, null, agentId), res);
+      }),
+    );
+    const outcome = bulkOutcome(labels, results);
+    if (outcome.allOk) toastSuccess(S.todo.bulkDone(outcome.ok));
+    else {
+      toastError(
+        `${S.todo.bulkPartial(outcome.ok, failedList(outcome.failed, S.todo.listSeparator))} — ${apiErrorText(firstFailure(results))}`,
+      );
+    }
+    // Runs after a partial failure too — some Agent moved, and the gate has to see it. Guarded,
+    // because `reloadAgents` rejects on a failed list read and the busy flag disables every
+    // control here, the dialog's Cancel included: a reload that failed after the writes landed
+    // would otherwise leave the page frozen with nothing saying why.
+    try {
+      await reloadAgents();
+    } catch (e) {
+      toastError(apiErrorText(e));
+    } finally {
+      setBulkRunning(false);
+      setPendingBulk(null);
+    }
+  };
+
+  /**
+   * Quick start: a plugin's demo, opened as a new-chat draft on the currently selected Agent —
+   * written, never sent, so nothing runs (and no token is spent) until the person sends it. The
+   * prompt goes in per UI language, overwriting the draft body (any typed-but-unsent text is
+   * parked as a draft conversation first, draft-sessions.ts), with the demo's skills
+   * pre-selected and goal mode on when the demo is a goal. handoffAgentId must be cleared: a
+   * leftover handoff target would forward the demo to a different Agent.
+   */
+  const openQuickStart = (quickStart: QuickStartItem) => {
+    const agentId = currentAgent?.agentId;
+    if (!agentId) return;
+    if (userId && projectId) {
+      // Typed-but-unsent draft text becomes a parked draft conversation instead of being
+      // clobbered by the canned invocation body, and the Workspace and approval mode start on
+      // the Project's new-chat defaults (new-chat.ts).
+      prepareNewChatDraft(userId, projectId);
+      const key = draftKey(userId, projectId);
+      const { skills: _skills, goal: _goal, ...rest } = loadDraft(key);
+      saveDraft(key, {
+        ...rest,
+        agentId,
+        text: localizedText(locale, quickStart.prompt, quickStart.promptZh),
+        ...(quickStart.skills !== undefined && quickStart.skills.length > 0
+          ? { skills: quickStart.skills }
+          : {}),
+        ...(quickStart.goal === true ? { goal: true as const } : {}),
+        handoffAgentId: undefined,
+      });
+    }
+    setCurrentAgentId(agentId);
+    navigate(`/chat/${DRAFT_SESSION_ID}`, { state: { agentId } });
+  };
+
+  /** A library plugin waiting for "install on this Agent, then quick start" to be confirmed. */
+  const [pendingQuickStart, setPendingQuickStart] = useState<PluginItem | null>(null);
+  const [quickStartInstalling, setQuickStartInstalling] = useState(false);
+
+  /** A library plugin's quick start: on an Agent that has all of it, it opens; otherwise installing comes first, and is asked. */
+  const quickStartLibrary = (plugin: PluginItem) => {
+    const demo = libraryQuickStart(plugin);
+    if (demo === null || !currentAgent) return;
+    if (pluginComplete(plugin, installed.get(currentAgent.agentId))) openQuickStart(demo);
+    else setPendingQuickStart(plugin);
+  };
+
+  const confirmQuickStartInstall = async () => {
+    const plugin = pendingQuickStart;
+    const agentId = currentAgent?.agentId;
+    if (plugin === null || !agentId) return;
+    setQuickStartInstalling(true);
+    const ok = await toggleInstall(agentId, plugin, true);
+    setQuickStartInstalling(false);
+    setPendingQuickStart(null);
+    const demo = libraryQuickStart(plugin);
+    if (ok && demo !== null) openQuickStart(demo);
+  };
+
+  const rows = pluginRows(groups ?? [], moduleParts(deployment, index ?? [], view));
+  const categories = pluginCategories(groups ?? [], locale);
+  const usages = new Map<string, LibraryUsage>();
+  for (const row of rows) {
+    if (row.library !== undefined) {
+      usages.set(
+        row.key,
+        libraryUsage(
+          row.library,
+          targets.map((t) => ({
+            agentId: t.key,
+            pluginUpdates: t.agent.pluginUpdates,
+            lastSeen: t.machine !== null && t.machine.live === false,
+          })),
+          installed,
+        ),
+      );
+    }
+  }
+  const statusOf = (row: PluginRow): PluginStatus => pluginStatus(row, usages.get(row.key) ?? null);
+  const unsatisfiedCount = rows.filter((row) => row.module?.unsatisfied !== undefined).length;
+  const searching = query.trim() !== "" || incompatibleOnly || category !== "";
+  const inTab = (row: PluginRow) => !qaMarket || marketTab === "plugins" || (marketTab === "skills" ? !!row.library?.skills.length : !!row.library?.mcpServers.length);
+  const visible = rows.filter(
+    (row) => inTab(row) && (!qaMarket || !category || row.category === category) && rowMatches(row, query) && (!incompatibleOnly || row.module?.unsatisfied !== undefined),
+  );
+  const sections = groupRows(visible, statusOf, groupBy, categories);
+  const categoryTitle = (id: string) => categories.find((c) => c.id === id)?.title ?? id;
+
+  const card = (row: PluginRow) => (
+    <PluginCard
+      framed={qaMarket || groupBy === "none"}
+      key={row.key}
+      row={row}
+      status={statusOf(row)}
+      usage={usages.get(row.key) ?? null}
+      categoryTitle={categoryTitle(row.category)}
+      showCategory={groupBy !== "category"}
+      targets={targets}
+      installed={installed}
+      unknown={unknown}
+      failed={unreadable}
+      pending={
+        (row.module !== undefined && modulesPending) ||
+        (row.library !== undefined && libraryPending)
+      }
+      canManageLibrary={canManageLibrary}
+      canQuickStart={currentAgent !== null && (canManageLibrary || !!row.library && pluginComplete(row.library, installed.get(currentAgent.agentId)))}
+      isAdmin={isAdmin}
+      isOwner={isOwner && canManageLibrary}
+      projectId={projectId}
+      busy={row.module !== undefined && pendingSpecifier === row.module.specifier}
+      blocked={
+        row.module !== undefined &&
+        (viewMachine === undefined ||
+          (pendingSpecifier !== null && pendingSpecifier !== row.module.specifier))
+      }
+      onQuickStart={quickStartLibrary}
+      onDeletePlugin={null}
+      onToggleInstall={toggleInstall}
+      onUpdateOutdated={updateOutdated}
+      onModuleApply={(install) => {
+        if (row.module !== undefined && projectId !== null && viewMachine !== undefined) {
+          setPendingApply({
+            specifier: row.module.specifier,
+            name: row.name,
+            install,
+            projectId,
+            machineId: viewMachine,
+          });
+        }
+      }}
+      onRepair={
+        isAdmin && row.module?.unsatisfied !== undefined
+          ? () =>
+              repair({
+                specifier: row.module!.specifier,
+                disabled: row.module!.state === "disabled",
+                reason: row.module!.unsatisfied!,
+              })
+          : null
+      }
+      onMcpChanged={refreshAgentMcp}
+    />
+  );
+
+  // The scrollbar gutter stays reserved: a search that shortens the page below the viewport
+  // would otherwise take the scrollbar with it and shift everything sideways as it is typed.
+  return (
+    <PageFrame className={`[scrollbar-gutter:stable] ${qaMarket ? "qa-plugin-market" : ""}`}>
+      {/* The options loaded plugins declare live on the Settings dialog's Plugins page, an
+          admin's page; the header's Settings button opens the dialog there rather than sending
+          anyone through the user menu to find it. */}
+      <PageHeader
+        title={qaMarket ? "插件市场" : S.plugins.pageTitle}
+        info={S.plugins.pageDesc}
+        actions={
+          <PluginsHeaderActions
+            hideFilters={qaMarket}
+            query={query}
+            onQuery={setQuery}
+            groupBy={groupBy}
+            onGroupBy={chooseGroupBy}
+            isAdmin={isAdmin}
+            machinePicker={
+              otherMachines.length > 0 ? (
+                <MachinePicker
+                  aria-label={S.plugins.viewMachine}
+                  choices={machineChoices}
+                  value={viewMachine ?? SELF_PENDING}
+                  onChange={(id) => {
+                    if (id !== SELF_PENDING) setPickedMachine(id);
+                  }}
+                />
+              ) : null
+            }
+            onOpenSettings={() => setSettingsOpen(true)}
+            onImport={() => setImportOpen(true)}
+          />
+        }
+      >
+        {qaMarket && <p className="qm-description">发现实用插件，扩展 AITestHarness 的测试能力。<span>共 {rows.length} 个插件</span></p>}
+        {/* Last stop on the plugins trail: what the sidebar's dot was pointing at, the control
+          that takes all of it in one press, and the way to clear it for someone who has looked
+          and decided to stay on the installed copies. A plugin is never NEW here — one nobody
+          has installed is not waiting for anyone — so the line states the upgradable count
+          alone rather than padding it with a zero. The per-card update buttons below remain
+          the way to take just one. */}
+        {todo && canManageLibrary && (
+          <TodoNotice
+            text={S.todo.changesUpgradable(noticeCounts(todo).updated)}
+            actionLabel={S.todo.updateNow}
+            busy={bulkRunning}
+            onAction={() => setPendingBulk(pluginUpdatePlan(agents))}
+            dismissLabel={S.todo.dismiss}
+            onDismiss={() => dismissTodo(projectId, "plugins", todo.signature)}
+          />
+        )}
+        {indexFailures.length > 0 && (
+          <Notice tone="attention" className="mt-4">
+            {S.pluginRegistry.sourceUnavailable(indexFailures.length)}
+          </Notice>
+        )}
+        {indexPending > 0 && (
+          <Notice tone="attention" className="mt-4">
+            {S.pluginRegistry.sourcePending(indexPending)}
+          </Notice>
+        )}
+        {/* Only while there is no answer to show: a failed re-read changes nothing on screen. */}
+        {remoteKey !== null &&
+          viewMachine !== undefined &&
+          remote.value === null &&
+          remote.error !== null && (
+            <Notice tone="attention" className="mt-4">
+              {S.plugins.machineUnreadable(nameOf(viewMachine), remote.error)}
+            </Notice>
+          )}
+        {deployment !== null && viewingHere && deployment.restartPending && (
+          <Notice tone="attention" className="mt-4">
+            {S.plugins.restartPending}
+          </Notice>
+        )}
+        <IncompatibleNotice filtered={incompatibleOnly} unsatisfied={unsatisfiedCount} />
+      </PageHeader>
+      {viewingHere && <ManagedResourceSection kind={qaMarket && marketTab === "skills" ? "skills" : "plugins"} />}
+      {qaMarket && <>
+        <div className="qm-toolbar">
+          <div className="qm-tabs" aria-label="市场资源类型">
+            {([['plugins', '插件'], ['skills', '技能'], ['mcp', 'MCP']] as const).map(([id, label]) => <button key={id} type="button" aria-pressed={marketTab === id} onClick={() => { setMarketTab(id); setCategory(""); setQuery(""); }}>{label}<span>{id === 'skills' ? (skillMarket.count ?? '…') : rows.filter(r => id === 'plugins' || r.library?.mcpServers.length).length}</span></button>)}
+          </div>
+          <div className="qm-search"><SearchInput icon size="sm" value={query} onChange={setQuery} aria-label="搜索市场资源" placeholder={marketTab === 'skills' ? '搜索技能' : marketTab === 'mcp' ? '搜索 MCP' : '搜索插件'} /></div>
+          {marketTab !== 'skills' && <div className="qm-group-select"><Select size="sm" aria-label={S.plugins.groupByLabel} value={groupBy} onChange={e => chooseGroupBy(e.target.value as PluginGroupBy)}>{PLUGIN_GROUP_BYS.map(by => <option key={by} value={by}>{S.plugins.groupBy[by]}</option>)}</Select></div>}
+        </div>
+        {marketTab === 'skills' && projectId && <><QaSkillMarket key={projectId} market={skillMarket} query={query} /><QaPersonalResources key={'personal-'+projectId} query={query} /></>}
+        {marketTab === 'plugins' && <div className="qm-showcase">{categories.filter(c => rows.some(r => r.category === c.id)).slice(0, 4).map((c, i) => <button type="button" className={`qm-category qm-category-${i}`} key={c.id} aria-pressed={category === c.id} onClick={() => setCategory(category === c.id ? '' : c.id)}><strong>{c.title}</strong>{rows.filter(r => r.category === c.id).slice(0, 3).map(r => <span key={r.key}>{rowTitle(r, locale)}</span>)}<small>浏览分类　›</small></button>)}</div>}
+        {marketTab !== 'skills' && <div className="qm-chips" aria-label="插件分类"><button type="button" aria-pressed={!category} onClick={() => setCategory('')}>全部</button>{categories.filter(c => rows.some(r => inTab(r) && r.category === c.id)).map(c => <button type="button" key={c.id} aria-pressed={category === c.id} onClick={() => setCategory(c.id)}>{c.title}</button>)}</div>}
+
+      </>}
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        section="plugins"
+      />
+      {isAdmin && projectId !== null && (
+        <ImportPluginModal
+          open={importOpen}
+          projectId={projectId}
+          agentId={pickDefaultAgent(agents)?.agentId ?? null}
+          onClose={() => setImportOpen(false)}
+          onInstalled={reloadServerPlugins}
+        />
+      )}
+
+      {qaMarket && marketTab === 'skills' ? null : error ? (
+        <div className="mt-2 flex items-center gap-3">
+          <p className={`text-sm ${toneInk.danger}`}>{error}</p>
+          <Button size="sm" onClick={() => window.location.reload()}>
+            {S.common.retry}
+          </Button>
+        </div>
+      ) : groups === null ? (
+        <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {Array.from({ length: 4 }, (_, i) => (
+            <SkeletonCard key={i} className="p-4">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="mt-2 h-4 w-3/4" />
+              <Skeleton className="mt-3 h-6 w-36" />
+            </SkeletonCard>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {groupBy === "none"
+            ? sections.map((section) => (
+                <CardGrid key={section.id}>{section.rows.map(card)}</CardGrid>
+              ))
+            : sections.map((section) => {
+                const key = foldKey(groupBy, section.id);
+                // A match folded away would read as a missing one, so a search opens every
+                // section it leaves; the remembered folds come back after.
+                const open = searching || !folded.has(key);
+                return (
+                  <CollapsibleSection
+                    className={qaMarket ? "qm-section" : undefined}
+                    key={key}
+                    title={section.title}
+                    meta={S.plugins.pluginCount(section.rows.length)}
+                    open={open}
+                    onOpenChange={() => toggleFold(key)}
+                  >
+                    <CardGrid>{section.rows.map(card)}</CardGrid>
+                  </CollapsibleSection>
+                );
+              })}
+          {sections.length === 0 && (
+            <p className="px-1 text-sm text-gray-400 dark:text-gray-500">{S.plugins.noMatch}</p>
+          )}
+        </div>
+      )}
+
+      {/* A server module change: what it does is said before it runs, and what it costs in
+          small type under it. An install is primary; a removal is danger. */}
+      {pendingApply !== null &&
+        samePluginTarget(pendingApply, { projectId, machineId: viewMachine }) && (
+          <ConfirmModal
+            open
+            title={
+              pendingApply.install
+                ? S.plugins.applyConfirmInstall(pendingApply.name)
+                : S.plugins.applyConfirmRemove(pendingApply.name)
+            }
+            tone={pendingApply.install ? "primary" : "danger"}
+            {...(pendingApply.install ? { glyph: ICONS.download } : {})}
+            confirmLabel={pendingApply.install ? S.plugins.install : S.plugins.uninstall}
+            cancelLabel={S.common.cancel}
+            busy={pendingSpecifier !== null}
+            onClose={() => setPendingApply(null)}
+            onConfirm={() => void runDeploymentInstall(pendingApply)}
+          >
+            <ModuleApplyBody install={pendingApply.install} name={pendingApply.name} />
+          </ConfirmModal>
+        )}
+      {repairModal}
+      {/* A library plugin's quick start on an Agent that lacks it: installing comes first, and is asked. */}
+      {pendingQuickStart !== null && currentAgent && (
+        <ConfirmModal
+          open
+          title={S.plugins.quickStartInstallTitle(
+            pendingQuickStart.name,
+            agentDisplayName(currentAgent),
+          )}
+          tone="primary"
+          confirmLabel={S.plugins.install}
+          cancelLabel={S.common.cancel}
+          busy={quickStartInstalling}
+          onClose={() => setPendingQuickStart(null)}
+          onConfirm={() => void confirmQuickStartInstall()}
+        >
+          <p>{S.plugins.quickStartAfterInstall}</p>
+          {/* The install brings a stdio server: the command it runs here is said before it does. */}
+          {installNeedsConfirm(pendingQuickStart, installed.get(currentAgent.agentId)) && (
+            <div className="mt-3">
+              <StdioInstallBody plugin={pendingQuickStart} />
+            </div>
+          )}
+        </ConfirmModal>
+      )}
+      {/* Bulk update confirmation. Same warning as the per-plugin confirm — an update is an
+          overwriting reinstall — and the same primary (overwrite) tone, with the list naming
+          every plugin the batch would rewrite. Confirm-first is the point of the button: it
+          overwrites many installs in one press, and a single one already asks. */}
+      {pendingBulk !== null && (
+        <ConfirmModal
+          open
+          title={S.todo.pluginsConfirmTitle(pendingBulk.plugins.length)}
+          tone="primary"
+          // As wide as a single plugin's update confirmation, which lists versions.
+          widthClass="sm:max-w-lg"
+          confirmLabel={S.skills.updateAction}
+          cancelLabel={S.common.cancel}
+          busy={bulkRunning}
+          onClose={() => setPendingBulk(null)}
+          onConfirm={() => void runBulkUpdate(pendingBulk)}
+        >
+          <div className="space-y-3">
+            <p className="text-sm text-gray-600 dark:text-gray-300">{S.todo.pluginsConfirmBody}</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">{S.todo.willTouch}</p>
+            <ul className="max-h-60 divide-y divide-gray-100 overflow-y-auto rounded-md border border-gray-200 dark:divide-gray-800 dark:border-gray-800">
+              {pendingBulk.plugins.map((name) => (
+                <li key={name} className="px-3 py-1.5 font-mono text-xs">
+                  {name}
+                </li>
+              ))}
+            </ul>
+            {/* The reinstalls write each plugin's stdio servers again: what they run here is
+                said before they do, as a single install says it. */}
+            <StdioDisclosure
+              plugins={(groups ?? [])
+                .flatMap((group) => group.plugins)
+                .filter((plugin) => pendingBulk.plugins.includes(plugin.name))}
+            />
+          </div>
+        </ConfirmModal>
+      )}
+    </PageFrame>
+  );
+}
+/**
+ * The notice about incompatible plugins, one at a time. While the list holds only them it says
+ * so and offers the whole list back: a filtered list that did not say so would read as plugins
+ * gone missing. Otherwise, while this build cannot fully run some listed plugins, it counts them
+ * and offers to show only those. Both actions flip the stored preference the Settings switch
+ * shows.
+ */
+export function IncompatibleNotice({
+  filtered,
+  unsatisfied,
+}: {
+  filtered: boolean;
+  /** How many listed plugins this build cannot fully run. */
+  unsatisfied: number;
+}) {
+  if (filtered) {
+    return (
+      <Notice
+        tone="info"
+        className="mt-4"
+        action={{
+          label: S.plugins.incompatibleOnlyShowAll,
+          onClick: () => writePluginsIncompatibleOnly(false),
+        }}
+      >
+        {S.plugins.incompatibleOnlyNotice}
+      </Notice>
+    );
+  }
+  if (unsatisfied === 0) return null;
+  return (
+    <Notice
+      tone="attention"
+      className="mt-4"
+      action={{
+        label: S.plugins.unsatisfiedShow,
+        onClick: () => writePluginsIncompatibleOnly(true),
+      }}
+    >
+      {S.plugins.unsatisfiedNotice(unsatisfied)}
+    </Notice>
+  );
+}
+
+/** Cards in a section: two to a row once there is room, one on a phone. */
+function CardGrid({ children }: { children: React.ReactNode }) {
+  return <div className="qm-grid grid grid-cols-1 gap-2 p-2 sm:grid-cols-2">{children}</div>;
+}
+
+/**
+ * The page header's actions, in the Agents page header's look: every control on the small rung,
+ * so the row is one height, at the header's gap. For everyone (a member narrows and regroups the
+ * list too): the search box, and beside it the grouping select, whose options each say what they
+ * do ("Group by status") while its accessible name says what it groups; it is wide enough for its
+ * longest English option. Then, for an admin, the machine picker (which machine's plugins the rows
+ * show, and which machine's own table an install or a removal edits), then
+ * the pair the Agents page header has: Import plugin, the primary button, and Settings, the
+ * secondary one, which opens the Settings dialog's Plugins page — each glyph before words that
+ * always show. On a phone the search box and the select share the first line, the box taking what
+ * the select leaves, and the admin's buttons wrap below them.
+ */
+export function PluginsHeaderActions({
+  hideFilters = false,
+  query,
+  onQuery,
+  groupBy,
+  onGroupBy,
+  isAdmin,
+  machinePicker,
+  onOpenSettings,
+  onImport,
+}: {
+  hideFilters?: boolean;
+  query: string;
+  onQuery: (query: string) => void;
+  groupBy: PluginGroupBy;
+  onGroupBy: (by: PluginGroupBy) => void;
+  isAdmin: boolean;
+  /** The machine picker, when there is another machine to pick; null otherwise. */
+  machinePicker: React.ReactNode;
+  onOpenSettings: () => void;
+  /** Opens the import dialog (shown to an admin only: installing is the server's). */
+  onImport: () => void;
+}) {
+  return (
+    <>
+      {!hideFilters && <div className="flex min-w-0 basis-full items-center gap-2 sm:basis-auto">
+        <div className="min-w-0 flex-1 sm:w-56 sm:flex-none">
+          <SearchInput
+            size="sm"
+            value={query}
+            placeholder={S.plugins.searchPlaceholder}
+            aria-label={S.plugins.searchPlaceholder}
+            onChange={onQuery}
+          />
+        </div>
+        <div className="w-40 shrink-0">
+          <Select
+            size="sm"
+            aria-label={S.plugins.groupByLabel}
+            value={groupBy}
+            onChange={(e) => onGroupBy(e.target.value as PluginGroupBy)}
+          >
+            {PLUGIN_GROUP_BYS.map((by) => (
+              <option key={by} value={by}>
+                {S.plugins.groupBy[by]}
+              </option>
+            ))}
+          </Select>
+        </div>
+      </div>
+      }
+      {isAdmin && (
+        <>
+          {machinePicker}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="primary" onClick={onImport}>
+              <GlyphIcon d={ICONS.upload} />
+              {S.plugins.importPlugin}
+            </Button>
+            <Button size="sm" variant="secondary" onClick={onOpenSettings}>
+              <GlyphIcon d={ICONS.gear} />
+              {S.plugins.openSettings}
+            </Button>
+          </div>
+        </>
+      )}
+    </>
+  );
+}

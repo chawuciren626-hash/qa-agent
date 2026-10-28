@@ -49,6 +49,12 @@ export function productEnvironment(layout,env=process.env) {
   delete result.PENGUIN_PORT_FILE;
   delete result.PENGUIN_WEB_DB;
   delete result.PENGUIN_WEB_DIST;
+  const accountFile=resolve(layout.paths.host_data,'account-center.json');
+  if(existsSync(accountFile)) {
+    const account=JSON.parse(readFileSync(accountFile,'utf8'));
+    result.AITEST_ACCOUNT_CENTER_ORIGIN=account.origin;
+    result.AITEST_ACCOUNT_CENTER_OWNER=account.ownerUserId;
+  }
   const pathKey=Object.keys(result).find(k=>k.toLowerCase()==='path') ?? 'PATH';
   result[pathKey]=[dirname(layout.paths.node),...(layout.paths.python?[dirname(layout.paths.python)]:[]),result[pathKey]??''].filter(Boolean).join(delimiter);
   return {...result,PENGUIN_HOME:layout.paths.host_data,PENGUIN_AGENT_ROOT:layout.agent_root,QA_APP_DATA_ROOT:layout.paths.qa_data,

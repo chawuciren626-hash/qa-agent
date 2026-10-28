@@ -1,0 +1,508 @@
+/**
+ * Global styles: single-file Tailwind CSS 4 entry point.
+ * Shared themes define the visual tone and optional shell wallpaper. The login page has its own
+ * circuit-trace animation (.login-trace, see login-circuit.tsx). Dark mode uses the html.dark class.
+ *
+ * Theming comes from the shared UI package (@prismshadow/penguin-ui): `theme.css` declares the
+ * `dark` variant, the cascade layers, the token → utility bridge and the base rules that read
+ * tokens (body colours and fonts, focus ring, selection, scrollbars); each `themes/*.css` holds
+ * one theme's values, including the gray bridge the palette classes below resolve through. This
+ * file keeps what is the app's own: the brand scale, layout invariants, animations and the
+ * unlayered content rules.
+ *
+ * Stacking-context convention (to avoid contexts masking each other): chrome (top bar/navigation) does not
+ * create a stacking context; dropdown/user menus use z-40; modal and drawer overlays use z-50.
+ */
+@import "tailwindcss";
+@import "@prismshadow/penguin-ui/theme.css";
+@import "@prismshadow/penguin-ui/themes/github.css";
+@import "@prismshadow/penguin-ui/themes/modern.css";
+@import "@prismshadow/penguin-ui/themes/geek.css";
+@import "@prismshadow/penguin-ui/fonts.css";
+
+/* Tailwind scans the Vite root only: the package's components carry class strings too. The test
+   helpers are excluded, so the class patterns they spell never enter the app's sheet. */
+@source "../../ui/src";
+@source not "../../ui/src/testing";
+
+/* Brand color scale (Google blue family): generates utility classes like bg-brand-600 / text-brand-300. */
+@theme {
+  --color-brand-25: #f8fbff;
+  --color-brand-50: #e8f0fe;
+  --color-brand-100: #d2e3fc;
+  --color-brand-200: #aecbfa;
+  --color-brand-300: #8ab4f8;
+  --color-brand-400: #669df6;
+  --color-brand-500: #4285f4;
+  --color-brand-600: #1a73e8;
+  --color-brand-700: #0b57d0;
+  --color-brand-800: #0842a0;
+  --color-brand-900: #062e6f;
+  --color-brand-950: #041e49;
+}
+
+@layer base {
+  :root {
+    /* The body font stack under a name of the app's own, which the workbench frame reads off the
+       document (lib/workbench-theme.ts). An alias of the theme's token, so the two cannot drift. */
+    --font-app-sans: var(--ui-font-sans);
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  /* The desktop window's drag handle (index.html): a transparent strip over the title-bar band,
+     zero tall in a browser. Every page keeps its own controls out of the band, so the strip has
+     nothing to give way to; it is first in the document and first in paint order all the same,
+     so a control laid over it later could still opt out with `no-drag`. */
+  .window-drag-strip {
+    position: fixed;
+    inset: 0 0 auto;
+    height: env(titlebar-area-height, 0px);
+    z-index: -1;
+    -webkit-app-region: drag;
+    app-region: drag;
+  }
+  /* Every scroll container is its own containing block.
+     The shell is height-constrained (the three rules above) and each page scrolls inside its
+     own container, so the document must never scroll. What breaks that is an absolutely
+     positioned descendant of a scroller that is itself `static`: its containing block is then
+     the initial containing block, which nothing clips — not the scroller's own overflow, not
+     an `overflow-hidden` ancestor — so its static position past the fold becomes the
+     *document's* scrollable overflow, and a second scrollbar appears that drags the whole
+     shell. That bug shipped three times (sidebar session list, Traces tree, Agent settings),
+     every time through a visually-hidden-but-focusable control, so the invariant is set here
+     once instead of being remembered per scroller.
+     Scoped to the scrollable utilities on purpose: `overflow-hidden` is also used as a plain
+     clipping box (the docked panels' clipping windows), where forcing a containing block is
+     more likely to surprise than to help. Declared in `base`, so an explicit
+     absolute/fixed/sticky utility on the same element still wins; `position: relative` at
+     `z-index: auto` creates no stacking context, so the convention in the file header holds. */
+  .overflow-auto,
+  .overflow-x-auto,
+  .overflow-y-auto,
+  .overflow-scroll,
+  .overflow-x-scroll,
+  .overflow-y-scroll {
+    position: relative;
+  }
+  /* Hide the native scrollbar (replaced with custom controls, e.g. zoom/pan sliders in trace viewing). */
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* The preview is an interior row of Appearance, so only the surrounding settings group's
+   outer ends have corners. A nested last row must not acquire its own bottom corners. */
+.background-settings-details .ui-field {
+  border-radius: 0;
+}
+
+/* ---------- Animations (160-280ms ease, slight entrance offset + subtle scale) ---------- */
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes drawer-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: none;
+  }
+}
+
+@keyframes drawer-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* Login card entrance (used only on the login page; in-app pages skip entrance animations to avoid a
+   transform ancestor hijacking fixed-positioned overlays). */
+.anim-rise {
+  animation: rise-in 280ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+/* Dropdown menu / popover entrance. */
+.anim-pop {
+  animation: pop-in 120ms ease-out both;
+}
+/* A status icon replaced by the next one (the composer's permission level): the new icon turns
+   and grows in from small, so the change is seen rather than blinked. */
+@keyframes icon-swap {
+  from {
+    opacity: 0;
+    transform: scale(0.4) rotate(-45deg);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.15) rotate(6deg);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) rotate(0);
+  }
+}
+.anim-icon-swap {
+  display: block;
+  animation: icon-swap 260ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+/* Top toast overlay: slides in from above / slides up while fading out. */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes toast-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+}
+.anim-toast-in {
+  animation: toast-in 180ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+.anim-toast-out {
+  animation: toast-out 160ms ease-in both;
+}
+
+/* Overlay fade-in. */
+.anim-fade {
+  animation: fade-in 120ms ease-out both;
+}
+
+/* The dock launcher's fan (features/dock/dock-launcher.tsx): entries spring out of the ball
+   onto their places on the arc with a slight overshoot, and fold back into it without one.
+   Every entry's box sits ON the ball's centre; `--fan-x` / `--fan-y` are its own offset from
+   there, set per entry, and that translate is also the entry's resting inline transform — so
+   the reduced-motion block below, which drops the animation outright, leaves each entry
+   standing on the arc instead of collapsed onto the ball or hidden. */
+@keyframes launcher-fan-in {
+  from {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.5);
+  }
+  to {
+    opacity: 1;
+    transform: translate(var(--fan-x, 0px), var(--fan-y, 0px));
+  }
+}
+@keyframes launcher-fan-out {
+  from {
+    opacity: 1;
+    transform: translate(var(--fan-x, 0px), var(--fan-y, 0px));
+  }
+  to {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.5);
+  }
+}
+.launcher-fan-in {
+  animation: launcher-fan-in 260ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.launcher-fan-out {
+  animation: launcher-fan-out 140ms ease-in both;
+}
+/* Message item entrance. It fills backwards only, as the theme's own entrances do: an entrance
+   held at its end would keep a transform on every message, and a transformed box turns the fixed
+   backgrounds inside it into scrolling ones (a stuck work-group row's copy of the wallpaper). */
+.anim-msg {
+  animation: msg-in 180ms ease-out backwards;
+}
+
+/* Outline jump feedback: a soft brand wash fading out over the landed-on message. Applied by
+   conversation-outline.tsx to the [data-outline-anchor] wrapper via classList — deliberately
+   outside React's managed props, so stream re-renders don't strip it mid-flash. */
+@keyframes outline-flash {
+  from {
+    background-color: var(--color-brand-50);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+@keyframes outline-flash-dark {
+  from {
+    background-color: var(--color-brand-950);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+.outline-flash {
+  border-radius: 0.5rem;
+  animation: outline-flash 900ms ease-out both;
+}
+.dark .outline-flash {
+  animation-name: outline-flash-dark;
+}
+/* Drawer slide-in. */
+.anim-drawer-left {
+  animation: drawer-in-left 240ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+.anim-drawer-right {
+  animation: drawer-in-right 240ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+/* Truncated-title scroll reveal (#309, sidebar conversation rows; truncated.tsx attaches the
+   class and the two variables only when the title measurably overflows). While the row — the
+   [data-title-reveal] ancestor — is hovered or holds keyboard focus, the title slides its
+   clipped tail into view: the inner span becomes transformable (inline-block) and translates
+   by the measured overflow (--title-scroll-shift) over a duration proportional to it
+   (--title-scroll-ms), then holds at the end for as long as the hover/focus lasts. The base
+   state is a plain inline span — not transformable — so leaving the row drops the animation
+   and restores the text and its ellipsis in the same frame, with nothing to transition back.
+
+   Everything that alters the rendering lives INSIDE the keyframes, and the fill is `forwards`
+   only: during the 0.3s start delay there is no fill, so the row paints exactly as at rest and
+   a mouse merely passing across the sidebar leaves every title alone, ellipsis included. A
+   plain `display: inline-block` declaration on the hover rule would NOT hold that line — Blink
+   paints no ellipsis for an overflowing atomic inline, so the "…" would vanish the instant the
+   pointer touched the row, 0.3s before anything moved. That same suppression is why no
+   `text-overflow: clip` is needed: inline-block already retires the ellipsis for the duration.
+   Leaving it out is also what makes the degradation clean — an engine that ignores `display`
+   in keyframes gets a no-op (ellipsis kept, `title` tooltip still there) instead of a
+   clipped-but-motionless title.
+
+   Being an animation rather than a transition is what keeps the reduced-motion path cheap: the
+   global `animation: none !important` block below disables the reveal outright, leaving the
+   ellipsis and the `title` tooltip that truncated.tsx hands back there (#570). Choosing between
+   the two is the only thing JS reads the preference for, and it reads it from one app-wide media
+   query (the UI package's usePrefersReducedMotion) — still nothing subscribed per row.
+
+   :focus-visible (not :focus-within) scopes the keyboard trigger to actual keyboard focus;
+   inside :is() its selector is forgiving, so engines without :has() keep the hover trigger. */
+@keyframes title-scroll-reveal {
+  from {
+    display: inline-block;
+    transform: translateX(0);
+  }
+  to {
+    display: inline-block;
+    transform: translateX(var(--title-scroll-shift, 0px));
+  }
+}
+[data-title-reveal]:is(:hover, :has(:focus-visible)) .title-scroll > .title-scroll-text {
+  animation: title-scroll-reveal var(--title-scroll-ms, 0ms) linear 0.3s forwards;
+}
+
+/* The built-in browser's agent-at-work frame (features/builtin-browser/browser-layer.tsx): an
+   inset ring over the page on screen while an agent acts in it, drawn in the busy tone's ink
+   through currentColor. It breathes by opacity from a resting state that IS the full ring, so
+   the global `animation: none` below leaves it on screen, still, instead of hiding it. */
+@keyframes browser-agent-ring {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.browser-agent-ring {
+  box-shadow: inset 0 0 0 2px currentColor;
+  animation: browser-agent-ring 1.6s ease-in-out infinite;
+}
+
+/* The models page's TokenDance banner (features/models/tokendance-banner.tsx): a slow highlight
+   sweeps across the brand name alone every 6 s — a deliberate emphasis on the sponsor's name,
+   the one emphasis the banner carries (owner, 2026-10-12); the rest of the banner stands still.
+   The word is painted by a gradient clipped to its glyphs: its own ink on both sides of a narrow
+   bright band, three times the word's width. The band sweeps from before the word to past its
+   end, and the word's own resting position shows ink only, so under the global `animation: none`
+   below it is plain text. */
+@keyframes banner-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  30%,
+  100% {
+    background-position: 0% 0;
+  }
+}
+.banner-shimmer {
+  --banner-ink: var(--color-gray-700);
+  --banner-glow: var(--color-gray-300);
+  /* Deliberate emphasis on the sponsor's name. deslop-ignore-next-line 06 */
+  background-image: linear-gradient(
+    100deg,
+    var(--banner-ink) 42%,
+    var(--banner-glow) 50%,
+    var(--banner-ink) 58%
+  );
+  background-size: 300% 100%;
+  background-position: 0% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: banner-shimmer 6s ease-in-out infinite;
+}
+.dark .banner-shimmer {
+  --banner-ink: var(--color-gray-300);
+  --banner-glow: var(--color-white);
+}
+
+/* Login page circuit traces (login-circuit.tsx): pathLength=1 normalization, draw-in -> hold -> fade-out
+   loop. Base state is fully hidden: the positive animation-delay wait keeps the first paint blank, and
+   lines only start growing after load; once reduced-motion globally disables animation, the override below
+   restores fully static lines. */
+@keyframes login-trace-draw {
+  0% {
+    stroke-dashoffset: 1;
+    opacity: 0;
+  }
+  6% {
+    opacity: 1;
+  }
+  45% {
+    stroke-dashoffset: 0;
+  }
+  78% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  92%,
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+}
+@keyframes login-via-blink {
+  0%,
+  40% {
+    opacity: 0;
+  }
+  50%,
+  78% {
+    opacity: 1;
+  }
+  92%,
+  100% {
+    opacity: 0;
+  }
+}
+.login-trace {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  opacity: 0;
+  animation: login-trace-draw var(--trace-dur, 14s) linear infinite;
+}
+.login-via {
+  opacity: 0;
+  animation: login-via-blink var(--trace-dur, 14s) linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+  /* With the trace animation disabled, the base state is fully hidden; this overrides it back to static full lines. */
+  .login-trace {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  .login-via {
+    opacity: 1;
+  }
+  /* The truncated-title scroll reveal (#309) needs no override here: it is delivered
+     entirely by the `title-scroll-reveal` keyframes above — including the inline-block
+     that makes the text transformable at all — so `animation: none` leaves the title
+     exactly as it renders at rest, ellipsis and `title` tooltip included. */
+  /* Nor do the two busy session glyphs (#291): their keyframes, in the UI package's theme.css,
+     only rotate and scale, so disabling them leaves the hourglass upright and the compress mark
+     at full height — both still present, just not moving. */
+}
+
+/* The stretch of the context panel's bar past the compaction threshold: hatched, so it reads as
+   room the model has but compaction fires before the Session can use — distinct from the plain
+   free run left of the cutter. The stripe is the only carrier of that meaning (its `title` sits
+   inside the bar's aria-hidden track), so each theme weights its own ink to clear 3:1 against
+   the track it is drawn on: gray-200 in light, and in dark this app's own override of gray-800
+   (#1f1f1f, far darker than the stock value), which is why the dark stripe is the lighter ink
+   of the two. */
+.context-hatch {
+  /* The hatch is the meaning. deslop-ignore-next-line 06 */
+  background-image: repeating-linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--color-gray-600) 70%, transparent) 0 2px,
+    transparent 2px 6px
+  );
+}
+.dark .context-hatch {
+  /* deslop-ignore-next-line 06 */
+  background-image: repeating-linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--color-gray-400) 60%, transparent) 0 2px,
+    transparent 2px 6px
+  );
+}
+
+/* ---------- Markdown and code ---------- */
+
+/* The Markdown typography (`.md-body`, `.md-compact`, `.md-body-flush`), the code surface
+   (`.code-*`), Shiki's dark palette and the KaTeX fixes live in the shared UI package, beside the
+   components that draw them: packages/ui/src/components/content/prose/prose.css. */
+
+/* The company channel's bubble (`.channel-bubble`: the deeper inline-code chip and table rules
+   inside it) lives in the shared UI package too, beside its component:
+   packages/ui/src/components/chat/channel-bubble/channel-bubble.css. */

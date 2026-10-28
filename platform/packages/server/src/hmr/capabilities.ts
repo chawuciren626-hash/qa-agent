@@ -1,0 +1,619 @@
+/**
+ * The runtime→platform capability contract: what the runtime publishes through the
+ * resource registry for the booting platform to claim.
+ *
+ * The registry is the only channel the kernel offers a booting platform (ctx carries
+ * `resources`, nothing else), and everything here is published for one of two reasons:
+ *
+ * - it is runtime MECHANISM the platform must not re-implement (authentication, the SSE
+ *   channel hub, the proxy dispatcher — a pushed bundle carries its own copy of every
+ *   module, so a bundle-side `applyProxySettings` would only update the bundle's copy of
+ *   net/proxy.js, which never installed the process dispatcher);
+ * - or it is a live object that must be ONE per process (the SQLite handle — web.db is
+ *   single-writer; the ServerConfig object — the listen callback writes the real port
+ *   back into it and every reader must observe that write).
+ *
+ * What a booting platform does when the capabilities are missing or wrong — refuse, or
+ * run terminals-only for a declared bare kernel — is {@link HmrClaim}'s story, below.
+ *
+ * There is no reverse direction here: the runtime reaches the current App through the
+ * instance `hmr.ensure()` already returns (in-process api members), never through the
+ * registry.
+ */
+import type { DatabaseSync } from "node:sqlite";
+import type { Resources, Opaque, ModuleClass } from "@prismshadow/penguin-core/kernel";
+import type { ServerConfig } from "../config.js";
+import type { AuthRuntimeState } from "../auth/runtime-state.js";
+import { newAuthRuntimeState } from "../auth/runtime-state.js";
+import type { ChannelHub, Channel } from "../runtime/channel.js";
+import type { ProxySettings } from "../net/proxy.js";
+import type { HmrHost, Hmr as HmrControlOf } from "@prismshadow/penguin-hmr";
+import type { PlatformApi } from "./platform.js";
+
+/** The control object the entry built (hmrMain): `current()` and `upgrade()`. */
+export type HmrControlApi = HmrControlOf<PlatformApi>;
+import type { DesktopService } from "../services/desktop-service.js";
+import { Interface, Component, Module, Provide, Use } from "@prismshadow/penguin-core/kernel";
+
+/**
+ * What one side of the seam speaks: a family, and a Go-style structural interface per
+ * name — the member set a consumer depends on, not a version number.
+ *
+ * Live objects cannot be strict-parsed the way a parked context document is (a claim is a
+ * cast), so this descriptor is the agreement that stands in for a schema. It is
+ * structural for the same reason the kernel's iface is (see boot()'s method-set check):
+ * satisfaction is implicit — anything carrying those members satisfies it — and it can be
+ * verified against the LIVE object rather than trusted. A number cannot be: it says
+ * nothing about what is actually there, it has to be remembered and bumped by hand, and
+ * every bump is global, so widening `db` would decline a bundle that only ever touches
+ * `terminal`. A member set narrows that automatically: adding a member cannot break a
+ * consumer that never named it, and removing one is caught by name at the claim.
+ *
+ * `family` names whose vocabulary these interface names belong to. Two descriptors of
+ * different families share nothing — the same name means something else over there — so a
+ * platform that does not want to inherit penguin's interfaces changes its family and
+ * inherits none of them, rather than having to disagree with each entry one by one.
+ */
+export interface Interfaces {
+  /** Whose vocabulary the names below belong to; {@link PENGUIN_FAMILY} for this build. */
+  family: string;
+  /** The members a consumer of that interface depends on. */
+  [name: string]: string | readonly string[];
+}
+
+/**
+ * Member names of `T`, checked by the compiler: a name `T` does not carry is an error
+ * here, so a rename or a removal breaks the build at the declaration instead of drifting
+ * into a descriptor that describes a shape nothing has. This is what keeps a hand-written
+ * member set honest — the runtime check in {@link lacksMembers} verifies the live object,
+ * and this verifies the list itself against the type it claims to describe.
+ *
+ * Names only: a changed SIGNATURE is out of reach of both checks, since the wire form is
+ * strings. That is the documented limit of a structural descriptor carried across a
+ * module boundary.
+ */
+export type MembersOf<T> = readonly (keyof T & string)[];
+
+/** The family the interfaces this repo defines belong to. */
+export const PENGUIN_FAMILY = "penguin";
+
+/**
+ * The interfaces the HMR LAYER publishes for a platform to claim: per `runtime:*`
+ * capability, the members a claimer reaches for. The runtime registers this descriptor
+ * and a bundle checks it — and the live objects behind it — against the copy compiled
+ * into itself, so a mismatch declines the claim at boot instead of surfacing as a
+ * TypeError inside a request or a sweep timer.
+ *
+ * `proxy` is a bare callable: an empty member set means "nothing beyond being there".
+ */
+interface HmrInterfaces extends Interfaces {
+  family: string;
+  config: MembersOf<ServerConfig>;
+  db: MembersOf<DatabaseSync>;
+  channels: MembersOf<ChannelHub>;
+  proxy: MembersOf<ProxyControl>;
+  hmr: MembersOf<HmrHost>;
+  desktop: MembersOf<DesktopService>;
+}
+
+export const HMR_INTERFACES: HmrInterfaces = {
+  family: PENGUIN_FAMILY,
+  // A config member added after runtimes shipped does NOT go in this list: naming it here
+  // refuses every installed runtime that predates it, and a push can never replace the
+  // runtime — only a reinstall can. Such a member is optional on ServerConfig and its
+  // consumer defaults it when the runtime does not publish it: cliEntry, penguinGoOrigin,
+  // modelscopeBridgeUrl.
+  config: [
+    "root",
+    "host",
+    "port",
+    "dbPath",
+    "webDist",
+    "previewOrigin",
+    "seedAdminPassword",
+    "authSessionTtlMs",
+    "authSessionRenewMs",
+    "desktopToken",
+    "portFile",
+    "trustProxy",
+  ],
+  db: ["prepare", "exec", "close"],
+  channels: ["get", "peek", "broadcast", "dispose", "setActivityProbe"],
+  proxy: [],
+  hmr: ["resources", "ensure", "resolveWebSource", "assetsDir", "dispose"],
+  hmrControl: ["current", "upgrade", "endpoint"],
+  // The replacement seam (Replacements): production publishes [], tests publish the nodes
+  // they stand in for. Presence-only — a list has no members to verify.
+  overrides: [],
+  desktop: ["onShutdownRequest", "requestShutdown", "verifyToken", "redeemLoginToken"],
+};
+
+export const HMR_INTERFACES_RESOURCE_ID = "platform.interfaces";
+
+/** The member set an entry names, or [] when the entry is absent or is the family tag. */
+function members(descriptor: Interfaces, name: string): readonly string[] | undefined {
+  const entry = descriptor[name];
+  return Array.isArray(entry) ? entry : undefined;
+}
+
+/**
+ * The mismatch between what a side offers and what the claimer requires, or null when
+ * every required interface is offered with at least the members named. Go semantics: the
+ * offering side may carry more, never less. A different family short-circuits — the names
+ * are not comparable at all.
+ */
+export function interfaceMismatch(
+  offered: Interfaces | undefined,
+  required: Interfaces,
+): string | null {
+  if (offered === undefined) return "no interface descriptor published";
+  if (offered.family !== required.family) {
+    return `family '${String(offered.family)}' != '${String(required.family)}'`;
+  }
+  for (const name of Object.keys(required)) {
+    if (name === "family") continue;
+    const need = members(required, name) ?? [];
+    const have = members(offered, name);
+    if (have === undefined) return `${name}: not offered`;
+    const missing = need.filter((m) => !have.includes(m));
+    if (missing.length > 0) return `${name}: missing ${missing.join(", ")}`;
+  }
+  return null;
+}
+
+/**
+ * Whether a live object actually carries the members its interface names — the same check
+ * boot() runs on an impl against its iface, applied to a claimed capability. This is what
+ * a structural descriptor buys over a number: the declaration is verified, not trusted.
+ */
+export function lacksMembers(value: unknown, need: readonly string[]): string[] {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+    return [...need];
+  }
+  return need.filter((m) => (value as Record<string, unknown>)[m] === undefined);
+}
+
+// What the layer publishes for the platform to claim: the platform's state, kept by the process
+// so a swap does not lose it. Ids are `platform.<name>`, the plugin-id shape.
+
+export const HMR_CONFIG_RESOURCE_ID = "platform.config";
+export const HMR_DB_RESOURCE_ID = "platform.db";
+export const HMR_CHANNELS_RESOURCE_ID = "platform.channels";
+export const HMR_PROXY_RESOURCE_ID = "platform.proxyControl";
+export const HMR_HOST_RESOURCE_ID = "platform.host";
+/** The frozen operations over the host (packages/hmr's main.ts): what the upgrade route drives. */
+export const HMR_CONTROL_RESOURCE_ID = "platform.hmrControl";
+/**
+ * Desktop mode's one service (one-shot login + shutdown token holder). Registered even
+ * when null — the platform reads desktop-ness too (`/api/me`, single-user mode), so the
+ * claim must distinguish "not desktop" from "not published".
+ */
+export const HMR_DESKTOP_RESOURCE_ID = "platform.desktop";
+
+/**
+ * Process-scoped auth values (auth/runtime-state.ts), not an auth service. Claimed
+ * optionally: a layer older than the holder gives the platform a fresh one, which costs one
+ * reprint of the first-login link.
+ */
+export const HMR_AUTH_STATE_RESOURCE_ID = "platform.authState";
+/** Test-only: the node Replacements bootAppDeps leaves for the platform boot to claim. */
+export const HMR_OVERRIDES_RESOURCE_ID = "platform.overrides";
+
+/**
+ * Test-only: plugin entries a test stands up in process, unioned into the host the platform
+ * builds from the closure. Its own id, not the host's: the closure is read from disk, so a
+ * plugin that exists only as an object in a test has no specifier anyone could import.
+ */
+export const HMR_TEST_PLUGINS_RESOURCE_ID = "platform.pluginsInjected";
+
+/**
+ * The {@link Interfaces} descriptor each App leaves for its successor, naming the
+ * live-object contracts it parks by ID-prefix group (`terminal` covers every `terminal:*`
+ * entry). The NEXT App's create() compares it against its own compiled-in declaration and
+ * integrates a group only at the SAME version and family, hard-stopping the rest (reverse
+ * registration order) before it adopts anything. Riding the registry, not the kernel
+ * iface, keeps the swap mechanism untouched and the policy itself hot-pushable.
+ *
+ * Not in any `<group>:` — disposeGroup never sweeps it: the declaration must outlive the App
+ * that wrote it (its dispose effect does NOT release it) to inform the successor.
+ */
+export const RESOURCE_IFACES_RESOURCE_ID = "platform.resourceInterfaces";
+
+/*
+ * There is deliberately NO reverse-direction registry entry. The runtime already holds
+ * the current App — it is `hmr.ensure()`'s instance — and everything it needs from the
+ * business side is an in-process member on that instance's api (`business()`,
+ * `shutdown()`, `drained()`) or a hook the App installs over a claimed capability
+ * (ChannelHub.setActivityProbe). A "current App" pointer in
+ * the registry was a duplicate of the host's own instance field, and the registry should
+ * carry only what has no other channel: resources, capabilities, and the contract
+ * declarations about them.
+ */
+
+/** Applies proxy settings to the RUNTIME's global dispatcher (see net/proxy.ts). */
+export type ProxyControl = (settings: ProxySettings) => void;
+
+/** Everything buildAppDeps needs, claimed in one place. */
+export interface HmrCapabilities {
+  config: ServerConfig;
+  db: DatabaseSync;
+  /** Process-scoped auth values; the AuthService itself is built per App (see buildAppDeps). */
+  authState: AuthRuntimeState;
+  channels: ChannelHub;
+  proxyControl: ProxyControl;
+  hmr: HmrHost;
+  hmrControl: HmrControlApi;
+  /** Null on a non-desktop server (a real value, not an absent capability). */
+  desktop: DesktopService | null;
+  /** Nodes a test stands in for (see Replacements); [] outside tests. */
+  replacements: Replacements;
+}
+
+/**
+ * The outcome of asking the host what it is, decided entirely by what it published:
+ *
+ * - `claimed` — a descriptor of this family offering the full capability set, with every
+ *   live object carrying the members the descriptor names.
+ * - `bare` — a descriptor of this family offering NONE of the capabilities: the host's
+ *   own declaration that there is no business runtime behind it (a bare kernel in
+ *   tests). Terminals-only is legal there. The declaration rides the descriptor the
+ *   handshake already reads — a host that offers nothing SAYS so, in the same document
+ *   every host describes itself in, rather than through a side-channel marker.
+ * - `refused` — everything else, with the reason: no descriptor (a runtime too old for
+ *   the handshake), a different family, a partial offer, or a live object that does not
+ *   carry what the descriptor promised. Booting a business platform over any of these
+ *   would put a new frontend in front of an older runtime's own routes.
+ */
+export type HmrClaim =
+  | { kind: "claimed"; caps: HmrCapabilities }
+  | { kind: "bare" }
+  | { kind: "refused"; reason: string };
+
+export function claimHmrCapabilities(resources: Resources): HmrClaim {
+  const offered = resources.claim<Interfaces>(HMR_INTERFACES_RESOURCE_ID);
+  if (offered === undefined) {
+    return { kind: "refused", reason: "no interface descriptor published" };
+  }
+  if (offered.family !== HMR_INTERFACES.family) {
+    return {
+      kind: "refused",
+      reason: `family '${String(offered.family)}' != '${String(HMR_INTERFACES.family)}'`,
+    };
+  }
+  // A family-matching descriptor that offers none of the required capabilities IS the
+  // bare-kernel declaration; offering SOME of them is a broken runtime, refused below.
+  const required = Object.keys(HMR_INTERFACES).filter((name) => name !== "family");
+  if (required.every((name) => members(offered, name) === undefined)) {
+    return { kind: "bare" };
+  }
+  const mismatch = interfaceMismatch(offered, HMR_INTERFACES);
+  if (mismatch !== null) return { kind: "refused", reason: mismatch };
+  const config = resources.claim<ServerConfig>(HMR_CONFIG_RESOURCE_ID);
+  const db = resources.claim<DatabaseSync>(HMR_DB_RESOURCE_ID);
+  const channels = resources.claim<ChannelHub>(HMR_CHANNELS_RESOURCE_ID);
+  const proxyControl = resources.claim<ProxyControl>(HMR_PROXY_RESOURCE_ID);
+  const hmr = resources.claim<HmrHost>(HMR_HOST_RESOURCE_ID);
+  const hmrControl = resources.claim<HmrControlApi>(HMR_CONTROL_RESOURCE_ID);
+  if (!config || !db || !channels || !proxyControl || !hmr || !hmrControl) {
+    return { kind: "refused", reason: "a declared capability was not actually published" };
+  }
+  // Desktop is nullable by meaning, so it sits outside the all-present check.
+  const desktop = resources.claim<DesktopService | null>(HMR_DESKTOP_RESOURCE_ID) ?? null;
+  // The slot's older occupant is the overrides bag ({}), not a list: a platform pushed onto
+  // an older runtime reads that as "no replacements" rather than tripping over it.
+  const claimedReplacements = resources.claim<unknown>(HMR_OVERRIDES_RESOURCE_ID);
+  const replacements: Replacements = Array.isArray(claimedReplacements)
+    ? (claimedReplacements as Replacements)
+    : [];
+  // Optional by design (see the resource's own note): an older runtime published no such
+  // holder, and a fresh one is a correct, slightly forgetful substitute. A runtime older
+  // than this platform may also publish a holder missing the fields added since; they are
+  // filled IN PLACE, never by copying — the bag is shared with the runtime by identity, and
+  // a copy would strand every write the App makes to it.
+  const authState =
+    resources.claim<AuthRuntimeState>(HMR_AUTH_STATE_RESOURCE_ID) ?? newAuthRuntimeState();
+  authState.firstLoginToken ??= null;
+  authState.apiToken ??= null;
+  // …then the objects themselves. A descriptor is a claim about what is there; this is
+  // the part that checks it, so an honest-but-wrong runtime is caught here rather than at
+  // the first call site. `desktop` is exempt when null — that is a value, not a shortfall.
+  const live: Array<[string, unknown]> = [
+    ["config", config],
+    ["db", db],
+    ["channels", channels],
+    ["proxy", proxyControl],
+    ["hmr", hmr],
+    ["hmrControl", hmrControl],
+    ...(desktop === null ? [] : ([["desktop", desktop]] as Array<[string, unknown]>)),
+  ];
+  for (const [name, value] of live) {
+    const need = HMR_INTERFACES[name];
+    if (!Array.isArray(need)) continue;
+    const lacking = lacksMembers(value, need);
+    if (lacking.length > 0) {
+      return { kind: "refused", reason: `runtime ${name} lacks ${lacking.join(", ")}` };
+    }
+  }
+  return {
+    kind: "claimed",
+    caps: {
+      config,
+      db,
+      authState,
+      channels,
+      proxyControl,
+      hmr,
+      hmrControl,
+      desktop,
+      replacements,
+    },
+  };
+}
+
+/**
+ * What the runtime publishes, as the tree sees it. The runtime registers live objects in
+ * the resource registry; the platform claims them once and hands each to a node of its own
+ * (RuntimeDb, RuntimeChannels, …) that provides it under an interface declared here. Every
+ * other node reaches the runtime only through these — `@Use() db!: Db` — so what a bundle
+ * needs from its host is written down and checked, not assumed.
+ */
+
+/** The process configuration object — one per process; the listen callback writes the real port into it. */
+export abstract class Config extends Interface<ServerConfig>() {}
+
+/** The SQLite handle (single-writer, one per process). Statements are host objects. */
+@Interface()
+export abstract class Db {
+  abstract prepare(sql: string): Opaque<"StatementSync", ReturnType<DatabaseSync["prepare"]>>;
+  abstract exec(sql: string): void;
+  abstract close(): void;
+}
+
+/** One SSE channel (the class in runtime/channel.ts satisfies this). */
+export type ChannelApi = Pick<
+  Channel,
+  "publish" | "sendTo" | "subscribe" | "replayAfter" | "lastEventId"
+>;
+
+@Interface()
+export abstract class Channels {
+  abstract get(key: string): ChannelApi;
+  abstract peek(key: string): ChannelApi | undefined;
+  abstract broadcast(prefix: string, data: unknown, event?: string): void;
+  abstract dispose(): void;
+  abstract setActivityProbe(probe: (key: string) => boolean): void;
+}
+/** Compile-time proof the hub satisfies the contract. */
+export type _ChannelsCheck = ChannelHub extends Channels ? true : never;
+
+/** The global fetch dispatcher's settings — runtime-owned, since only the runtime's copy of net/proxy.js installed that dispatcher. */
+@Interface()
+export abstract class Proxy {
+  abstract apply(settings: ProxySettings): void;
+}
+
+/** The hot-update host: the cross-generation resource registry and the current App. */
+@Interface()
+export abstract class Hmr {
+  abstract resources: Resources;
+  abstract ensure(): Promise<Opaque<"PlatformInstance", Awaited<ReturnType<HmrHost["ensure"]>>>>;
+  abstract resolveWebSource(): Opaque<
+    "WebSource",
+    NonNullable<ReturnType<HmrHost["resolveWebSource"]>>
+  > | null;
+  abstract assetsDir(): string | null;
+  abstract dispose(): void;
+}
+export type _HmrCheck = HmrHost extends Hmr ? true : never;
+
+/**
+ * The frozen operations (packages/hmr's main.ts), as the platform's routes drive them. The
+ * instance and the outcome are host objects to the contract, like `Hmr`'s.
+ */
+@Interface()
+export abstract class HmrControl {
+  abstract current(): Promise<Opaque<"PlatformInstance", Awaited<ReturnType<HmrHost["ensure"]>>>>;
+  abstract upgrade(
+    target: Opaque<"UpgradeAllTarget", Parameters<HmrHost["upgradeAll"]>[0]>,
+  ): Promise<Opaque<"UpgradeOutcome", Awaited<ReturnType<HmrHost["upgradeAll"]>>>>;
+  abstract endpoint(request: Opaque<"Request", Request>): Promise<Opaque<"Response", Response>>;
+}
+
+export type DesktopApi = Pick<
+  DesktopService,
+  | "verifyToken"
+  | "redeemLoginToken"
+  | "onShutdownRequest"
+  | "requestShutdown"
+  | "getUpdateStatus"
+  | "setUpdateStatus"
+  | "onUpdateCommand"
+  | "requestUpdateCommand"
+  | "getTrayStatus"
+  | "setTrayStatus"
+  | "onTrayCommand"
+  | "requestTrayCommand"
+  | "onFolderAccessRequest"
+  | "requestFolderAccess"
+  | "onPrivacySettingsCommand"
+  | "requestPrivacySettings"
+>;
+
+/** The desktop shell's service, or null when this server is not the shell's child. */
+@Interface()
+export abstract class Desktop {
+  abstract current(): DesktopApi | null;
+}
+
+export abstract class AuthState extends Interface<AuthRuntimeState>() {}
+
+@Interface()
+export abstract class Log {
+  abstract line(text: string): void;
+}
+
+/**
+ * Whether a registry resource group inherited from the previous App may be adopted — the
+ * platform node decides from the parked declaration (hmr/platform.ts); a
+ * module that parks handles asks before claiming them back.
+ */
+@Interface()
+export abstract class ResourceGroups {
+  abstract adoptable(group: string): boolean;
+}
+
+/** A clock every node reads time through; a test replaces it. */
+@Interface()
+export abstract class Clock {
+  abstract now(): Date;
+}
+
+/** Where the data lives — what most nodes actually want from the config. */
+@Interface()
+export abstract class Paths {
+  abstract root: string;
+}
+
+/**
+ * A replacement for one node of the tree: the class the platform would build, and the
+ * instance to boot in its place. Tests publish these (bootAppDeps) for the platform to
+ * claim; production publishes none. A replacement is checked exactly like the node it
+ * stands in for — the table says what the class provides, the instance has to have it.
+ */
+export type Replacements = ReadonlyArray<readonly [ModuleClass, object]>;
+
+/**
+ * The claimed capabilities enter the tree one node each, so a consumer names the one it
+ * needs and nothing else. They are the only classes with constructor arguments; the
+ * platform pre-builds their instances (platform.ts) from the claim, which is the one
+ * place the registry is read.
+ */
+@Module()
+export class RuntimeConfig {
+  @Provide() config!: Config;
+  constructor(private readonly caps: HmrCapabilities) {}
+  setup() {
+    this.config = this.caps.config;
+  }
+}
+@Module()
+export class RuntimeDb {
+  @Provide() db!: Db;
+  constructor(private readonly caps: HmrCapabilities) {}
+  setup() {
+    this.db = this.caps.db;
+  }
+}
+@Module()
+export class RuntimeChannels {
+  @Provide() channels!: Channels;
+  constructor(private readonly caps: HmrCapabilities) {}
+  setup() {
+    this.channels = this.caps.channels;
+  }
+}
+@Module()
+export class RuntimeProxy {
+  @Provide() proxy!: Proxy;
+  constructor(private readonly caps: HmrCapabilities) {}
+  setup() {
+    this.proxy = { apply: this.caps.proxyControl };
+  }
+}
+@Module()
+export class RuntimeHmr {
+  @Provide() hmr!: Hmr;
+  constructor(private readonly caps: HmrCapabilities) {}
+  setup() {
+    this.hmr = this.caps.hmr;
+  }
+}
+@Module()
+export class RuntimeHmrControl {
+  @Provide() hmrControl!: HmrControl;
+  constructor(private readonly caps: HmrCapabilities) {}
+  setup() {
+    this.hmrControl = this.caps.hmrControl;
+  }
+}
+
+/**
+ * The App re-assembling itself from the same bundle — how a plugin change applies without
+ * a process restart. The PLATFORM's own, above the seam: it re-boots its inner tree with
+ * the kernel's upgrade, and the runtime holds the same outer instance throughout (see
+ * hmr/platform.ts). Nothing here is a runtime capability, so it works on every runtime.
+ */
+/**
+ * A configuration change that a re-assembly applies: written just before the new tree
+ * boots, in the same queue as every other re-assembly (so two edits of one file never
+ * interleave), and undone before the previous tree is restored when that boot fails — the
+ * restore boot reads the same configuration, and a change that broke the tree once would
+ * break it again.
+ */
+export interface ReassemblyChange {
+  write(): Promise<void>;
+  undo(): Promise<void>;
+}
+@Interface()
+export abstract class Reassembly {
+  /** Whether the re-assembled tree is the one now running; false when its boot failed and the previous one was restored. */
+  abstract reassemble(change?: ReassemblyChange): Promise<boolean>;
+}
+@Module()
+export class AppReassembly {
+  @Provide() reassembly!: Reassembly;
+  constructor(private readonly run: (change?: ReassemblyChange) => Promise<boolean>) {}
+  setup() {
+    this.reassembly = { reassemble: this.run };
+  }
+}
+@Module()
+export class RuntimeDesktop {
+  @Provide() desktop!: Desktop;
+  constructor(private readonly caps: HmrCapabilities) {}
+  setup() {
+    const { desktop } = this.caps;
+    this.desktop = { current: () => desktop };
+  }
+}
+@Module()
+export class RuntimeAuthState {
+  @Provide() authState!: AuthState;
+  constructor(private readonly caps: HmrCapabilities) {}
+  setup() {
+    this.authState = this.caps.authState;
+  }
+}
+@Module()
+export class RuntimeResourceGroups {
+  @Provide() resourceGroups!: ResourceGroups;
+  constructor(private readonly adoptable: (group: string) => boolean) {}
+  setup() {
+    this.resourceGroups = { adoptable: this.adoptable };
+  }
+}
+
+/** The process log; a test replaces it with a sink. */
+@Component()
+export class ConsoleLog implements Log {
+  line(text: string): void {
+    console.log(text);
+  }
+}
+
+/** Wall-clock time; a test replaces it with a frozen one. */
+@Component()
+export class SystemClock implements Clock {
+  now(): Date {
+    return new Date();
+  }
+}
+
+/** The data root, read off the config. */
+@Component()
+export class ConfigPaths implements Paths {
+  @Use() private readonly config!: Config;
+  get root(): string {
+    return this.config.root;
+  }
+}

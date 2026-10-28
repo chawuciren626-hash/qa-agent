@@ -37,9 +37,12 @@ export function qaBindProject(
   sessionId,
   storage = globalThis.localStorage,
 ) {
-  if (!groupId) return;
   const scope = qaScope(projectId, userId, storage),
     value = qaRead(scope, storage);
+  if (!groupId) {
+    groupId = "default-workspace";
+    if (!value.projects.some(p => p.id === groupId)) value.projects.push({ id: groupId, name: "默认工作空间", folders: [] });
+  }
   if (!value.projects.some((p) => p.id === groupId)) return;
   value.bindings[sessionId] = groupId;
   qaWrite(scope, value, storage);
@@ -81,6 +84,21 @@ export function qaProjectForSession(projects, bindings, session) {
   )
     return null;
   return matches[0].project;
+}
+// Derived groups keep historical tasks reachable without moving any directories or rewriting history.
+export function qaWorkspaceGroups(value, sessions = []) {
+  const projects = [...value.projects], bindings = { ...value.bindings };
+  for (const session of sessions) {
+    const matched = qaProjectForSession(projects, bindings, session);
+    if (matched) { bindings[session.sessionId] = matched.id; continue; }
+    const path = String(session.workspace || "").replaceAll("\\", "/").replace(/\/+$/, "");
+    const leaf = path.split("/").at(-1);
+    const folder = /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-[a-f0-9]+$/i.test(leaf || "") ? path.slice(0, path.lastIndexOf("/")) : path;
+    const id = bindings[session.sessionId] || (folder ? "historical:" + folder.toLowerCase() : "default-workspace");
+    if (!projects.some(p => p.id === id)) projects.push({ id, name: folder ? folder.split("/").filter(Boolean).at(-1) || folder : "默认工作空间", folders: folder ? [folder] : [], historical: true });
+    bindings[session.sessionId] = id;
+  }
+  return { projects, bindings };
 }
 export function qaTaskStatus(session, live = {}) {
   if (live.humanWaiting) return { label: "等待人工操作", kind: "waiting" };
@@ -125,7 +143,7 @@ const qaGeneralPrompts = [
   "根据需求生成测试用例",
   "执行一轮回归测试",
   "汇总本轮测试结果并输出测试报告",
-  "分析目标的性能与安全测试范围",
+  "根据需求生成测试点",
 ];
 export const qaScenes = [
   {
@@ -137,7 +155,7 @@ export const qaScenes = [
       "根据需求生成测试用例",
       "执行一轮功能回归测试",
       "汇总本轮测试结果并输出测试报告",
-      "分析目标的性能与安全测试范围",
+      "根据功能需求生成测试点",
     ],
   },
   {
@@ -149,7 +167,7 @@ export const qaScenes = [
       "根据接口文档生成测试用例",
       "执行一轮接口自动化回归测试",
       "汇总接口测试结果并输出测试报告",
-      "分析接口的性能与安全测试范围",
+      "根据接口文档生成测试点",
     ],
   },
   {
@@ -161,7 +179,7 @@ export const qaScenes = [
       "根据页面需求生成测试用例",
       "执行一轮 Web 自动化回归测试",
       "汇总 Web 自动化测试结果并输出测试报告",
-      "分析网页的性能与安全测试范围",
+      "根据页面需求生成测试点",
     ],
   },
 ];
@@ -191,6 +209,10 @@ export function qaToggleBookmark(key, turn, storage = globalThis.localStorage) {
   storage.setItem(key,JSON.stringify(next));return next;
 }
 export function createWorkspaceUI(deps) {
+  // Source builds inject these assets; legacy distributions supply the concatenated constants.
+  const clientStyles = deps.clientStyles ?? (typeof qaClientStyles === "string" ? qaClientStyles : "");
+  const brandLogo = deps.brandLogo ?? (typeof qaBrandLogo === "string" ? qaBrandLogo : "");
+  const brandLogoLight = deps.brandLogoLight ?? (typeof qaBrandLogoLight === "string" ? qaBrandLogoLight : brandLogo);
   const {
     React: R,
     useProject,
@@ -202,6 +224,7 @@ export function createWorkspaceUI(deps) {
     Modal,
     AccountMenu,
     SidebarTools,
+    ProjectNavigation,
     useSessionActions = () => null,
     notify,
     reportError,
@@ -238,8 +261,8 @@ export function createWorkspaceUI(deps) {
   }
   function BrandLogo({className = "qa-sidebar-logo"}) {
     return h("span", {className: `qa-brand-mark ${className}`, role: "img", "aria-label": "AITestHarness Logo"},
-      h("img", {src: qaBrandLogo, className:"qa-logo-default", alt:"", "aria-hidden":true, draggable:false}),
-      h("img", {src: qaBrandLogoLight, className:"qa-logo-light", alt:"", "aria-hidden":true, draggable:false}));
+      h("img", {src: brandLogo, className:"qa-logo-default", alt:"", "aria-hidden":true, draggable:false}),
+      h("img", {src: brandLogoLight, className:"qa-logo-light", alt:"", "aria-hidden":true, draggable:false}));
   }
   if (
     typeof document !== "undefined" &&
@@ -247,7 +270,7 @@ export function createWorkspaceUI(deps) {
   ) {
     const el = document.createElement("style");
     el.id = "aitest-client-styles";
-    el.textContent = qaClientStyles;
+    el.textContent = clientStyles;
     document.head.append(el);
     document.documentElement.dataset.qaClient = "v2";
   }
@@ -351,9 +374,9 @@ export function createWorkspaceUI(deps) {
     }, [open]);
     function create() {
       const label = name.trim();
-      if (!label) return setError("请输入项目名称后再创建");
+      if (!label) return setError("请输入工作空间名称后再创建");
       if (groups.projects.some((p) => p.name === label))
-        return setError("已有同名项目，请使用其他名称");
+        return setError("已有同名工作空间，请使用其他名称");
       const project = {
         id: crypto.randomUUID(),
         name: label,
@@ -367,16 +390,16 @@ export function createWorkspaceUI(deps) {
           projects: [...latest.projects, project],
         });
         onCreated(project);
-        notify(`项目「${label}」已创建`);
+        notify(`工作空间「${label}」已创建`);
       } catch {
-        setError("项目保存失败，请检查本机存储空间后重试");
+        setError("工作空间保存失败，请检查本机存储空间后重试");
       }
     }
     return h(
       Modal,
       {
         open,
-        title: "新建项目",
+        title: "新建工作空间",
         onClose,
         widthClass: "qa-project-modal",
         footer: h(
@@ -390,7 +413,7 @@ export function createWorkspaceUI(deps) {
               disabled: !name.trim(),
               onClick: create,
             },
-            "创建项目",
+            "创建工作空间",
           ),
         ),
       },
@@ -400,7 +423,7 @@ export function createWorkspaceUI(deps) {
         h(
           "label",
           { htmlFor: "qa-project-name", className: "qa-sr" },
-          "项目名称",
+          "工作空间名称",
         ),
         h(
           "div",
@@ -410,7 +433,7 @@ export function createWorkspaceUI(deps) {
             id: "qa-project-name",
             autoFocus: true,
             maxLength: 80,
-            placeholder: "项目名称",
+            placeholder: "工作空间名称",
             value: name,
             "aria-invalid": !!error,
             onChange: (e) => {
@@ -491,18 +514,31 @@ export function createWorkspaceUI(deps) {
       { user } = useAuth(),
       navigate = useNavigate(),
       location = useLocation(),
-      groups = useGroups();
+      storedGroups = useGroups();
     const [modal, setModal] = R.useState(false),
       [toolsCollapsed, setToolsCollapsed] = R.useState(() => {
         try { return localStorage.getItem("penguin.sidebarNavGroupCollapsed") === "collapsed"; } catch { return false; }
       }),
       [collapsed, setCollapsed] = R.useState({}),
       [more, setMore] = R.useState(false),
-      [recentLimit, setRecentLimit] = R.useState(3),
-      [search, setSearch] = R.useState(""),
       [refreshing, setRefreshing] = R.useState(false);
+    const loadMarker = R.useRef(null);
+    const [loadError, setLoadError] = R.useState(false);
+    const canLoad = project.agents.some(a => sessionState.hasMoreFor(a.agentId, "active"));
+    R.useEffect(() => {
+      if (!canLoad || refreshing || loadError || !loadMarker.current) return;
+      const observer = new IntersectionObserver(entries => {
+        if (!entries.some(entry => entry.isIntersecting)) return;
+        observer.disconnect(); setRefreshing(true);
+        Promise.all(project.agents.filter(a => sessionState.hasMoreFor(a.agentId, "active")).map(a => sessionState.loadMoreFor(a.agentId, "active")))
+          .catch(() => setLoadError(true)).finally(() => setRefreshing(false));
+      });
+      observer.observe(loadMarker.current);
+      return () => observer.disconnect();
+    }, [canLoad, refreshing, loadError, sessionState.sessions.length, project.currentProject?.projectId]);
     const selectedId = location.pathname.split("/chat/")[1];
     const sessionActions = useSessionActions({selectedId, onRemoved: () => go("/chat/new")});
+    const search = String(sessionActions?.searchQuery || "").trim();
     const sessions = sessionState.sessions.filter(
       (s) =>
         !s.origin?.length &&
@@ -512,6 +548,7 @@ export function createWorkspaceUI(deps) {
         !s.archived &&
         s.status !== "archived",
     );
+    const groups = { ...storedGroups, ...qaWorkspaceGroups(storedGroups, sessions) };
     const agentId =
       project.agents.find((a) => a.agentId === "test_agent")?.agentId ||
       project.currentAgent?.agentId;
@@ -520,6 +557,15 @@ export function createWorkspaceUI(deps) {
       onNavigate?.();
     }
     function start(group) {
+      group ??= groups.projects.find(p => p.id === location.state?.qaProjectId)
+        || qaProjectForSession(groups.projects, groups.bindings, sessions.find(s => s.sessionId === selectedId) || { sessionId: "" })
+        || (groups.projects.length === 1 ? groups.projects[0] : null)
+        || groups.projects.find(p => p.id === "default-workspace")
+        || { id: "default-workspace", name: "默认工作空间", folders: [] };
+      try {
+        const latest = qaRead(groups.scope);
+        if (!latest.projects.some(p => p.id === group.id)) qaWrite(groups.scope, { ...latest, projects: [...latest.projects, group] });
+      } catch { reportError("工作空间保存失败，请重试后再创建任务"); return; }
       go("/chat/new", {
         agentId,
         workspace: group?.folders[0] || "",
@@ -574,8 +620,9 @@ export function createWorkspaceUI(deps) {
         ),
       );
     };
+    const allowed = key => user?.isAdmin || !user?.modulePermissions || user.modulePermissions.includes(key);
     const nav = (label, icon, path) =>
-      h(
+      (!allowed(path.includes("library")?"library":path.includes("schedules")?"schedules":path.includes("qa/project")?"projects":path.split("/")[1]) ? null : h(
         "button",
         {
           className: `qa-nav ${location.pathname + location.search === path ? "is-active" : ""}`,
@@ -584,7 +631,7 @@ export function createWorkspaceUI(deps) {
         },
         h(Icon, { name: icon }),
         label,
-      );
+      ));
     return h(
       "div",
       { className: "qa-sidebar" },
@@ -593,7 +640,7 @@ export function createWorkspaceUI(deps) {
         "div",
         { className: "qa-brand" },
         h(BrandLogo),
-        h("span", null, "AITestHarness"),
+        ProjectNavigation ? h(ProjectNavigation) : h("span", null, "AITestHarness"),
         onCollapse &&
           h(
             "button",
@@ -614,17 +661,18 @@ export function createWorkspaceUI(deps) {
       h(
         "nav",
         { className: "qa-nav-list", "aria-label": "功能导航" },
+        nav("项目视图", "folder", "/qa/project"),
         nav("定时任务", "clock", "/chat?view=schedules"),
         nav("资料库", "book", "/chat?view=library"),
-        nav("智能体", "bot", "/agents"),
+        allowed("agents") && nav("多智能体管理", "bot", "/agents"),
         nav("模型库", "box", "/models"),
         h("div", {className: "qa-tools-navigation"},
           SidebarTools ? h(SidebarTools, {onNavigate}) : h(R.Fragment, null,
             !toolsCollapsed && h("div", {id:"qa-extra-tools"},
               nav("插件市场", "puzzle", "/plugins"),
               user?.isAdmin && nav("机器管理", "server", "/machines"),
-              nav("成本中心", "chart", "/usage"),
-              nav("评估中心", "trophy", "/benchmark")),
+              user?.isAdmin && nav("成本中心", "chart", "/usage"),
+              user?.isAdmin && nav("评估中心", "trophy", "/benchmark")),
             h("button", {type:"button",className:"qa-tools-toggle",
               "aria-label":toolsCollapsed?"展开功能导航":"收起功能导航",
               "aria-expanded":!toolsCollapsed,"aria-controls":"qa-extra-tools",
@@ -640,11 +688,11 @@ export function createWorkspaceUI(deps) {
         h(
           "div",
           { className: "qa-section-heading" },
-          h(
+          !sessionActions?.searchOpen && h(
             "button",
             {
               onClick: () => toggle("projects"),
-              "aria-label": "项目",
+              "aria-label": "工作空间",
               "aria-expanded": !collapsed.projects,
             },
             h(
@@ -652,28 +700,30 @@ export function createWorkspaceUI(deps) {
               { className: collapsed.projects ? "" : "qa-expanded" },
               h(Icon, { name: "chevron", size: 12 }),
             ),
-            "项目",
+            "工作空间",
           ),
+          sessionActions?.searchControl,
           h(
             "button",
             {
               className: "qa-icon-button",
-              "aria-label": "新建项目",
-              title: "新建项目",
+              "aria-label": "新建工作空间",
+              title: "新建工作空间",
               onClick: () => setModal(true),
             },
             h(Icon, { name: "plus" }),
           ),
         ),
-        !collapsed.projects &&
+        (!collapsed.projects || search) &&
           h(
             "div",
             null,
             ...[...groups.projects]
+              .filter(group => !search || recent.some(s => qaProjectForSession(groups.projects, groups.bindings, s)?.id === group.id))
               .sort((a, b) =>
                 projectActivity(b).localeCompare(projectActivity(a)),
               )
-              .slice(0, more ? undefined : 3)
+              .slice(0, more || search ? undefined : 3)
               .map((group) =>
                 h(
                   "section",
@@ -705,7 +755,7 @@ export function createWorkspaceUI(deps) {
                       h(Icon, { name: "plus", size: 14 }),
                     ),
                   ),
-                  !collapsed[group.id] &&
+                  (!collapsed[group.id] || search) &&
                     h(
                       "div",
                       { className: "qa-project-tasks" },
@@ -718,7 +768,7 @@ export function createWorkspaceUI(deps) {
                               s,
                             )?.id === group.id && matches(s),
                         )
-                        .slice(0, collapsed["more:" + group.id] ? undefined : 3)
+                        .slice(0, collapsed["more:" + group.id] || search ? undefined : 3)
                         .map(taskRow),
                       recent.filter(
                         (s) =>
@@ -761,7 +811,7 @@ export function createWorkspaceUI(deps) {
               h(
                 "button",
                 { className: "qa-empty-task", onClick: () => setModal(true) },
-                "创建项目，组织测试任务",
+                "创建工作空间，组织测试任务",
               ),
             groups.projects.length > 3 &&
               h(
@@ -770,100 +820,8 @@ export function createWorkspaceUI(deps) {
                 more ? "收起" : "显示更多",
               ),
           ),
-        h(
-          "div",
-          { className: "qa-section-heading" },
-          h(
-            "button",
-            {
-              onClick: () => toggle("recents"),
-              "aria-label": "任务",
-              "aria-expanded": !collapsed.recents,
-            },
-            h(
-              "span",
-              { className: collapsed.recents ? "" : "qa-expanded" },
-              h(Icon, { name: "chevron", size: 12 }),
-            ),
-            "任务",
-          ),
-          h(
-            "button",
-            {
-              className: "qa-icon-button",
-              disabled: refreshing,
-              "aria-label": "刷新任务列表",
-              onClick: async () => {
-                setRefreshing(true);
-                try {
-                  await sessionState.reload();
-                  notify("任务列表已刷新");
-                } catch {
-                  reportError("刷新失败，请稍后重试");
-                } finally {
-                  setRefreshing(false);
-                }
-              },
-            },
-            h(Icon, { name: "refresh", size: 14 }),
-          ),
-        ),
-        !collapsed.recents &&
-          h(
-            "div",
-            null,
-            h("input", {
-              className: "qa-search",
-              "aria-label": "搜索任务",
-              placeholder: "搜索任务…",
-              value: search,
-              onChange: (e) => setSearch(e.target.value),
-            }),
-            ...recent.slice(0, recentLimit).map(taskRow),
-            recentLimit > 3 &&
-              h(
-                "button",
-                { className: "qa-show-more", onClick: () => setRecentLimit(3) },
-                "收起任务",
-              ),
-            !recent.length &&
-              h(
-                "p",
-                { className: "qa-empty" },
-                sessionState.loading
-                  ? "正在加载任务…"
-                  : search
-                    ? "没有匹配的任务"
-                    : "暂无任务",
-              ),
-            (recent.length > recentLimit ||
-              project.agents.some((a) =>
-                sessionState.hasMoreFor(a.agentId, "active"),
-              )) &&
-              h(
-                "button",
-                {
-                  className: "qa-show-more",
-                  onClick: async () => {
-                    setRecentLimit(recentLimit + 20);
-                    try {
-                      await Promise.all(
-                        project.agents
-                          .filter((a) =>
-                            sessionState.hasMoreFor(a.agentId, "active"),
-                          )
-                          .map((a) =>
-                            sessionState.loadMoreFor(a.agentId, "active"),
-                          ),
-                      );
-                    } catch {
-                      reportError("加载更多任务失败");
-                    }
-                  },
-                },
-                "显示更多",
-              ),
-          ),
+        h("div", { ref: loadMarker, style: { height: 1 }, "aria-hidden": true }),
+        loadError && h("button", {className: "qa-show-more", onClick: () => setLoadError(false)}, "读取任务失败，点击重试"),
       ),
       h(
         "div",
@@ -918,18 +876,18 @@ export function createWorkspaceUI(deps) {
       return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", keyboard); };
     }, [open]);
     return h("div", {className:"qa-project-context",role:"group","aria-label":"工作空间",ref:anchor},
-      selected && h("button", {type:"button",className:"qa-workspace-clear","aria-label":"清除工作空间选择",title:"不在项目中工作",onClick:()=>choose(null)}, h(Icon,{name:"close",size:12})),
+      selected && h("button", {type:"button",className:"qa-workspace-clear","aria-label":"清除工作空间选择",title:"不在工作空间中工作",onClick:()=>choose(null)}, h(Icon,{name:"close",size:12})),
       h("button", {type:"button",ref:trigger,className:"qa-workspace-trigger","aria-haspopup":"dialog","aria-expanded":open,
-        title:workspace || group?.folders[0] || "选择项目工作空间",onClick:()=>{setSearch("");setOpen(!open)}},
-        !selected && h(Icon,{name:"folder",size:14}), h("span",null,selected || "选择项目")),
-      group?.folders.length > 1 && h("select", {"aria-label":"项目工作文件夹",value:workspace,onChange:e=>onWorkspaceChange(e.target.value)},
+        title:workspace || group?.folders[0] || "选择工作空间工作空间",onClick:()=>{setSearch("");setOpen(!open)}},
+        !selected && h(Icon,{name:"folder",size:14}), h("span",null,selected || "选择工作空间")),
+      group?.folders.length > 1 && h("select", {"aria-label":"工作空间文件夹",value:workspace,onChange:e=>onWorkspaceChange(e.target.value)},
         ...group.folders.map(path=>h("option",{key:path,value:path},path))),
-      open && h("div", {className:"qa-workspace-popover",role:"dialog","aria-label":"选择项目工作空间"},
-        h("input", {className:"qa-workspace-search",type:"search",placeholder:"搜索项目…","aria-label":"搜索项目工作空间",autoFocus:true,value:search,onChange:e=>setSearch(e.target.value)}),
+      open && h("div", {className:"qa-workspace-popover",role:"dialog","aria-label":"选择工作空间工作空间"},
+        h("input", {className:"qa-workspace-search",type:"search",placeholder:"搜索工作空间…","aria-label":"搜索工作空间",autoFocus:true,value:search,onChange:e=>setSearch(e.target.value)}),
         h("div", {className:"qa-workspace-options"}, ...results.map(project=>h("button",{key:project.id,type:"button",className:project.id===groupId?"is-selected":"",title:project.folders.join("\n")||project.name,onClick:()=>choose(project)},
           h(Icon,{name:"folder",size:14}),h("span",null,project.name))),
-          !results.length && h("p",{className:"qa-workspace-empty"},search.trim()?"没有匹配的项目":"暂无项目，可新建项目工作空间")),
-        h("button", {type:"button",className:"qa-workspace-create",onClick:()=>{setOpen(false);setCreating(true)}},h(Icon,{name:"plus",size:14}),"新建项目工作空间")),
+          !results.length && h("p",{className:"qa-workspace-empty"},search.trim()?"没有匹配的工作空间":"暂无工作空间，可新建工作空间")),
+        h("button", {type:"button",className:"qa-workspace-create",onClick:()=>{setOpen(false);setCreating(true)}},h(Icon,{name:"plus",size:14}),"新建工作空间工作空间")),
       h(ProjectModal,{open:creating,onClose:()=>{setCreating(false);trigger.current?.focus()},onCreated:project=>{setCreating(false);choose(project)}}));
   }
   function FirstRunGuide({controlRef}) {
@@ -968,13 +926,13 @@ export function createWorkspaceUI(deps) {
     return h('section',{className:'qa-first-run','aria-label':'开始使用'},
       h('div',{className:'qa-first-run-heading'},h('strong',null,'开始使用'),h('button',{type:'button','aria-expanded':expanded,onClick:()=>setExpanded(!expanded)},expanded?'收起':'展开')),
       expanded&&h(R.Fragment,null,
-        h('p',null,`测试角色：${count}/7 就绪。`,count<7?' 尚未全部就绪，请等待初始化或检查智能体列表。':''),
+        h('p',null,`测试角色：${count}/${roleIds.length} 就绪。`,count<roleIds.length?' 尚未全部就绪，请等待初始化或检查智能体列表。':''),
         h('p',null,'总控模型：',current.model?.label||'待读取。'),
         h('p',{role:'status'},messages[current.status]||'请验证当前配置。'),
         h('div',{className:'qa-first-run-actions'},
           h('button',{type:'button',onClick:()=>navigate('/models')},'1. 配置模型'),
-          h('button',{type:'button',disabled:!base||current.status==='checking'||current.status==='loading'||count<7,onClick:probe},'2. 验证连接'),
-          h('button',{type:'button',disabled:count<7,onClick:()=>controlRef.current?.fillPrompt(qaFirstTaskPrompt,[])},'3. 填写示例任务'),
+          h('button',{type:'button',disabled:!base||current.status==='checking'||current.status==='loading'||count<roleIds.length,onClick:probe},'2. 验证连接'),
+          h('button',{type:'button',disabled:count<roleIds.length,onClick:()=>controlRef.current?.fillPrompt(qaFirstTaskPrompt,[])},'3. 填写示例任务'),
           h('button',{type:'button',disabled:current.status==='checking',onClick:refresh},'刷新配置')),
         h('small',null,'连接验证会发送一次小型模型请求，可能产生少量费用。示例仅填入输入框，由你确认发送；可用自己的模型账号配置，不附带模型额度。')));
   }
@@ -992,7 +950,7 @@ export function createWorkspaceUI(deps) {
       "生成测试用例",
       "执行回归测试",
       "输出测试报告",
-      "性能与安全",
+      "生成测试点",
     ];
     return h(
       "div",

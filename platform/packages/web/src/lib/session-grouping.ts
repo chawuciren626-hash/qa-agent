@@ -1,0 +1,761 @@
+/**
+ * Pure grouping logic for the chat sidebar's Session groups — the "by Workspace" mode
+ * (below), and the time buckets of the "by time" mode (TIME_BUCKETS, near the bottom).
+ *
+ * There is no Workspace entity on the server: a Session only carries the plain
+ * filesystem path locked in at creation (SessionInfo.workspace), so grouping works
+ * on those path strings. Sessions created without an explicit Workspace get an
+ * auto-created temporary workspace shaped like `<agentDir>/workspaces/tmp-<8hex>`
+ * (packages/core/src/internal/session-support.ts, createTempWorkspace); each of
+ * those is single-use, so per-path groups would be one-session noise — they are all
+ * merged into ONE trailing "temporary workspaces" group instead.
+ */
+import type {
+  SessionCategory,
+  SessionCategoryCounts,
+  SessionInfo,
+} from "@prismshadow/penguin-server/api";
+
+/** Group key of the merged temporary-workspace group ("\0" can never appear in a filesystem path, so it never collides with a real Workspace). */
+export const TEMP_WORKSPACE_GROUP_KEY = "\0temp-workspaces";
+
+/** Auto-created temporary Workspace tail: `workspaces/tmp-<8hex>` (either path separator; core supports win32). */
+const TEMP_WORKSPACE_RE = /[/\\]workspaces[/\\]tmp-[0-9a-f]{8}$/;
+
+/**
+ * Any directory directly under an Agent's own `workspaces/` — `agents/<agent>/workspaces/<name>`
+ * — which is where the evaluation Skill creates its isolated Test Workspaces, one per Case ×
+ * Run, each holding that run's Test Session and nothing else. Their names are the Skill's
+ * own, so the parent directory is the rule, not a prefix; a directory below one of them is
+ * not itself such a Workspace. The server's workspace-group.ts folds the same paths, so the
+ * group the sidebar draws is the group it pages.
+ */
+const AGENT_WORKSPACES_RE = /[/\\]agents[/\\][^/\\]+[/\\]workspaces[/\\][^/\\]+$/;
+
+/**
+ * Whether a Session's Workspace is one the system made for itself — core's auto-created
+ * temporary directory, or any directory directly under an Agent's `workspaces/` (the
+ * evaluation Skill's Test Workspaces) — and so belongs to the merged temp group instead of
+ * a group of its own. An empty path also counts as one: the server always backfills the
+ * resolved path, so this is defensive only.
+ */
+export function isTempWorkspace(workspace: string): boolean {
+  const p = workspace.trim();
+  return p === "" || TEMP_WORKSPACE_RE.test(p) || AGENT_WORKSPACES_RE.test(p);
+}
+
+/**
+ * Stable group key for a Session's Workspace (collapse state / React key): the path itself,
+ * or the temp sentinel — prefixed by the machine the directory is ON.
+ *
+ * A Workspace is a directory on a machine, so `/srv/app` on two machines is two different
+ * directories and the pair is the identity (the same rule workspace-registry.ts stores by,
+ * and the dashboard's rows follow). Keying on the path alone merged them into one folder
+ * whose "+" then opened a chat here, in whatever this machine has at that path.
+ *
+ * A machine of `null` — this server — keys exactly as it did before machines existed, which
+ * is what every persisted key already on a browser (collapse state, pin set, group order)
+ * was written as. `\0` appears in no path and in no machine id, so the two halves stay
+ * separable and neither can forge the other's shape.
+ */
+export function workspaceGroupKey(workspace: string, machineId: string | null = null): string {
+  const key = isTempWorkspace(workspace) ? TEMP_WORKSPACE_GROUP_KEY : workspace.trim();
+  return machineId === null ? key : `${machineId}\0${key}`;
+}
+
+/**
+ * The machine half of a group key; null for this server's own groups — including every key
+ * written before a group could name a machine, and the sentinel keys of the other grouping
+ * modes, which begin with the separator and so have no machine half.
+ */
+export function workspaceGroupMachine(groupKey: string): string | null {
+  const sep = groupKey.indexOf("\0");
+  return sep <= 0 ? null : groupKey.slice(0, sep);
+}
+
+/** The Workspace half of a group key: the path, or the temp sentinel. */
+export function workspaceGroupPath(groupKey: string): string {
+  const sep = groupKey.indexOf("\0");
+  return sep <= 0 ? groupKey : groupKey.slice(sep + 1);
+}
+
+/**
+ * Query value that names a Workspace group to the server's list endpoint — the group's
+ * path, or the sentinel the server merges every auto-created temporary Workspace under
+ * (its `TEMP_WORKSPACE_GROUP`; stored Workspaces are realpath results and therefore
+ * absolute, so the bare word cannot collide with one). The machine half is dropped: the
+ * query goes TO that machine (the page key carries the source), and no server is asked
+ * about a path in another server's name.
+ */
+export function workspaceGroupQuery(groupKey: string): string {
+  const path = workspaceGroupPath(groupKey);
+  return path === TEMP_WORKSPACE_GROUP_KEY ? "temp" : path;
+}
+
+/** Short display label: the last path segment (the filesystem root yields "/"). */
+export function workspaceLabel(workspace: string): string {
+  const parts = workspace
+    .trim()
+    .split(/[/\\]+/)
+    .filter(Boolean);
+  return parts[parts.length - 1] ?? "/";
+}
+
+/**
+ * Sidebar page size: sessions fetched per (Agent, category) per page, and the display cap
+ * step of every list — 10 conversations show by default and every click on the list's
+ * "Show N more chats" row reveals 10 more. Fetches use limit = SIDEBAR_PAGE_SIZE + 1 (see splitPage)
+ * so one request both fills a page and answers "is there more" without a
+ * response-envelope change. Pages run in activity order (compareActivityDesc), cut at the
+ * watermark (cutAtWatermark) wherever several streams merge.
+ */
+export const SIDEBAR_PAGE_SIZE = 10;
+
+/**
+ * Groups (Agents / Workspace groups) rendered per sidebar page. With dozens of groups the
+ * full list renders too tall to scan (#139), so the sidebar paginates them: one page at a
+ * time, stepped by the pager below the list. A pure display window — every group's data
+ * loading is unchanged, and the manual group order is committed over the whole sequence,
+ * not the page on screen.
+ */
+export const SIDEBAR_GROUP_PAGE_SIZE = 10;
+
+/** Pages `total` groups take (always at least one, so an empty list still has a page 1). */
+export function groupPageCount(total: number, pageSize = SIDEBAR_GROUP_PAGE_SIZE): number {
+  return Math.max(1, Math.ceil(total / pageSize));
+}
+
+/**
+ * A stored page number pinned inside the pages that currently exist. Groups come and go
+ * (a Workspace is removed, an Agent is deleted, a Project switch swaps the whole list),
+ * and a page that outlived its groups must land on the last real one rather than render
+ * an empty sidebar.
+ */
+export function clampGroupPage(
+  page: number,
+  total: number,
+  pageSize = SIDEBAR_GROUP_PAGE_SIZE,
+): number {
+  return Math.min(Math.max(page, 0), groupPageCount(total, pageSize) - 1);
+}
+
+/** The page a group at `index` of the ordered sequence renders on (0-based both ends). */
+export function groupPageOf(index: number, pageSize = SIDEBAR_GROUP_PAGE_SIZE): number {
+  return Math.floor(Math.max(index, 0) / pageSize);
+}
+
+/** The groups of one page, in the order given (the caller has already sorted them). */
+export function groupPageSlice<T>(
+  groups: readonly T[],
+  page: number,
+  pageSize = SIDEBAR_GROUP_PAGE_SIZE,
+): T[] {
+  const start = clampGroupPage(page, groups.length, pageSize) * pageSize;
+  return groups.slice(start, start + pageSize);
+}
+
+/**
+ * Conversations of one group that its reveal row still hides — what "Show N more chats"
+ * counts. Computed from the group's OWN numbers only: `loaded` rows are in memory,
+ * `shown` of them are past the display cap, and `total` is the group's exact server share
+ * — except once every Agent that could hold its rows is fully fetched (`fullyLoaded`),
+ * when the loaded rows ARE the share. That last clause is what keeps a count drifting
+ * above reality (totals refresh only on reload) from leaving a row that reveals nothing.
+ */
+export function hiddenRowCount({
+  shown,
+  loaded,
+  total,
+  fullyLoaded,
+}: {
+  shown: number;
+  loaded: number;
+  total: number;
+  fullyLoaded: boolean;
+}): number {
+  return Math.max((fullyLoaded ? loaded : Math.max(total, loaded)) - shown, 0);
+}
+
+/**
+ * The display window of one list — a sidebar group's rows, or a group of the archive page;
+ * both obey the same rule and both read it from here (time mode's list spreads it over its
+ * buckets: sectionWindow). The list shows
+ * `SIDEBAR_PAGE_SIZE` rows, every click on its one reveal row ("Show N more chats", N =
+ * `hidden`) reveals one page more (revealStep), and a "show less" stands beside the reveal
+ * row (not after it) from the moment the list is revealed past its first page, folding it
+ * back to exactly that page. Rows beyond the cap stay in memory — a fetch that returned far
+ * more than a page (a group fans out over every contributing Agent) is revealed a page at a
+ * time instead of all at once.
+ *
+ * `cap` is the list's current display cap, `loaded` the rows in memory, `total` its
+ * exact server share and `fullyLoaded` whether every Agent that could hold one of its
+ * rows is fetched out (see hiddenRowCount for why that last one decides the count).
+ * "Show less" needs both a raised cap and more loaded rows than a page — otherwise there
+ * is nothing for it to fold away.
+ */
+export function revealPlan({
+  cap,
+  loaded,
+  total,
+  fullyLoaded,
+}: {
+  cap: number;
+  loaded: number;
+  total: number;
+  fullyLoaded: boolean;
+}): { shown: number; hidden: number; canCollapse: boolean } {
+  const shown = Math.min(Math.max(cap, 0), loaded);
+  return {
+    shown,
+    hidden: hiddenRowCount({ shown, loaded, total, fullyLoaded }),
+    canCollapse: cap > SIDEBAR_PAGE_SIZE && loaded > SIDEBAR_PAGE_SIZE,
+  };
+}
+
+/**
+ * One click on a list's reveal row: the cap becomes one page more than the rows on screen,
+ * and the click asks the server for the next page only when that cap runs past the rows
+ * already in memory and some stream behind the list still has more (`canFetch`). Rows a
+ * previous fetch over-returned are revealed without a request. Counting from what is shown
+ * rather than from the old cap keeps a click to one page even after a fetch that came back
+ * short or failed: the next click asks for the same page again instead of promising two. The
+ * cap never drops below where it was, though — a window whose rows sit behind a folded time
+ * bucket shows fewer than its cap, and a reveal must not shrink what that bucket opens onto.
+ */
+export function revealStep({
+  cap,
+  shown,
+  loaded,
+  canFetch,
+}: {
+  cap: number;
+  shown: number;
+  loaded: number;
+  canFetch: boolean;
+}): { cap: number; fetch: boolean } {
+  const next = Math.max(cap, Math.max(shown, 0) + SIDEBAR_PAGE_SIZE);
+  return { cap: next, fetch: canFetch && loaded < next };
+}
+
+/**
+ * The display window of one list drawn as consecutive sections that fold — time mode's
+ * buckets, which are stretches of a single activity-ordered list rather than lists of their
+ * own, so the cap, the count and the reveal row belong to the list: revealPlan's rule, spread
+ * over the sections.
+ *
+ * `cap` counts rows on screen and is spent section by section, in order, so the newest bucket
+ * fills first. A folded section spends none of it: its rows are behind the reader's own fold,
+ * not behind the reveal row, so folding a bucket lets the next rows into view instead of
+ * leaving the window spent on rows nobody can see. A section is drawn only while some of the
+ * cap is left when the walk reaches it; every section after that is past the window's edge and
+ * not drawn at all — which also means a drawn folded section, once opened, always gets a row.
+ *
+ * Per section, `rows` is null when it is not drawn, otherwise the rows it shows open; a folded
+ * one gets the rows it would show if opened, which is what its fold opens onto and closes
+ * from. `shown` counts the rows on screen and `hidden` what the reveal row still hides — the
+ * rows the window has not reached, counted as hiddenRowCount counts them. `reachable` is the
+ * loaded rows the cap could ever be spent on (those of open sections), which is what decides
+ * whether a reveal needs the next server page (revealStep).
+ */
+export function sectionWindow<T>({
+  sections,
+  cap,
+  total,
+  fullyLoaded,
+}: {
+  sections: readonly { rows: readonly T[]; folded: boolean }[];
+  cap: number;
+  total: number;
+  fullyLoaded: boolean;
+}): {
+  rows: (T[] | null)[];
+  shown: number;
+  hidden: number;
+  reachable: number;
+  canCollapse: boolean;
+} {
+  const budget = Math.max(cap, 0);
+  let left = budget;
+  let folded = 0;
+  let loaded = 0;
+  let reachable = 0;
+  const rows = sections.map((section) => {
+    loaded += section.rows.length;
+    if (!section.folded) reachable += section.rows.length;
+    if (left === 0) return null;
+    const taken = section.rows.slice(0, left);
+    if (section.folded) folded += section.rows.length;
+    else left -= taken.length;
+    return taken;
+  });
+  const shown = budget - left;
+  return {
+    rows,
+    shown,
+    hidden: hiddenRowCount({ shown: shown + folded, loaded, total, fullyLoaded }),
+    reachable,
+    canCollapse: shown > SIDEBAR_PAGE_SIZE,
+  };
+}
+
+/**
+ * A row's place in the sidebar's activity order — the order every list of it is displayed
+ * AND paged in (the server's `order=activity`): last activity first, ties broken by id.
+ */
+export interface ActivityKey {
+  lastActiveAt: string;
+  sessionId: string;
+}
+
+/**
+ * The activity order: `lastActiveAt` descending, then `sessionId` descending, both compared by
+ * code point (`<` / `>`, never `localeCompare`). Negative when `a` is more recent.
+ *
+ * Code point because the two ends must agree on one total order: the browser names a page's
+ * cursor and the server slices on it, and a collation that ranks case or punctuation
+ * differently from the server would skip or repeat a row at every page boundary it touches.
+ * The stamps are uniform ISO-8601 UTC strings, so string order is time order.
+ */
+export function compareActivityDesc(a: ActivityKey, b: ActivityKey): number {
+  if (a.lastActiveAt !== b.lastActiveAt) return a.lastActiveAt > b.lastActiveAt ? -1 : 1;
+  if (a.sessionId !== b.sessionId) return a.sessionId > b.sessionId ? -1 : 1;
+  return 0;
+}
+
+/** The key alone, detached from the row — what a page position stores, so a later live event that moves the row does not move the cursor with it. */
+export const activityKeyOf = (row: ActivityKey): ActivityKey => ({
+  lastActiveAt: row.lastActiveAt,
+  sessionId: row.sessionId,
+});
+
+/** The `before=` query value of a cursor: `<lastActiveAt>,<sessionId>` (neither half can contain a comma). */
+export const activityCursorParam = (key: ActivityKey): string =>
+  `${key.lastActiveAt},${key.sessionId}`;
+
+/** One server stream's position as the watermark sees it: the key of the last row read from it, and whether rows lie below that. */
+export interface StreamPosition {
+  hasMore: boolean;
+  cursor: ActivityKey | null;
+}
+
+/**
+ * The watermark of a list merged from several streams (Agents, machines): the most recent
+ * cursor among the streams that still have more. Every row a stream has not served yet lies
+ * below its own cursor, so nothing missing can sort above this key — the rows at or above it
+ * are a true prefix of the merged order, and rows below it may still have unfetched rows
+ * between them.
+ *
+ * Null when no stream has more (everything is fetched; every loaded row shows). A stream with
+ * more but no cursor — nothing read from it yet — bounds nothing, so what is loaded still shows.
+ */
+export function activityWatermark(streams: readonly StreamPosition[]): ActivityKey | null {
+  let mark: ActivityKey | null = null;
+  for (const { hasMore, cursor } of streams) {
+    if (!hasMore || cursor === null) continue;
+    if (mark === null || compareActivityDesc(cursor, mark) < 0) mark = cursor;
+  }
+  return mark;
+}
+
+/**
+ * The rows a merged list shows: those at or above `watermark`, in activity order. `keep` (the
+ * open conversation) stays wherever it falls — a reader is never left looking at a chat its
+ * own list does not show. A null watermark keeps every row.
+ *
+ * The rows below are fetched but held back: showing them now would let a later page insert
+ * rows above them, and a list that grows anywhere but at its bottom reads as rows jumping.
+ */
+export function cutAtWatermark<T extends ActivityKey>(
+  rows: readonly T[],
+  watermark: ActivityKey | null,
+  keep?: string | null,
+): T[] {
+  const kept =
+    watermark === null
+      ? [...rows]
+      : rows.filter((r) => r.sessionId === keep || compareActivityDesc(r, watermark) <= 0);
+  return kept.sort(compareActivityDesc);
+}
+
+/**
+ * Applies the limit+1 fetch trick: `fetched` came from a request with `limit = pageSize + 1`;
+ * the visible page is the first `pageSize` items, and an overflow item (never shown) proves
+ * the server has more.
+ */
+export function splitPage<T>(fetched: T[], pageSize: number): { items: T[]; hasMore: boolean } {
+  return fetched.length > pageSize
+    ? { items: fetched.slice(0, pageSize), hasMore: true }
+    : { items: fetched, hasMore: false };
+}
+
+/**
+ * The list a Session belongs to — the same rule the server's `category` filter applies, so
+ * filtered fetching and client rendering can never disagree. A `subagent` Session (its
+ * parent's Agent panel opens it) and a `company` Session (company mode's own views list it)
+ * are in none. Otherwise the server's `archived` decides: it is the listing rule's answer
+ * already — the user archived the Session, or a program opened it and nobody kept it — so the
+ * archive page lists it, and every other row is the sidebar's.
+ */
+export function sessionCategory(s: SessionInfo): SessionCategory | null {
+  if (s.source === "company" || s.source === "subagent") return null;
+  return s.archived ? "archived" : "active";
+}
+
+/**
+ * Whether a row is one of the sidebar's conversations: active, and not an organization's
+ * (company mode reaches those as themselves). The store also holds rows the sidebar never
+ * draws — the archived, subagent or organization Session the chat page is showing — so the
+ * page's writes keep reaching it; the sidebar draws only these.
+ */
+export function isSidebarRow(s: SessionInfo): boolean {
+  return sessionCategory(s) === "active" && !isOrgSession(s);
+}
+
+/**
+ * Whether a Session matches the sidebar's live title search: case-insensitive substring
+ * over the stored title (untitled Sessions have none and never match a non-empty
+ * query); a blank/whitespace query matches everything (search inactive).
+ */
+export function matchesSessionQuery(s: SessionInfo, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (q === "") return true;
+  return (s.title ?? "").toLowerCase().includes(q);
+}
+
+/** The list categories, in the order the counts carry them. */
+const ALL_CATEGORIES: readonly SessionCategory[] = ["active", "archived"];
+
+/** One workspace-mode group's aggregated server counts: exact totals plus which Agents hold rows of each category. */
+export interface GroupCounts {
+  totals: SessionCategoryCounts;
+  /** Per category, the Agents whose share of this group is non-zero — the fetch fan-out set for the group's "More". */
+  agents: Record<SessionCategory, string[]>;
+}
+
+/**
+ * Folds the per-Agent per-group category counts (SessionsResponse.workspaceCounts, keyed by
+ * the store into workspaceGroupKey form) into workspace-mode groups. The keys arrive
+ * machine-qualified because each machine answers about its own paths: summing two machines'
+ * counts for one path string would put both totals on both groups, each contradicting the
+ * rows under it. The sidebar decides a group's "More" from its own share — never from an
+ * Agent's other Workspaces, which would advertise rows that live in other groups.
+ */
+export function aggregateWorkspaceCounts(
+  byAgent: ReadonlyMap<string, Readonly<Record<string, SessionCategoryCounts>>>,
+): Map<string, GroupCounts> {
+  const out = new Map<string, GroupCounts>();
+  for (const [agentId, byGroup] of byAgent) {
+    for (const [key, counts] of Object.entries(byGroup)) {
+      let group = out.get(key);
+      if (!group) {
+        group = {
+          totals: { active: 0, archived: 0 },
+          agents: { active: [], archived: [] },
+        };
+        out.set(key, group);
+      }
+      for (const category of ALL_CATEGORIES) {
+        const n = counts[category];
+        // !(n > 0) rather than n <= 0: a missing key (undefined) must not slip through and poison the totals with NaN.
+        if (!(n > 0)) continue;
+        group.totals[category] += n;
+        // Several temp paths of one Agent fold into the temp group: dedupe.
+        if (!group.agents[category].includes(agentId)) group.agents[category].push(agentId);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The Session the UI opens as "the last conversation" (the chat home's auto-select and
+ * the collapsed rail's entry): the loaded row the user was last IN — not the one created
+ * last, which on a revisited conversation is a different row. Only a conversation of the
+ * sidebar (an active row) qualifies: an archived Session — one the user filed away, or one a
+ * program opened that nobody kept — and a subagent or company Session are not conversations of
+ * this list the user was in. Newest by lastActiveAt (stamped from `Date#toISOString`, so
+ * uniform ISO-8601 UTC like createdAt and comparable as a string), ties broken by sessionId —
+ * the list's ordering convention. Input order doesn't matter.
+ */
+export function latestConversation(sessions: readonly SessionInfo[]): SessionInfo | null {
+  let best: SessionInfo | null = null;
+  for (const s of sessions) {
+    if (sessionCategory(s) !== "active") continue;
+    if (
+      !best ||
+      s.lastActiveAt > best.lastActiveAt ||
+      (s.lastActiveAt === best.lastActiveAt && s.sessionId > best.sessionId)
+    ) {
+      best = s;
+    }
+  }
+  return best;
+}
+
+/**
+ * Folds the per-Agent per-Workspace-path newest-Session stamps
+ * (SessionsResponse.workspaceLatest) into workspace-mode group keys: the newest across
+ * Agents, and across every temporary path for the merged temp group. createdAt is uniform
+ * ISO-8601 UTC, so the string maximum is the chronological one.
+ */
+export function aggregateWorkspaceLatest(
+  byAgent: ReadonlyMap<string, Readonly<Record<string, string>>>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const byWorkspace of byAgent.values()) {
+    for (const [workspace, createdAt] of Object.entries(byWorkspace)) {
+      const key = workspaceGroupKey(workspace);
+      const cur = out.get(key);
+      if (cur === undefined || createdAt > cur) out.set(key, createdAt);
+    }
+  }
+  return out;
+}
+
+export interface WorkspaceGroup<T = SessionInfo> {
+  /** Stable group key: the machine and the Workspace path (workspaceGroupKey), or the temp sentinel for the merged temp group — one per machine. */
+  key: string;
+  /** Display label: the path basename; empty for the temp group (the sidebar renders the localized name). */
+  label: string;
+  /** Full path for tooltips; null for the merged temp group (its members' paths all differ). */
+  fullPath: string | null;
+  /** The machine the directory is on; null for this server — a path is only a directory together with its machine. */
+  machineId: string | null;
+  /** True for the merged temporary-workspace group. */
+  temp: boolean;
+  /** Member Sessions, newest first (createdAt desc). */
+  sessions: T[];
+}
+
+/**
+ * Groups Sessions by their Workspace path. Named groups are sorted by their newest
+ * Session's createdAt desc; the merged temp group (if any) always comes last.
+ * Sessions inside a group are re-sorted newest first — the flat store list
+ * concatenates per-Agent server responses, so its order isn't globally chronological.
+ * createdAt is a uniform ISO-8601 UTC string (server: `new Date().toISOString()`),
+ * so lexicographic comparison equals chronological comparison.
+ * Generic over the row type (defaulting to SessionInfo, the sidebar's rows): the Trace
+ * page groups its own Session rows with the same logic — only `workspace` and the
+ * `createdAt` sort key are touched.
+ *
+ * Which machine a Session is on is asked of the caller rather than read off the row: the
+ * rows are the server's own SessionInfo, and where each one lives is the browser's fact,
+ * held by the map that routes every call about it (lib/session-machines.ts). The default
+ * says "this server", which is what a list of one server's Sessions is.
+ */
+export function groupSessionsByWorkspace<T extends { workspace: string; createdAt: string }>(
+  sessions: T[],
+  machineOf: (session: T) => string | null = () => null,
+): WorkspaceGroup<T>[] {
+  const byKey = new Map<string, WorkspaceGroup<T>>();
+  for (const s of sessions) {
+    const machineId = machineOf(s);
+    const key = workspaceGroupKey(s.workspace, machineId);
+    let group = byKey.get(key);
+    if (!group) {
+      const temp = isTempWorkspace(s.workspace);
+      group = {
+        key,
+        label: temp ? "" : workspaceLabel(s.workspace),
+        fullPath: temp ? null : s.workspace.trim(),
+        machineId,
+        temp,
+        sessions: [],
+      };
+      byKey.set(key, group);
+    }
+    group.sessions.push(s);
+  }
+  const byCreatedDesc = (a: string, b: string) => (a < b ? 1 : a > b ? -1 : 0);
+  const groups = [...byKey.values()];
+  for (const g of groups) g.sessions.sort((a, b) => byCreatedDesc(a.createdAt, b.createdAt));
+  groups.sort((a, b) => {
+    if (a.temp !== b.temp) return a.temp ? 1 : -1;
+    return byCreatedDesc(a.sessions[0]?.createdAt ?? "", b.sessions[0]?.createdAt ?? "");
+  });
+  return groups;
+}
+
+/**
+ * Completes the session-derived grouping with every Workspace the server's counts know:
+ * a group the loaded pages touched no row of is added EMPTY (its rows page in down its own
+ * stream once it is on screen), and the named groups are re-sorted by recency — the newer
+ * of the group's newest loaded row and the server's `latest` stamp — with the merged temp
+ * group last, the order groupSessionsByWorkspace gives. Without this the group list was
+ * only as complete as each Agent's first page: a Workspace whose newest conversation was
+ * older than an Agent's ten newest never formed a group at all, which with dozens of
+ * Workspaces holding hundreds of conversations each is most of them.
+ *
+ * Only active conversations make a group: a counted key holding none (only archived rows, or
+ * its last conversation deleted since the counts were taken) forms no group; a key already
+ * grouped keeps its loaded rows.
+ */
+export function completeWorkspaceGroups<T extends { createdAt: string }>(
+  groups: readonly WorkspaceGroup<T>[],
+  counts: ReadonlyMap<string, GroupCounts>,
+  latest: ReadonlyMap<string, string>,
+): WorkspaceGroup<T>[] {
+  const out = [...groups];
+  const existing = new Set(groups.map((g) => g.key));
+  for (const [key, { totals }] of counts) {
+    if (existing.has(key)) continue;
+    if (!(totals.active > 0)) continue;
+    existing.add(key);
+    // A counted key names a directory ON a machine, the way the loaded groups are keyed:
+    // its path half is what the label and the tooltip show, never the whole key.
+    const workspace = workspaceGroupPath(key);
+    const temp = workspace === TEMP_WORKSPACE_GROUP_KEY;
+    out.push({
+      key,
+      label: temp ? "" : workspaceLabel(workspace),
+      fullPath: temp ? null : workspace,
+      machineId: workspaceGroupMachine(key),
+      temp,
+      sessions: [],
+    });
+  }
+  // A group's newest loaded row (groupSessionsByWorkspace sorts members newest first) or
+  // the server's stamp, whichever is newer: a row added locally since the counts were
+  // taken counts, and so does a stamp for rows not loaded.
+  const recency = (g: WorkspaceGroup<T>): string => {
+    const loaded = g.sessions[0]?.createdAt ?? "";
+    const stamped = latest.get(g.key) ?? "";
+    return loaded > stamped ? loaded : stamped;
+  };
+  out.sort((a, b) => {
+    if (a.temp !== b.temp) return a.temp ? 1 : -1;
+    const ra = recency(a);
+    const rb = recency(b);
+    return ra < rb ? 1 : ra > rb ? -1 : 0;
+  });
+  return out;
+}
+
+/**
+ * The sidebar's time buckets, in render order: last day, last month, everything older.
+ * Bucketing is on `lastActiveAt` — the same key the recency sort and each row's compact
+ * timestamp already use, so a row labelled "3m ago" can never sit under "Earlier".
+ */
+export const TIME_BUCKETS = ["day", "month", "earlier"] as const;
+export type TimeBucket = (typeof TIME_BUCKETS)[number];
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** "Last month" is a rolling 30-day window, not a calendar month — the boundary a user reads off a relative timestamp. */
+const MONTH_MS = 30 * DAY_MS;
+
+/** Group key of a time bucket (collapse state / React key); "\0" can never appear in a Workspace path or an Agent id, so these never collide with the other modes' keys. */
+export const timeGroupKey = (bucket: TimeBucket): string => `\0time-${bucket}`;
+
+/** Key of time mode's whole list: its display cap and its one reveal row span every bucket. */
+export const TIME_LIST_KEY = "\0time-list";
+
+/** The bucket an activity timestamp falls in, against `nowMs`. An unparseable stamp counts as the oldest bucket rather than jumping to the top. */
+export function timeBucketOf(lastActiveAt: string, nowMs: number): TimeBucket {
+  const t = Date.parse(lastActiveAt);
+  if (!Number.isFinite(t)) return "earlier";
+  const age = nowMs - t;
+  if (age < DAY_MS) return "day";
+  return age < MONTH_MS ? "month" : "earlier";
+}
+
+export interface TimeGroup<T = SessionInfo> {
+  /** Stable group key (timeGroupKey of the bucket). */
+  key: string;
+  bucket: TimeBucket;
+  /** Member Sessions, newest activity first. */
+  sessions: T[];
+}
+
+/**
+ * Buckets Sessions by their last activity into the three time groups, in TIME_BUCKETS
+ * order. Empty buckets are dropped — a "Last day" header over nothing states an absence
+ * the list is not asked to report. Members are sorted in activity order (compareActivityDesc;
+ * the flat store list merges per-Agent responses, so its order is not one to rely on); the
+ * sidebar re-orders them again for pins and manual sort. The caller has already cut the rows at
+ * the list's watermark, so a bucket only ever holds a prefix of the activity order.
+ */
+export function groupSessionsByTime<T extends ActivityKey>(
+  sessions: readonly T[],
+  nowMs: number,
+): TimeGroup<T>[] {
+  const byBucket = new Map<TimeBucket, T[]>();
+  for (const s of sessions) {
+    const bucket = timeBucketOf(s.lastActiveAt, nowMs);
+    const list = byBucket.get(bucket);
+    if (list) list.push(s);
+    else byBucket.set(bucket, [s]);
+  }
+  const groups: TimeGroup<T>[] = [];
+  for (const bucket of TIME_BUCKETS) {
+    const rows = byBucket.get(bucket);
+    if (rows === undefined) continue;
+    rows.sort(compareActivityDesc);
+    groups.push({ key: timeGroupKey(bucket), bucket, sessions: rows });
+  }
+  return groups;
+}
+
+/**
+ * Stable pinned-first partition for sidebar groups: items whose key is in `pinned`
+ * come first, each partition preserving the input order (recency for Workspace
+ * groups, the configured order for Agents). Pure and mode-agnostic — callers pass
+ * the key extractor; pinned keys with no matching item are simply ignored.
+ */
+export function pinnedFirst<T>(
+  items: readonly T[],
+  keyOf: (item: T) => string,
+  pinned: ReadonlySet<string>,
+): T[] {
+  if (pinned.size === 0) return [...items];
+  const pin: T[] = [];
+  const rest: T[] = [];
+  for (const item of items) (pinned.has(keyOf(item)) ? pin : rest).push(item);
+  return [...pin, ...rest];
+}
+
+/**
+ * The marks a Session an organization owns can carry — a desk session of one of its
+ * employees, or a session contributing to one of its tickets. `client` is stamped on the row
+ * when the organization runtime creates the Session and never changes, and a Session it opened
+ * is a `company` Session; `orgId` is resolved per read from the organization's own caches. All
+ * are optional on the wire, and a row is an organization's when any says so.
+ */
+export interface OrgSessionMarks {
+  /** The owning organization, resolved per read; absent once the organization is deleted. */
+  orgId?: string;
+  /** The client that created the Session; "org" is the organization runtime's own stamp. */
+  client?: string;
+  /** What kind of conversation it is; "company" for a desk or ticket Session. */
+  source?: string;
+}
+
+/**
+ * Whether a Session belongs to an organization. The durable stamp answers even after the
+ * organization is gone, which is the case `orgId` alone cannot: the caches it is read from no
+ * longer hold the Session, and the row would otherwise reappear somewhere it never belonged.
+ */
+export function isOrgSession(row: OrgSessionMarks): boolean {
+  return (
+    (row.orgId !== undefined && row.orgId !== "") ||
+    row.client === "org" ||
+    row.source === "company"
+  );
+}
+
+/**
+ * The rows the development list shows: the user's own conversations, ALWAYS. An
+ * organization's Sessions are driven by its scheduler rather than by the user, which is a
+ * fact about the Session and not about the shell around it — so neither company mode being
+ * switched off (the admin's master switch or the user's own) nor the organization being
+ * deleted turns one back into a conversation of this list. They are reached as themselves in
+ * company mode — a desk from the 工位 group, a ticket session from the ticket that started it
+ * — and stay reachable by their own url and through the Trace page regardless.
+ *
+ * The list's own fetches already leave these rows out, totals included (the server's
+ * `excludeOrg`); this is the guard for a row that enters by another door — the chat page's
+ * deep-link self-heal — and, applied at the source, it keeps such a row from conjuring the
+ * Workspace group, Agent group or time bucket it would belong to.
+ */
+export function withoutOrgSessions<T extends OrgSessionMarks>(rows: readonly T[]): T[] {
+  return rows.filter((s) => !isOrgSession(s));
+}

@@ -73,5 +73,8 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "xmind": "^2.2.33",
     "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "miniprogram-automator": "0.13.0"
   }
 }

@@ -103,3 +103,21 @@ test('real planning CLI keeps each role independent, explicit lifecycle dependen
   assert.deepEqual(live.stages.filter(s => s.selected).map(s => s.id), ['execution', 'report']);
   assert.deepEqual(live.stages.find(s => s.id === 'report').depends_on, ['execution']);
 });
+
+test('mobile execution plans select dedicated agents without changing the six stage definitions', () => {
+  for (const [platform, agent, skill] of [['android','android_test_agent','android-execution'],['miniprogram','miniprogram_test_agent','miniprogram-execution']]) {
+    const id=`run-registry-${randomUUID()}`;
+    for (const [script,args] of [
+      ['create-run',[`--run-id=${id}`]],
+      ['plan-run',[`--run-id=${id}`,'--stages=execution','--workflow-mode=task','--review-mode=auto',`--execution-platform=${platform}`]]
+    ]) {
+      const result=spawnSync(process.execPath,[`scripts/${script}.mjs`,...args],{cwd:root,encoding:'utf8'});
+      assert.equal(result.status,0,result.stderr);
+    }
+    const plan=JSON.parse(readFileSync(resolve(root,'output/runs',id,'manifest.json'))).orchestration.plan;
+    assert.equal(plan.execution_platform,platform);
+    assert.equal(plan.stages.find(stage=>stage.id==='execution').agent,agent);
+    assert.deepEqual(plan.stages.find(stage=>stage.id==='execution').skills,[skill]);
+  }
+  assert.equal(stageDefinition('execution').agent,'automation_execution_agent');
+});

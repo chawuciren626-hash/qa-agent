@@ -1,0 +1,68 @@
+/** English dictionary for the docs UI (same shape as `zh` in strings.ts). */
+import type { Strings } from "./strings";
+
+export const en: Strings = {
+  siteName: "PenguinHarness",
+
+  nav: {
+    home: "Home",
+    blog: "Blog",
+    download: "Download",
+    docs: "Docs",
+    gallery: "Gallery",
+    github: "GitHub",
+    openMenu: "Open navigation",
+    closeMenu: "Close navigation",
+  },
+
+  theme: {
+    label: "Theme",
+    light: "Light",
+    dark: "Dark",
+    system: "System",
+  },
+
+  lang: {
+    label: "Language",
+    zh: "中文",
+    en: "English",
+    system: "System",
+  },
+
+  sections: {
+    start: "Get Started",
+    guides: "Guides",
+    advanced: "Advanced",
+    design: "How It Works",
+    reference: "Reference",
+  } as Record<string, string>,
+
+  doc: {
+    toc: "On this page",
+    copyMarkdown: "Copy Markdown",
+    copied: "Copied",
+    prev: "Previous",
+    next: "Next",
+    notFound: "Page not found",
+    backHome: "Back to docs home",
+  },
+
+  search: {
+    open: "Search docs",
+    label: "Search docs",
+    placeholder: "Search titles, sections, and content",
+    start: "Enter a keyword to search all docs in the current language",
+    noResults: "No matching documentation",
+    noResultsHint: "Try a shorter or different search term",
+    results: "Search results",
+    close: "Close search",
+    keyboardHint: "Use the arrow keys to select, then press Enter to open",
+  },
+
+  footer: {
+    repo: "GitHub repository",
+    license: "Apache-2.0 License",
+    site: "Website",
+    copyright: "© 2026 Prism Shadow · Open source under Apache-2.0",
+  },
+};

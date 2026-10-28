@@ -35,8 +35,18 @@ if html_only:
 if len(sys.argv) not in (6, 7):
     raise SystemExit("用法: python generate-report-documents.py <report.md> <results.json> <bugs.json> <report.docx> <report.pdf> [quality-metrics.json]")
 
-report_md, results_path, bugs_path, docx_path, pdf_path = map(os.path.abspath, sys.argv[1:6])
-metrics_path = os.path.abspath(sys.argv[6]) if len(sys.argv) == 7 else None
+def filesystem_path(value):
+    """Workspace and generation ids can exceed MAX_PATH in Windows user profiles."""
+    absolute = os.path.abspath(value)
+    if os.name != 'nt' or absolute.startswith('\\\\?\\'):
+        return absolute
+    if absolute.startswith('\\\\'):
+        return '\\\\?\\UNC\\' + absolute[2:]
+    return '\\\\?\\' + absolute
+
+
+report_md, results_path, bugs_path, docx_path, pdf_path = map(filesystem_path, sys.argv[1:6])
+metrics_path = filesystem_path(sys.argv[6]) if len(sys.argv) == 7 else None
 with open(report_md, encoding="utf-8") as f:
     markdown = markdown_body(f.read())
 with open(results_path, encoding="utf-8") as f:

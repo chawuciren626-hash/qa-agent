@@ -1,0 +1,447 @@
+/**
+ * Unit tests for task-stats.ts: the stats-row convention matches the CLI's stats-row
+ * output item for item.
+ */
+import { describe, expect, it } from "vitest";
+import type { TokenUsagePayload } from "@prismshadow/amsp";
+import {
+  addLlmDuration,
+  addToolExecution,
+  mergedIntervalMs,
+  seedPriorStats,
+  sessionElapsedBreakdown,
+  beginCompaction,
+  bucketCostUsd,
+  commitPendingCompaction,
+  createTaskStatsTracker,
+  endCompaction,
+  endTask,
+  formatTaskStats,
+  liveSessionElapsedMs,
+  resetTaskCounters,
+  trackMainUsage,
+  trackSubagentUsage,
+} from "../src/lib/amsp/task-stats";
+
+function usage(requestTotal: number, sessionTotal: number): TokenUsagePayload {
+  return {
+    type: "token_usage",
+    session: { cache_read: 0, cache_write: 0, output: 0, total: sessionTotal },
+    request: { cache_read: 0, cache_write: 0, output: 0, total: requestTotal },
+  };
+}
+
+/** Three-bucket request (session uses its total): builds a token_usage with specific cache/output figures. */
+function req(cr: number, cw: number, o: number): TokenUsagePayload {
+  const total = cr + cw + o;
+  return {
+    type: "token_usage",
+    session: { cache_read: 0, cache_write: 0, output: 0, total },
+    request: { cache_read: cr, cache_write: cw, output: o, total },
+  };
+}
+
+describe("TaskStatsTracker", () => {
+  it("a Task without token_usage produces no stats row, but elapsed time still accumulates", () => {
+    const t = createTaskStatsTracker();
+    expect(endTask(t, 500)).toBeNull();
+    expect(t.sessionElapsedMs).toBe(500);
+  });
+
+  it("context/Token/elapsed each report a cumulative value + delta", () => {
+    const t = createTaskStatsTracker();
+    trackMainUsage(t, usage(1000, 1000));
+    const s1 = endTask(t, 2300);
+    expect(s1).toEqual({
+      context: 1000,
+      contextDelta: 1000,
+      tokens: 1000,
+      tokensDelta: 1000,
+      elapsedMs: 2300,
+      elapsedDeltaMs: 2300,
+      tokensByBucket: { cacheRead: 0, cacheWrite: 0, output: 0 },
+      outputTps: null,
+    });
+
+    // Second Task: context can drop (may be negative, not clamped to non-negative).
+    trackMainUsage(t, usage(800, 1800));
+    const s2 = endTask(t, 1000);
+    expect(s2).toEqual({
+      context: 800,
+      contextDelta: -200,
+      tokens: 1800,
+      tokensDelta: 800,
+      elapsedMs: 3300,
+      elapsedDeltaMs: 1000,
+      tokensByBucket: { cacheRead: 0, cacheWrite: 0, output: 0 },
+      outputTps: null,
+    });
+  });
+
+  it("bucketed usage accumulates per Task (parent + child) for cost conversion; resets across Tasks", () => {
+    const t = createTaskStatsTracker();
+    const buckets = (cr: number, cw: number, o: number, total: number): TokenUsagePayload => ({
+      type: "token_usage",
+      session: { cache_read: 0, cache_write: 0, output: 0, total },
+      request: { cache_read: cr, cache_write: cw, output: o, total },
+    });
+    trackMainUsage(t, buckets(100, 10, 5, 200));
+    trackSubagentUsage(t, buckets(50, 0, 3, 60));
+    const s1 = endTask(t, 100);
+    expect(s1?.tokensByBucket).toEqual({ cacheRead: 150, cacheWrite: 10, output: 8 });
+    // Next Task accumulates from zero.
+    trackMainUsage(t, buckets(20, 2, 1, 40));
+    const s2 = endTask(t, 100);
+    expect(s2?.tokensByBucket).toEqual({ cacheRead: 20, cacheWrite: 2, output: 1 });
+  });
+
+  it("output TPS = this Task's main-session output ÷ LLM seconds", () => {
+    const t = createTaskStatsTracker();
+    // No LLM timing (no request pairing) -> TPS is null, avoiding a divide-by-zero.
+    trackMainUsage(t, req(300, 100, 200));
+    expect(endTask(t, 100)?.outputTps).toBeNull();
+    // Output 900 tokens / 3s LLM time = 300 tok/s.
+    trackMainUsage(t, req(0, 0, 900));
+    addLlmDuration(t, 3000);
+    expect(endTask(t, 100)?.outputTps).toBe(300);
+    // Subagent output doesn't count toward the main session's TPS (matches the Trace page's
+    // per-round convention): 600 / 2s = 300, excluding the subagent's 400.
+    trackMainUsage(t, req(0, 0, 600));
+    trackSubagentUsage(t, req(0, 0, 400));
+    addLlmDuration(t, 2000);
+    expect(endTask(t, 100)?.outputTps).toBe(300);
+  });
+
+  it("child-session usage counts toward the Token cumulative and delta, without affecting context", () => {
+    const t = createTaskStatsTracker();
+    trackMainUsage(t, usage(1000, 1000));
+    trackSubagentUsage(t, usage(400, 400));
+    const s = endTask(t, 100);
+    expect(s?.context).toBe(1000);
+    expect(s?.tokens).toBe(1400); // parent session.total + subagent cumulative
+    expect(s?.tokensDelta).toBe(1400); // sum of this Task's parent + subagent request totals
+    expect(t.subagentTotal).toBe(400); // persists across Tasks
+  });
+
+  it("compaction **after** the round ends (pending, never committed): Token / cost / context untouched, only the session total advances", () => {
+    const t = createTaskStatsTracker();
+    trackMainUsage(t, usage(1000, 1000));
+    beginCompaction(t);
+    trackMainUsage(t, usage(300, 1300)); // compaction request: request 300 -> stays pending first
+    expect(t.contextNow).toBe(1000); // compaction doesn't update the context figure
+    expect(t.sessionTotal).toBe(1300); // but the session total still tracks the provider (includes compaction; nothing leaks at the session level)
+    endCompaction(t, "completed");
+    // No commitPendingCompaction follows (no normal request_end for this round before closing) ->
+    // compaction after the round ends is discarded when the round closes.
+    expect(endTask(t, 100)?.tokensDelta).toBe(1000);
+  });
+
+  it("**mid-round** compaction (committed via commitPendingCompaction): Token / cost count toward the round, but not context / TPS", () => {
+    const t = createTaskStatsTracker();
+    trackMainUsage(t, req(200, 0, 100)); // own1: request 300 (cache 200 + output 100)
+    beginCompaction(t);
+    trackMainUsage(t, req(0, 500, 40)); // compaction request: request 540 (cache write 500 + output 40) -> pending
+    expect(t.contextNow).toBe(300); // compaction doesn't update the context figure
+    endCompaction(t, "completed");
+    // This round still has a normal Request after compaction -> commit the pending compaction
+    // usage at that request's request_end.
+    commitPendingCompaction(t);
+    trackMainUsage(t, req(0, 0, 200)); // own2: request 200 (output 200)
+    addLlmDuration(t, 4000); // LLM wall clock for the two normal requests (compaction request excluded)
+    const s = endTask(t, 100);
+    expect(s?.tokensDelta).toBe(1040); // 300 + 540 (compaction) + 200
+    expect(s?.tokensByBucket).toEqual({ cacheRead: 200, cacheWrite: 500, output: 340 }); // includes compaction
+    // The TPS numerator only counts normal-request output (100 + 200 = 300, compaction's 40 excluded): 300 / 4s = 75 tok/s.
+    expect(s?.outputTps).toBe(75);
+  });
+
+  it("successful compaction marks context usage stale (the ring draws empty instead of holding the pre-compaction value); abandoned compaction does not set it", () => {
+    // The ring reads usage **live**: once compaction succeeds, the old value no longer holds,
+    // and the new usage isn't measurable until the next normal Request's token_usage arrives.
+    // Without this flag, right after a user runs /compact the ring would still show "nearly
+    // full" — but the whole point of manual compaction is to see the space freed up. (The CLI
+    // only prints the stats row at the end of each round, and the next line is guaranteed to
+    // already have new token_usage, so this issue never surfaced there.)
+    const t = createTaskStatsTracker();
+    trackMainUsage(t, usage(120_000, 120_000));
+    beginCompaction(t);
+    trackMainUsage(t, usage(2_000, 122_000)); // the compaction request's own usage
+    endCompaction(t, "completed");
+    expect(t.contextStale).toBe(true);
+    // Only sets the flag, doesn't touch contextNow: it also serves as TaskStats' per-round
+    // history (context and the negative delta from "compaction dropping usage").
+    expect(t.contextNow).toBe(120_000);
+    // The next normal Request measures the new usage -> the flag clears, the ring shows the real number.
+    trackMainUsage(t, usage(15_000, 137_000));
+    expect(t.contextStale).toBe(false);
+    expect(t.contextNow).toBe(15_000);
+
+    // Compaction abandoned: the original context still holds (per core's CompactionEndPayload.status comment), so the flag isn't set.
+    const t2 = createTaskStatsTracker();
+    trackMainUsage(t2, usage(120_000, 120_000));
+    beginCompaction(t2);
+    endCompaction(t2, "aborted");
+    expect(t2.contextStale).toBe(false);
+    expect(t2.contextNow).toBe(120_000);
+  });
+
+  it("resetTaskCounters prevents usage outside the Task boundary from being misattributed to the next Task", () => {
+    const t = createTaskStatsTracker();
+    // Manual compaction (outside the Task boundary) consumes usage.
+    beginCompaction(t);
+    trackMainUsage(t, usage(300, 300));
+    endCompaction(t);
+    // Reset when the new Task starts.
+    resetTaskCounters(t);
+    trackMainUsage(t, usage(500, 800));
+    const s = endTask(t, 100);
+    expect(s?.tokensDelta).toBe(500); // excludes the compaction's 300
+    expect(s?.tokens).toBe(800);
+  });
+});
+
+describe("liveSessionElapsedMs", () => {
+  it("idle (no open Task): exactly the settled cumulative — the header renders the same value as before", () => {
+    const t = createTaskStatsTracker();
+    t.sessionElapsedMs = 2300;
+    expect(liveSessionElapsedMs(t, false, 1000, 99_999)).toBe(2300);
+    // Open but without a recorded start clock: nothing to add either.
+    expect(liveSessionElapsedMs(t, true, null, 99_999)).toBe(2300);
+  });
+
+  it("running: settled cumulative + wall clock since the Task started, never going backwards", () => {
+    const t = createTaskStatsTracker();
+    t.sessionElapsedMs = 2000;
+    expect(liveSessionElapsedMs(t, true, 5000, 8000)).toBe(5000); // 2000 + 3000
+    // A clock anomaly (now before the recorded start) adds nothing instead of subtracting.
+    expect(liveSessionElapsedMs(t, true, 5000, 4000)).toBe(2000);
+  });
+
+  it("no double count across the Task boundary: endTask folds the Task in as taskOpen flips off", () => {
+    const t = createTaskStatsTracker();
+    // Task 1 settled earlier.
+    endTask(t, 1000);
+    // Task 2 runs: started at 10_000, now 14_000 -> 1000 settled + 4000 live.
+    expect(liveSessionElapsedMs(t, true, 10_000, 14_000)).toBe(5000);
+    // Task 2 ends: the same model update folds its elapsed into the cumulative AND flips
+    // taskOpen off — the live view continues from the settled value without re-adding.
+    endTask(t, 4000);
+    expect(liveSessionElapsedMs(t, false, 10_000, 15_000)).toBe(5000);
+  });
+});
+
+describe("bucketCostUsd", () => {
+  it("converts the three buckets at per-million-token pricing", () => {
+    expect(
+      bucketCostUsd(
+        { cacheRead: 2_000_000, cacheWrite: 1_000_000, output: 500_000 },
+        { cacheRead: 0.5, cacheWrite: 2, output: 10 },
+      ),
+    ).toBe(8); // 2M×$0.5/M + 1M×$2/M + 0.5M×$10/M = 1 + 2 + 5
+  });
+
+  it("no pricing -> null (uncosted; callers keep the value as-is instead of fabricating $0)", () => {
+    const buckets = { cacheRead: 100, cacheWrite: 100, output: 100 };
+    expect(bucketCostUsd(buckets, undefined)).toBeNull();
+    expect(bucketCostUsd(buckets, null)).toBeNull();
+  });
+
+  it("the live Task buckets equal the settled stats row's buckets (the mid-task estimate lands on the final turn cost)", () => {
+    const t = createTaskStatsTracker();
+    trackMainUsage(t, req(300, 100, 200));
+    trackSubagentUsage(t, req(50, 0, 3));
+    const pricing = { cacheRead: 1, cacheWrite: 2, output: 3 };
+    const live = bucketCostUsd(
+      { cacheRead: t.taskCacheRead, cacheWrite: t.taskCacheWrite, output: t.taskOutput },
+      pricing,
+    );
+    const s = endTask(t, 100);
+    expect(live).not.toBeNull();
+    expect(live).toBe(bucketCostUsd(s!.tokensByBucket, pricing));
+  });
+});
+
+describe("formatTaskStats", () => {
+  const EN_LABELS = {
+    stats: "Stats",
+    input: "Input tokens",
+    cached: "cached",
+    output: "Output tokens",
+    parenOpen: " (",
+    parenClose: ")",
+  };
+  const ZH_LABELS = {
+    stats: "统计信息",
+    input: "输入 tokens",
+    cached: "已缓存",
+    output: "输出 tokens",
+    parenOpen: "（",
+    parenClose: "）",
+  };
+
+  it("the convention is this round's usage \"input (cached) · output · output TPS\", taking this Task's three-bucket usage + this Task's TPS", () => {
+    expect(
+      formatTaskStats(
+        {
+          context: 40000, // context usage isn't in the stats row (shown by the input-box ring instead)
+          contextDelta: 1000,
+          tokens: 60000,
+          tokensDelta: 1200,
+          elapsedMs: 5100,
+          elapsedDeltaMs: 2300,
+          tokensByBucket: { cacheRead: 3000, cacheWrite: 1000, output: 1200 },
+          outputTps: 42.5,
+        },
+        EN_LABELS,
+      ),
+    ).toBe("[Stats] Input tokens 4k (cached 3k) · Output tokens 1.2k · 42.5 tok/s");
+  });
+
+  it("TPS shows — without LLM timing", () => {
+    expect(
+      formatTaskStats(
+        {
+          context: 500,
+          contextDelta: 0,
+          tokens: 500,
+          tokensDelta: 500,
+          elapsedMs: 900,
+          elapsedDeltaMs: 900,
+          tokensByBucket: { cacheRead: 500, cacheWrite: 0, output: 0 },
+          outputTps: null,
+        },
+        EN_LABELS,
+      ),
+    ).toBe("[Stats] Input tokens 500 (cached 500) · Output tokens 0 · —");
+  });
+
+  it("renders with the supplied locale labels (zh)", () => {
+    expect(
+      formatTaskStats(
+        {
+          context: 40000,
+          contextDelta: 1000,
+          tokens: 60000,
+          tokensDelta: 1200,
+          elapsedMs: 5100,
+          elapsedDeltaMs: 2300,
+          tokensByBucket: { cacheRead: 3000, cacheWrite: 1000, output: 1200 },
+          outputTps: 42.5,
+        },
+        ZH_LABELS,
+      ),
+    ).toBe("[统计信息] 输入 tokens 4k（已缓存 3k） · 输出 tokens 1.2k · 42.5 tok/s");
+  });
+});
+
+describe("elapsed breakdown: API time and tool wall time", () => {
+  it("unions intervals so parallel tools count once", () => {
+    expect(mergedIntervalMs([])).toBe(0);
+    // Overlapping, nested, adjacent and out-of-order all reduce to the covered span.
+    expect(
+      mergedIntervalMs([
+        [3000, 9000],
+        [4000, 11000],
+      ]),
+    ).toBe(8000);
+    expect(
+      mergedIntervalMs([
+        [0, 10000],
+        [2000, 3000],
+      ]),
+    ).toBe(10000);
+    expect(
+      mergedIntervalMs([
+        [5000, 6000],
+        [0, 5000],
+      ]),
+    ).toBe(6000);
+    expect(
+      mergedIntervalMs([
+        [8000, 9000],
+        [0, 1000],
+      ]),
+    ).toBe(2000);
+    // Recording the same execution twice (a streamed stop, then the complete message) is what
+    // lets stream-model settle a duration twice without inflating the figure.
+    expect(
+      mergedIntervalMs([
+        [1000, 4000],
+        [1000, 4000],
+      ]),
+    ).toBe(3000);
+  });
+
+  it("drops executions that carry no wall time", () => {
+    const t = createTaskStatsTracker();
+    addToolExecution(t, 1000, 1000);
+    addToolExecution(t, 2000, 1000);
+    addToolExecution(t, Number.NaN, 5000);
+    expect(t.taskToolIntervals).toEqual([]);
+  });
+
+  it("folds both components into the session totals at the Task boundary", () => {
+    const t = createTaskStatsTracker();
+    addLlmDuration(t, 2000);
+    addToolExecution(t, 3000, 9000);
+    addToolExecution(t, 4000, 11000);
+    // Before the boundary the open Task's parts are already visible, so the breakdown keeps
+    // pace with the ticking total instead of lagging a whole Task behind it.
+    expect(sessionElapsedBreakdown(t)).toEqual({ apiMs: 2000, toolMs: 8000 });
+
+    endTask(t, 12000);
+    expect(t.sessionLlmMs).toBe(2000);
+    expect(t.sessionToolMs).toBe(8000);
+    expect(t.taskToolIntervals).toEqual([]);
+    expect(t.taskLlmMs).toBe(0);
+    expect(sessionElapsedBreakdown(t)).toEqual({ apiMs: 2000, toolMs: 8000 });
+
+    // A second Task accumulates on top rather than restarting.
+    addLlmDuration(t, 1000);
+    addToolExecution(t, 20000, 21000);
+    endTask(t, 3000);
+    expect(sessionElapsedBreakdown(t)).toEqual({ apiMs: 3000, toolMs: 9000 });
+  });
+
+  it("keeps the components' TPS denominator intact across the fold", () => {
+    const t = createTaskStatsTracker();
+    trackMainUsage(t, {
+      type: "token_usage",
+      session: { cache_read: 0, cache_write: 0, output: 1000, total: 1000 },
+      request: { cache_read: 0, cache_write: 0, output: 1000, total: 1000 },
+    });
+    addLlmDuration(t, 2000);
+    // endTask folds taskLlmMs into the session total AND still reports it as the TPS
+    // denominator: 1000 output tokens over 2s.
+    expect(endTask(t, 2000)?.outputTps).toBe(500);
+    expect(t.sessionLlmMs).toBe(2000);
+  });
+
+  it("drops a Task's components when its counters reset outside a boundary", () => {
+    const t = createTaskStatsTracker();
+    addLlmDuration(t, 2000);
+    addToolExecution(t, 1000, 5000);
+    // resetTaskCounters is the "usage outside a Task" path: it leaves sessionElapsedMs alone,
+    // so the components it discards must not reach the session totals either.
+    resetTaskCounters(t);
+    expect(sessionElapsedBreakdown(t)).toEqual({ apiMs: 0, toolMs: 0 });
+    expect(t.sessionLlmMs).toBe(0);
+    expect(t.sessionToolMs).toBe(0);
+  });
+
+  it("seeds the breakdown from a windowed load's prior stats", () => {
+    const t = createTaskStatsTracker();
+    seedPriorStats(t, {
+      subagentTokens: 0,
+      elapsedMs: 30000,
+      apiMs: 12000,
+      toolMs: 9000,
+      sessionTokens: 0,
+      contextTokens: 0,
+    });
+    // Total and components are seeded together: seeding one alone would show a full elapsed
+    // time beside components covering only the loaded window.
+    expect(t.sessionElapsedMs).toBe(30000);
+    expect(sessionElapsedBreakdown(t)).toEqual({ apiMs: 12000, toolMs: 9000 });
+  });
+});

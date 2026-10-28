@@ -4,11 +4,21 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { checkData, checkDataReferences, inspectCaseData, inspectDesign, designReceipt, validatePlanDesign } from '../../scripts/design-quality.mjs';
+import { checkData, checkDataReferences, inspectCaseData, inspectDesign, designReceipt, validatePlanDesign, sameProtectedStatement } from '../../scripts/design-quality.mjs';
 import { createExecutionCases, validateExecutionPlan } from '../../scripts/execution-plan.mjs';
 import { provenanceFixture } from './provenance-fixtures.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
+
+test('protected rule comparison resolves embedded references only for the owning session',()=>{
+  const owner='session-2026-10-28-12-00-00-abcd1234',other='session-2026-10-28-12-00-00-ffff1234';
+  const ref=`qa-secret://${owner}/12345678-1234-4123-8123-123456789abc`;
+  const store={get:(session,value)=>{assert.equal(session,owner);assert.equal(value,ref);return 'synthetic-secret';}};
+  assert.equal(sameProtectedStatement(`Login with ${ref}`, 'Login with synthetic-secret', owner, store),true);
+  assert.equal(sameProtectedStatement(`Login with ${ref}`, 'Login with different value', owner, store),false);
+  assert.throws(()=>sameProtectedStatement(ref,'synthetic-secret',other,store));
+  assert.throws(()=>sameProtectedStatement(ref,'synthetic-secret',null,store),/task session binding/);
+});
 
 test('data preparation hints are generic, nonblocking and never equate references with semantic correctness',()=>{
   const row={case_id:'STATE',preconditions:['Prepare test_data.count'],steps:['Do not clear test_data.label'],test_data:{label:'',payload:null,count:0,enabled:false,other:'private sample'}};

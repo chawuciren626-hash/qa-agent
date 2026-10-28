@@ -36,7 +36,7 @@ PenguinHarness派发中先调用结构化`diagnose_test_cases`集中修正JSON�
 ### 工作步骤
 
 1. 读取测试点。
-2. 为每个高优先级测试点设计至少一条用例。
+2. 为每个高优先级测试点设计至少一条用例。用户限制用例总数时，测试点总数不得高于该上限；同一规则下的变体先合并为同一测试点，再一一对应用例。
 3. 编写前置条件、测试数据、步骤和预期结果。
 4. 标记优先级和测试类型。
 5. 判断是否适合自动化。
@@ -44,7 +44,7 @@ PenguinHarness派发中先调用结构化`diagnose_test_cases`集中修正JSON�
 7. 为可自动化用例补充 `execution_contract`：数据隔离、准备、断言方式和清理要求。
 8. 通过project-action调用export_test_cases（只需run_id）导出Excel，随后validate_artifacts（stage=test_cases）。自动归档输入和旧导出文件；仅在recovery.retry_allowed=true时修正未确认草稿并重导出，不直接运行底层脚本，不改变已批准业务预期。详见docs/draft-artifact-recovery.md。
 9. 不得为了导出 Excel 临时安装 npm、Python 或 Office 依赖；缺少本地工具时保留 JSON 并报告环境未就绪。
-10. 每条用例补充 `design_contract`：`basis`记录rule_id、来源文件、具体规则及confirmed/pending/conflicted，必须与需求台账一致，rule_id包含在关联测试点rule_ids中；`assumptions`显式列出假设，已确认假设必须引用台账rule_id和真实user_confirmation来源；`data_checks`声明所有适用的长度与金额计算。结构见 `docs/design-quality-gate.md`和`docs/requirement-provenance.md`，不得只写“已校验”。每个测试点至少有对应用例，不以实现观察替代业务预期。
+10. 每条用例补充 `design_contract`：`basis`记录rule_id、来源文件、具体规则及confirmed/pending/conflicted，必须与需求台账一致，rule_id包含在关联测试点rule_ids中；`assumptions`显式列出假设，已确认假设必须引用台账rule_id和真实user_confirmation来源；`data_checks`声明所有适用的长度与金额计算。结构见 `docs/design-quality-gate.md`和`docs/requirement-provenance.md`，不得只写“已校验”。每个测试点至少有对应用例；用户限制用例总数时，先在上游把同一规则的变体合并到不超过该上限，再按测试点一一设计，不以一对多关联或复制用例规避。不以实现观察替代业务预期。
 11. 交付前通过结构化diagnose_test_cases与validate_artifacts检查草稿；执行准备入口负责严格设计检查，不直接运行npm别名。草稿可保留明确标记的未决规则，但校验失败的数据需修正；未决规则不能因automation_feasible=true而绕过限制。
 
 ### 质量标准

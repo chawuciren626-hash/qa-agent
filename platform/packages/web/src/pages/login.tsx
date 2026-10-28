@@ -1,0 +1,190 @@
+/**
+ * Login page: brand penguin logo above the form + centered large
+ * title + full-width primary button. Background is only the circuit-trace animation (the logo belongs to
+ * the form area, not the background graphics); top-right corner has language and theme settings (reuses
+ * global preferences, defaults to following the device). No open registration: accounts are created by
+ * admins in the user backend; first use logs in with the built-in admin account (hinted in the footer).
+ *
+ * It is also where a rejected sign-in link lands: the server redirects a spent or invalid claim here
+ * with `?claimFailed=`, and the page raises a dialog over the form saying how to get a working link.
+ */
+import { useEffect, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router";
+import {
+  Button,
+  Input,
+  Modal,
+  Notice,
+  PasswordInput,
+  PenguinLogo,
+  Segmented,
+} from "@prismshadow/penguin-ui";
+import { PENGUIN_LOGO_URL } from "../lib/brand-logo";
+import { S } from "../lib/strings";
+import { apiErrorText } from "../lib/api-error";
+import { useDocumentTitle } from "../lib/use-document-title";
+import { useAuth } from "../state/auth";
+import { useLocale } from "../state/locale";
+import type { LangPref } from "../state/locale";
+import { useTheme } from "../state/theme";
+import type { ThemeMode } from "../state/theme";
+import { LoginCircuit } from "./login-circuit";
+
+/** Which advice a failed claim asks for; the server decides it from the deployment, not from the token. */
+type ClaimFailure = "desktop" | "server";
+
+/** Reads `?claimFailed=`; anything the server did not write is ignored rather than shown. */
+function parseClaimFailure(value: string | null): ClaimFailure | null {
+  return value === "desktop" || value === "server" ? value : null;
+}
+
+export function LoginPage() {
+  useDocumentTitle(S.auth.login);
+  const { login } = useAuth();
+  const { mode, setMode } = useTheme();
+  const { lang, setLang } = useLocale();
+  const navigate = useNavigate();
+  const [userId, setUserId] = useState("");
+  const [password, setPassword] = useState("");
+  // Per-field required errors sit next to their input; `form` holds the auth failure (wrong user/password), which isn't specific to one field.
+  const [errors, setErrors] = useState<{ userId?: string; password?: string; form?: string }>({});
+  const [busy, setBusy] = useState(false);
+  const clearErrors = () => setErrors((p) => (p.userId || p.password || p.form ? {} : p));
+
+  // Read once from the landing address, which the effect below then strips: the dialog answers
+  // the navigation that arrived here, so a reload must not raise it again and an address copied
+  // out of the bar must not raise it for someone who never followed a link.
+  const [searchParams] = useSearchParams();
+  const [claimFailure] = useState<ClaimFailure | null>(() =>
+    parseClaimFailure(searchParams.get("claimFailed")),
+  );
+  const [noticeOpen, setNoticeOpen] = useState(claimFailure !== null);
+  useEffect(() => {
+    if (claimFailure !== null) navigate("/login", { replace: true });
+  }, [claimFailure, navigate]);
+
+  const submit = async () => {
+    const next: { userId?: string; password?: string } = {};
+    if (!userId.trim()) next.userId = S.common.requiredField;
+    if (!password) next.password = S.common.requiredField;
+    if (next.userId || next.password) {
+      setErrors(next);
+      return;
+    }
+    setBusy(true);
+    setErrors({});
+    try {
+      await login(userId.trim(), password);
+      navigate("/chat", { replace: true });
+    } catch (e) {
+      setErrors({ form: apiErrorText(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const themeOptions: ReadonlyArray<{ value: ThemeMode; label: string }> = [
+    { value: "light", label: S.settings.themeLight },
+    { value: "dark", label: S.settings.themeDark },
+    { value: "system", label: S.settings.followSystem },
+  ];
+  const langOptions: ReadonlyArray<{ value: LangPref; label: string }> = [
+    { value: "en", label: S.settings.langEn },
+    { value: "zh", label: S.settings.langZh },
+    { value: "system", label: S.settings.followSystem },
+  ];
+
+  return (
+    // relative + overflow-hidden: the circuit-trace background fills this page and clips lines that go out
+    // of bounds; the form area uses relative positioning to sit above the background (otherwise the
+    // absolutely positioned SVG would render in front of the static content).
+    <div className="relative flex min-h-full items-center justify-center overflow-hidden p-4 pt-[calc(env(titlebar-area-height,0px)+1rem)]">
+      <LoginCircuit />
+      {/* Language / theme settings: compact segmented control in the top-right corner (stacks vertically on narrow screens to avoid competing with the form for width). */}
+      <div className="absolute right-4 top-[calc(env(titlebar-area-height,0px)+1rem)] flex flex-col items-end gap-1.5 sm:flex-row sm:items-center sm:gap-2">
+        <div aria-label={S.settings.language}>
+          <Segmented options={langOptions} value={lang} onChange={setLang} />
+        </div>
+        <div aria-label={S.settings.colorMode}>
+          <Segmented options={themeOptions} value={mode} onChange={setMode} />
+        </div>
+      </div>
+      <div className="anim-rise relative w-full max-w-sm">
+        {/* Brand penguin logo (part of the form area, not background graphics, so it doesn't clash with the trace animation) */}
+        <PenguinLogo src={PENGUIN_LOGO_URL} className="mx-auto mb-3 h-16 w-16 rounded-2xl" />
+        <h1 className="mb-6 text-center text-3xl font-semibold tracking-tight">{S.appName}</h1>
+
+        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+          <form
+            className="space-y-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submit();
+            }}
+          >
+            {/* The two fields ask for the base tier by name, the only place in the app that
+                does. This is a standalone page holding two controls and nothing else, so it is
+                deliberately roomier than the dense forms inside the app, where sm is the rung. */}
+            <Input
+              size="base"
+              label={S.common.username}
+              required
+              value={userId}
+              onChange={(e) => {
+                setUserId(e.target.value);
+                clearErrors();
+              }}
+              error={errors.userId}
+              autoComplete="username"
+              autoFocus
+            />
+            <PasswordInput
+              size="base"
+              label={S.auth.password}
+              required
+              value={password}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                clearErrors();
+              }}
+              error={errors.password}
+              autoComplete="current-password"
+            />
+            {errors.form && <Notice tone="danger">{errors.form}</Notice>}
+            <Button
+              type="submit"
+              variant="primary"
+              className="w-full justify-center py-2.5 font-semibold"
+              disabled={busy}
+            >
+              {S.auth.login}
+            </Button>
+          </form>
+
+          <p className="mt-4 text-center text-xs text-gray-400 dark:text-gray-500">
+            {S.auth.defaultAdminNote}
+          </p>
+          <p className="mt-1.5 text-center text-xs text-gray-400 dark:text-gray-500">
+            {S.auth.forgotAdminNote}
+          </p>
+        </div>
+      </div>
+      {/* Over the form, never instead of it: the link is one way in and the password form is the
+          other, so the dialog explains and steps aside. */}
+      <Modal
+        open={noticeOpen}
+        title={S.auth.claimFailedTitle}
+        onClose={() => setNoticeOpen(false)}
+        footer={
+          <Button size="sm" variant="primary" onClick={() => setNoticeOpen(false)}>
+            {S.common.gotIt}
+          </Button>
+        }
+      >
+        <p className="text-sm text-gray-600 dark:text-gray-300">
+          {claimFailure === "desktop" ? S.auth.claimFailedDesktop : S.auth.claimFailedServer}
+        </p>
+      </Modal>
+    </div>
+  );
+}

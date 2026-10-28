@@ -3,7 +3,7 @@ name: api-testing
 description: 依据接口契约设计和编写Playwright API测试，覆盖认证权限、错误响应、分页、Schema与幂等副作用；适用于接口专项或UI数据准备，不将API成功当作UI验收通过。
 license: MIT; see LICENSE.txt
 metadata:
-  version: '1.1.0'
+  version: '1.2.0'
   source: fugazi/test-automation-skills-agents
   revision: 65a72d5e74def3c23143bef8757e72cb68e91032
   adapted-from: api-testing

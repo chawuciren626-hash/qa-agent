@@ -2,10 +2,12 @@
 name: bug-reporting
 description: 基于测试失败结果、日志和截图分类问题，生成可追溯的 Bug 草稿。
 metadata:
-  version: '1.2.0'
+  version: '1.3.0'
 ---
 
 # Bug 记录 Skill
+
+task和lifecycle遇到多种可能原因时，均可按需读取已安装的qa-investigation及其失败分类参考。只利用本次材料分析，不因此补建执行批次、启动复测或把反复失败直接定为产品缺陷。
 
 ## 独立任务（task）
 

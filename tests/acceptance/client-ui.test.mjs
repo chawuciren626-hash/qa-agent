@@ -7,6 +7,7 @@ import {
   qaBindProject,
   qaTaskStatus,
   qaProjectForSession,
+  qaWorkspaceGroups,
   qaLastOutcome,
   qaReadBookmarks,
   qaToggleBookmark,
@@ -170,4 +171,24 @@ test("new user turns and later aborts cannot inherit an old success badge", () =
     qaTaskStatus({ status: "idle" }, { stopReason: "failed" }).kind,
     "error",
   );
+});
+
+test("every historical task remains in a workspace while explicit bindings win", () => {
+  const original = {projects:[{id:"named",name:"已有空间",folders:["E:/work/shop"]}],bindings:{s1:"named"}};
+  const sessions = [{sessionId:"s1",workspace:"E:/other"},{sessionId:"s2",workspace:"E:/work/legacy/2026-10-26-10-00-00-aabb"},{sessionId:"s3",workspace:"E:/work/legacy/2026-10-26-11-00-00-ccdd"},{sessionId:"s4",workspace:""}];
+  const result = qaWorkspaceGroups(original,sessions);
+  assert.equal(result.bindings.s1,"named");
+  assert.equal(result.bindings.s2,result.bindings.s3);
+  assert.equal(result.projects.find(p=>p.id===result.bindings.s2).name,"legacy");
+  for(const session of sessions) assert.ok(qaProjectForSession(result.projects,result.bindings,session));
+  assert.equal(original.projects.length,1);
+  assert.deepEqual(original.bindings,{s1:"named"});
+});
+test("a task sent without an explicit selection receives a default workspace within its project",()=>{
+  const store=memory();
+  qaBindProject("business-a","alice",null,"new-task",store);
+  const saved=qaRead(qaScope("business-a","alice",store),store);
+  assert.equal(saved.bindings["new-task"],"default-workspace");
+  assert.equal(saved.projects[0].name,"默认工作空间");
+  assert.equal(qaRead(qaScope("business-b","alice",store),store).projects.length,0);
 });

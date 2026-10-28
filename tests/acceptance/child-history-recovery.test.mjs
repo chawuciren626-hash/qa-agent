@@ -6,6 +6,16 @@ const options = { allowRecovery: true, requireControlledCommands: true };
 const call = (name, id, args) => ({ payload: { type: 'tool_call', name, tool_call_id: id, arguments: args } });
 const output = (id, value, stop_reason = 'completed') => ({ payload: { type: 'tool_call_output', tool_call_id: id, output: value, stop_reason } });
 const success = JSON.stringify({ status: 'completed', exit_code: 0, result: { termination_confirmed: true } });
+test('catalog recovery accepts Node 24 entry errors and archived help, never archived execution',()=>{
+  const lookup=call('exec_command','catalog',{cmd:'node scripts/project-action.mjs catalog'});
+  const missing="Error: Cannot find module 'project-action.mjs'\n at Module.executeUserEntryPoint (run_main:1)\n code: 'MODULE_NOT_FOUND', requireStack: []\n[exit code: 1]";
+  const help='{ "status": "help", "actions": {\n[truncated]\n}\n[output archived: scratchpad/catalog.log]';
+  const recovered=[lookup,output('catalog',missing),call('exec_command','fixed',{cmd:'node scripts/project-action.mjs catalog'}),output('fixed',help)];
+  assert.doesNotThrow(()=>assertChildCommands(recovered,options));
+  assert.throws(()=>assertChildCommands(recovered.slice(0,2),options),/not corrected/);
+  assert.throws(()=>assertChildCommands([call('exec_command','execute',{cmd:'node scripts/project-action.mjs execute'}),output('execute',help)],options),/unreadable/);
+  assert.throws(()=>assertChildCommands([lookup,output('catalog',help,'fatal')],options),/unreadable/);
+});
 const launch = () => [
   call('exec_command', 'launch', { cmd: 'node scripts/project-action.mjs execute' }),
   output('launch', '[process running with process_id proc-a; use input_command to send input or poll for output]')

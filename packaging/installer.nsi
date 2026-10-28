@@ -70,10 +70,15 @@ Section "Application"
 SectionEnd
 
 Section "Uninstall"
-  nsExec::ExecToStack '"$INSTDIR\runtime\tools\node\node.exe" "$INSTDIR\app\engine\scripts\product-uninstall-check.mjs" "$INSTDIR\installation.json"'
+  InitPluginsDir
+  nsExec::ExecToStack '"$INSTDIR\runtime\tools\node\node.exe" "$INSTDIR\app\engine\scripts\product-uninstall-check.mjs" "$INSTDIR\installation.json" "$PLUGINSDIR\uninstall-error.txt"'
   Pop $0
   Pop $1
   ${If} $0 != "0"
+    IfFileExists "$PLUGINSDIR\uninstall-error.txt" 0 +4
+    FileOpen $2 "$PLUGINSDIR\uninstall-error.txt" r
+    FileReadUTF16LE $2 $1
+    FileClose $2
     SetErrorLevel 2
     IfSilent +2
     MessageBox MB_ICONSTOP "无法安全卸载。$\r$\n$1"

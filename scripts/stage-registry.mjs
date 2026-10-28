@@ -68,6 +68,8 @@ export function stageWriteRules(id) {
 export function isControlledStageEvidence(stage, path) {
   const value = path.toLowerCase();
   return (value.startsWith('execution/api/') && (stage==='execution' || stage==='api_execution' && value!=='execution/api/scenario-draft.json')) || stage === 'execution' && (/^execution\/browser-/.test(value) ||
+    /^execution\/(?:android|miniprogram)-(?:evidence|receipts|sessions)\//.test(value) ||
+    /^execution\/(?:android|miniprogram)-(?:session|results)\.json$/.test(value) ||
     ['execution/test_results.json','execution/exploration.json','execution/exploration.lock'].includes(value));
 }
 export function dispatchTemplate(id, runId = 'run-example') {
