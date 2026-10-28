@@ -27,6 +27,7 @@ config/product-installation.local.json
 **/.vault.toml*
 **/api-token
 **/api-token.*
+!platform/packages/server/src/auth/api-token.ts
 **/browser-private.json*
 .env
 .env.*
