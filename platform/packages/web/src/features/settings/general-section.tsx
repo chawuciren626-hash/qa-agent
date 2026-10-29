@@ -10,7 +10,7 @@
  * request answered rather than on what was clicked.
  */
 import { useState, useSyncExternalStore } from "react";
-import { PrefRow, Segmented, SettingsGroup, ToggleRow, guardLeave } from "@prismshadow/penguin-ui";
+import { Button, PrefRow, Segmented, SettingsGroup, ToggleRow, guardLeave } from "@prismshadow/penguin-ui";
 import { S } from "../../lib/strings";
 import {
   enableNotifications,
@@ -29,10 +29,9 @@ import { useTheme } from "../../state/theme";
 import type { Currency } from "../../state/theme";
 import { TraceImportRow } from "./trace-import-row";
 
-export function GeneralSection() {
+export function GeneralSection({ workspace = true, onOpenUpdates }: { workspace?: boolean; onOpenUpdates?: () => void } = {}) {
   const { lang, locale, setLang } = useLocale();
   const { currency, setCurrency } = useTheme();
-  const { serverEnabled, personalEnabled, setPersonalEnabled } = useCompany();
 
   useSyncExternalStore(subscribeNotificationsEnabled, notificationsEnabledVersion);
   const notificationsOn = readNotificationsEnabled();
@@ -102,6 +101,17 @@ export function GeneralSection() {
       {/* The personal company-mode switch: off hides this user's mode switch and nothing else.
           Offered only while the server allows company mode at all — a switch that changes
           nothing would only invite the question of why. */}
+      {workspace && <WorkspaceGeneralSettings />}
+      {onOpenUpdates && <PrefRow label="软件更新">
+        <Button size="sm" variant="secondary" onClick={onOpenUpdates}>检查更新</Button>
+      </PrefRow>}
+    </SettingsGroup>
+  );
+}
+
+function WorkspaceGeneralSettings() {
+  const { serverEnabled, personalEnabled, setPersonalEnabled } = useCompany();
+  return <>
       {serverEnabled && (
         <ToggleRow
           label={S.settings.companyModePersonal}
@@ -111,6 +121,5 @@ export function GeneralSection() {
         />
       )}
       <TraceImportRow />
-    </SettingsGroup>
-  );
+    </>;
 }

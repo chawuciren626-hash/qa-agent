@@ -37,6 +37,7 @@ export const FOLDER_ACCESS_TIMEOUT_MS = 120_000;
 /** The slice of Electron's ParentPort this relay uses (structural: the server must not depend on Electron types). */
 export interface ShellPort {
   on(event: "message", listener: (e: { data: unknown }) => void): void;
+  off?(event: "message", listener: (e: { data: unknown }) => void): void;
   postMessage(message: unknown): void;
 }
 
@@ -66,6 +67,24 @@ export function parseUpdaterStatusMessage(data: unknown): DesktopUpdateStatus | 
 
 /** Reads Electron's injected port off `process`, absent under plain Node. */
 export function shellPortOf(proc: NodeJS.Process): ShellPort | null {
+  if (proc.env.AITEST_LOCAL_SERVICE === "1" && proc.send) {
+    const listeners = new Map<(e: { data: unknown }) => void, (message: any) => void>();
+    return {
+      on: (_event, listener) => {
+        if (listeners.has(listener)) return;
+        const receive = (message: any) => {
+          if (message?.type === "aitest-shell-frame") listener({ data: message.data });
+        };
+        listeners.set(listener, receive); proc.on("message", receive);
+      },
+      off: (_event, listener) => {
+        const receive = listeners.get(listener);
+        if (receive) proc.off("message", receive);
+        listeners.delete(listener);
+      },
+      postMessage: (data) => { if (proc.connected) proc.send?.({ type: "aitest-shell-frame", data }); },
+    };
+  }
   const port = (proc as NodeJS.Process & { parentPort?: ShellPort }).parentPort;
   return port && typeof port.on === "function" && typeof port.postMessage === "function"
     ? port

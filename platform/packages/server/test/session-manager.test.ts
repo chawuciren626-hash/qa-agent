@@ -229,6 +229,31 @@ describe("session-manager", () => {
     expect((err as { status: number }).status).toBe(404);
   });
 
+  it("idle maintenance closes task admission without interrupting a waiting approval", async () => {
+    const manager = makeManager(loaderOf(approvalFakeSession("session-1")));
+    await manager.startTask("session-1", [userText("wait for approval")]);
+    await waitFor(() => manager.pendingApprovalCount("session-1") > 0);
+    expect(manager.prepareIdleMaintenance()).toBe(false);
+    expect(manager.statusOf("session-1")).toBe("running");
+    expect(manager.pendingApprovalCount("session-1")).toBe(1);
+    await manager.abortTask("session-1");
+    await waitFor(() => manager.statusOf("session-1") === "idle");
+    expect(manager.prepareIdleMaintenance()).toBe(true);
+    await expect(manager.startTask("session-1", [userText("too late")])).rejects.toMatchObject({ code: "shutting_down" });
+    await manager.shutdown();
+  });
+
+  it("refuses maintenance while a task is still loading under its admission lock", async () => {
+    let release!: (session: RuntimeSession) => void;
+    const manager = makeManager({ load: () => new Promise(resolve => { release = resolve; }) });
+    const task = manager.startTask("session-1", [userText("loading")]);
+    await waitFor(() => release !== undefined);
+    expect(manager.prepareIdleMaintenance()).toBe(false);
+    release(approvalFakeSession("session-1"));
+    await task;
+    await manager.shutdown();
+  });
+
   it("startTask: echoes the input ahead of the run's output; when driving ends it returns to idle and pushes task_state", async () => {
     sessions.updateApprovalMode("session-1", "allow-all");
     const manager = makeManager(loaderOf(approvalFakeSession("session-1")));

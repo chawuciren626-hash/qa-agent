@@ -47,15 +47,13 @@ const container = document.getElementById("root");
 if (!container) throw new Error("#root mount point not found");
 
 async function mount(): Promise<void> {
-  if (!location.pathname.startsWith("/admin")) {
-    const config = await fetch("/api/account-client/config").then(response => response.json()).catch(() => null);
-    if (config?.central === true) { location.replace("/admin/login"); return; }
-  }
+  const deployment = await fetch("/api/account-client/config", { signal: AbortSignal.timeout(6000) }).then(response => response.ok ? response.json() : null).catch(() => null);
+  const accountCenter = deployment?.central === true;
   if(!/^\/(?:admin|user)(?:\/|$)/.test(location.pathname) && !location.pathname.startsWith("/app/")){location.replace("/user"+(location.pathname==="/"?"/":location.pathname)+location.search+location.hash);return;}
   try { if (await syncAccountScope()) { location.reload(); return; } } catch { container!.textContent = "Account state could not be restored. Please reload."; return; }
   createRoot(container!).render(
     <StrictMode>
-      <App />
+      <App accountCenter={accountCenter} />
     </StrictMode>,
   );
 }

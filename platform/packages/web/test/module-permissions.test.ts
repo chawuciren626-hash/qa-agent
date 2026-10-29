@@ -12,6 +12,7 @@ describe("module navigation and route authorization", () => {
   it("denies missing central grants and preserves explicit administrator access", () => {
     expect(allowedModule(null, "agents")).toBe(false);
     expect(allowedModule({isAdmin:false,modulePermissions:[]}, "agents")).toBe(false);
+    expect(allowedModule({isAdmin:false,modulePermissions:[]}, "models")).toBe(true);
     expect(allowedModule({isAdmin:false,modulePermissions:["models"]}, "models")).toBe(true);
     expect(allowedModule({isAdmin:false,modulePermissions:["models"]}, "agents")).toBe(false);
     expect(allowedModule({isAdmin:true,modulePermissions:[]}, "agents")).toBe(true);

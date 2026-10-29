@@ -1,26 +1,26 @@
 /* AITestHarness v2: shared tokens, responsive shell and native component styling. */
 :root[data-qa-client] {
-  --qa-bg: #fff;
-  --qa-sidebar: #f7f7f5;
-  --qa-border: #e6e6e3;
-  --qa-text: #1f2328;
-  --qa-secondary: #6b7280;
-  --qa-muted: #9ca3af;
-  --qa-hover: rgba(0, 0, 0, 0.05);
-  --qa-active: rgba(0, 0, 0, 0.08);
+  --qa-bg: #f4f6f8;
+  --qa-sidebar: #fbfcfd;
+  --qa-border: #d7dce4;
+  --qa-text: #171a1e;
+  --qa-secondary: #4f575f;
+  --qa-muted: #69717b;
+  --qa-hover: #f3f5f8;
+  --qa-active: #eaeef3;
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Microsoft YaHei", sans-serif;
 }
 :root.dark[data-qa-client] {
-  --qa-bg: #17191d;
-  --qa-sidebar: #202226;
-  --qa-border: #34373d;
-  --qa-text: #f2f3f5;
-  --qa-secondary: #b1b5be;
-  --qa-muted: #8b929e;
-  --qa-hover: rgba(255, 255, 255, 0.06);
-  --qa-active: rgba(255, 255, 255, 0.1);
+  --qa-bg: #0f1113;
+  --qa-sidebar: #17191c;
+  --qa-border: #383c43;
+  --qa-text: #e9ecef;
+  --qa-secondary: #a8aeb6;
+  --qa-muted: #8b9199;
+  --qa-hover: #25282d;
+  --qa-active: #25282d;
 }
 .qa-shell {
   color: var(--qa-text);
@@ -91,7 +91,7 @@
   padding: 9px 12px;
   border: 1px solid var(--qa-border);
   border-radius: 8px;
-  background: var(--qa-bg);
+  background: var(--qa-active);
   font-size: 13.5px;
   font-weight: 600;
 }
@@ -105,23 +105,6 @@
   overflow-y: auto;
   scrollbar-width: thin;
 }
-.qa-tools-navigation { margin-top: 2px; }
-.qa-tools-navigation .qa-tool-link { min-height: 34px; padding: 8px 10px; font-size: 13.5px; }
-.qa-tools-navigation svg { color: inherit; }
-.qa-tools-navigation button:focus-visible { outline-offset: -2px; }
-.qa-tools-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 16px;
-  width: 100%;
-  border-radius: 6px;
-  background: var(--qa-active);
-  color: var(--qa-secondary);
-}
-.qa-tools-toggle:hover { background: var(--qa-hover); color: var(--qa-text); }
-.qa-tools-down { transform: rotate(90deg); }
-.qa-tools-up { transform: rotate(-90deg); }
 .qa-nav {
   display: flex;
   width: 100%;
@@ -144,6 +127,8 @@
   color: var(--qa-text);
   font-weight: 600;
 }
+.qa-nav.is-active{position:relative}
+.qa-nav.is-active::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;border-radius:2px;background:#4a8fd4}
 .qa-sidebar-scroll {
   flex: 1;
   min-height: 0;

@@ -131,6 +131,8 @@ export interface PlatformApi extends Park {
   business(): ModuleTree | null;
   /** Process-exit graceful drain (manager ≤5s wrap-up, workbench park); no-op without business. */
   shutdown(): Promise<void>;
+  /** Refuse maintenance while work is active, then synchronously close task admission. */
+  prepareIdleMaintenance?(): boolean;
   /**
    * The asynchronous tail of this App's dispose — set by the dispose effect, awaited by
    * the KERNEL between dispose and the successor's boot (see core kernel/upgrade.ts), so
@@ -673,6 +675,11 @@ async function createInner(
       bindTerminalStream(ws, ref, url, log);
     },
     business: () => business,
+    prepareIdleMaintenance: () => {
+      if (terminals.hasLiveTerminals() || manager === null || !manager.prepareIdleMaintenance()) return false;
+      terminals.prepareIdleMaintenance();
+      return true;
+    },
     // Process exit wants the manager's graceful ≤5s drain, which a synchronous dispose
     // effect cannot await — exposed for index.ts's shutdown to call before disposing.
     shutdown: async () => {
@@ -857,6 +864,7 @@ export const platformImpl: Impl<PlatformApi, PlatformCtx> = {
         });
       },
       business: () => inner.api.business(),
+      prepareIdleMaintenance: () => inner.api.prepareIdleMaintenance?.() ?? false,
       shutdown: () => inner.api.shutdown(),
       drained: () => drained,
     };

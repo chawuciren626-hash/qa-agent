@@ -3,6 +3,7 @@ import {resolve} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {loadProductLayout} from './product-layout.mjs';
 import {pathToFileURL} from 'node:url';
+import {pauseLocalService,resumeLocalService,registerLocalService} from './local-service.mjs';
 
 function failure(code,message,legacyMessage){return Object.assign(Error(message),{code,legacyMessage});}
 
@@ -40,7 +41,11 @@ export function checkProductUninstall(config,{engineRoot=resolve(import.meta.dir
 if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url){
   try{
     if(![3,4].includes(process.argv.length))throw Error('Usage: product-uninstall-check.mjs <installation.json> [error-file]');
-    checkProductUninstall(process.argv[2]);
+    const stopped=await pauseLocalService(process.argv[2]);
+    try {
+      checkProductUninstall(process.argv[2]);
+      registerLocalService(process.argv[2],{remove:true});
+    } catch(error) {if(stopped)await resumeLocalService(process.argv[2]);throw error;}
     console.log('Program directories verified. User data and workspaces must be retained.');
   }catch(error){
     if(process.argv.length===4){try{writeFileSync(process.argv[3],error.message.replace(/[\r\n]+/g,' '),'utf16le');}catch{}}

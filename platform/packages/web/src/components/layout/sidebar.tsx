@@ -134,7 +134,7 @@ import {
   initialNavGroupCollapsed,
   initialNavPinOverrides,
   isNavPinned,
-  navEntryKeysFor,
+  productNavEntryKeysFor,
   splitNavEntries,
   storeNavGroupCollapsed,
   storeNavPinOverrides,
@@ -318,7 +318,7 @@ export function Sidebar({
 }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, sessionVia } = useAuth();
+  const { user, sessionVia, accountClient } = useAuth();
   const { locale } = useLocale();
   const {
     projects,
@@ -1696,7 +1696,7 @@ export function Sidebar({
    * collapsible, both areas in manifest order. New chat is always pinned and renders in its
    * fixed slot above the scroll area, so the pinned rows here are the pages after it.
    */
-  const navSplit = splitNavEntries(navEntryKeysFor(user?.isAdmin === true || user?.modulePermissions!==undefined).filter(key=>allowedModule(user,key==="newChat"?"chat":key)), navPins);
+  const navSplit = splitNavEntries(productNavEntryKeysFor(user?.isAdmin === true || user?.modulePermissions!==undefined).filter(key=>allowedModule(user,key==="newChat"?"chat":key)), navPins);
   const pinnedNavPages = navSplit.pinned.filter(isNavPage);
   const collapsibleNavPages = navSplit.collapsible.filter(isNavPage);
 
@@ -1960,13 +1960,13 @@ export function Sidebar({
     </>
   );
 
-  if (!inCompany && agents.some((agent) => agent.agentId === "test_agent")) return (
+  // Deployment identity is known before this shell mounts. An unfinished Agent fetch
+  // must not briefly select the upstream sidebar (also applies on Project switches).
+  if (!inCompany && (accountClient || agents.some((agent) => agent.agentId === "test_agent"))) return (
     <QaSessionActions.Provider value={{ pins: pinnedSessions, row: (session: SessionInfo) => renderRows([session], false), overlays: dialogs,
       searchQuery, searchOpen,
       searchControl: searchOpen ? <SearchInput ref={searchInputRef} icon alwaysClearable autoFocus className="min-w-0 flex-1" value={searchQuery} onChange={setSearchQuery} onClear={closeSearch} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); closeSearch(); } }} placeholder={S.chat.searchSessionsPlaceholder} aria-label={S.chat.searchSessions} clearLabel={S.chat.searchClear} /> : <SidebarControl label={S.chat.searchSessions} tooltip={searchTitle} glyph={ICONS.search} onClick={() => setSearchOpen(true)} />,
-      tools: <SidebarNavGroup collapsed={navCollapsed} onToggle={toggleNavGroup} expandLabel={S.nav.expandGroup} collapseLabel={S.nav.collapseGroup}>
-        {[...pinnedNavPages, ...collapsibleNavPages].filter((key) => key !== "agents" && key !== "models").map(renderNavEntry)}
-      </SidebarNavGroup> }}>
+      }}>
       <QaSidebar onNavigate={onNavigate} onCollapse={onCollapse} />
     </QaSessionActions.Provider>
   );
@@ -2136,7 +2136,7 @@ export function Sidebar({
           : collapsibleNavPages.map(renderNavEntry)}
       </SidebarNavGroup>
 
-      {!inCompany && <button className="mx-3 my-2 rounded px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800" onClick={() => go("/qa/library")}>资料库</button>}
+      {!inCompany && <button className="mx-3 my-2 rounded px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800" onClick={() => go("/qa/library")}>项目资料</button>}
       {inCompany ? (
         navOrg !== null ? (
           /* Company mode: the organization's channels, where development mode lists

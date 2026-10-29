@@ -137,7 +137,7 @@ export class AccountClient {
   }
   private requireModule(binding:Binding,path:string,method:string,modules=binding.modules??[]) {
     const key=requestModule(path,method);
-    if(key&&!binding.remote.isAdmin&&!modules.includes(key))throw new HttpError(403,"module_forbidden","你没有此功能模块的权限。");
+    if(key&&key!=="models"&&!binding.remote.isAdmin&&!modules.includes(key))throw new HttpError(403,"module_forbidden","你没有此功能模块的权限。");
   }
   private async control(c:Context<AppEnv>):Promise<Response>{
     const held=this.held(c);if(!held)throw new HttpError(401,"unauthorized","请先登录。");
@@ -175,7 +175,8 @@ export class AccountClient {
       return c.json(await applyPublicResource(this.deps.db,body,bundle.resources,request=>this.deps.localRequest!(held.binding.localId,request)));
     }
     const valid=(c.req.method==="GET"&&/^\/api\/control\/(access|catalog(?:\/[a-z0-9-]+)?|admin\/(resources(?:\/[a-z0-9-]+\/history)?|permissions\/[a-z][a-z0-9_]*|audit))$/.test(endpoint)) ||
-      (["POST","PUT"].includes(c.req.method)&&/^\/api\/control\/admin\/(resources(?:\/[a-z0-9-]+(?:\/(publish|withdraw))?)?|permissions\/[a-z][a-z0-9_]*)$/.test(endpoint));
+      (["POST","PUT"].includes(c.req.method)&&/^\/api\/control\/admin\/(resources(?:\/[a-z0-9-]+(?:\/(publish|withdraw))?)?|permissions\/[a-z][a-z0-9_]*)$/.test(endpoint)) ||
+      (c.req.method==="DELETE"&&/^\/api\/control\/admin\/resources\/[a-z0-9-]+$/.test(endpoint));
     if(!valid)throw new HttpError(404,"not_found","未知管理接口。");
     const response=await this.remote(endpoint,c.req.method,c.req.method==="GET"?undefined:await c.req.json(),held.binding);
     return new Response(await response.text(),{status:response.status,headers:{"content-type":"application/json"}});

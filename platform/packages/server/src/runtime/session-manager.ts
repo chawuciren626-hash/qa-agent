@@ -767,6 +767,19 @@ export class SessionManager {
   private readonly log: (line: string) => void;
   /** Graceful-shutdown flag: once set, new Tasks/compactions are rejected (503). */
   private closed = false;
+  private maintenance = false;
+
+  /** Synchronous admission barrier: don't interrupt runs, queued inputs or background work for an update. */
+  prepareIdleMaintenance(): boolean {
+    if (this.closed || this.locks.size > 0) return false;
+    for (const entry of this.entries.values()) {
+      if (entry.status !== "idle" || entry.running !== null || entry.approvals.size > 0 ||
+          entry.followUps.length > 0 || entry.session.listBackgroundCommands?.().some(p => p.running) ||
+          entry.session.hasRunningBackgroundSubagents?.() || entry.session.hasPendingBackgroundNotices?.()) return false;
+    }
+    this.maintenance = true;
+    return true;
+  }
   /** Agents currently being deleted (key = agentKey): new Tasks/compactions are always rejected with 409 during this window. */
   private readonly deletingAgents: Set<string>;
   /** Sessions currently being deleted (guards against the entry/Trace file being rebuilt and reviving it inside the deletion race window). */
@@ -1443,7 +1456,7 @@ export class SessionManager {
   private async startQueuedFollowUp(sessionId: string): Promise<void> {
     try {
       await this.withLock(sessionId, async () => {
-        if (this.closed || this.deletingSessions.has(sessionId)) return;
+        if (this.closed || this.maintenance || this.deletingSessions.has(sessionId)) return;
         const row = this.deps.sessions.findById(sessionId);
         if (row && this.deletingAgents.has(agentKey(row.projectId, row.agentId))) return;
         const entry = this.entries.get(sessionId);
@@ -2038,7 +2051,7 @@ export class SessionManager {
    */
   async preload(sessionId: string): Promise<void> {
     await this.withLock(sessionId, async () => {
-      if (this.closed || this.deletingSessions.has(sessionId)) return;
+      if (this.closed || this.maintenance || this.deletingSessions.has(sessionId)) return;
       const row = this.deps.sessions.findById(sessionId);
       if (!row || this.deletingAgents.has(agentKey(row.projectId, row.agentId))) return;
       try {
@@ -2059,7 +2072,7 @@ export class SessionManager {
   // —— Internal ——
 
   private assertOpen(): void {
-    if (this.closed) {
+    if (this.closed || this.maintenance) {
       throw new HttpError(
         503,
         "shutting_down",
@@ -2229,7 +2242,7 @@ export class SessionManager {
   private async startBackgroundNoticeTask(sessionId: string): Promise<void> {
     try {
       await this.withLock(sessionId, async () => {
-        if (this.closed || this.deletingSessions.has(sessionId)) return;
+        if (this.closed || this.maintenance || this.deletingSessions.has(sessionId)) return;
         const row = this.deps.sessions.findById(sessionId);
         if (row && this.deletingAgents.has(agentKey(row.projectId, row.agentId))) return;
         const entry = this.entries.get(sessionId);
@@ -2770,6 +2783,7 @@ export abstract class Sessions extends Interface<
     | "endSessionDeletion"
     | "atIdleBoundary"
     | "shutdown"
+    | "prepareIdleMaintenance"
     | "detach"
     | "runningSessionIds"
     | "sweepIdle"

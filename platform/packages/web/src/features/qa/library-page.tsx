@@ -108,7 +108,7 @@ function Library({ base }: { base: string }) {
   }
   return (
     <main className="mx-auto h-full max-w-5xl overflow-auto p-6" aria-label="项目资料库">
-      <h1 className="text-xl font-semibold">资料库</h1>
+      <h1 className="text-xl font-semibold">项目资料</h1>
       <p className="my-2 text-sm text-gray-500">
         当前项目下的个人资料。可整理需求、接口文档和参考链接；不会自动作为任务输入。
       </p>

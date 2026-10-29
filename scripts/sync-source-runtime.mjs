@@ -9,6 +9,7 @@ import {loadProductLayout} from './product-layout.mjs';
 import {checkSourceRuntime} from './source-runtime.mjs';
 import {assertPlainPath,within} from './application-data.mjs';
 import {qaRoles,qaRoleTools} from './qa-project-bootstrap.mjs';
+import {withLocalServicePaused} from './local-service.mjs';
 
 const json=file=>JSON.parse(readFileSync(file,'utf8'));
 const digest=file=>createHash('sha256').update(readFileSync(file)).digest('hex');
@@ -50,6 +51,9 @@ export async function planSourceAdoption(layout) {
   return {marker:file,existing:false,edits};
 }
 export async function syncSourceRuntime({installation,stage,backupRoot}) {
+  return withLocalServicePaused(installation,()=>syncStoppedRuntime({installation,stage,backupRoot}));
+}
+async function syncStoppedRuntime({installation,stage,backupRoot}) {
   const layout=loadProductLayout(installation),candidate=loadProductLayout(resolve(stage,'installation.json'));
   for(const root of [layout.root,candidate.root,resolve(backupRoot)])assertPlainPath(root);
   if(within(layout.root,candidate.root)||within(candidate.root,layout.root)||within(layout.root,resolve(backupRoot))||within(candidate.root,resolve(backupRoot)))throw Error('Installation, stage and backups must be separate');

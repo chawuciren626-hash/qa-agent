@@ -223,7 +223,6 @@ export function createWorkspaceUI(deps) {
     FolderPicker,
     Modal,
     AccountMenu,
-    SidebarTools,
     ProjectNavigation,
     useSessionActions = () => null,
     notify,
@@ -516,9 +515,6 @@ export function createWorkspaceUI(deps) {
       location = useLocation(),
       storedGroups = useGroups();
     const [modal, setModal] = R.useState(false),
-      [toolsCollapsed, setToolsCollapsed] = R.useState(() => {
-        try { return localStorage.getItem("penguin.sidebarNavGroupCollapsed") === "collapsed"; } catch { return false; }
-      }),
       [collapsed, setCollapsed] = R.useState({}),
       [more, setMore] = R.useState(false),
       [refreshing, setRefreshing] = R.useState(false);
@@ -620,7 +616,7 @@ export function createWorkspaceUI(deps) {
         ),
       );
     };
-    const allowed = key => user?.isAdmin || !user?.modulePermissions || user.modulePermissions.includes(key);
+    const allowed = key => key === "models" || user?.isAdmin || !user?.modulePermissions || user.modulePermissions.includes(key);
     const nav = (label, icon, path) =>
       (!allowed(path.includes("library")?"library":path.includes("schedules")?"schedules":path.includes("qa/project")?"projects":path.split("/")[1]) ? null : h(
         "button",
@@ -663,24 +659,9 @@ export function createWorkspaceUI(deps) {
         { className: "qa-nav-list", "aria-label": "功能导航" },
         nav("项目视图", "folder", "/qa/project"),
         nav("定时任务", "clock", "/chat?view=schedules"),
-        nav("资料库", "book", "/chat?view=library"),
-        allowed("agents") && nav("多智能体管理", "bot", "/agents"),
-        nav("模型库", "box", "/models"),
-        h("div", {className: "qa-tools-navigation"},
-          SidebarTools ? h(SidebarTools, {onNavigate}) : h(R.Fragment, null,
-            !toolsCollapsed && h("div", {id:"qa-extra-tools"},
-              nav("插件市场", "puzzle", "/plugins"),
-              user?.isAdmin && nav("机器管理", "server", "/machines"),
-              user?.isAdmin && nav("成本中心", "chart", "/usage"),
-              user?.isAdmin && nav("评估中心", "trophy", "/benchmark")),
-            h("button", {type:"button",className:"qa-tools-toggle",
-              "aria-label":toolsCollapsed?"展开功能导航":"收起功能导航",
-              "aria-expanded":!toolsCollapsed,"aria-controls":"qa-extra-tools",
-              onClick:()=>{
-                try { localStorage.setItem("penguin.sidebarNavGroupCollapsed",toolsCollapsed?"expanded":"collapsed"); } catch {}
-                setToolsCollapsed(!toolsCollapsed);
-              }},
-              h(Icon,{name:"chevron",size:12,className:toolsCollapsed?"qa-tools-down":"qa-tools-up"})))),
+        nav("项目资料", "book", "/chat?view=library"),
+        nav("模型配置", "box", "/models"),
+        nav("插件市场", "puzzle", "/plugins"),
       ),
       h(
         "div",
@@ -1180,7 +1161,7 @@ function createSectionsUI(deps) {
     const { currentProject } = useProject(),
       { user } = useAuth();
     R.useEffect(() => {
-      document.title = `${view === "schedules" ? "定时任务" : "资料库"} · AITestHarness`;
+      document.title = `${view === "schedules" ? "定时任务" : "项目资料"} · AITestHarness`;
     }, [view]);
     if (!currentProject)
       return h("div", { className: "qa-page-empty" }, "正在加载工作空间…");
@@ -1789,7 +1770,7 @@ function createSectionsUI(deps) {
         h(
           "div",
           { className: "qa-library-title" },
-          h("h1", null, "资料库"),
+          h("h1", null, "项目资料"),
           button("刷新", list.reload),
         ),
         h(

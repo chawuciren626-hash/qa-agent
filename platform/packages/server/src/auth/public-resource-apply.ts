@@ -50,9 +50,19 @@ export async function applyPublicResource(db:DatabaseSync,body:{resourceId:strin
         for(const k of ["displayName","contextWindow","clientType","vision","maxTokens","fastMode","pricing","discount"])if(m[k]!==undefined)out[k]=m[k];
         if(m.credential?.baseUrl!==undefined)out.baseUrl=m.credential.baseUrl;return out;
       });
-      let added=false;for(const r of models){const p=r.payload;const provider="public_"+r.id.replaceAll("-","").slice(0,12)+"_v"+r.version;
-        if(entries.some((m:any)=>m.provider===provider&&m.modelId===p.modelId)){if(target.kind==="models")throw new HttpError(409,"already_applied","此模型版本已有本地配置，不会覆盖密钥或个人修改。");continue;}
-        entries.push({...p,provider,displayName:r.name});added=true;results.push(r.name);
+      let added=false;for(const r of models){const p=r.payload;const provider=String(p.provider), modelId=String(p.modelId);
+        const index=entries.findIndex((m:any)=>m.provider===provider&&m.modelId===modelId);
+        // Keep the upstream (provider, modelId) identity. A synthetic provider breaks the
+        // vendor's protocol routing and prevents the existing provider key from reaching it.
+        // The administrator's metadata is adopted only when the user explicitly clicks Apply;
+        // a local key and locally chosen URL always remain on this machine.
+        const publicFields=Object.fromEntries(["contextWindow","clientType","vision","maxTokens","fastMode","pricing","discount"].filter(k=>p[k]!==undefined).map(k=>[k,p[k]]));
+        if(index>=0){
+          entries[index]={...entries[index],...publicFields,displayName:r.name};
+        }else{
+          entries.push({provider,modelId,displayName:r.name,...publicFields,...(p.baseUrl?{baseUrl:p.baseUrl}:{})});
+        }
+        added=true;results.push(r.name);
       }
       if(added)await call(base+"/models","PUT",{models:entries});
     }
@@ -70,6 +80,6 @@ export async function applyPublicResource(db:DatabaseSync,body:{resourceId:strin
       db.prepare("INSERT OR IGNORE INTO applied_public_resources VALUES (?,?,?,?,?)").run(body.projectId,r.id,r.version,agentId??"",new Date().toISOString());
     }
     for(const r of resources)db.prepare("INSERT OR IGNORE INTO applied_public_resources VALUES (?,?,?,?,?)").run(body.projectId,r.id,r.version,agentId??"",new Date().toISOString());
-    return {ok:true,agentId,applied:results,message:"已创建本地副本；模型凭据请在本机配置。"};
+    return {ok:true,agentId,applied:results,message:"已获取管理员配置；模型密钥和个人地址仍在本机管理。"};
   }finally{applying.delete(key);}
 }

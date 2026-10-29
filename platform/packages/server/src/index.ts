@@ -17,6 +17,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Server as HttpServer } from "node:http";
+import { startWorkspaceDiscovery } from "./local-workspace-discovery.js";
 import { config as loadDotenv } from "dotenv";
 import { serve } from "@hono/node-server";
 import { bootAppDeps, createApp } from "./app.js";
@@ -105,8 +106,18 @@ class PenguinServer {
 
   /** The `::1` companion listener, when one was opened — see openIpv6Loopback(). */
   private ipv6Loopback: ReturnType<typeof serve> | null = null;
+  private workspaceDiscovery: HttpServer | null = null;
 
   private shuttingDown = false;
+  private maintenance = false;
+  private activeRequests = 0;
+
+  private async serveRequest(request: Request, env: Parameters<ReturnType<typeof createApp>["fetch"]>[1]): Promise<Response> {
+    if (this.maintenance) return new Response("本机服务正在维护，请稍后重试。", { status: 503 });
+    this.activeRequests++;
+    try { return await (this.app?.fetch(request, env) ?? startingResponse()); }
+    finally { this.activeRequests--; }
+  }
 
   /** The current App's auth service — resolved per call, since a hot swap replaces the tree. */
   private auth(): Auth {
@@ -311,7 +322,7 @@ class PenguinServer {
     this.httpServer = serve(
       {
         // `env` carries the Node request: app.ts sets an event stream's idle timeout on its socket.
-        fetch: (request: Request, env) => this.app?.fetch(request, env) ?? startingResponse(),
+        fetch: (request: Request, env) => this.serveRequest(request, env),
         hostname: this.config.host,
         port: this.config.port,
       },
@@ -327,6 +338,15 @@ class PenguinServer {
    * starting response instead.
    */
   async announce(): Promise<void> {
+    if (process.env.AITEST_MANAGED_RUNTIME === "1" && this.config.accountClient) {
+      try {
+        this.workspaceDiscovery = await startWorkspaceDiscovery({
+          workspacePort: await this.bound,
+          centralOrigin: this.config.accountClient.origin,
+        });
+        if (!this.workspaceDiscovery) console.warn("[workspace-discovery] Discovery ports unavailable; local workbench remains available.");
+      } catch { console.warn("[workspace-discovery] Discovery unavailable; local workbench remains available."); }
+    }
     if (this.config.portFile === null) return;
     writePortFile(this.config.portFile, await this.bound);
   }
@@ -336,6 +356,30 @@ class PenguinServer {
    * listen(), so shutdown() can never fire before there is a listener for it to close.
    */
   installProcessHandlers(): void {
+    if (process.env.AITEST_LOCAL_SERVICE === "1" && process.send) {
+      process.on("message", (message: any) => {
+        if (message?.type !== "aitest-service-request") return;
+        void (async () => {
+          try {
+            let result: unknown;
+            if (message.method === "claim") result = this.deps.desktop?.mintLaunchClaim();
+            else if (message.method === "prepare-stop") {
+              const platform = await this.deps.hmr.ensure();
+              if (this.activeRequests > 0 || !platform.api.prepareIdleMaintenance?.())
+                throw new Error("仍有任务、后台进程、终端或请求正在运行，请结束后再维护。");
+              this.maintenance = true;
+              result = true;
+            } else if (message.method === "shutdown" && this.maintenance) {
+              void this.shutdown("local-service-maintenance");
+              return;
+            } else throw new Error("Unsupported local service command");
+            process.send?.({ type: "aitest-service-response", id: message.id, result });
+          } catch (error) {
+            process.send?.({ type: "aitest-service-response", id: message.id, error: String(error) });
+          }
+        })();
+      });
+    }
     process.on("SIGINT", () => void this.shutdown("SIGINT"));
     process.on("SIGTERM", () => void this.shutdown("SIGTERM"));
 
@@ -460,7 +504,7 @@ class PenguinServer {
    */
   private openIpv6Loopback(port: number): void {
     const loopback = serve({
-      fetch: (request: Request, env) => this.app?.fetch(request, env) ?? startingResponse(),
+      fetch: (request: Request, env) => this.serveRequest(request, env),
       hostname: "::1",
       port,
     });
@@ -528,6 +572,7 @@ class PenguinServer {
   private async shutdown(signal: string, exitCode?: number): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
+    this.workspaceDiscovery?.close();
     console.log(`Received ${signal}, shutting down…`);
     // The CURRENT App's graceful drain (manager: interrupt runs, deny approvals, wait ≤5s
     // for wrap-up) — through the instance the host holds, which a hot swap keeps current;

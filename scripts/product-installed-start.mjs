@@ -6,6 +6,7 @@ import {checkProductDesktop} from './product-desktop-adapter.mjs';
 import {setupProduct} from './product-setup.mjs';
 import {installPenguinRuntime} from './install-penguin-runtime.mjs';
 import {checkSourceRuntime} from './source-runtime.mjs';
+import {ensureLocalService,registerLocalService} from './local-service.mjs';
 
 try {
   if(process.argv.length!==3)throw new Error('缺少安装配置。');
@@ -27,6 +28,7 @@ try {
   }
   }
   for(const key of ['host_data','qa_data','desktop_profile','workspaces'])mkdirSync(layout.paths[key],{recursive:true});
+  if(sourceMode){registerLocalService(config);await ensureLocalService(config);}
   const child=spawn(layout.paths.host_executable,[],{cwd:dirname(layout.paths.host_executable),env:{...productEnvironment(layout),...(sourceMode?{AITEST_INSTALLATION_CONFIG:config,AITEST_ENGINE_ROOT:layout.paths.engine,AITEST_MANAGED_RUNTIME:'1'}:{}),PENGUIN_SHELL:resolve(process.env.SystemRoot??'C:/Windows','System32/WindowsPowerShell/v1.0/powershell.exe')},detached:true,windowsHide:true,stdio:'ignore'});
   await new Promise((done,reject)=>{child.once('spawn',done);child.once('error',reject);});child.unref();
   console.log(JSON.stringify({status:'desktop_process_started',readiness:'confirmed_by_desktop_bootstrap',pid:child.pid}));

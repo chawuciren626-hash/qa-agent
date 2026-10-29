@@ -46,6 +46,12 @@ const desktopBrowser = visibleSettingsSections({
 });
 
 describe("visibleSettingsSections", () => {
+  it("keeps My Account inside Settings for the managed desktop window", () => {
+    expect(visibleSettingsSections({ isAdmin: true, desktopMode: true, sessionVia: "desktop", accountClient: true }).map(s => s.key)).toContain("account");
+  });
+  it("keeps central personal settings without mounting local workspace or execution settings", () => {
+    expect(visibleSettingsSections({ isAdmin: true, desktopMode: false, sessionVia: "password", accountCenter: true }).map(s => s.key)).toEqual(["profile", "general", "appearance", "shortcuts", "account"]);
+  });
   it("gives a web admin every page, in rail order", () => {
     expect(admin.map((s) => s.key)).toEqual([
       "profile",

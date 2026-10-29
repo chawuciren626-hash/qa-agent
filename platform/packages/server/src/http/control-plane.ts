@@ -66,8 +66,8 @@ export class ControlStore {
     CREATE TABLE IF NOT EXISTS public_module_grants(user_id TEXT PRIMARY KEY,modules TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS public_admin_audit(id INTEGER PRIMARY KEY,actor TEXT NOT NULL,action TEXT NOT NULL,resource_id TEXT NOT NULL,created_at TEXT NOT NULL);
   `);}
-  modules(userId:string,admin:boolean):string[]{if(admin)return [...MODULES];const row=this.db.prepare("SELECT modules FROM public_module_grants WHERE user_id=?").get(userId);return row?JSON.parse(String(row.modules)):["chat","projects","library","schedules","models","plugins","skills"];}
-  setModules(actor:string,userId:string,v:unknown){const modules=strings(v);if(modules.some(m=>!(MODULES as readonly string[]).includes(m)))fail("未知模块。");if(!this.db.prepare("SELECT user_id FROM users WHERE user_id=?").get(userId))throw new HttpError(404,"not_found","用户不存在。");if(userId==="admin")fail("管理员保留全部权限。");this.db.prepare("INSERT INTO public_module_grants VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET modules=excluded.modules").run(userId,JSON.stringify(modules));this.audit(actor,"permissions",userId);return modules;}
+  modules(userId:string,admin:boolean):string[]{if(admin)return [...MODULES];const row=this.db.prepare("SELECT modules FROM public_module_grants WHERE user_id=?").get(userId);const grants:string[]=row?JSON.parse(String(row.modules)):["chat","projects","library","schedules","plugins","skills"];return [...new Set([...grants,"models"])];}
+  setModules(actor:string,userId:string,v:unknown){const modules=strings(v);if(modules.some(m=>!(MODULES as readonly string[]).includes(m)))fail("未知模块。");if(!this.db.prepare("SELECT user_id FROM users WHERE user_id=?").get(userId))throw new HttpError(404,"not_found","用户不存在。");if(userId==="admin")fail("管理员保留全部权限。");const effective=[...new Set([...modules,"models"])];this.db.prepare("INSERT INTO public_module_grants VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET modules=excluded.modules").run(userId,JSON.stringify(effective));this.audit(actor,"permissions",userId);return effective;}
   audit(actor:string,action:string,id:string){this.db.prepare("INSERT INTO public_admin_audit(actor,action,resource_id,created_at) VALUES (?,?,?,?)").run(actor,action,id,new Date().toISOString());}
   row(id:string){const row=this.db.prepare("SELECT * FROM public_resources WHERE id=?").get(id);if(!row)throw new HttpError(404,"not_found","资源不存在。");return row;}
   get(id:string,draft=false):PublicResource {const row=this.row(id);const version=Number(row.version);const body=draft?JSON.parse(String(row.draft)):JSON.parse(String(this.db.prepare("SELECT body FROM public_resource_versions WHERE resource_id=? AND version=?").get(id,version)?.body??"null"));if(!body)throw new HttpError(404,"not_published","资源尚未发布。");return {...body,id,kind:row.kind,revision:Number(row.revision),version,published:!!row.published,audience:JSON.parse(String(row.audience)),updatedAt:String(row.updated_at)};}
@@ -91,6 +91,14 @@ export class ControlStore {
     for(const d of resourceDependencies(r)){const dep=this.get(d.id);if(dep.kind!==d.kind||!this.accessible(d.id,actor,true))fail("依赖资源必须先发布且类型正确。");if(r.audience.includes("*")&&!dep.audience.includes("*"))fail("面向全部用户的模板不能依赖受限资源。");for(const u of r.audience)if(u!=="*"&&!this.accessible(d.id,u,false))fail("部分授权用户无权使用依赖资源。");}
     const next=r.version+1, now=new Date().toISOString();this.db.exec("BEGIN IMMEDIATE");try{this.db.prepare("INSERT INTO public_resource_versions VALUES (?,?,?,?)").run(id,next,JSON.stringify({kind:r.kind,name:r.name,description:r.description,payload:r.payload}),now);this.db.prepare("UPDATE public_resources SET version=?,published=1,revision=revision+1,updated_at=? WHERE id=?").run(next,now,id);this.audit(actor,"publish",id);this.db.exec("COMMIT");}catch(e){this.db.exec("ROLLBACK");throw e;}return this.get(id,true);}
   withdraw(actor:string,id:string){this.row(id);this.db.prepare("UPDATE public_resources SET published=0,revision=revision+1,updated_at=? WHERE id=?").run(new Date().toISOString(),id);this.audit(actor,"withdraw",id);}
+  deleteDraft(actor:string,id:string,revision:unknown){
+    const row=this.row(id);
+    if(row.revision!==revision)throw new HttpError(409,"revision_conflict","资源已变化，请刷新后再删除。");
+    if(Number(row.version)>0)fail("已发布过的资源须保留版本记录；请下架，不要删除。");
+    for(const other of this.list(true))if(other.id!==id&&resourceDependencies(other).some(dependency=>dependency.id===id))fail("此资源仍被其他公共配置引用，请先解除关联。");
+    this.db.prepare("DELETE FROM public_resources WHERE id=?").run(id);
+    this.audit(actor,"delete_draft",id);
+  }
   bundle(id:string,userId:string,admin:boolean):PublicResource[]{if(!this.accessible(id,userId,admin))throw new HttpError(403,"resource_forbidden","资源已下架或没有使用权限。");const out=new Map<string,PublicResource>();const walk=(key:string)=>{if(out.has(key))return;const r=this.get(key);out.set(key,r);for(const d of resourceDependencies(r))walk(d.id);};walk(id);return [...out.values()];}
 }
 export function controlRoutes(store:ControlStore):Hono<AppEnv>{
@@ -102,6 +110,7 @@ export function controlRoutes(store:ControlStore):Hono<AppEnv>{
   app.get("/admin/resources",c=>c.json({resources:store.list(true)}));
   app.post("/admin/resources",async c=>c.json(store.save(c.var.user.userId,await c.req.json()),201));
   app.put("/admin/resources/:id",async c=>c.json(store.save(c.var.user.userId,await c.req.json(),c.req.param("id"))));
+  app.delete("/admin/resources/:id",async c=>{store.deleteDraft(c.var.user.userId,c.req.param("id"),(await c.req.json()).revision);return c.json({ok:true});});
   app.post("/admin/resources/:id/publish",async c=>c.json(store.publish(c.var.user.userId,c.req.param("id"),(await c.req.json()).revision)));
   app.post("/admin/resources/:id/withdraw",c=>{store.withdraw(c.var.user.userId,c.req.param("id"));return c.json({ok:true});});
   app.get("/admin/resources/:id/history",c=>{store.row(c.req.param("id"));return c.json({versions:store.db.prepare("SELECT version,body,created_at FROM public_resource_versions WHERE resource_id=? ORDER BY version DESC").all(c.req.param("id")).map(r=>({...r,body:JSON.parse(String(r.body))}))});});

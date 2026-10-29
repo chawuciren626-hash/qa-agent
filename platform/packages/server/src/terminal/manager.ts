@@ -96,6 +96,7 @@ export class TerminalManager {
   }
 
   private readonly sessions = new Map<string, TerminalSession>();
+  private maintenance = false;
   private readonly reapTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Exit-listener unsubscribers, so quiesce() can detach this manager from delivered ptys. */
   private readonly exitUnsubs = new Set<() => void>();
@@ -104,6 +105,7 @@ export class TerminalManager {
 
   async create(request: CreateTerminalRequest): Promise<TerminalSession> {
     const cwd = await resolveCwd(request.cwd);
+    if (this.maintenance) throw new HttpError(503, "shutting_down", "Local service is being maintained.");
 
     const owned = this.list(request.ownerUserId).filter((session) => session.alive);
     if (owned.length >= MAX_TERMINALS_PER_USER) {
@@ -253,6 +255,14 @@ export class TerminalManager {
     return [...this.sessions.values()]
       .filter((session) => session.ownerUserId === userId)
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  }
+
+  hasLiveTerminals(): boolean {
+    return [...this.sessions.values()].some(session => session.alive);
+  }
+
+  prepareIdleMaintenance(): void {
+    this.maintenance = true;
   }
 
   listInfo(userId: string): TerminalSessionInfo[] {

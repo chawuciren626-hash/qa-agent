@@ -64,6 +64,15 @@ export function navKeysFor(isAdmin: boolean): readonly NavGroupKey[] {
   return isAdmin ? offered : offered.filter((key) => !ADMIN_ONLY_NAV_KEYS.has(key));
 }
 
+/** AITestHarness user-view navigation; upstream pages and routes remain available. */
+const HIDDEN_PRODUCT_NAV_KEYS: ReadonlySet<NavGroupKey> = new Set(["machines", "usage", "benchmark"]);
+export function productNavKeysFor(isAdmin: boolean): readonly NavGroupKey[] {
+  return navKeysFor(isAdmin).filter((key) => !HIDDEN_PRODUCT_NAV_KEYS.has(key));
+}
+export function productNavEntryKeysFor(isAdmin: boolean): readonly NavEntryKey[] {
+  return ["newChat", ...productNavKeysFor(isAdmin)];
+}
+
 /**
  * A development-mode nav entry: New chat or a page. New chat opens a draft rather than a
  * route, so it is not in the manifest; it is the one entry that is always pinned (see

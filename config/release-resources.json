@@ -183,6 +183,7 @@
     "scripts/product-doctor.mjs",
     "scripts/product-entry.mjs",
     "scripts/product-installed-start.mjs",
+    "scripts/local-service.mjs",
     "scripts/product-layout.mjs",
     "scripts/product-migration-plan.mjs",
     "scripts/product-setup.mjs",

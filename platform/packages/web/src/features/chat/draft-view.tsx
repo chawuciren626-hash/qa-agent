@@ -173,7 +173,8 @@ export function DraftView({
   // guarantees the user is logged in here; on the off chance there's no user (the
   // type allows null), it's better to disable caching entirely than to read/write a
   // key that isn't account-scoped.
-  const userId = useAuth().user?.userId ?? null;
+  const { user, accountClient } = useAuth();
+  const userId = user?.userId ?? null;
 
   // The cache is read only once, on mount: the component remounts keyed by Project (and
   // by parked-draft id), so switching Projects or parked drafts automatically switches to
@@ -200,7 +201,8 @@ export function DraftView({
   // once the Agent list and the Project's defaults are in — never a stand-in it would swap out.
   const [agentId, setAgentId] = useState<string | null>(cached.agentId ?? null);
   const [workspace, setWorkspace] = useState(cached.workspace ?? "");
-  const testingProject = localAgents.some((agent) => agent.agentId === "test_agent");
+  // Product presentation does not depend on the asynchronous Agent inventory.
+  const testingProject = accountClient || localAgents.some((agent) => agent.agentId === "test_agent");
   const qaProjectId: string | null = location.state?.qaProjectId === undefined ? cached.qaProjectId ?? null : location.state.qaProjectId;
   /**
    * The machine that workspace is on (null = this one). Carried beside the path because a

@@ -59,7 +59,6 @@ const ui = createWorkspaceUI({
   React, useProject, useSessions, useAuth, useNavigate: useQaNavigate, useLocation,
   FolderPicker: WorkspaceSelect, Modal, AccountMenu: UserMenu,
   useSessionActions: () => React.useContext(QaSessionActions),
-  SidebarTools: () => <>{React.useContext(QaSessionActions)?.tools as React.ReactNode}</>,
   ProjectNavigation,
   request: apiFetch, notify: toastSuccess, reportError: toastError,
   Markdown: ({ text }: { text: string }) => <SiteMarkdown variant="doc">{text}</SiteMarkdown>,

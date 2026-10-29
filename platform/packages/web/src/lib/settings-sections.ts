@@ -51,6 +51,9 @@ export interface SettingsSection {
 /** Who is looking, and from where — the union of what the visibility rules consume. */
 export interface SettingsViewer extends AccountMenuSession {
   readonly isAdmin: boolean;
+  readonly accountClient?: boolean;
+  /** Central identity service has no projects, sessions or execution settings. */
+  readonly accountCenter?: boolean;
 }
 
 /**
@@ -72,7 +75,7 @@ const SECTION_RULES: ReadonlyArray<SettingsSection & { visible(viewer: SettingsV
     { key: "archived", group: "personal", visible: () => true },
     // The desktop shell's own window has no password to change; a password-established
     // session against the same server still does. Same predicate as the old menu row.
-    { key: "account", group: "personal", visible: (v) => offersChangePassword(v) },
+    { key: "account", group: "personal", visible: (v) => v.accountClient === true || offersChangePassword(v) },
     // The user's agent browser: the desktop app's choice of backend, and the Chromes paired to
     // the account. Every user may pair their own Chrome, so every session has it.
     { key: "browser", group: "personal", visible: () => true },
@@ -92,7 +95,7 @@ const SECTION_RULES: ReadonlyArray<SettingsSection & { visible(viewer: SettingsV
 
 /** The pages this viewer may open, in rail order. */
 export function visibleSettingsSections(viewer: SettingsViewer): readonly SettingsSection[] {
-  return SECTION_RULES.filter((section) => section.visible(viewer)).map(({ key, group }) => ({
+  return SECTION_RULES.filter((section) => section.visible(viewer) && (!viewer.accountCenter || ["profile", "general", "appearance", "shortcuts", "account"].includes(section.key))).map(({ key, group }) => ({
     key,
     group,
   }));

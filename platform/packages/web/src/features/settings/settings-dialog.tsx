@@ -15,6 +15,7 @@
  * does nothing until it answers; an instant control's write holds nothing.
  */
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 import { ICONS, PagedDialog, guardLeave, useGuardedClose } from "@prismshadow/penguin-ui";
 import type { PagedDialogGroup } from "@prismshadow/penguin-ui";
 import { S } from "../../lib/strings";
@@ -26,6 +27,8 @@ import {
 import type { SettingsGroupKey, SettingsSectionKey } from "../../lib/settings-sections";
 import { SETTINGS_SCOPE } from "../../lib/unsaved/scopes";
 import { useAuth } from "../../state/auth";
+import { offersChangePassword } from "../../lib/account-menu";
+import { openAppInfo } from "../../lib/use-update-flow";
 import { ProfileSection } from "./profile-section";
 import { GeneralSection } from "./general-section";
 import { AppearanceSection } from "./appearance-section";
@@ -77,6 +80,7 @@ export function SettingsDialog({
   onClose,
   section,
   pluginFocus,
+  accountCenter = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -84,13 +88,17 @@ export function SettingsDialog({
   section?: SettingsSectionKey;
   /** On the Plugins page: the card an opening scrolls to (e.g. `sandbox`). */
   pluginFocus?: string;
+  accountCenter?: boolean;
 }) {
   // uploadLimits feeds the Upload limits page's "?" (sectionInfo below); the rest pick pages.
-  const { user, desktopMode, sessionVia, uploadLimits } = useAuth();
+  const navigate = useNavigate();
+  const { user, desktopMode, sessionVia, accountClient, uploadLimits } = useAuth();
   const sections = visibleSettingsSections({
     isAdmin: user?.isAdmin === true,
     desktopMode,
     sessionVia,
+    accountClient,
+    accountCenter,
   });
   const [active, setActive] = useState<SettingsSectionKey | null>(null);
   const requestClose = useGuardedClose(onClose, SETTINGS_SCOPE);
@@ -167,11 +175,11 @@ export function SettingsDialog({
       }}
     >
       {current === "profile" && <ProfileSection />}
-      {current === "general" && <GeneralSection />}
+      {current === "general" && <GeneralSection workspace={!accountCenter} {...(!accountCenter ? { onOpenUpdates: () => { requestClose(); openAppInfo(); } } : {})} />}
       {current === "appearance" && <AppearanceSection />}
       {current === "shortcuts" && <ShortcutsSection />}
       {current === "archived" && <ArchivedSessionsSection />}
-      {current === "account" && <AccountSection />}
+      {current === "account" && <AccountSection canChangePassword={offersChangePassword({ desktopMode, sessionVia })} {...(accountClient ? { onOpenAccount: () => { requestClose(); navigate("/accounts"); } } : {})} />}
       {current === "browser" && <BrowserSection />}
       {current === "proxy" && <ProxySection />}
       {current === "uploads" && <UploadsSection />}

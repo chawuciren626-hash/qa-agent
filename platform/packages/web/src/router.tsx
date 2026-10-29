@@ -1,5 +1,6 @@
 import { AdminLayout, AdminHostGate, AdminLogin, AdminAccountsPage, AdminPermissionsPage, AdminAuditPage } from "./features/admin/admin-layout";
 import { AdminSkillsPage } from "./features/admin/admin-skills-page";
+import { AdminOverviewPage } from "./features/admin/admin-overview-page";
 import { PublicationsPage } from "./features/admin/publications-page";
 import { allowedModule, pageModule } from "./lib/module-permissions";
 /**
@@ -39,6 +40,7 @@ import { CompanyProvider } from "./state/company";
 import { AppLayout } from "./components/layout/app-layout";
 import { IntegratedAccountPage } from "./pages/integrated-account";
 import { LoginPage } from "./pages/login";
+import { LocalWorkspacePage } from "./pages/local-workspace";
 import { ChatPage } from "./features/chat/chat-page";
 import { QaSectionPage } from "./features/qa/workspace-ui";
 import { QaProjectView } from "./features/qa/project-view";
@@ -90,7 +92,7 @@ function renderPage(page: PageEntry): React.ReactNode {
 }
 function AuthorizedPage({ page }: { page: PageEntry }) {
   const { user } = useAuth();
-  if (page.admin && !(user?.isAdmin || (user?.modulePermissions !== undefined && allowedModule(user,page.key==="agent-settings"?"agents":page.key)))) return <div className="p-8"><h1 className="text-xl font-semibold">仅管理员可访问</h1><p className="mt-3">你可以使用测试任务、资料库、模型库和个人插件能力。</p></div>;
+  if (page.admin && !(user?.isAdmin || (user?.modulePermissions !== undefined && allowedModule(user,page.key==="agent-settings"?"agents":page.key)))) return <div className="p-8"><h1 className="text-xl font-semibold">仅管理员可访问</h1><p className="mt-3">你可以使用测试任务、项目资料、模型库和个人插件能力。</p></div>;
   if ("iframe" in page.renderer) {
     return (
       <iframe title={page.key} src={page.renderer.iframe.src} className="h-full w-full border-0" />
@@ -108,7 +110,7 @@ function RequireAuth({ admin = false }: { admin?: boolean }) {
   // Plugin-contributed grammars, adopted once for the signed-in tree (see the hook). Called
   // before the early returns, because a hook cannot be conditional; it fetches only once a user
   // is signed in.
-  useRuntimeLanguages(user != null);
+  useRuntimeLanguages(!admin && user != null);
   if (user === undefined) return null; // GET /api/me is still initializing
   if (user === null) return <Navigate to="/login" replace />;
   if(module && !allowedModule(user,module)) return <div className="p-8"><h1>没有此模块的访问权限</h1><p>请联系管理员调整授权。</p><a href="/user/accounts">我的账号</a></div>;
@@ -168,7 +170,8 @@ function RootFrame() {
   );
 }
 
-function appRoutes(admin = false) {
+function appRoutes(admin = false, accountCenter = false) {
+  if (accountCenter && !admin) return createRoutesFromElements(<Route element={<RootFrame />}><Route path="*" element={<LocalWorkspacePage />} /></Route>);
   return createRoutesFromElements(
     <Route element={<RootFrame />}>
       <Route path="/login" element={admin ? <AdminLogin /> : <LoginRoute />} />
@@ -198,8 +201,9 @@ function appRoutes(admin = false) {
         />
       ))}
       <Route element={<RequireAuth admin={admin} />}>
-        <Route index element={<Navigate to={admin ? "/agents" : "/chat"} replace />} />
+        <Route index element={<Navigate to={admin ? "/overview" : "/chat"} replace />} />
         {admin && <>
+          <Route path="/overview" element={<AdminOverviewPage />} />
           <Route path="/users" element={<AdminAccountsPage />} />
           <Route path="/permissions" element={<AdminPermissionsPage />} />
           <Route path="/audit" element={<AdminAuditPage />} />
@@ -246,10 +250,10 @@ function appRoutes(admin = false) {
  */
 let browserRouter: ReturnType<typeof createBrowserRouter> | null = null;
 
-export function AppRouter({ initialPath }: { initialPath?: string } = {}) {
+export function AppRouter({ initialPath, accountCenter = false }: { initialPath?: string; accountCenter?: boolean } = {}) {
   const [router] = useState(() =>
     initialPath === undefined
-      ? (browserRouter ??= createBrowserRouter(appRoutes(location.pathname.startsWith("/admin")), {basename:location.pathname.startsWith("/admin")?"/admin":location.pathname.startsWith("/user")?"/user":"/"}))
+      ? (browserRouter ??= createBrowserRouter(appRoutes(location.pathname.startsWith("/admin"), accountCenter), {basename:location.pathname.startsWith("/admin")?"/admin":location.pathname.startsWith("/user")?"/user":"/"}))
       : createMemoryRouter(appRoutes(), { initialEntries: [initialPath] }),
   );
   return <RouterProvider router={router} />;

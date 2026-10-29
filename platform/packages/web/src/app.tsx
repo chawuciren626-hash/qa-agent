@@ -33,7 +33,7 @@ import { highlightCode } from "./features/chat/code-highlight";
  * `initialPath`: mount the app on an in-memory router opened at that path instead of the
  * browser's address bar (see AppRouter) — for a host document that frames the app.
  */
-export function App({ initialPath }: { initialPath?: string } = {}) {
+export function App({ initialPath, accountCenter = false }: { initialPath?: string; accountCenter?: boolean } = {}) {
   // The guard reads `defaultPrevented` rather than assuming it runs last: the chat area's
   // drop zone is a window listener too, so the two fire in registration order. Both orders
   // converge — whichever runs second either finds the drag already claimed and bails, or
@@ -54,7 +54,7 @@ export function App({ initialPath }: { initialPath?: string } = {}) {
             <BackgroundProvider>
               <AuthProvider>
                 <LocaleScope>
-                  <AppRouter {...(initialPath === undefined ? {} : { initialPath })} />
+                  <AppRouter accountCenter={accountCenter} {...(initialPath === undefined ? {} : { initialPath })} />
                   {/* Top toast overlay: portaled to body, z-index above modals, shared site-wide. */}
                   <Toaster />
                   {/* The one "discard unsaved changes?" prompt every leave asks through, and the

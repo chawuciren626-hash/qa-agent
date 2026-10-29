@@ -23,7 +23,7 @@ export function ManagedResourceSection({ kind, agentId: fixedAgent, onApplied }:
   if (!visible.length && !error) return null;
   return <details className="mb-4 rounded-lg border border-[var(--border)] p-4">
     <summary className="cursor-pointer text-sm font-medium">管理员提供的{kind === "agents" ? "智能体模板" : kind === "models" ? "模型配置" : kind === "plugins" ? "插件" : "技能"} · {visible.length}</summary>
-    <p className="my-3 text-sm opacity-70">来源：管理后台。获取后保存为本机副本，新版本需手动获取，不覆盖个人修改。上游组件仍使用本页原有的更新入口。</p>
+    <p className="my-3 text-sm opacity-70">来源：管理后台。新版本需手动获取；智能体、技能和插件保留本机副本，模型沿用上游供应商与模型 ID，密钥和个人地址仍留在本机。上游组件继续使用本页原有的更新入口。</p>
     {kind === "plugins" && <p className="mb-3 text-sm opacity-70">管理员发布的是上游插件名称与版本引用；安装复用本机已有插件库，升级继续使用原有插件市场。</p>}
     <div className="mb-3 flex flex-wrap gap-2">
       {needsAgent && !fixedAgent && <select aria-label="管理员配置的目标智能体" className="rounded border bg-transparent p-2 text-sm" value={selectedAgent} onChange={event => setSelectedAgent(event.target.value)}>
@@ -40,7 +40,7 @@ export function ManagedResourceSection({ kind, agentId: fixedAgent, onApplied }:
       return <section key={resource.id} className="rounded border border-[var(--border)] p-3">
         <div className="flex flex-wrap items-center justify-between gap-3"><div><strong className="text-sm">{resource.name}</strong><p className="text-xs opacity-70">管理员发布 v{resource.version}{localVersion ? ` · 已获取 v${localVersion}${current ? "" : " · 有新配置版本"}` : " · 尚未获取"}</p></div>
           <Button size="sm" disabled={busy || current || (needsAgent && !agentId)} onClick={async () => {
-            if (!currentProject || !confirm(`获取「${resource.name}」v${resource.version} 到当前本机项目？智能体和模型创建独立版本副本，技能和插件保留原格式；遇到同名内容会拒绝覆盖，请使用原有更新入口。模型密钥仍需在本机填写。`)) return;
+            if (!currentProject || !confirm(`获取「${resource.name}」v${resource.version} 到当前本机项目？模型会更新同一供应商和模型 ID 的公共元数据，保留本机密钥与地址；智能体、技能和插件不会覆盖个人修改。`)) return;
             setBusy(true); setFailure(""); setMessage("");
             try {
               const result = await controlRequest("/api/control/apply", "POST", { resourceId: resource.id, projectId: currentProject.projectId, ...(needsAgent ? { agentId } : {}) });

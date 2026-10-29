@@ -31,6 +31,8 @@ import {
   isNavPinned,
   navEntryKeysFor,
   navKeysFor,
+  productNavEntryKeysFor,
+  productNavKeysFor,
   splitNavEntries,
   storeNavGroupCollapsed,
   storeNavPinOverrides,
@@ -68,11 +70,18 @@ describe("navEntryKeysFor", () => {
 });
 
 describe("navKeysFor", () => {
-  it("a member sees the admin's entries minus Machines, which the server refuses them", () => {
-    // /api/machines is admin-gated server-side (it spawns ssh with the server account's
-    // keys), so offering a member the row would only ever produce a 403.
+  it("a member sees only the model and plugin pages allowed by their role", () => {
     expect(navKeysFor(true)).toContain("machines");
-    expect(navKeysFor(false)).toEqual(navKeysFor(true).filter((key) => key !== "machines"));
+    expect(navKeysFor(false)).toEqual(["models", "plugins"]);
+  });
+});
+
+describe("AITestHarness user-view navigation", () => {
+  it("hides the three unused modules for both roles while retaining the upstream manifest", () => {
+    expect(navKeysFor(true)).toEqual(expect.arrayContaining(["machines", "usage", "benchmark"]));
+    expect(productNavKeysFor(true)).not.toEqual(expect.arrayContaining(["machines", "usage", "benchmark"]));
+    expect(productNavEntryKeysFor(true)).toEqual(["newChat", "agents", "models", "plugins"]);
+    expect(productNavEntryKeysFor(false)).toEqual(["newChat", "models", "plugins"]);
   });
 });
 
@@ -86,8 +95,8 @@ describe("pinned vs. collapsible", () => {
 
   it("a member's areas are cut from their own entries: an admin-only page is in neither", () => {
     expect(splitNavEntries(navEntryKeysFor(false), {})).toEqual({
-      pinned: ["newChat", "agents", "models", "plugins"],
-      collapsible: ["usage", "benchmark"],
+      pinned: ["newChat", "models", "plugins"],
+      collapsible: [],
     });
     // A choice stored for it (an admin signed in on this browser before) offers nothing.
     const { pinned, collapsible } = splitNavEntries(navEntryKeysFor(false), { machines: true });
@@ -164,7 +173,7 @@ describe("visibleNavKeys", () => {
     expect(visibleNavKeys(false)).toEqual(navEntryKeysFor(true));
     expect(visibleNavKeys(true)).toEqual(["newChat", "agents", "models", "plugins"]);
     expect(visibleNavKeys(false, false)).toEqual(navEntryKeysFor(false));
-    expect(visibleNavKeys(true, false)).toEqual(["newChat", "agents", "models", "plugins"]);
+    expect(visibleNavKeys(true, false)).toEqual(["newChat", "models", "plugins"]);
   });
 
   it("renders the pinned area first, then the collapsible one", () => {

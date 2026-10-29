@@ -58,6 +58,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   app,
   autoUpdater as electronUpdater,
@@ -165,7 +166,9 @@ let showTrayIcon = true;
 let trayLocale: TrayLocale = "en";
 let server: EmbeddedServer | null = null;
 /** The live server child, for pushes that are not answers to one of its messages. */
-let relayChild: EmbeddedServer["child"] | null = null;
+type ShellRelay = Pick<EmbeddedServer["child"], "on" | "postMessage">;
+let relayChild: ShellRelay | null = null;
+let managedConnection: { close(): void } | null = null;
 /**
  * The built-in browser's guests and their relay (see the header). Frames for the server go to
  * whichever child is live; with none, a push is dropped and the next server asks for the tabs.
@@ -619,7 +622,7 @@ function setTrayLocale(next: TrayLocale): void {
  * restarts included, must not start blind. The subscription dies with the child; the next
  * start wires the next one.
  */
-function wireShellRelay(child: EmbeddedServer["child"]): void {
+function wireShellRelay(child: ShellRelay): void {
   relayChild = child;
   child.on("message", (message: unknown) => {
     if (builtinBrowser.handle(message)) return;
@@ -722,6 +725,26 @@ async function boot(): Promise<void> {
     releaseRoot: resolveRoot,
   });
   shellDataRoot = dataRoot;
+  if (qaInstall && process.env.PENGUIN_DESKTOP_SMOKE !== "1") {
+    // Product-only adapter; upstream development and standalone desktop still use their original lifecycle.
+    const moduleUrl = pathToFileURL(path.join(process.env.AITEST_ENGINE_ROOT!, "scripts/local-service.mjs")).href;
+    const local = await import(moduleUrl);
+    const connection = await local.attachLocalService(process.env.AITEST_INSTALLATION_CONFIG!);
+    managedConnection = connection;
+    appOrigin = connection.origin;
+    wireShellRelay(connection);
+    connection.on("ready", async () => {
+      try {
+        const next = await connection.request("attach");
+        appOrigin = next.origin;
+        connection.postMessage(updaterStatusMessage(getUpdaterStatus()));
+        pushTrayStatus();
+        if (win) await win.loadURL(desktopLoginUrl(next.origin, next.token));
+      } catch (err) { logLine(`[shell] local service reconnect failed: ${String(err)}`); }
+    });
+    createWindow(desktopLoginUrl(connection.origin, connection.token));
+    return;
+  }
   if (profile === "dev") {
     logLine(`[shell] dev instance '${app.name}' on data root ${dataRoot}`);
   }
@@ -803,6 +826,8 @@ if (!app.requestSingleInstanceLock()) {
     quitting = true;
   });
   app.on("will-quit", (event) => {
+    managedConnection?.close();
+    managedConnection = null;
     // Nulling the tray keeps the second pass (after the stop) from destroying it twice.
     tray?.dispose();
     tray = null;

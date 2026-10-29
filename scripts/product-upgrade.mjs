@@ -5,6 +5,7 @@ import {execFileSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import {assertPlainPath,within} from './application-data.mjs';
 import {loadProductLayout} from './product-layout.mjs';
+import {withLocalServicePaused} from './local-service.mjs';
 
 const items=['AITestHarness.exe','app','runtime','licenses','THIRD-PARTY-NOTICES.txt','product-payload.json'];
 const json=p=>JSON.parse(readFileSync(p,'utf8').replace(/^\uFEFF/,''));
@@ -161,7 +162,12 @@ export function installProductCandidate(source,root,{assertStopped=assertProduct
   }
 }
 if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url){
-  try{if(![4,5].includes(process.argv.length))throw Error('Usage: product-upgrade.mjs <candidate> <target> [error-file]');console.log(JSON.stringify(installProductCandidate(process.argv[2],process.argv[3])));}
+  try{
+    if(![4,5].includes(process.argv.length))throw Error('Usage: product-upgrade.mjs <candidate> <target> [error-file]');
+    const config=resolve(process.argv[3],'installation.json');
+    const install=()=>installProductCandidate(process.argv[2],process.argv[3]);
+    console.log(JSON.stringify(existsSync(config)?await withLocalServicePaused(config,install):install()));
+  }
   catch(error){
     // nsExec decodes stdout using the Windows code page, not Node's UTF-8.
     // The Unicode installer reads this explicit UTF-16LE file instead.

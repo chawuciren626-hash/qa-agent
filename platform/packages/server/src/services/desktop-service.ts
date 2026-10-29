@@ -24,7 +24,7 @@
  * answers (its main process reads a folder in the app's own name), and a command that opens
  * System Settings at a privacy pane.
  */
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual, randomBytes } from "node:crypto";
 import type {
   DesktopFolderAccessResult,
   DesktopPrivacyPane,
@@ -44,6 +44,15 @@ function digest(value: string): Buffer {
 export class DesktopService {
   private readonly tokenDigest: Buffer;
   private loginConsumed = false;
+  private readonly launchClaims = new Map<string, number>();
+
+  /** A fresh shell launch gets a short-lived one-shot claim over the private local IPC channel. */
+  mintLaunchClaim(): string {
+    this.launchClaims.clear();
+    const token = randomBytes(32).toString("base64url");
+    this.launchClaims.set(digest(token).toString("hex"), Date.now() + 30_000);
+    return token;
+  }
   private shutdownHandler: (() => void) | null = null;
 
   constructor(token: string) {
@@ -57,6 +66,10 @@ export class DesktopService {
 
   /** One-shot login redemption: true exactly once, for the correct token. */
   redeemLoginToken(candidate: string): boolean {
+    const key = digest(candidate).toString("hex");
+    const expires = this.launchClaims.get(key);
+    this.launchClaims.delete(key);
+    if (expires !== undefined) return expires > Date.now();
     if (this.loginConsumed || !this.verifyToken(candidate)) return false;
     this.loginConsumed = true;
     return true;

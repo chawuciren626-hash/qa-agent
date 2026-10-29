@@ -39,6 +39,16 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app?.cleanup();app=undefined;await new Promise<void>(resolve=>server.close(()=>resolve()));});
 describe('central identity with full local application',()=>{
+  it('shares local projects between two logins but logs out only the requesting session',async()=>{
+    const first=await loginUser(app!.app,'admin','central-test-password');
+    const second=await loginUser(app!.app,'admin','central-test-password');
+    expect(first.cookie).not.toBe(second.cookie);
+    const a=apiClient(app!.app,first.cookie),b=apiClient(app!.app,second.cookie);
+    expect(await (await a.get('/api/projects')).json()).toEqual(await (await b.get('/api/projects')).json());
+    expect((await app!.app.request('/api/auth/logout',{method:'POST',headers:{cookie:first.cookie}})).status).toBe(204);
+    expect((await a.get('/api/projects')).status).toBe(401);
+    expect((await b.get('/api/projects')).status).toBe(200);
+  });
   it('enforces native feature routes over HTTP and socket dispatch after grants change',async()=>{
     const login=await loginUser(app!.app,'ordinary','central-test-password');
     const api=apiClient(app!.app,login.cookie);

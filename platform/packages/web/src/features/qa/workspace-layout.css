@@ -1,7 +1,7 @@
 /* The source shell names its navigation slot instead of the legacy .qa-shell wrapper. */
 .ui-shell:has(.qa-sidebar) > [data-slot="nav"],
 .ui-shell:has(.qa-sidebar) > [data-slot="nav"] > div {
-  width: 240px;
+  width: 236px;
   background: var(--qa-sidebar);
   border-color: var(--qa-border);
 }

@@ -31,7 +31,7 @@ import { S } from "../../lib/strings";
 import { onCommand } from "../../lib/shortcuts/dispatcher";
 import { useShortcutTitle } from "../../lib/shortcuts/use-keymap";
 import { latestConversation, withoutOrgSessions } from "../../lib/session-grouping";
-import { navKeysFor } from "../../lib/nav-group-collapse";
+import { productNavKeysFor } from "../../lib/nav-group-collapse";
 import { navNoteFor, useUpdateBadges } from "../../lib/use-update-badges";
 import { backgroundStyle, useBackground } from "../../state/background";
 import { useAuth } from "../../state/auth";
@@ -144,7 +144,7 @@ function CollapsedRail({ onExpand }: { onExpand: () => void }) {
         icon: COMPANY_NAV_ICONS[key],
         note: null,
       }))
-    : navKeysFor(user?.isAdmin === true || user?.modulePermissions!==undefined).filter(key=>allowedModule(user,key)).map((key) => ({
+    : productNavKeysFor(user?.isAdmin === true || user?.modulePermissions!==undefined).filter(key=>allowedModule(user,key)).map((key) => ({
         key,
         to: `/${key}`,
         label: S.nav[key],
