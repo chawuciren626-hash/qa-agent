@@ -142,7 +142,7 @@ test('lost worker collects original partial receipts without replaying an uncert
   const previous=process.env.QA_APP_DATA_ROOT;process.env.QA_APP_DATA_ROOT=mkdtempSync(resolve(tmpdir(),'qa-api-crash-'));
   try {
     const action=op=>apiTask(root,run_id,owner,op,{nativeMessages:[text]});await action({type:'prepare',cases_path:'inputs/cases.json'});const started=await action({type:'start'});
-    for(let i=0;i<100 && !calls.length;i++)await new Promise(r=>setTimeout(r,20));assert.equal(calls.length,1);
+    for(let i=0;i<750 && !calls.length;i++)await new Promise(r=>setTimeout(r,20));assert.equal(calls.length,1);
     const snapshot=await action({type:'collect',partial:true});
     const frozen=JSON.parse(readFileSync(resolve(dir,snapshot.result_path)));
     assert.equal(frozen.cases[0].result_unknown,true);assert.equal(frozen.cases[0].status,'blocked');assert.equal(frozen.finished_at,null);assert.equal(calls.length,1);

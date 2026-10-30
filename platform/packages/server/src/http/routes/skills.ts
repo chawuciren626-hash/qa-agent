@@ -16,6 +16,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { strFromU8, zipSync } from "fflate";
 import { Hono } from "hono";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   listInstalledSkills,
   removeSkill,
@@ -224,6 +225,58 @@ export function agentSkillsRoutes(deps: SkillsRouteDeps): Hono<AppEnv> {
     const agentId = requireValidId(c, "agentId");
     deps.access.requireProjectAccess(c.var.user.userId, projectId);
     await deps.agentConfigService.requireExists(projectId, agentId);
+    return c.json(await listResponse(projectId, agentId));
+  });
+
+  // Author a SKILL.md from the management page. Existing adjunct files survive edits.
+  const authoredSkill = (body: Record<string, unknown>, name: string, previous?: string): Uint8Array => {
+    const description = requireString(body, "description", { minLen: 1, maxLen: 2000 }).trim();
+    const content = requireString(body, "content", { minLen: 1, maxLen: MAX_FILE_BYTES }).trim();
+    if (!description || !content) throw badRequest("Skill description and content are required.");
+    let metadata: Record<string, unknown> = {};
+    const previousHeader = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(previous ?? "");
+    if (previousHeader) {
+      try {
+        const parsed: unknown = parseYaml(previousHeader[1]!);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) metadata = parsed as Record<string, unknown>;
+      } catch { /* Legacy malformed metadata is replaced by validated fields. */ }
+    }
+    metadata.name = name;
+    metadata.description = description;
+    const raw = `---\n${stringifyYaml(metadata).trimEnd()}\n---\n\n${content}\n`;
+    if (parseSkillFrontmatter(raw)?.name !== name) throw badRequest("Invalid SKILL.md frontmatter.");
+    return new TextEncoder().encode(raw);
+  };
+
+  app.post("/", async (c) => {
+    const projectId = requireValidId(c, "projectId");
+    const agentId = requireValidId(c, "agentId");
+    deps.access.requireProjectAccess(c.var.user.userId, projectId);
+    await deps.agentConfigService.requireExists(projectId, agentId);
+    const body = await readJson(c);
+    const name = requireString(body, "name", { minLen: 1, maxLen: 64 });
+    if (!PLUGIN_NAME_PATTERN.test(name)) throw badRequest("Invalid skill name.");
+    const file = path.join(skillsDir(deps.config.root, projectId, agentId), name, "SKILL.md");
+    if (await fs.access(file).then(() => true, () => false)) throw new HttpError(409, "skill_exists", `Skill is already installed: ${name}`);
+    await replaceSkillDirectory(path.dirname(file), new Map([["SKILL.md", authoredSkill(body, name)]]));
+    return c.json(await listResponse(projectId, agentId), 201);
+  });
+
+  app.put("/:name", async (c) => {
+    const projectId = requireValidId(c, "projectId");
+    const agentId = requireValidId(c, "agentId");
+    const name = requireValidId(c, "name");
+    deps.access.requireProjectAccess(c.var.user.userId, projectId);
+    await deps.agentConfigService.requireExists(projectId, agentId);
+    const dir = path.join(skillsDir(deps.config.root, projectId, agentId), name);
+    try {
+      if (!(await fs.lstat(dir)).isDirectory() || !(await fs.lstat(path.join(dir, "SKILL.md"))).isFile()) throw new Error("Not a regular Skill");
+    } catch { throw new HttpError(404, "not_found", `Skill is not installed: ${name}`); }
+    const body = await readJson(c);
+    const files = await collectSkillArchive(dir, name);
+    const next = new Map(Object.entries(files).map(([file, data]) => [file.slice(name.length + 1), data] as const));
+    next.set("SKILL.md", authoredSkill(body, name, strFromU8(files[`${name}/SKILL.md`]!)));
+    await replaceSkillDirectory(dir, next);
     return c.json(await listResponse(projectId, agentId));
   });
 

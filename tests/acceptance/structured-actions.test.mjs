@@ -1374,6 +1374,13 @@ test('dispatch catalog explains optional mode and normal analysis dispatch succe
   assert.match(contractText(result),/Do not create or re-plan/);
   assert.match(result.delegation.description,/^处理/);
   assert.match(result.delegation.prompt,/任务：需求分析/);
+  assert.match(result.delegation.prompt,/【目标】从本次原始材料/);
+  assert.match(result.delegation.prompt,/【交付】/);
+  assert.match(result.delegation.prompt,/【验收】/);
+  assert.match(contractText(result),/【执行细则】/);
+  assert.equal(result.task_brief.dispatch_id,result.data.event.dispatch_id);
+  assert.deepEqual(result.task_brief.deliverables,result.completion_template.artifacts);
+  assert.deepEqual(JSON.parse(readFileSync(result.action_receipt,'utf8')).task_brief,result.task_brief);
   assert.match(result.delegation.prompt,/使用中文/);
   assert.doesNotMatch(result.delegation.prompt,/You are|Before any work|Do not create/);
   assert.ok(result.delegation.prompt.includes(`output/delegations/${result.data.event.dispatch_id}.prompt.txt`));

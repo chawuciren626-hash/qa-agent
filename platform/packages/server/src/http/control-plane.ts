@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { HttpError } from "./errors.js";
 import type { AppEnv } from "../auth/middleware.js";
 import { parseSkillArchive } from "./routes/skills.js";
+import { AdminSystemStore } from "./admin-system-store.js";
 
 export const CONTROL_BODY_LIMIT = 2 * 1024 * 1024;
 
@@ -60,17 +61,18 @@ export function resourceDependencies(r:Pick<PublicResource,"kind"|"payload">):{i
   const p=r.payload;return [...(p.modelResource?[{id:String(p.modelResource),kind:"models" as const}]:[]),...(Array.isArray(p.skillResources)?p.skillResources.map(id=>({id:String(id),kind:"skills" as const})):[]),...(Array.isArray(p.pluginResources)?p.pluginResources.map(id=>({id:String(id),kind:"plugins" as const})):[])];
 }
 export class ControlStore {
+  readonly system: AdminSystemStore;
   constructor(readonly db:DatabaseSync){db.exec(`
     CREATE TABLE IF NOT EXISTS public_resources(id TEXT PRIMARY KEY,kind TEXT NOT NULL,draft TEXT NOT NULL,revision INTEGER NOT NULL,version INTEGER NOT NULL DEFAULT 0,published INTEGER NOT NULL DEFAULT 0,audience TEXT NOT NULL,updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS public_resource_versions(resource_id TEXT NOT NULL,version INTEGER NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(resource_id,version));
     CREATE TABLE IF NOT EXISTS public_module_grants(user_id TEXT PRIMARY KEY,modules TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS public_admin_audit(id INTEGER PRIMARY KEY,actor TEXT NOT NULL,action TEXT NOT NULL,resource_id TEXT NOT NULL,created_at TEXT NOT NULL);
-  `);}
-  modules(userId:string,admin:boolean):string[]{if(admin)return [...MODULES];const row=this.db.prepare("SELECT modules FROM public_module_grants WHERE user_id=?").get(userId);const grants:string[]=row?JSON.parse(String(row.modules)):["chat","projects","library","schedules","plugins","skills"];return [...new Set([...grants,"models"])];}
-  setModules(actor:string,userId:string,v:unknown){const modules=strings(v);if(modules.some(m=>!(MODULES as readonly string[]).includes(m)))fail("未知模块。");if(!this.db.prepare("SELECT user_id FROM users WHERE user_id=?").get(userId))throw new HttpError(404,"not_found","用户不存在。");if(userId==="admin")fail("管理员保留全部权限。");const effective=[...new Set([...modules,"models"])];this.db.prepare("INSERT INTO public_module_grants VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET modules=excluded.modules").run(userId,JSON.stringify(effective));this.audit(actor,"permissions",userId);return effective;}
+  `);this.system=new AdminSystemStore(db,(actor,action,id)=>this.audit(actor,action,id),MODULES);}
+  modules(userId:string,admin:boolean):string[]{if(admin)return [...MODULES];const row=this.db.prepare("SELECT modules FROM public_module_grants WHERE user_id=?").get(userId);const grants:string[]=this.system.roleModules(userId)??(row?JSON.parse(String(row.modules)):["chat","projects","library","schedules","plugins","skills"]);return [...new Set([...grants,"models"])];}
+  setModules(actor:string,userId:string,v:unknown){const modules=strings(v);if(modules.some(m=>!(MODULES as readonly string[]).includes(m)))fail("未知模块。");if(!this.db.prepare("SELECT user_id FROM users WHERE user_id=?").get(userId))throw new HttpError(404,"not_found","用户不存在。");if(userId==="admin")fail("管理员保留全部权限。");const effective=[...new Set([...modules,"models"])];this.db.exec("BEGIN IMMEDIATE");try{this.db.prepare("INSERT INTO public_module_grants VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET modules=excluded.modules").run(userId,JSON.stringify(effective));this.db.prepare("DELETE FROM public_role_members WHERE user_id=?").run(userId);this.audit(actor,"permissions",userId);this.db.exec("COMMIT");}catch(error){this.db.exec("ROLLBACK");throw error;}return effective;}
   audit(actor:string,action:string,id:string){this.db.prepare("INSERT INTO public_admin_audit(actor,action,resource_id,created_at) VALUES (?,?,?,?)").run(actor,action,id,new Date().toISOString());}
   row(id:string){const row=this.db.prepare("SELECT * FROM public_resources WHERE id=?").get(id);if(!row)throw new HttpError(404,"not_found","资源不存在。");return row;}
-  get(id:string,draft=false):PublicResource {const row=this.row(id);const version=Number(row.version);const body=draft?JSON.parse(String(row.draft)):JSON.parse(String(this.db.prepare("SELECT body FROM public_resource_versions WHERE resource_id=? AND version=?").get(id,version)?.body??"null"));if(!body)throw new HttpError(404,"not_published","资源尚未发布。");return {...body,id,kind:row.kind,revision:Number(row.revision),version,published:!!row.published,audience:JSON.parse(String(row.audience)),updatedAt:String(row.updated_at)};}
+  get(id:string,draft=false):PublicResource {const row=this.row(id);const version=Number(row.version);const body=draft?JSON.parse(String(row.draft)):JSON.parse(String(this.db.prepare("SELECT body FROM public_resource_versions WHERE resource_id=? AND version=?").get(id,version)?.body??"null"));if(!body)throw new HttpError(404,"not_published","资源尚未发布。");return {...body,id,kind:row.kind,revision:Number(row.revision),version,published:!!row.published,audience:body.audience??JSON.parse(String(row.audience)),updatedAt:String(row.updated_at)};}
   list(draft=false):PublicResource[]{return this.db.prepare("SELECT id FROM public_resources ORDER BY updated_at DESC,id").all().flatMap(row=>{try{return [this.get(String(row.id),draft)];}catch{return [];}});}
   save(actor:string,raw:unknown,id?:string):PublicResource{
     const b=object(raw);fields(b,["kind","name","description","payload","audience","revision"]);
@@ -89,7 +91,7 @@ export class ControlStore {
   }
   publish(actor:string,id:string,revision:unknown){const r=this.get(id,true);if(r.revision!==revision)throw new HttpError(409,"revision_conflict","请刷新资源后再发布。");
     for(const d of resourceDependencies(r)){const dep=this.get(d.id);if(dep.kind!==d.kind||!this.accessible(d.id,actor,true))fail("依赖资源必须先发布且类型正确。");if(r.audience.includes("*")&&!dep.audience.includes("*"))fail("面向全部用户的模板不能依赖受限资源。");for(const u of r.audience)if(u!=="*"&&!this.accessible(d.id,u,false))fail("部分授权用户无权使用依赖资源。");}
-    const next=r.version+1, now=new Date().toISOString();this.db.exec("BEGIN IMMEDIATE");try{this.db.prepare("INSERT INTO public_resource_versions VALUES (?,?,?,?)").run(id,next,JSON.stringify({kind:r.kind,name:r.name,description:r.description,payload:r.payload}),now);this.db.prepare("UPDATE public_resources SET version=?,published=1,revision=revision+1,updated_at=? WHERE id=?").run(next,now,id);this.audit(actor,"publish",id);this.db.exec("COMMIT");}catch(e){this.db.exec("ROLLBACK");throw e;}return this.get(id,true);}
+    const next=r.version+1, now=new Date().toISOString();this.db.exec("BEGIN IMMEDIATE");try{this.db.prepare("INSERT INTO public_resource_versions VALUES (?,?,?,?)").run(id,next,JSON.stringify({kind:r.kind,name:r.name,description:r.description,payload:r.payload,audience:r.audience}),now);this.db.prepare("UPDATE public_resources SET version=?,published=1,revision=revision+1,updated_at=? WHERE id=?").run(next,now,id);this.audit(actor,"publish",id);this.db.exec("COMMIT");}catch(e){this.db.exec("ROLLBACK");throw e;}return this.get(id,true);}
   withdraw(actor:string,id:string){this.row(id);this.db.prepare("UPDATE public_resources SET published=0,revision=revision+1,updated_at=? WHERE id=?").run(new Date().toISOString(),id);this.audit(actor,"withdraw",id);}
   deleteDraft(actor:string,id:string,revision:unknown){
     const row=this.row(id);
@@ -104,7 +106,7 @@ export class ControlStore {
 export function controlRoutes(store:ControlStore):Hono<AppEnv>{
   const app=new Hono<AppEnv>();app.use("*",bodyLimit({maxSize:CONTROL_BODY_LIMIT}));
   app.use("/admin/*",async(c,next)=>{if(!c.var.user.isAdmin)throw new HttpError(403,"admin_required","仅管理员可以访问管理后台。");await next();});
-  app.get("/access",c=>{const u=c.var.user;return c.json({modules:store.modules(u.userId,u.isAdmin),resourceIds:store.list().filter(r=>store.accessible(r.id,u.userId,u.isAdmin)).map(r=>r.id)});});
+  app.get("/access",c=>{const u=c.var.user;return c.json({modules:store.modules(u.userId,u.isAdmin),menuKeys:u.isAdmin?store.system.menuItems().map(item=>item.key):store.system.ordinaryMenus(),resourceIds:store.list().filter(r=>store.accessible(r.id,u.userId,u.isAdmin)).map(r=>r.id)});});
   app.get("/catalog",c=>{const u=c.var.user;return c.json({resources:store.list().filter(r=>store.accessible(r.id,u.userId,u.isAdmin))});});
   app.get("/catalog/:id",c=>c.json({resources:store.bundle(c.req.param("id"),c.var.user.userId,c.var.user.isAdmin)}));
   app.get("/admin/resources",c=>c.json({resources:store.list(true)}));
@@ -116,6 +118,23 @@ export function controlRoutes(store:ControlStore):Hono<AppEnv>{
   app.get("/admin/resources/:id/history",c=>{store.row(c.req.param("id"));return c.json({versions:store.db.prepare("SELECT version,body,created_at FROM public_resource_versions WHERE resource_id=? ORDER BY version DESC").all(c.req.param("id")).map(r=>({...r,body:JSON.parse(String(r.body))}))});});
   app.get("/admin/permissions/:id",c=>c.json({modules:store.modules(c.req.param("id"),c.req.param("id")==="admin")}));
   app.put("/admin/permissions/:id",async c=>c.json({modules:store.setModules(c.var.user.userId,c.req.param("id"),(await c.req.json()).modules)}));
-  app.get("/admin/audit",c=>c.json({events:store.db.prepare("SELECT * FROM public_admin_audit ORDER BY id DESC LIMIT 100").all()}));
+  app.get("/admin/roles",c=>c.json(store.system.roleSummary()));
+  app.put("/admin/roles/:id/users",async c=>c.json(store.system.assignUsers(c.var.user.userId,c.req.param("id"),(await c.req.json()).userIds)));
+  app.put("/admin/roles/ordinary/menus",async c=>c.json({menus:store.system.setOrdinaryMenus(c.var.user.userId,(await c.req.json()).menuKeys)}));
+  app.get("/admin/menus",c=>c.json({items:store.system.menuItems()}));
+  app.put("/admin/menus",async c=>c.json({items:store.system.setMenus(c.var.user.userId,(await c.req.json()).items)}));
+  app.get("/admin/audit",c=>{
+    const page=Math.max(1,Math.min(100000,Number(c.req.query("page"))||1));
+    const type=c.req.query("type")??"",keyword=(c.req.query("keyword")??"").trim().slice(0,100);
+    const actions:Record<string,string[]>={publish:["publish"],withdraw:["withdraw"],draft:["save","delete_draft"],permissions:["permissions","role_assign","role_menus","role_create","role_update","role_delete","menus"],login:["login"]};
+    const selected=actions[type]??[];
+    const clauses=["1=1"],args:(string|number)[]=[];
+    if(type&&selected.length){clauses.push(`a.action IN (${selected.map(()=>"?").join(",")})`);args.push(...selected);}
+    if(keyword){clauses.push("(a.actor LIKE ? OR a.resource_id LIKE ? OR json_extract(r.draft,'$.name') LIKE ?)");args.push(...Array(3).fill(`%${keyword}%`));}
+    const from=" FROM public_admin_audit a LEFT JOIN public_resources r ON r.id=a.resource_id WHERE "+clauses.join(" AND ");
+    const total=Number(store.db.prepare("SELECT COUNT(*) AS total"+from).get(...args)?.total??0);
+    const events=store.db.prepare("SELECT a.*,r.kind AS resource_kind,json_extract(r.draft,'$.name') AS resource_name"+from+" ORDER BY a.id DESC LIMIT 10 OFFSET ?").all(...args,(page-1)*10);
+    return c.json({events,total,page,pageSize:10});
+  });
   return app;
 }

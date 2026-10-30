@@ -1,19 +1,22 @@
 .qa-plugin-market { background:var(--qa-bg); }
 .qm-description { color:var(--qa-muted); font-size:12.5px; margin-top:6px; }
 .qm-description span { margin-left:12px; }
-.qm-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; border-bottom:1px solid var(--qa-border); margin-bottom:20px; padding-bottom:8px; }
-.qm-tabs { display:flex; align-self:stretch; gap:24px; margin-right:auto; }
-.qm-tabs button { padding:8px 2px; border-bottom:2px solid transparent; font-size:14px; }
-.qm-tabs button[aria-pressed=true] { border-bottom-color:currentColor; font-weight:600; }
-.qm-tabs span { margin-left:6px; color:var(--qa-muted); font-size:11px; font-weight:400; }
+.qm-toolbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:12px; border-bottom:1px solid var(--qa-border); margin-bottom:20px; padding-bottom:8px; }
+.qm-split { display:flex; align-items:flex-start; gap:24px; }
+.qm-side { position:sticky; top:12px; width:212px; flex:0 0 212px; max-height:calc(100dvh - 150px); overflow:auto; scrollbar-width:thin; }
+.qm-side-title { padding:0 10px 8px; font-size:12px; color:var(--qa-muted); }
+.qm-side nav { display:flex; flex-direction:column; gap:2px; }
+.qm-side nav button { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 10px; border-radius:8px; font-size:13px; text-align:left; color:var(--qa-secondary,#4e5969); }
+.qm-side nav button:hover { background:var(--qa-hover); }
+.qm-side nav button[aria-pressed=true] { background:var(--qa-hover); color:var(--qa-text,#1d2129); font-weight:600; }
+.qm-side nav button span { font-size:11px; color:var(--qa-muted); font-variant-numeric:tabular-nums; }
+.qm-content { flex:1; min-width:0; }
+.qm-cat-block + .qm-cat-block { margin-top:8px; }
+.qm-cat-head { display:flex; align-items:baseline; gap:10px; margin:4px 0 0; }
+.qm-cat-head strong { font-size:15px; font-weight:600; }
+.qm-cat-head span { font-size:12px; color:var(--qa-muted); }
+@media(max-width:900px) { .qm-split { display:block; } .qm-side { position:static; width:auto; flex:auto; max-height:none; margin-bottom:14px; } .qm-side nav { flex-direction:row; flex-wrap:wrap; } }
 .qm-search { width:220px; }.qm-toolbar > select { width:150px; }
-.qm-showcase { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:22px; }
-.qm-category { position:relative; overflow:hidden; text-align:left; padding:18px; border:1px solid var(--qa-border); border-radius:12px; background:var(--qa-panel); transition:box-shadow .15s; }
-.qm-category:after { content:''; position:absolute; right:-16px; top:22px; width:65px; height:65px; border-radius:14px; transform:rotate(15deg); background:#5a8dea18; pointer-events:none; }
-.qm-category-1:after { background:#d85ca51a; }.qm-category-2:after { background:#dea52e1c; }.qm-category-3:after { background:#36ae831a; }
-.qm-category:hover { box-shadow:0 4px 16px #00000012; }.qm-category[aria-pressed=true] { border-color:#3370ff; }
-.qm-category strong { display:block; font-size:14px; margin-bottom:12px; }.qm-category span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:var(--qa-muted); margin-top:7px; }.qm-category small { display:block; text-align:right; font-size:11px; margin-top:14px; }
-.qm-chips { display:flex; flex-wrap:wrap; gap:8px; margin:20px 0; }.qm-chips button { border:1px solid var(--qa-border); border-radius:99px; padding:5px 14px; font-size:12px; }.qm-chips button[aria-pressed=true] { background:var(--qa-text); color:var(--qa-bg); border-color:var(--qa-text); }
 .qa-plugin-market .qm-grid { gap:12px; padding:12px 0 20px; grid-template-columns:repeat(3,minmax(0,1fr)); }
 .qa-plugin-market [data-plugin] { flex-direction:column; align-items:stretch; gap:14px; border-radius:12px; background:var(--qa-panel); padding:16px; }
 .qa-plugin-market [data-plugin] > div:last-child { justify-content:flex-end; }
@@ -24,8 +27,8 @@
 .qm-empty { padding:24px; text-align:center; color:var(--qa-muted); font-size:13px; border:1px dashed var(--qa-border); border-radius:12px; margin-top:14px; }
 .qm-resource-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }.qm-resource { padding:16px; border:1px solid var(--qa-border); border-radius:12px; background:var(--qa-panel); overflow-wrap:anywhere; }.qm-resource-icon { color:#3370ff; font-size:24px; }.qm-resource p,.qm-resource small { font-size:12px; color:var(--qa-muted); margin-top:8px; }.qm-resource-actions { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:6px; margin-top:16px; }
 .qm-dropzone { width:100%; display:flex; align-items:center; flex-direction:column; gap:10px; border:1.5px dashed var(--qa-border,#c9cdd4); border-radius:10px; padding:32px 20px; background:var(--qa-hover); overflow-wrap:anywhere; }.qm-dropzone:hover,.qm-dropzone.is-dragging { border-color:#3370ff; background:#3370ff0b; }.qm-upload-icon { font-size:30px; color:#3370ff; }.qm-dropzone strong { font-size:13px; font-weight:500; }.qm-dropzone em { font-style:normal; color:#3370ff; }.qm-dropzone small,.qm-upload-notes { font-size:12px; color:var(--qa-muted); }.qm-upload-notes { margin:16px 0; line-height:1.9; padding-left:16px; list-style:disc; }.qm-upload-footer { display:flex; justify-content:flex-end; gap:8px; margin-top:20px; }
-@media(max-width:1100px) { .qa-plugin-market .qm-grid,.qm-resource-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }.qm-showcase { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-@media(max-width:640px) { .qa-plugin-market .qm-grid,.qm-resource-grid { grid-template-columns:1fr; }.qm-search { width:100%; }.qm-tabs { width:100%; }.qm-showcase { gap:8px; }.qm-category { padding:12px; } }
+@media(max-width:1100px) { .qa-plugin-market .qm-grid,.qm-resource-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:640px) { .qa-plugin-market .qm-grid,.qm-resource-grid { grid-template-columns:1fr; }.qm-search { width:100%; } }
 .qa-plugin-market { --qa-panel:var(--qa-bg); } .qm-upload { --qa-panel:var(--qa-bg); }
 .qm-group-select { width:160px; flex-shrink:0; }
 .qa-plugin-market .qm-section { border:0; border-radius:0; background:transparent; box-shadow:none; }

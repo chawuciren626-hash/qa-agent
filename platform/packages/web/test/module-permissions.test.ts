@@ -16,5 +16,7 @@ describe("module navigation and route authorization", () => {
     expect(allowedModule({isAdmin:false,modulePermissions:["models"]}, "models")).toBe(true);
     expect(allowedModule({isAdmin:false,modulePermissions:["models"]}, "agents")).toBe(false);
     expect(allowedModule({isAdmin:true,modulePermissions:[]}, "agents")).toBe(true);
+    expect(allowedModule({isAdmin:false,modulePermissions:["agents","models"],menuKeys:["agents"]}, "models")).toBe(false);
+    expect(allowedModule({isAdmin:false,modulePermissions:["agents","models"],menuKeys:["agents"]}, "agents")).toBe(true);
   });
 });

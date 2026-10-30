@@ -686,6 +686,27 @@ describe("skills api", () => {
     await expect(fs.access(path.join(dir, "old.txt"))).rejects.toThrow();
   });
 
+  it("authors and edits a Skill while preserving adjunct files and rejecting duplicates", async () => {
+    await createPlainAgent("author_skill");
+    const url = base("author_skill");
+    const body = { name: "handbook", description: "Use for handbook tasks", content: "# Handbook\n\nFollow these steps." };
+    expect((await member.post(url, body)).status).toBe(201);
+    expect((await member.post(url, body)).status).toBe(409);
+    expect((await outsider.post(url, { ...body, name: "outsider" })).status).toBe(404);
+    expect((await member.post(url, { ...body, name: "../escape" })).status).toBe(400);
+    const dir = path.join(skillsDir(t.root, projectId, "author_skill"), "handbook");
+    await fs.mkdir(path.join(dir, "references"));
+    await fs.writeFile(path.join(dir, "references", "notes.bin"), Buffer.from([0, 255, 20]));
+    const previous = await fs.readFile(path.join(dir, "SKILL.md"), "utf8");
+    await fs.writeFile(path.join(dir, "SKILL.md"), previous.replace("description:", "version: 2026.10.30.1\ndescription:"));
+    expect((await member.put(`${url}/handbook`, { description: "Updated guidance", content: "# New steps" })).status).toBe(200);
+    const updated = await fs.readFile(path.join(dir, "SKILL.md"), "utf8");
+    expect(updated).toContain("version: 2026.10.30.1");
+    expect(updated).toContain("Updated guidance");
+    expect(updated).toContain("# New steps");
+    expect(await fs.readFile(path.join(dir, "references", "notes.bin"))).toEqual(Buffer.from([0, 255, 20]));
+  });
+
   it("archive export: single-top-dir zip round-trips byte-identically; a non-installed name is 404", async () => {
     await createPlainAgent("zip_export_agent");
     const url = base("zip_export_agent");

@@ -1,5 +1,7 @@
-export function allowedModule(user:{isAdmin:boolean;modulePermissions?:string[]}|null|undefined,key:string):boolean {
-  return !!user&&(key==="models"||user.isAdmin||user.modulePermissions===undefined||user.modulePermissions.includes(key));
+export function allowedModule(user:{isAdmin:boolean;modulePermissions?:string[];menuKeys?:string[]}|null|undefined,key:string):boolean {
+  if (!user) return false;
+  if (!user.isAdmin && user.menuKeys && ["agents","models","plugins","skills"].includes(key) && !user.menuKeys.includes(key)) return false;
+  return key==="models"||user.isAdmin||user.modulePermissions===undefined||user.modulePermissions.includes(key);
 }
 export function pageModule(path:string,search=""):string|undefined {
   if(path==="/chat"||path.startsWith("/chat/")) {

@@ -3,13 +3,38 @@ import { zipSync, strToU8 } from "fflate";
 import type { PublicResource } from "../http/control-plane.js";
 import { HttpError } from "../http/errors.js";
 import { parseSkillArchive } from "../http/routes/skills.js";
+import { currentAgentValues, planAgentUpdate, publishedAgentValues, type AgentResolution, type ManagedAgentValues } from "./public-agent-version.js";
 const applying=new Set<string>();
+function ensureAgentVersionTables(db:DatabaseSync){
+  db.exec("CREATE TABLE IF NOT EXISTS applied_public_resources(project_id TEXT NOT NULL,resource_id TEXT NOT NULL,version INTEGER NOT NULL,agent_id TEXT NOT NULL,applied_at TEXT NOT NULL,PRIMARY KEY(project_id,resource_id,version,agent_id))");
+  db.exec("CREATE TABLE IF NOT EXISTS applied_agent_managed(project_id TEXT NOT NULL,resource_id TEXT NOT NULL,agent_id TEXT NOT NULL,version INTEGER NOT NULL,base_json TEXT NOT NULL,PRIMARY KEY(project_id,resource_id,agent_id))");
+  db.exec("CREATE TABLE IF NOT EXISTS applied_agent_backups(project_id TEXT NOT NULL,resource_id TEXT NOT NULL,agent_id TEXT NOT NULL,from_version INTEGER NOT NULL,to_version INTEGER NOT NULL,config_json TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(project_id,resource_id,agent_id,to_version))");
+}
+function priorAgent(db:DatabaseSync,projectId:string,resourceId:string){
+  return db.prepare("SELECT agent_id AS agentId,MAX(version) AS version FROM applied_public_resources WHERE project_id=? AND resource_id=? GROUP BY agent_id ORDER BY MAX(version) DESC LIMIT 1").get(projectId,resourceId) as {agentId:string;version:number}|undefined;
+}
+export async function previewPublicAgentUpdate(db:DatabaseSync,body:{resourceId:string;projectId:string},resources:PublicResource[],dispatch:(r:Request)=>Promise<Response>){
+  if(!/^[a-zA-Z0-9_-]{1,100}$/.test(body.projectId))throw new HttpError(400,"invalid_target","项目标识无效。");
+  const target=resources.find(r=>r.id===body.resourceId&&r.kind==="agents");
+  if(!target)throw new HttpError(400,"invalid_bundle","智能体发布资源不完整。");
+  ensureAgentVersionTables(db);
+  const base="/api/projects/"+encodeURIComponent(body.projectId);
+  const ask=async(path:string)=>{const response=await dispatch(new Request("http://localhost"+path));if(!response.ok)throw new HttpError(response.status as 400,"project_forbidden","无法读取本机目标。");return response.json() as Promise<any>;};
+  const visible=await ask("/api/projects");
+  if(!visible.projects.some((p:any)=>p.projectId===body.projectId))throw new HttpError(403,"project_forbidden","不能访问其他用户的项目。");
+  const prior=priorAgent(db,body.projectId,target.id);
+  if(!prior)return {newInstall:true,agentId:"public_"+target.id.replaceAll("-","").slice(0,16),fromVersion:0,toVersion:target.version,fields:[]};
+  const current=await ask(base+"/agents/"+encodeURIComponent(prior.agentId)+"/config");
+  const row=db.prepare("SELECT base_json AS baseJson FROM applied_agent_managed WHERE project_id=? AND resource_id=? AND agent_id=?").get(body.projectId,target.id,prior.agentId) as {baseJson:string}|undefined;
+  const plan=planAgentUpdate(row?JSON.parse(row.baseJson) as ManagedAgentValues:null,currentAgentValues(current),publishedAgentValues(target));
+  return {newInstall:false,agentId:prior.agentId,fromVersion:prior.version,toVersion:target.version,fields:plan.fields};
+}
 /** Apply only the centrally returned bundle. The browser cannot submit executable resource contents. */
-export async function applyPublicResource(db:DatabaseSync,body:{resourceId:string;projectId:string;agentId?:string},resources:PublicResource[],dispatch:(r:Request)=>Promise<Response>){
+export async function applyPublicResource(db:DatabaseSync,body:{resourceId:string;projectId:string;agentId?:string;resolutions?:AgentResolution},resources:PublicResource[],dispatch:(r:Request)=>Promise<Response>){
   if(!/^[a-zA-Z0-9_-]{1,100}$/.test(body.projectId))throw new HttpError(400,"invalid_target","项目标识无效。");
   const target=resources.find(r=>r.id===body.resourceId);if(!target)throw new HttpError(400,"invalid_bundle","发布资源不完整。");
   const key=body.projectId;if(applying.has(key))throw new HttpError(409,"busy","此项目正在应用公共资源，请稍后重试。");applying.add(key);
-  db.exec("CREATE TABLE IF NOT EXISTS applied_public_resources(project_id TEXT NOT NULL,resource_id TEXT NOT NULL,version INTEGER NOT NULL,agent_id TEXT NOT NULL,applied_at TEXT NOT NULL,PRIMARY KEY(project_id,resource_id,version,agent_id))");
+  ensureAgentVersionTables(db);
   const base="/api/projects/"+encodeURIComponent(body.projectId);
   const call=async(path:string,method="GET",value?:unknown):Promise<any>=>{const r=await dispatch(new Request("http://localhost"+path,{method,headers:{"content-type":"application/json"},...(value===undefined?{}:{body:JSON.stringify(value)})}));const result:any=await r.json().catch(()=>({}));if(!r.ok)throw new HttpError(r.status as 400,result.error?.code??"apply_failed",result.error?.message??"本地应用失败。");return result;};
   let agentId=body.agentId;const results:string[]=[];
@@ -17,17 +42,28 @@ export async function applyPublicResource(db:DatabaseSync,body:{resourceId:strin
     // Project access is checked by the existing local API before any write.
     const visible=await call("/api/projects");
     if(!visible.projects.some((p:any)=>p.projectId===body.projectId))throw new HttpError(403,"project_forbidden","不能应用到其他用户的项目。");
+    const previous=target.kind==="agents"?priorAgent(db,body.projectId,target.id):undefined;
+    let updatePlan:ReturnType<typeof planAgentUpdate>|null=null;
+    let previousConfig:any=null;
     if(target.kind==="agents"){
-      agentId="public_"+target.id.replaceAll("-","").slice(0,16)+"_v"+target.version;
-      const current=await call(base+"/agents");if(current.agents.some((a:any)=>a.agentId===agentId))throw new HttpError(409,"already_applied","此版本已有本地副本，请使用已有副本；不会覆盖本地修改。");
+      agentId=previous?.agentId??("public_"+target.id.replaceAll("-","").slice(0,16));
+      if(previous){
+        if(previous.version>=target.version)throw new HttpError(409,"already_applied","此版本已应用到本机智能体。");
+        previousConfig=await call(base+"/agents/"+agentId+"/config");
+        const row=db.prepare("SELECT base_json AS baseJson FROM applied_agent_managed WHERE project_id=? AND resource_id=? AND agent_id=?").get(body.projectId,target.id,agentId!) as {baseJson:string}|undefined;
+        updatePlan=planAgentUpdate(row?JSON.parse(row.baseJson) as ManagedAgentValues:null,currentAgentValues(previousConfig),publishedAgentValues(target),body.resolutions);
+        if(updatePlan.unresolved.length)throw new HttpError(409,"agent_update_conflict","请先逐项确认本机修改与发布版本的差异。");
+      }else{
+        const current=await call(base+"/agents");if(current.agents.some((a:any)=>a.agentId===agentId))throw new HttpError(409,"agent_id_conflict","本机已有同名智能体，未覆盖。");
+      }
     } else if(target.kind!=="models"&&!/^[a-zA-Z0-9_-]{1,100}$/.test(agentId??""))throw new HttpError(400,"choose_agent","请选择目标智能体。");
     // Reuse the upstream library and installer. Never replace an existing plugin's local parts.
-    const upstreamPlugins=resources.filter(r=>r.kind==="plugins"&&r.payload.source==="upstream-library");
+    const upstreamPlugins=resources.filter(r=>r.kind==="plugins"&&r.payload.source==="upstream-library"&&(!previous||!db.prepare("SELECT 1 FROM applied_public_resources WHERE project_id=? AND resource_id=? AND version=? AND agent_id=?").get(body.projectId,r.id,r.version,agentId??"")));
     let pluginNames:string[]=[];
     if(upstreamPlugins.length){
       const library=await call("/api/plugins");
       const available=library.groups.flatMap((group:any)=>group.plugins);
-      const installed=target.kind==="agents"?{skills:[],hooks:[],mcpServers:[],workbenches:[]}:await call(base+"/agents/"+agentId+"/plugins");
+      const installed=target.kind==="agents"&&!previous?{skills:[],hooks:[],mcpServers:[],workbenches:[]}:await call(base+"/agents/"+agentId+"/plugins");
       for(const resource of upstreamPlugins){
         const plugin=available.find((item:any)=>item.name===resource.payload.pluginName);
         if(!plugin||plugin.version!==resource.payload.pluginVersion)throw new HttpError(409,"upstream_plugin_required","请先在原有插件市场获取管理员指定的插件版本；此处不替换上游安装器。");
@@ -67,8 +103,15 @@ export async function applyPublicResource(db:DatabaseSync,body:{resourceId:strin
       if(added)await call(base+"/models","PUT",{models:entries});
     }
     if(target.kind==="agents"){
-      await call(base+"/agents","POST",{agentId,name:target.name,description:target.description,...(pluginNames.length?{plugins:pluginNames}:{})});
-      await call(base+"/agents/"+agentId+"/config","PUT",{...(target.payload.agentsMd===undefined?{}:{agentsMd:target.payload.agentsMd}),config:{systemPrompt:String(target.payload.prompt),...(target.payload.maxTurns===undefined?{}:{maxTurns:target.payload.maxTurns})}});
+      if(previous){
+        db.prepare("INSERT OR IGNORE INTO applied_agent_backups VALUES (?,?,?,?,?,?,?)").run(body.projectId,target.id,agentId!,previous.version,target.version,JSON.stringify(previousConfig),new Date().toISOString());
+        if(pluginNames.length)await call(base+"/agents/"+agentId+"/plugins","POST",{names:pluginNames});
+        const values=updatePlan!.values;
+        await call(base+"/agents/"+agentId+"/config","PUT",{agentsMd:values.agentsMd,config:{name:values.name,description:values.description,systemPrompt:values.prompt,...(values.maxTurns===undefined?{}:{maxTurns:values.maxTurns})}});
+      }else{
+        await call(base+"/agents","POST",{agentId,name:target.name,description:target.description,...(pluginNames.length?{plugins:pluginNames}:{})});
+        await call(base+"/agents/"+agentId+"/config","PUT",{...(target.payload.agentsMd===undefined?{}:{agentsMd:target.payload.agentsMd}),config:{systemPrompt:String(target.payload.prompt),...(target.payload.maxTurns===undefined?{}:{maxTurns:target.payload.maxTurns})}});
+      }
       results.push(target.name);
     }
     if(target.kind!=="agents"&&pluginNames.length)await call(base+"/agents/"+agentId+"/plugins","POST",{names:pluginNames});
@@ -80,6 +123,7 @@ export async function applyPublicResource(db:DatabaseSync,body:{resourceId:strin
       db.prepare("INSERT OR IGNORE INTO applied_public_resources VALUES (?,?,?,?,?)").run(body.projectId,r.id,r.version,agentId??"",new Date().toISOString());
     }
     for(const r of resources)db.prepare("INSERT OR IGNORE INTO applied_public_resources VALUES (?,?,?,?,?)").run(body.projectId,r.id,r.version,agentId??"",new Date().toISOString());
+    if(target.kind==="agents")db.prepare("INSERT INTO applied_agent_managed VALUES (?,?,?,?,?) ON CONFLICT(project_id,resource_id,agent_id) DO UPDATE SET version=excluded.version,base_json=excluded.base_json").run(body.projectId,target.id,agentId!,target.version,JSON.stringify(publishedAgentValues(target)));
     return {ok:true,agentId,applied:results,message:"已获取管理员配置；模型密钥和个人地址仍在本机管理。"};
   }finally{applying.delete(key);}
 }

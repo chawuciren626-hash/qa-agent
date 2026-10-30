@@ -15,6 +15,7 @@
 - [工程测试与 CI](engineering-tests-and-ci.md)
 - [运行编排](orchestration-engine.md)
 - [结构化动作](structured-actions.md)
+- [专业子智能体任务书](delegation-task-brief-2026-10-30.md)
 - [总控工具接口](controller-tool-interface.md)
 - [输入与交付约定](input-and-delivery.md)
 - [阶段注册](stage-registry.md)

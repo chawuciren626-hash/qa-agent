@@ -126,6 +126,8 @@ export function AccountCenter({ registrationEnabled, apiBase = "", onSignedIn, i
   const actionTitle = action ? ({ create: "创建普通账号", reset: "重置密码", disable: "停用账号", enable: "启用账号", revoke: "退出全部设备" })[action.kind] : "";
 
   const alerts = <>{notice && <p className="ac-notice" role="status">{notice}</p>}{error && <p className="ac-error" role="alert">{error}</p>}</>;
+  if (user === undefined && !integrated) return <div className="account-center ac-dashboard ac-loading" role="status">正在加载用户管理…</div>;
+  if (user === null && !integrated) return <div className="account-center ac-dashboard ac-loading" role="alert">用户管理登录状态已失效，请刷新管理后台重新登录。</div>;
   if (!user) return <div className="account-center ac-login-view"><div className="layout">
     <aside className="brand-panel"><div className="brand-top"><Logo/><div className="brand-name">AITestHarness<small>软件测试智能体</small></div></div>
       <div className="brand-middle"><h1 className="brand-headline">让每一次测试<br/>都有 <em>AI</em> 全程护航</h1><p className="brand-sub">统一的账号管理，安心的本地工作体验。项目、会话、文件和测试结果保存在你的电脑。</p>

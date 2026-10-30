@@ -60,6 +60,21 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () =>
     expect(await fs.readFile(prompt, "utf8")).toBe(before);
   });
   it("creates testing projects ready to use, with empty task data and project-scoped access", async () => {
+    const agents = await (await owner.get(`/api/projects/${project}/agents`)).json() as {agents:{agentId:string}[]};
+    expect(agents.agents.map(agent => agent.agentId)).toContain("test_agent");
+    expect(agents.agents.map(agent => agent.agentId)).not.toContain("default_agent");
+    await expect(fs.access(path.join(app.root, project, "agents/default_agent"))).rejects.toThrow();
+    const initial = await (await owner.get("/api/projects")).json() as {projects:{projectId:string}[]};
+    const ownDefault = initial.projects.find(item => item.projectId === "qa_owner-default_project")?.projectId;
+    expect(ownDefault).toBe("qa_owner-default_project");
+    const initialAgents = await (await owner.get(`/api/projects/${ownDefault}/agents`)).json() as {agents:{agentId:string}[]};
+    expect(initialAgents.agents.map(agent => agent.agentId)).not.toContain("default_agent");
+    const admin = apiClient(app.app, (await loginAdmin(app.app)).cookie);
+    const adminAgents = await (await admin.get("/api/projects/default_project/agents")).json() as {agents:{agentId:string}[]};
+    expect(adminAgents.agents.map(agent => agent.agentId)).toContain("default_agent");
+    expect((await admin.post("/api/projects", {projectId: "admin_agent_catalog"})).status).toBe(201);
+    const catalogAgents = await (await admin.get("/api/projects/admin_agent_catalog/agents")).json() as {agents:{agentId:string}[]};
+    expect(catalogAgents.agents.map(agent => agent.agentId)).toContain("default_agent");
     const status = await (await owner.get(base)).json() as {enabled: boolean};
     expect(status.enabled).toBe(true);
     const overview = await owner.get(base + "/overview");
@@ -67,7 +82,6 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () =>
     expect(await overview.json()).toEqual({projectId: project, tasks: []});
     expect((await outsider.get(base + "/overview")).status).toBe(404);
     expect((await member.get(base + "/overview")).status).toBe(200);
-    const admin = apiClient(app.app, (await loginAdmin(app.app)).cookie);
     expect((await admin.get(base + "/overview")).status).toBe(200);
     expect((await owner.post(`/api/projects/${project}/agents`, {agentId: "custom"})).status).toBe(403);
     expect((await owner.get(`/api/projects/${project}/usage`)).status).toBe(403);
@@ -75,7 +89,7 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () =>
     expect((await member.post(`/api/projects/${project}/agents/test_agent/skills/archive`, {})).status).toBe(403);
   });
   it("keeps personal library records separated by account and project and rejects stale revisions", async () => {
-    const library = `/api/projects/${project}/agents/default_agent/memory/library`;
+    const library = `/api/projects/${project}/agents/test_agent/memory/library`;
     const created = await owner.post(library, { name: "需求.md", kind: "file", content: "合成需求", encoding: "utf8" });
     expect(created.status).toBe(201);
     const record = await created.json() as { id: string; revision: string };
@@ -88,14 +102,14 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () =>
     expect((await (await owner.get(`${library}/${record.id}`)).json() as { content: string }).content).toBe("修改");
     const other = "qa_owner-second";
     expect((await owner.post("/api/projects", {projectId: other})).status).toBe(201);
-    expect((await owner.get(`/api/projects/${other}/agents/default_agent/memory/library/${record.id}`)).status).toBe(404);
+    expect((await owner.get(`/api/projects/${other}/agents/test_agent/memory/library/${record.id}`)).status).toBe(404);
   });
   it("session extensions check project membership and reject native open on Web", async () => {
     await owner.put(`/api/projects/${project}/models`, {
       defaultModel: { provider: "anthropic", modelId: "claude-sonnet-4-6" },
       models: [{ provider: "anthropic", modelId: "claude-sonnet-4-6" }],
     });
-    const result = await owner.post(`/api/projects/${project}/agents/default_agent/sessions`, {});
+    const result = await owner.post(`/api/projects/${project}/agents/test_agent/sessions`, {});
     expect(result.status).toBe(201);
     const { session } = (await result.json()) as SessionCreateResponse;
     const prefix = `/api/sessions/${session.sessionId}`;

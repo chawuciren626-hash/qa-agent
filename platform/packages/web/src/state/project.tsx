@@ -86,7 +86,8 @@ function enteredProject(projectId: string | null): Partial<ProjectStoreState> {
   return { currentProjectId: projectId, currentAgentId: null, agents: null, agentsLoading: true };
 }
 
-function createProjectStore() {
+function createProjectStore(scope: "user" | "admin" = "user") {
+  const selectionKey = scope === "admin" ? "aitest.admin.configProjectId" : PROJECT_KEY;
   /** Agent-list asks so far: only the newest one's answer is applied (see reloadAgents). */
   let agentsAsked = 0;
   return createStore<ProjectStoreState>((set, get) => ({
@@ -102,7 +103,7 @@ function createProjectStore() {
       set({ projectsLoading: true });
       try {
         const res = await api.listProjects();
-        const wanted = get().currentProjectId ?? localStorage.getItem(PROJECT_KEY);
+        const wanted = get().currentProjectId ?? localStorage.getItem(selectionKey);
         const found = res.projects.find((p) => p.projectId === wanted);
         const next = (found ?? res.projects[0])?.projectId ?? null;
         // The current Project gone from the list (deleted, access lost) moves the app to another
@@ -123,13 +124,13 @@ function createProjectStore() {
       // so the Agent list (and the Session list mounted under it) would disappear for good
       // (reproducible by clicking the already-current Project in the dropdown).
       if (projectId === get().currentProjectId) return;
-      localStorage.setItem(PROJECT_KEY, projectId);
+      localStorage.setItem(selectionKey, projectId);
       // Clear the Agent list in sync: avoids a transient render with "new projectId + old
       // Project's agents" that would make downstream consumers (Sessions) fetch with the
       // wrong Agent set (which could create spurious Sessions under the new Project).
       set(enteredProject(projectId));
       // Sync server-side prefs (best-effort; failure doesn't affect the local experience).
-      void api.putPrefs({ lastProjectId: projectId }).catch(() => undefined);
+      if (scope === "user") void api.putPrefs({ lastProjectId: projectId }).catch(() => undefined);
     },
 
     reloadAgents: async () => {
@@ -208,8 +209,8 @@ function projectView(
   return { currentProject, agents, currentAgent: agentOf(agents, state.currentAgentId) };
 }
 
-export function ProjectProvider({ children }: { children: ReactNode }) {
-  const [store] = useState(createProjectStore);
+export function ProjectProvider({ children, scope = "user" }: { children: ReactNode; scope?: "user" | "admin" }) {
+  const [store] = useState(() => createProjectStore(scope));
   const state = useStore(store);
 
   useEffect(() => {

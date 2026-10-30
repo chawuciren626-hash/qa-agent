@@ -151,6 +151,9 @@ export interface CreateAgentDialogProps {
   onClose: () => void;
   /** The Agent was created on `machineId` (null: this server): the page closes the dialog and goes to it. */
   onCreated: (agentId: string, machineId: string | null) => Promise<void>;
+  adminStages?: { id: string; name: string }[];
+  adminStageId?: string;
+  onAdminStageChange?: (stageId: string) => void;
 }
 
 export function CreateAgentDialog(props: CreateAgentDialogProps) {
@@ -164,6 +167,9 @@ function CreateAgentForm({
   machines = [],
   onClose,
   onCreated,
+  adminStages,
+  adminStageId,
+  onAdminStageChange,
 }: CreateAgentDialogProps) {
   const form = useFormDraft(EMPTY, { normalize: normalizeCreate });
   const {
@@ -352,7 +358,7 @@ function CreateAgentForm({
             <Button
               size="sm"
               variant="primary"
-              disabled={!form.dirty || !idValid || busy}
+              disabled={!form.dirty || !idValid || busy || (adminStages !== undefined && !adminStageId)}
               onClick={() => void create()}
             >
               {S.common.create}
@@ -361,6 +367,7 @@ function CreateAgentForm({
         }
       >
         <div className="space-y-3">
+          {adminStages && <label className="block text-sm">所属阶段 *<select className="mt-1 w-full rounded border bg-transparent p-2" value={adminStageId ?? ""} onChange={event => onAdminStageChange?.(event.target.value)} disabled={busy} required><option value="">请选择阶段</option>{adminStages.map(stage => <option key={stage.id} value={stage.id}>{stage.name}</option>)}</select></label>}
           {/* Where the Agent is created, first: everything below is read from that server. Only
             once there is a machine to pick. */}
           {machines.length > 0 && (

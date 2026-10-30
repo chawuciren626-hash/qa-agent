@@ -231,6 +231,7 @@ import { DetailsFold, MODEL_DIALOG_SLOTS, foldedErrors, foldedSlots } from "./mo
 import type { ModelDialogSlot } from "./model-dialog-details";
 import { isPinned, usePinnedBalance } from "./balance";
 import { TOKENDANCE_PROVIDER_ID, TokenDanceBanner } from "./tokendance-banner";
+import "./models-page-redesign.css";
 
 /**
  * The authorization flows a group's Connect dialog can run, keyed by the flow named in that
@@ -934,6 +935,8 @@ export function ModelsPage() {
   /** Target group (provider id) for adding a model: taken from the group header entry point, falling back to custom when empty. */
   const [addingTo, setAddingTo] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
+  const [modelFilter, setModelFilter] = useState<"all" | "configured" | "unconfigured">("all");
   /**
    * Expanded vendor groups — hydrated from this Project's persisted set (DeepSeek-only
    * on a first visit; every other group, including user-defined ones arriving with the
@@ -1707,14 +1710,28 @@ export function ModelsPage() {
     );
   };
 
-  /** The two areas (model-group-pins.ts), each in the page's group order. */
-  const layout = modelGroupLayout(groups, (group) => group.provider.id, groupPins, {
-    searching,
-    folded: groupsFolded,
-  });
+  const browseGroups = rows
+    ? sortModelGroups(groupModelRows(rows, "", groupOrder), groupSorts, new Date(), locale)
+    : [];
+  const activeGroup = browseGroups.find((g) => g.provider.id === selectedProvider) ?? browseGroups[0];
+  const searchRows = groups.flatMap((g) => g.rows);
+  const baseRows = searching ? searchRows : (activeGroup?.rows ?? []);
+  const modelIsConfigured = (row: RowState) => hasKey(row, providers[row.provider]);
+  const configuredCount = baseRows.filter(modelIsConfigured).length;
+  const visibleRows = baseRows.filter((row) =>
+    modelFilter === "all" ? true : modelFilter === "configured" ? modelIsConfigured(row) : !modelIsConfigured(row),
+  );
+  const activeActions = activeGroup
+    ? groupHeaderActions(activeGroup.provider, {
+        isOwner,
+        keyStored: groupKeyStored(providers[activeGroup.provider.id]),
+        keyFromEnv: groupKeyFromEnv(activeGroup.rows),
+        balancePinned: isPinned(pinnedBalance, projectId, activeGroup.provider.id),
+      })
+    : [];
 
   return (
-    <PageFrame>
+    <PageFrame width="full" className="models-redesign-frame" contentClassName="models-redesign">
       {/* The header holds search, the owner-only catalog pair — "Add new models" and "Restore
           defaults" — and the pair of create buttons: the AI path and the group form, offered side
           by side (per-model entry points still live in each group header); on narrow screens the
@@ -1803,65 +1820,71 @@ export function ModelsPage() {
         />
       )}
 
-      {rows === null ? (
-        <SkeletonList rows={4} />
-      ) : rows.length === 0 ? (
-        <EmptyState
-          title={S.models.empty}
-          action={
-            isOwner && <Button onClick={() => setAddingTo("custom")}>{S.models.addCustom}</Button>
-          }
-        />
-      ) : groups.length === 0 ? (
-        <EmptyState title={S.models.noSearchResults} />
-      ) : (
-        <div className="space-y-3">
-          {layout.shown.map(renderGroup)}
-          {layout.fold !== null && (
-            <>
-              {/* The bar that folds the collapsible groups away, the sidebar nav's toggle with
-                  the count of what it holds. It stands above them, so it stays put while they
-                  open and close. A search shows every match and no bar (modelGroupLayout). */}
-              <button
-                ref={foldBarRef}
-                type="button"
-                aria-expanded={!layout.fold.folded}
-                aria-controls="models-collapsible-groups"
-                onClick={toggleGroupsFolded}
-                className={`flex h-6 w-full items-center justify-center ${ICON_GAP.tight} rounded-md ${NAV_FILL.selected} text-xs text-fg-subtle transition-colors duration-150 hover:bg-fg/10 hover:text-fg`}
-              >
-                {S.models.foldedGroups(layout.fold.groups.length)}
-                <ChevronFlip up={!layout.fold.folded} />
-              </button>
-              {/* The fold: the nav's height tween, groups kept mounted but inert while folded,
-                  clipped on the grid's box rather than its row (the blank-band fix above). Its
-                  own bottom padding, not the list's gap, spaces it from what follows, so a
-                  folded area adds no second gap under the bar. */}
-              <div
-                id="models-collapsible-groups"
-                data-layout-motion
-                className={`mb-0 grid overflow-clip ${layout.fold.folded ? "grid-rows-[0fr]" : "grid-rows-[1fr]"}`}
-              >
-                <div className="min-h-0" inert={layout.fold.folded}>
-                  <div
-                    className={`space-y-3 pb-3 transition-opacity duration-200 ${layout.fold.folded ? "opacity-0" : "opacity-100"}`}
-                  >
-                    {layout.fold.groups.map(renderGroup)}
-                  </div>
+      {rows === null ? <SkeletonList rows={4} /> : (
+        <div className="models-workspace">
+          <div className="models-layout">
+            <aside className="models-sidebar" aria-label="渠道商列表">
+              <div className="models-sidebar-heading">
+                <span>渠道商 <small>{browseGroups.length}</small></span>
+                {isOwner && <button type="button" onClick={() => setAddingTo("custom")} aria-label={`${S.models.addToGroup} Custom`}>＋</button>}
+              </div>
+              <div className="models-provider-list">
+                {browseGroups.map((group) => {
+                  const selected = !searching && activeGroup?.provider.id === group.provider.id;
+                  const connected = groupKeyStored(providers[group.provider.id]) || groupKeyFromEnv(group.rows);
+                  return <button key={group.provider.id} type="button"
+                    className={`models-provider-row ${selected ? "is-selected" : ""}`}
+                    aria-current={selected ? "page" : undefined}
+                    onClick={() => { setQuery(""); setModelFilter("all"); setSelectedProvider(group.provider.id); }}>
+                    <ProviderLogo provider={group.provider.id} className="models-provider-logo" />
+                    <span className="models-provider-name">{group.provider.label}</span>
+                    {!connected && <span className="models-provider-off" data-tooltip="未配置渠道商密钥" aria-label="未配置渠道商密钥" />}
+                    <span className="models-provider-count">{group.rows.length}</span>
+                  </button>;
+                })}
+                {isOwner && <button type="button" className="models-new-provider" onClick={() => setAddGroupOpen(true)}>＋ {S.models.addGroup}</button>}
+              </div>
+            </aside>
+            <section className="models-panel" aria-label={searching ? "搜索结果" : activeGroup?.provider.label}>
+              <div className="models-panel-heading">
+                <div className="models-panel-title">
+                  {searching ? <GlyphIcon d={ICONS.search} size={20} /> : activeGroup && <ProviderLogo provider={activeGroup.provider.id} className="models-panel-logo" />}
+                  <strong>{searching ? "搜索结果" : activeGroup?.provider.label ?? S.models.title}</strong>
+                  <span>{searching ? `${searchRows.length} 个模型` : `${activeGroup?.rows.length ?? 0} 个模型`}</span>
+                  {!searching && activeGroup && <span className={`models-connection ${groupKeyStored(providers[activeGroup.provider.id]) || groupKeyFromEnv(activeGroup.rows) ? "is-connected" : ""}`}>
+                    {groupKeyStored(providers[activeGroup.provider.id]) || groupKeyFromEnv(activeGroup.rows) ? "已连接" : "未连接"}
+                  </span>}
+                </div>
+                <div className="models-panel-actions">
+                  {searching ? <Button size="sm" variant="ghost" onClick={() => setQuery("")}>清空搜索</Button> : activeGroup && <>
+                    {activeActions.map((action) => <Fragment key={action}>{renderGroupAction(activeGroup, action, groupKeyStored(providers[activeGroup.provider.id]))}</Fragment>)}
+                  </>}
                 </div>
               </div>
-            </>
-          )}
-          {isOwner && query.trim() === "" && (
-            // "Add group" (user-defined group): hidden while searching (the group list itself is being filtered).
-            <button
-              type="button"
-              onClick={() => setAddGroupOpen(true)}
-              className="w-full rounded-md border border-dashed border-gray-300 px-3 py-2.5 text-sm text-gray-500 transition-colors hover:border-gray-400 hover:text-gray-700 dark:border-gray-700 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:text-gray-200"
-            >
-              ＋ {S.models.addGroup}
-            </button>
-          )}
+              <div className="models-filters" role="group" aria-label="模型配置筛选">
+                {([ ["all", "全部", baseRows.length], ["configured", "已配置", configuredCount], ["unconfigured", "待配置", baseRows.length - configuredCount] ] as const).map(([key, label, count]) =>
+                  <button key={key} type="button" aria-pressed={modelFilter === key}
+                    className={modelFilter === key ? "is-selected" : ""} onClick={() => setModelFilter(key)}>{label} <span>{count}</span></button>)}
+              </div>
+              <div className="models-panel-body">
+                {visibleRows.length === 0 ? <div className="models-empty">
+                  <strong>{searching ? S.models.noSearchResults : baseRows.length === 0 ? S.models.empty : "此筛选下暂无模型"}</strong>
+                  <span>{searching ? "试试模型名称、ID 或渠道商名称" : "可切换筛选条件或添加模型"}</span>
+                  {isOwner && !searching && activeGroup && isAddableGroup(activeGroup.provider.id) && <Button size="sm" onClick={() => setAddingTo(activeGroup.provider.id)}>{S.models.addCustom}</Button>}
+                </div> : <div className="models-card-grid">
+                  {visibleRows.map((row) => <ModelCard key={`${row.provider}:${row.modelId}`}
+                    row={row} group={providers[row.provider]} currency={currency}
+                    isDefault={sameModelRef(rowRef(row), defaultModel)}
+                    isVisionModel={sameModelRef(rowRef(row), visionModel)}
+                    speed={speedResults.get(refMapKey(row.provider, row.modelId))}
+                    usedTokens={usedTokens.get(refMapKey(row.provider, row.modelId))}
+                    hourTick={hourTick}
+                    onOpen={() => { setEditingMovedToCustom(false); setEditing(rowRef(row)); }}
+                    onMoveToCustom={isOwner ? () => { setEditingMovedToCustom(true); setEditing(rowRef(row)); } : undefined} />)}
+                </div>}
+              </div>
+            </section>
+          </div>
         </div>
       )}
 
@@ -2609,6 +2632,7 @@ export function ModelCard({
           <span className="min-w-0 flex-1 truncate text-sm font-medium">
             {modelLabelOf(row.displayName, row.modelId)}
           </span>
+          <span className={`models-card-status ${hasKey(row, group) ? "" : "is-unconfigured"}`} aria-label={keyStatusText(row, group)} />
           {/* What this model has spent over its whole life, on the row's right edge. Recessive by
               design — grey, on the small rung below the name: it is context for a name you are
               scanning past, not a figure the page is about. A model that has never run shows
@@ -2622,6 +2646,18 @@ export function ModelCard({
               {S.models.usedTokens(humanizeTokens(usedTokens))}
             </span>
           )}
+        </span>
+        <span className="models-card-id" data-tooltip={row.modelId}>{row.modelId}</span>
+        <span className="flex w-full items-center gap-1.5">
+          <span className="min-w-0 flex-1 truncate text-xs text-gray-400 dark:text-gray-500">
+            {meta.map((part, i) => (
+              <Fragment key={i}>
+                {i > 0 && " · "}
+                {part}
+              </Fragment>
+            ))}
+          </span>
+          {speedBadges}
         </span>
         {/* 2. Every standing mark, on one row of its own (see `tags`). The row is rendered even
             when empty: most models carry no mark at all, and letting it collapse would leave the
@@ -2643,17 +2679,6 @@ export function ModelCard({
         </span>
         {/* 3. Meta line: the truncating text takes the flexible space; speed badges keep their own
             non-shrinking slot on the right so the numbers never wrap or get pushed out. */}
-        <span className="flex w-full items-center gap-1.5">
-          <span className="min-w-0 flex-1 truncate text-xs text-gray-400 dark:text-gray-500">
-            {meta.map((part, i) => (
-              <Fragment key={i}>
-                {i > 0 && " · "}
-                {part}
-              </Fragment>
-            ))}
-          </span>
-          {speedBadges}
-        </span>
       </button>
       {/* The routing warning and its way out (see unroutableFix): the move the config dialog's
           own button performs, so the owner lands where the problem is fixed rather than on a

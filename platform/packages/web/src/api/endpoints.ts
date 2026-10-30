@@ -1884,6 +1884,12 @@ export const getAgentSkills = (projectId: string, agentId: string, machineId: st
     { server: machineId },
   );
 
+export const createAgentSkill = (projectId: string, agentId: string, body: { name: string; description: string; content: string }, machineId: string | null) =>
+  apiFetch<AgentSkillsResponse>(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/skills`, { method: "POST", body, server: machineId });
+
+export const updateAgentSkill = (projectId: string, agentId: string, name: string, body: { description: string; content: string }, machineId: string | null) =>
+  apiFetch<AgentSkillsResponse>(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/skills/${encodeURIComponent(name)}`, { method: "PUT", body, server: machineId });
+
 /** Every readable file in one installed Skill, for the Agent settings detail browser. */
 export const getAgentSkillFiles = (
   projectId: string,

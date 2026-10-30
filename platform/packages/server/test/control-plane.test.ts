@@ -6,7 +6,7 @@ import type { AppEnv } from "../src/auth/middleware.js";
 import { HttpError } from "../src/http/errors.js";
 import { zipSync, strToU8 } from "fflate";
 let db:DatabaseSync,store:ControlStore;
-beforeEach(()=>{db=new DatabaseSync(":memory:");db.exec("CREATE TABLE users(user_id TEXT PRIMARY KEY); INSERT INTO users VALUES ('admin'),('alice'),('bob');");store=new ControlStore(db);});
+beforeEach(()=>{db=new DatabaseSync(":memory:");db.exec("CREATE TABLE users(user_id TEXT PRIMARY KEY,is_admin INTEGER NOT NULL DEFAULT 0); INSERT INTO users VALUES ('admin',1),('alice',0),('bob',0);");store=new ControlStore(db);});
 afterEach(()=>db.close());
 const skill=(audience=["alice"])=>store.save("admin",{kind:"skills",name:"测试技能",description:"公共说明",payload:{skillName:"test-skill",content:"# 公共测试方法"},audience});
 describe("public control plane",()=>{
@@ -15,6 +15,55 @@ describe("public control plane",()=>{
     expect(store.modules("alice",false)).toEqual(["models"]);
     db.prepare("UPDATE public_module_grants SET modules='[]' WHERE user_id='alice'").run();
     expect(store.modules("alice",false)).toEqual(["models"]);
+  });
+  it("applies editable role permissions to assigned users without changing the administrator",()=>{
+    store.setModules("admin","alice",["chat"]);
+    const role=store.system.saveRole("admin",{name:"测试执行",modules:["agents","skills"]});
+    store.system.assignRole("admin","alice",role.id);
+    expect(store.modules("alice",false)).toEqual(["agents","skills","models"]);
+    store.system.saveRole("admin",{name:"测试设计",modules:["projects"]},role.id);
+    expect(store.modules("alice",false)).toEqual(["projects","models"]);
+    expect(store.modules("admin",true)).toContain("agents");
+    expect(()=>store.system.deleteRole("admin",role.id)).toThrow();
+    store.setModules("admin","alice",["skills"]);
+    expect(store.system.members()).toEqual([]);
+    expect(store.modules("alice",false)).toEqual(["skills","models"]);
+    store.system.assignRole("admin","alice",role.id);
+    store.system.assignRole("admin","alice",null);
+    store.system.deleteRole("admin",role.id);
+    expect(store.modules("alice",false)).toEqual(["skills","models"]);
+  });
+  it("validates menu edits and keeps required system entries visible",()=>{
+    const items=store.system.menuItems();
+    expect(items.map(item=>item.key)).toEqual(["overview","chat","agents","models","plugins","skills","users","roles","menus","audit"]);
+    const changed=items.map(item=>item.key==="plugins"?{...item,visible:false}:item);
+    expect(store.system.setMenus("admin",changed).find(item=>item.key==="plugins")?.visible).toBe(false);
+    expect(()=>store.system.setMenus("admin",changed.map(item=>item.key==="menus"?{...item,visible:false}:item))).toThrow();
+    expect(()=>store.system.setMenus("admin",changed.slice(1))).toThrow();
+  });
+  it("keeps two built-in roles and persists menu assignments and custom menu edits",()=>{
+    expect(store.system.roleSummary().roles.map(role=>role.id)).toEqual(["admin","ordinary"]);
+    const menus=store.system.menuItems();
+    const custom={key:"custom_help",name:"帮助",path:"/help",group:"main" as const,icon:"menus",color:"#5a8dea",visible:true,builtin:false};
+    store.system.setMenus("admin",[...menus,custom]);
+    expect(store.system.menuItems().at(-1)).toEqual(custom);
+    expect(store.system.setOrdinaryMenus("admin",["agents","custom_help"])).toEqual(["agents","custom_help"]);
+    expect(store.system.roleSummary().roles[1]?.menus).toEqual(["agents","custom_help"]);
+    store.system.assignUsers("admin","admin",["admin","alice"]);
+    expect(store.system.roleSummary().roles[0]?.members).toEqual(["admin","alice"]);
+    expect(()=>store.system.assignUsers("admin","ordinary",["admin"])).toThrow();
+    store.system.setMenus("admin",menus);
+    expect(store.system.ordinaryMenus()).toEqual(["agents"]);
+  });
+  it("filters and paginates audit rows from stored operations",async()=>{
+    for(let i=0;i<12;i++) store.audit("admin",i%2?"publish":"withdraw",`resource_${i}`);
+    const app=new Hono<AppEnv>();
+    app.use("*",async(c,next)=>{c.set("user",{userId:"admin",isAdmin:true} as AppEnv["Variables"]["user"]);await next();});
+    app.route("/api/control",controlRoutes(store));
+    const response=await app.request("http://localhost/api/control/admin/audit?type=publish&page=1");
+    const body=await response.json() as {total:number;events:unknown[]};
+    expect(body.total).toBe(6);
+    expect(body.events).toHaveLength(6);
   });
   it("accepts upstream plugin references and preserves the original skill archive and companion files",()=>{
     expect(publicPayload("plugins",{pluginName:"qa-plugin",pluginVersion:"1.0.0",source:"upstream-library"})).toEqual({pluginName:"qa-plugin",pluginVersion:"1.0.0",source:"upstream-library"});
@@ -25,6 +74,7 @@ describe("public control plane",()=>{
     expect(()=>publicPayload("skills",{skillName:"other",archiveBase64:archive})).toThrow();
   });
   it("keeps unpublished drafts private and snapshots published content",()=>{let r=skill();expect(store.accessible(r.id,"alice",false)).toBe(false);r=store.publish("admin",r.id,r.revision);expect(store.accessible(r.id,"alice",false)).toBe(true);expect(store.accessible(r.id,"bob",false)).toBe(false);store.save("admin",{kind:r.kind,name:"新草稿",description:r.description,payload:r.payload,audience:r.audience,revision:r.revision},r.id);expect(store.get(r.id).name).toBe("测试技能");expect(store.get(r.id,true).name).toBe("新草稿");});
+  it("keeps published authorization unchanged while the next version is being edited",()=>{let r=skill();r=store.publish("admin",r.id,r.revision);store.save("admin",{kind:r.kind,name:r.name,description:r.description,payload:r.payload,audience:["bob"],revision:r.revision},r.id);expect(store.get(r.id).audience).toEqual(["alice"]);expect(store.get(r.id,true).audience).toEqual(["bob"]);expect(store.accessible(r.id,"alice",false)).toBe(true);expect(store.accessible(r.id,"bob",false)).toBe(false);});
   it("rejects stale edits and keeps an immutable version history",()=>{let r=skill();r=store.publish("admin",r.id,r.revision);expect(()=>store.publish("admin",r.id,r.revision-1)).toThrow();r=store.publish("admin",r.id,r.revision);expect(r.version).toBe(2);expect(db.prepare("SELECT count(*) n FROM public_resource_versions").get()!.n).toBe(2);});
   it("deletes only unreferenced never-published drafts with the current revision",()=>{const draft=skill();expect(()=>store.deleteDraft("admin",draft.id,draft.revision-1)).toThrow();const agent=store.save("admin",{kind:"agents",name:"引用模板",payload:{prompt:"",skillResources:[draft.id]}},undefined);expect(()=>store.deleteDraft("admin",draft.id,draft.revision)).toThrow();store.deleteDraft("admin",agent.id,agent.revision);store.deleteDraft("admin",draft.id,draft.revision);expect(store.list(true)).toHaveLength(0);let published=skill();published=store.publish("admin",published.id,published.revision);store.withdraw("admin",published.id);expect(()=>store.deleteDraft("admin",published.id,store.get(published.id,true).revision)).toThrow();});
   it("enforces dependencies, audiences, module revocation and withdrawal",()=>{let s=skill();s=store.publish("admin",s.id,s.revision);let a=store.save("admin",{kind:"agents",name:"公共模板",payload:{prompt:"测试",skillResources:[s.id]},audience:["alice"]});a=store.publish("admin",a.id,a.revision);expect(store.accessible(a.id,"alice",false)).toBe(false);store.setModules("admin","alice",["agents","skills"]);expect(store.bundle(a.id,"alice",false)).toHaveLength(2);store.setModules("admin","alice",["agents"]);expect(store.accessible(a.id,"alice",false)).toBe(false);store.setModules("admin","alice",["agents","skills"]);store.withdraw("admin",s.id);expect(store.accessible(a.id,"alice",false)).toBe(false);expect(db.prepare("SELECT count(*) n FROM public_resources").get()!.n).toBe(2);});

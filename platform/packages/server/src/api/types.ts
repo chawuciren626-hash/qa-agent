@@ -59,6 +59,7 @@ export type { SessionSource };
 
 export interface UserInfo {
   modulePermissions?: string[];
+  menuKeys?: string[];
   /** Semantic id, i.e. login name: `^[a-z][a-z0-9_-]{1,31}$`, immutable after creation. */
   userId: string;
   /** Built-in admin (seeded at startup). */

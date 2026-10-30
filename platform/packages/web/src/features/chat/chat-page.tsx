@@ -259,7 +259,7 @@ export const parkedDraftIdOf = (routeSessionId: string | null): string | null =>
  */
 const STAT_PATHS_PER_REQUEST = 100;
 
-export function ChatPage() {
+export function ChatPage({ fixedAgentId }: { fixedAgentId?: string } = {}) {
   const navigate = useNavigate();
   const location = useLocation();
   const params = useParams<{ sessionId?: string }>();
@@ -720,14 +720,17 @@ export function ChatPage() {
   const selectedAgentKnown =
     selectedAgentId !== null && agents.some((a) => a.agentId === selectedAgentId);
   useEffect(() => {
-    if (selectedSessionId && selectedAgentId && selectedAgentKnown)
+    if (selectedSessionId && selectedAgentId && selectedAgentKnown && (!fixedAgentId || selectedAgentId === fixedAgentId))
       setCurrentAgentId(selectedAgentId);
     else if (selectedSessionId && selectedAgentId)
       console.warn(
         `[chat] the Agent ${selectedAgentId} of ${selectedSessionId} is not in this server's Agent list; the conversation renders under the Session's own Agent id`,
       );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedSessionId, selectedAgentId, selectedAgentKnown, setCurrentAgentId]);
+  }, [selectedSessionId, selectedAgentId, selectedAgentKnown, setCurrentAgentId, fixedAgentId]);
+  useEffect(() => {
+    if (fixedAgentId && selected && selected.agentId !== fixedAgentId) navigate("/chat/new", { replace: true });
+  }, [fixedAgentId, selected, navigate]);
 
   // Agents tab AUTO-OPEN (the one automatic tab action): the pure tracker
   // (advancePanelTaskScope, unit-tested) brings the agents tab to the front on the CURRENT
@@ -2169,6 +2172,7 @@ export function ChatPage() {
       </div>
     );
   }
+  if (fixedAgentId && selected && selected.agentId !== fixedAgentId) return null;
 
   // Header statistics (chip row + info dropdown), live while a Task runs; recomputed every
   // stream version bump, so the in-place-mutated model stats always read fresh. The cost chip
@@ -2672,6 +2676,7 @@ export function ChatPage() {
                   composerRef={composerRef}
                   onWorkspaceChange={onDraftWorkspace}
                   onAgentChange={onDraftAgent}
+                  {...(fixedAgentId ? { fixedAgentId } : {})}
                 />
               ) : (
                 // Keyed by Session: the whole block does a light fade-in when switching sessions.

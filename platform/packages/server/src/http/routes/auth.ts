@@ -14,15 +14,17 @@ import type { AppEnv } from "../../auth/middleware.js";
 import { readJson, requireString } from "../validate.js";
 import { HttpError } from "../errors.js";
 import type { ServerConfig } from "../../config.js";
+import type { DatabaseSync } from "node:sqlite";
 import type { Auth } from "../../mechanisms/identity.js";
 import { Bind, Component, Use } from "@prismshadow/penguin-core/kernel";
-import { Config, Desktop } from "../../hmr/capabilities.js";
+import { Config, Db, Desktop } from "../../hmr/capabilities.js";
 import type { DesktopApi } from "../../hmr/capabilities.js";
 
 export interface AuthRouteDeps {
   authService: Auth;
   config: ServerConfig;
   desktop: Pick<DesktopApi, "redeemLoginToken"> | null;
+  auditLogin?: (userId: string) => void;
 }
 
 export function authRoutes(deps: AuthRouteDeps): Hono<AppEnv> {
@@ -39,6 +41,22 @@ export function authRoutes(deps: AuthRouteDeps): Hono<AppEnv> {
       token,
       cookieOptions(c, deps.authService.sessionTtlMs, deps.config.trustProxy),
     );
+    deps.auditLogin?.(user.userId);
+    return c.json({ user } satisfies AuthResponse);
+  });
+
+  app.post("/admin-login", async (c) => {
+    const body = await readJson(c);
+    const userId = requireString(body, "userId", { label: "userId" });
+    const password = requireString(body, "password", { label: "password" });
+    const { user, token } = await deps.authService.login(userId, password);
+    if (!user.isAdmin) {
+      deps.authService.logout(token);
+      throw new HttpError(403, "admin_required", "仅管理员可以登录管理后台。");
+    }
+    setCookie(c, sessionCookieName(c.req.url, c.req.header("origin") !== undefined), token,
+      cookieOptions(c, deps.authService.sessionTtlMs, deps.config.trustProxy));
+    deps.auditLogin?.(user.userId);
     return c.json({ user } satisfies AuthResponse);
   });
 
@@ -111,12 +129,21 @@ export class AuthRoutes {
   @Use() private readonly auth!: Auth;
   @Use() private readonly config!: Config;
   @Use() private readonly desktop!: Desktop;
+  @Use() private readonly db!: Db;
   @Bind("AuthRoutes.routes") routes!: Hono<AppEnv>;
   setup() {
     this.routes = authRoutes({
       authService: this.auth,
       config: this.config,
       desktop: this.desktop.current(),
+      auditLogin: userId => {
+        try {
+          const db = this.db as unknown as DatabaseSync;
+          if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='public_admin_audit'").get()) return;
+          db.prepare("INSERT INTO public_admin_audit(actor,action,resource_id,created_at) VALUES (?,?,?,?)")
+            .run(userId, "login", userId, new Date().toISOString());
+        } catch { /* A logging failure must not prevent a valid sign-in. */ }
+      },
     });
   }
 }

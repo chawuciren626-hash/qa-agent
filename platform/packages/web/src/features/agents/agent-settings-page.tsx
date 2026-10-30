@@ -56,7 +56,6 @@ import {
   TableHead,
   TableHeaderCell,
   TableRow,
-  Tabs,
   Textarea,
   UpdateDot,
   toastError,
@@ -98,6 +97,7 @@ import { McpServersSection } from "./mcp-servers-section";
 import { SNAPSHOT_ACCEPT, SNAPSHOT_BUTTON_CLASS, fileToBase64 } from "./snapshot-file";
 import { effectiveThinkingLevel } from "../chat/thinking-level";
 import { ThinkingLevelSelect } from "../chat/thinking-level-select";
+import "./agent-settings-page.css";
 
 type TabKey =
   | "overview"
@@ -331,7 +331,11 @@ export function AgentSettingsPage() {
   return (
     /* relative: a scroller is its own containing block (see the invariant in styles.css) —
        this page's snapshot-import control used to grow the document from below the fold. */
-    <PageFrame width="sm" className="no-scrollbar relative">
+    <PageFrame
+      width="full"
+      className="agent-settings-frame relative"
+      contentClassName="agent-settings-content"
+    >
       <PageHeader
         title={data.config.name ?? agentId}
         back={{ label: S.agent.backToList, onClick: () => navigate("/agents") }}
@@ -345,21 +349,40 @@ export function AgentSettingsPage() {
           </span>
         }
       />
-      {/* The kernel update action lives in the Overview tab's Kernel section, so the trail
-          from the Agents list has to cross the tab strip to reach it. */}
-      <Tabs
-        items={TABS.map((t) =>
-          t.key === "overview" && data.config.kernelOutdated
-            ? { ...t, badge: S.agent.kernelOutdatedHint }
-            : t,
-        )}
-        active={tab}
-        onChange={(next) => {
-          if (next !== tab) switchTab(next);
-        }}
-      />
-      <AgentLocationContext.Provider value={machineId}>
-        <div className="py-4">
+      <div className="agent-settings-columns">
+        <nav className="agent-settings-nav" role="tablist" aria-orientation="vertical" aria-label={S.agent.settings}>
+          {TABS.map((item) => {
+            const selected = item.key === tab;
+            const badge = item.key === "overview" && data.config.kernelOutdated
+              ? S.agent.kernelOutdatedHint
+              : null;
+            return (
+              <button
+                key={item.key}
+                id={`agent-settings-tab-${item.key}`}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                aria-controls="agent-settings-panel"
+                {...(badge !== null
+                  ? { "data-tooltip": badge, "aria-label": `${item.label} · ${badge}` }
+                  : {})}
+                onClick={() => { if (!selected) switchTab(item.key); }}
+                className={`agent-settings-nav-item${selected ? " active" : ""}`}
+              >
+                <span>{item.label}</span>
+                {badge !== null && <UpdateDot size="inline" position="right-1 top-1" />}
+              </button>
+            );
+          })}
+        </nav>
+        <AgentLocationContext.Provider value={machineId}>
+          <div
+            id="agent-settings-panel"
+            role="tabpanel"
+            aria-labelledby={`agent-settings-tab-${tab}`}
+            className="agent-settings-panel"
+          >
           {tab === "overview" && (
             <OverviewTab
               data={data}
@@ -397,8 +420,9 @@ export function AgentSettingsPage() {
               isOwner={currentProject?.role === "owner"}
             />
           )}
-        </div>
-      </AgentLocationContext.Provider>
+          </div>
+        </AgentLocationContext.Provider>
+      </div>
     </PageFrame>
   );
 }

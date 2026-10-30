@@ -77,6 +77,7 @@ import { APPROVAL_MODES } from "./approval-mode";
 import { adoptDockScope } from "../dock/dock-state";
 import { setDockConversation } from "../dock/dock-terminal";
 import { StartDashboard } from "./start-dashboard";
+import { AdminAssistantDashboard } from "./admin-assistant-dashboard";
 import { QaHero } from "../qa/workspace-ui";
 import { qaBindProject, qaCompleteFirstRun } from "../../../../../../penguin/ui/workspace-ui.mjs";
 import { clearDraft, draftKey, loadDraft, saveDraft } from "./draft-cache";
@@ -136,6 +137,7 @@ export function DraftView({
   composerRef: pageComposerRef,
   onWorkspaceChange,
   onAgentChange,
+  fixedAgentId,
 }: {
   projectId: string;
   /**
@@ -155,6 +157,8 @@ export function DraftView({
   onWorkspaceChange?: (path: string, machineId: string | null) => void;
   /** The resolved draft owner, including the machine whose Agent list was used. */
   onAgentChange?: (agentId: string | null, machineId: string | null) => void;
+  /** Administrator assistant: use one local Agent throughout the draft. */
+  fixedAgentId?: string;
 }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -199,19 +203,19 @@ export function DraftView({
 
   // Null until something names an Agent: the cache here, otherwise the resolution effect below
   // once the Agent list and the Project's defaults are in — never a stand-in it would swap out.
-  const [agentId, setAgentId] = useState<string | null>(cached.agentId ?? null);
+  const [agentId, setAgentId] = useState<string | null>(fixedAgentId ?? cached.agentId ?? null);
   const [workspace, setWorkspace] = useState(cached.workspace ?? "");
   // Product presentation does not depend on the asynchronous Agent inventory.
-  const testingProject = accountClient || localAgents.some((agent) => agent.agentId === "test_agent");
+  const testingProject = !fixedAgentId && (accountClient || localAgents.some((agent) => agent.agentId === "test_agent"));
   const qaProjectId: string | null = location.state?.qaProjectId === undefined ? cached.qaProjectId ?? null : location.state.qaProjectId;
   /**
    * The machine that workspace is on (null = this one). Carried beside the path because a
    * path alone does not identify a directory: `/srv/app` exists on many machines and means
    * a different one on each.
    */
-  const [workspaceMachine, setWorkspaceMachine] = useState<string | null>(cached.machineId ?? null);
+  const [workspaceMachine, setWorkspaceMachine] = useState<string | null>(fixedAgentId ? null : cached.machineId ?? null);
   /** The Agents actually offerable for this draft: the target machine's, or this one's. */
-  const agents = workspaceMachine === null ? localAgents : remoteAgents;
+  const agents = fixedAgentId ? localAgents.filter(agent => agent.agentId === fixedAgentId) : workspaceMachine === null ? localAgents : remoteAgents;
   /**
    * The workspace's machine as the Machines page sees it — connected, coming back, stopped —
    * from the one live account of the machines, so this composer and that page never disagree:
@@ -311,15 +315,19 @@ export function DraftView({
     workspace?: string;
     machineId?: string;
   } | null;
-  const stateAgentId = routeState?.agentId;
+  const stateAgentId = fixedAgentId ?? routeState?.agentId;
   // Read here rather than beside their own effect below: the Agent resolution waits on them
   // (see `routeMachineSettled`), and a dependency array is evaluated during the render that
   // declares it.
   const stateWorkspace = routeState?.workspace;
-  const stateMachineId = routeState?.machineId;
+  const stateMachineId = fixedAgentId ? null : routeState?.machineId;
   const appliedStateKey = useRef<string | null>(null);
   useEffect(() => {
     if (agents.length === 0) return; // list not ready yet, nothing to validate against — wait for the next pass
+    if (fixedAgentId) {
+      if (agentId !== fixedAgentId) setAgentId(fixedAgentId);
+      return;
+    }
     const valid = (id: string | null | undefined): id is string =>
       !!id && agents.some((a) => a.agentId === id);
     // The route may name an Agent that only exists on the machine it names alongside it (the
@@ -361,6 +369,7 @@ export function DraftView({
     stateWorkspace,
     workspaceMachine,
     chatDefaults,
+    fixedAgentId,
   ]);
 
   // Explicit Workspace from route state (the workspace-mode group header "+"): applied once per
@@ -927,18 +936,18 @@ export function DraftView({
 
       {/* Agent and Workspace selection below the composer. */}
       {!testingProject && <div className="mt-2 flex flex-wrap items-center gap-2">
-        <AgentSelect
+        {!fixedAgentId && <AgentSelect
           agents={agents}
           selected={selectedAgent}
           onSelect={selectAgent}
           empty={remoteAgentsEmpty(remoteLink, remoteAgentsFailure)}
-        />
+        />}
         <WorkspaceSelect
           projectId={projectId}
           workspace={workspace}
           machineId={workspaceMachine}
           onChange={changeWorkspace}
-          chooseMachine
+          chooseMachine={!fixedAgentId}
           {...(agentId ? { agentId } : {})}
         />
         {/* The dock's Files panel on the folder picked beside it; a temporary Workspace has
@@ -964,7 +973,7 @@ export function DraftView({
       <div className="flex-1" />
 
       <div className="mx-auto w-full max-w-3xl">
-        {testingProject ? <>
+        {fixedAgentId ? <AdminAssistantDashboard composer={composer} fill={fillComposer} /> : testingProject ? <>
           <QaHero controlRef={{ current: { fillPrompt: fillComposer } }} scene={0} onSceneChange={() => {}}
             groupId={qaProjectId} workspace={workspace} onWorkspaceChange={(path: string) => changeWorkspace(path, null)}
             onProjectChange={(group: { id: string; folders: string[] } | null) => {

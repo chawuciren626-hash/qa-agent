@@ -51,7 +51,7 @@ export function AdminOverviewPage() {
     <div className="admin-stat-grid">
       <Link className="admin-stat-card" to="/users"><span>用户数量</span><strong>{loading ? "…" : users.length}</strong><small>中央账号</small></Link>
       {summary.map(item => <Link className="admin-stat-card" to={item.path} key={item.key}><span>{item.title}</span><strong>{loading ? "…" : item.total}</strong><small>已发布 {item.published}</small></Link>)}
-      <Link className="admin-stat-card" to="/audit"><span>发布记录</span><strong>{loading ? "…" : events.length}</strong><small>最近 100 条操作</small></Link>
+      <Link className="admin-stat-card" to="/audit"><span>操作日志</span><strong>{loading ? "…" : events.length}</strong><small>最近 100 条操作</small></Link>
     </div>
     <div className="admin-chart-card"><div className="admin-chart-head"><strong>公共配置分布</strong><span>仅统计中央目录，不包含用户本机数据</span></div><div className="admin-chart-bars">{summary.map(item => <Link to={item.path} key={item.key} className="admin-chart-bar"><span>{item.title}</span><div><i style={{ width: `${item.total / maximum * 100}%` }} /></div><b>{item.total}</b></Link>)}</div></div>
     <div className="admin-recent-head"><h2>最近动态</h2><Link to="/audit">查看全部 →</Link></div>

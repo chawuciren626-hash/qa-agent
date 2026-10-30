@@ -1,6 +1,8 @@
 import { AdminLayout, AdminHostGate, AdminLogin, AdminAccountsPage, AdminPermissionsPage, AdminAuditPage } from "./features/admin/admin-layout";
+import { AdminRolesPage, AdminMenusPage } from "./features/admin/admin-system-pages";
 import { AdminSkillsPage } from "./features/admin/admin-skills-page";
 import { AdminOverviewPage } from "./features/admin/admin-overview-page";
+import { AdminAssistantPage } from "./features/admin/admin-assistant-page";
 import { PublicationsPage } from "./features/admin/publications-page";
 import { allowedModule, pageModule } from "./lib/module-permissions";
 /**
@@ -113,10 +115,10 @@ function RequireAuth({ admin = false }: { admin?: boolean }) {
   useRuntimeLanguages(!admin && user != null);
   if (user === undefined) return null; // GET /api/me is still initializing
   if (user === null) return <Navigate to="/login" replace />;
-  if(module && !allowedModule(user,module)) return <div className="p-8"><h1>没有此模块的访问权限</h1><p>请联系管理员调整授权。</p><a href="/user/accounts">我的账号</a></div>;
+  if(module && !allowedModule(user,module)) return <div className="p-8"><h1>没有此模块的访问权限</h1><p>请联系管理员调整授权。</p><a href="/user/chat">返回工作台</a></div>;
   if(admin && !user.isAdmin) return <div className="p-8"><h1>仅管理员可访问管理后台</h1><a href="/user/">返回用户端</a></div>;
   const workspace = (
-    <ProjectProvider>
+    <ProjectProvider scope={admin ? "admin" : "user"}>
       <MachinesProvider>
         <SessionsProvider>
           <CompanyProvider>
@@ -204,17 +206,21 @@ function appRoutes(admin = false, accountCenter = false) {
         <Route index element={<Navigate to={admin ? "/overview" : "/chat"} replace />} />
         {admin && <>
           <Route path="/overview" element={<AdminOverviewPage />} />
+          <Route path="/chat/:sessionId?" element={<AdminAssistantPage />} />
           <Route path="/users" element={<AdminAccountsPage />} />
+          <Route path="/roles" element={<AdminRolesPage />} />
+          <Route path="/menus" element={<AdminMenusPage />} />
           <Route path="/permissions" element={<AdminPermissionsPage />} />
           <Route path="/audit" element={<AdminAuditPage />} />
           <Route path="/skills" element={<AdminSkillsPage />} />
+          <Route path="/publications/agents" element={<Navigate to="/agents" replace />} />
           <Route path="/publications/:kind" element={<PublicationsPage />} />
         </>}
         <Route path="/resources" element={<Navigate to="/plugins" replace />} />
         {/* Every page is a module.json entry (lib/pages.ts). Admin-only ones are refused
             server-side (403); the sidebar hides their row, so a member only ever reaches
             one by typing the URL. */}
-        {PAGES.map((page) => (
+        {PAGES.filter(page => !admin || page.key !== "chat").map((page) => (
           <Route key={page.id} path={page.path} element={renderPage(page)} />
         ))}
         {/* Company mode: /org resolves to an organization (or the empty landing), and an

@@ -307,14 +307,16 @@ export function SkillsTab({
  * source is the dialog's draft (compared without the spaces around it): closing with one typed
  * asks first, and an upload in flight holds every way of closing until it answers.
  */
-function SkillImportDialog({
+export function SkillImportDialog({
   projectId,
   agentId,
+  agentOptions,
   onClose,
   onImported,
 }: {
   projectId: string;
   agentId: string;
+  agentOptions?: { agentId: string; label: string }[];
   onClose: () => void;
   /** A zip landed: the tab closes the dialog and reads the list again. */
   onImported: () => void;
@@ -324,6 +326,7 @@ function SkillImportDialog({
   const form = useFormDraft<string>("", { normalize: (text) => text.trim() });
   const source = form.draft;
   const [uploading, setUploading] = useState(false);
+  const [targetAgentId, setTargetAgentId] = useState(agentId);
   const [uploadError, setUploadError] = useState<string | null>(null);
   // Non-null shows the overwrite confirm (the archive POST answered 409 skill_exists).
   const [overwriting, setOverwriting] = useState<PendingOverwrite | null>(null);
@@ -350,7 +353,7 @@ function SkillImportDialog({
   const openChat = () => {
     if (trimmedSource === "") return;
     discardUnsaved(form.scope);
-    openAiChat({ agentId, text: buildImportPrompt(trimmedSource), machineId });
+    openAiChat({ agentId: targetAgentId, text: buildImportPrompt(trimmedSource), machineId });
     onClose();
   };
 
@@ -366,7 +369,7 @@ function SkillImportDialog({
     try {
       await api.installAgentSkillArchive(
         projectId,
-        agentId,
+        targetAgentId,
         { dataBase64, ...(overwrite ? { overwrite: true } : {}) },
         machineId,
       );
@@ -404,6 +407,7 @@ function SkillImportDialog({
     <>
       <Modal open title={S.skills.importSkill} onClose={requestClose} widthClass="sm:max-w-lg">
         <div className="space-y-4">
+          {agentOptions && <label className="block text-sm">所属 Agent<select aria-label="上传技能所属 Agent" className="mt-1 w-full rounded border border-line bg-surface p-2" value={targetAgentId} onChange={event => setTargetAgentId(event.target.value)} disabled={uploading}>{agentOptions.map(agent => <option key={agent.agentId} value={agent.agentId}>{agent.label}</option>)}</select></label>}
           <section>
             <p className="text-sm font-medium">{S.skills.importChatTitle}</p>
             <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">

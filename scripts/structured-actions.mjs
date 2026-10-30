@@ -27,6 +27,7 @@ import { validateExplorationTarget } from './explore-task-url.mjs';
 import { validateBrowserOperation, browserOperationFields } from './browser-task.mjs';
 import { assertBrowserResume } from './browser-task-resume.mjs';
 import { captureDelegationBinding } from './delegation-binding.mjs';
+import { buildDelegationTaskBrief, renderDelegationTaskBrief } from './delegation-task-brief.mjs';
 import { stageDefinitions, stageDefinition, dispatchTemplate } from './stage-registry.mjs';
 import { draftRecords, validateDraftOperation, reuseDesignArtifact } from './draft-records.mjs';
 import { protectedInputs } from './protected-inputs.mjs';
@@ -833,6 +834,14 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
           const deliveryManifest=JSON.parse(readRunFile(runDirectory(root,parsed.run_id),'manifest.json').data);
           const track=deliveryManifest.test_track;
           const label=(track?.label??'')+stageDefinition(parsed.stage).label;
+          const taskBrief=buildDelegationTaskBrief({
+            runId:parsed.run_id,dispatchId:event.dispatch_id,stage:parsed.stage,agent:event.agent,mode:parsed.mode,
+            inputContext,availableSources:event.available_sources ?? deliveryManifest.orchestration.events
+              .filter(item=>item.type==='completed').flatMap(item=>item.evidence?.artifact_contract?.files ?? []),
+            manifest:deliveryManifest,artifacts:output.completion_template.artifacts
+          });
+          output.task_brief=taskBrief;
+          receipt.task_brief=taskBrief;
           output.test_track=track??null;
           output.delegation.description=`处理${label}`;
           const deliveryInstructions=[
@@ -843,10 +852,12 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
             '最终只回复完成内容、可点击的交付文件及确需人工处理的问题；保留失败与未测限制，不展示思考过程或操作流水账。',
             'exec_command支持qa_request时，动作对象直接放在该字段，不另写请求文件；请求文件名不同内容不得复用。'
           ].join('\n');
-          writeFileSync(internalContractPath,readFileSync(internalContractPath,'utf8')+'\n'+deliveryInstructions+'\n','utf8');
+          writeFileSync(internalContractPath,
+            renderDelegationTaskBrief(taskBrief)+'\n\n【执行细则】\n'+readFileSync(internalContractPath,'utf8')+'\n'+deliveryInstructions+'\n','utf8');
           output.delegation.prompt=[
             'Caller agent: test_agent',
             `任务：${label}。使用中文答复，仅处理stage=${parsed.stage}。`,
+            renderDelegationTaskBrief(taskBrief,{compact:true}),
             `run_id=${parsed.run_id}；dispatch_id=${event.dispatch_id}；controller-session=${session}。`,
             `用read_file读取受管任务契约：output/delegations/${event.dispatch_id}.prompt.txt。按该文件执行，不展开或转抄合同。`,
             ...(event.resumes_dispatch_id?['这是旧协议人工操作完成后的续接：保留原浏览器，先snapshot，不重新start或重放操作。']:[]),

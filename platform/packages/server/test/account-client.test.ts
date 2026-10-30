@@ -39,6 +39,31 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app?.cleanup();app=undefined;await new Promise<void>(resolve=>server.close(()=>resolve()));});
 describe('central identity with full local application',()=>{
+  it('persists administrator categories and refuses to delete occupied categories',async()=>{
+    const admin=apiClient(app!.app,(await loginUser(app!.app,'admin','central-test-password')).cookie);
+    const ordinary=apiClient(app!.app,(await loginUser(app!.app,'ordinary','central-test-password')).cookie);
+    expect((await ordinary.get('/api/control/admin/skill-categories')).status).toBe(403);
+    const skill=await admin.post('/api/control/admin/skill-categories',{name:'自定义技能分类'});
+    expect(skill.status).toBe(201);
+    const skillId=(await skill.json() as {id:string}).id;
+    expect((await admin.put(`/api/control/admin/skill-categories/${skillId}`,{name:'已编辑分类'})).status).toBe(200);
+    expect((await admin.put('/api/control/admin/skill-categories/assign',{skillName:'example_skill',categoryId:skillId})).status).toBe(200);
+    expect((await admin.delete(`/api/control/admin/skill-categories/${skillId}`)).status).toBe(409);
+    expect((await admin.delete('/api/control/admin/skill-categories/assignment/example_skill')).status).toBe(200);
+    expect((await admin.delete(`/api/control/admin/skill-categories/${skillId}`)).status).toBe(200);
+    expect((await admin.get('/api/control/admin/skill-categories')).status).toBe(200);
+
+    const plugin=await admin.post('/api/control/admin/plugin-categories',{name:'自定义插件分类'});
+    expect(plugin.status).toBe(201);
+    const pluginId=(await plugin.json() as {id:string}).id;
+    expect((await admin.put('/api/control/admin/plugin-categories/assign',{pluginKey:'library:example',categoryId:pluginId})).status).toBe(200);
+    expect((await admin.delete(`/api/control/admin/plugin-categories/${pluginId}`)).status).toBe(409);
+    expect((await admin.delete('/api/control/admin/plugin-categories/assignment/library%3Aexample')).status).toBe(200);
+    expect((await admin.delete(`/api/control/admin/plugin-categories/${pluginId}`)).status).toBe(200);
+    expect((await admin.put('/api/control/admin/plugin-categories/sandbox',{name:'运行沙箱'})).status).toBe(200);
+    const listing=await (await admin.get('/api/control/admin/plugin-categories')).json() as {overrides:{id:string;name:string}[]};
+    expect(listing.overrides).toContainEqual({id:'sandbox',name:'运行沙箱',deleted:0});
+  });
   it('shares local projects between two logins but logs out only the requesting session',async()=>{
     const first=await loginUser(app!.app,'admin','central-test-password');
     const second=await loginUser(app!.app,'admin','central-test-password');
@@ -60,7 +85,7 @@ describe('central identity with full local application',()=>{
     const paths=[
       `/api/projects/${project}/benchmarks`,
       `/api/projects/${project}/agents/${agent}/mcp-servers`,
-      `/api/projects/${project}/agents/qa/personal-resources`,
+      `/api/projects/${project}/agents/${agent}/skills`,
     ];
     const http=app!.boot.tree.api<Http>('HttpModule','http');
     modules=[];

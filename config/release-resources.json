@@ -3,6 +3,7 @@
   "status": "source_resource_allowlist_not_executable_package",
   "files": [
     "scripts/api-snapshot.mjs",
+    "scripts/delegation-task-brief.mjs",
     "scripts/test-tracks.mjs",
     "config/host-compatibility.json",
     "config/orchestration-workflow.json",

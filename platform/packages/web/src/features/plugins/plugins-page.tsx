@@ -38,10 +38,8 @@ import { ManagedResourceSection } from "../../components/managed-resource-sectio
  * card's status and "used by" are placeholders (plugin-card.tsx).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { QaPersonalResources } from "../qa/personal-resources";
-import { QaSkillMarket, useQaSkillMarket } from "../qa/skill-market";
 import "./plugin-market.css";
-import { rowTitle } from "./plugin-marks";
+import "./admin-plugins-page.css";
 import { useNavigate } from "react-router";
 import type { AgentSummary, PluginItem, QuickStartItem } from "@prismshadow/penguin-server/api";
 import {
@@ -50,6 +48,7 @@ import {
   ConfirmModal,
   GlyphIcon,
   ICONS,
+  Modal,
   Notice,
   PageFrame,
   PageHeader,
@@ -62,6 +61,7 @@ import {
   toastSuccess,
 } from "@prismshadow/penguin-ui";
 import * as api from "../../api/endpoints";
+import { controlRequest } from "../../api/control";
 import { ApiError } from "../../api/client";
 import { S } from "../../lib/strings";
 import { apiErrorText } from "../../lib/api-error";
@@ -178,6 +178,7 @@ export function pluginUpdatePlan(
 }
 
 export function PluginsPage() {
+  const adminView = window.location.pathname.startsWith("/admin/");
   useDocumentTitle(S.nav.plugins);
   const navigate = useNavigate();
   const { locale } = useLocale();
@@ -246,10 +247,23 @@ export function PluginsPage() {
   const [importOpen, setImportOpen] = useState(false);
   /** Free text over names, descriptions and keywords. */
   const [query, setQuery] = useState("");
-  const [marketTab, setMarketTab] = useState<"plugins" | "skills" | "mcp">("plugins");
   const [category, setCategory] = useState("");
+  const [customCategories, setCustomCategories] = useState<{ id: string; name: string }[]>([]);
+  const [categoryOverrides, setCategoryOverrides] = useState<Record<string, { name: string | null; deleted: boolean }>>({});
+  const [categoryAssignments, setCategoryAssignments] = useState<Record<string, string>>({});
+  const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+  const [categoryError, setCategoryError] = useState("");
+  const [categoryBusy, setCategoryBusy] = useState(false);
   const qaMarket = document.documentElement.hasAttribute("data-qa-client");
-  const skillMarket = useQaSkillMarket(qaMarket);
+  const reloadCategories = async () => {
+    const result = await controlRequest("/api/control/admin/plugin-categories");
+    setCustomCategories(result.categories);
+    setCategoryOverrides(Object.fromEntries(result.overrides.map((item: { id: string; name: string | null; deleted: number }) => [item.id, { name: item.name, deleted: !!item.deleted }])));
+    setCategoryAssignments(Object.fromEntries(result.assignments.map((item: { pluginKey: string; categoryId: string }) => [item.pluginKey, item.categoryId])));
+  };
+  useEffect(() => { if (adminView) void reloadCategories().catch(cause => setCategoryError(apiErrorText(cause))); }, [adminView]);
   /** Only the plugins this build cannot fully run: switched in Settings › Plugins. */
   const incompatibleOnly = usePluginsIncompatibleOnly();
   const [groupBy, setGroupBy] = useState<PluginGroupBy>(() => initialPluginsGroupBy());
@@ -776,7 +790,15 @@ export function PluginsPage() {
   };
 
   const rows = pluginRows(groups ?? [], moduleParts(deployment, index ?? [], view));
-  const categories = pluginCategories(groups ?? [], locale);
+  const categories = [
+    ...pluginCategories(groups ?? [], locale).filter(item => !categoryOverrides[item.id]?.deleted).map(item => ({ ...item, title: categoryOverrides[item.id]?.name ?? item.title })),
+    ...(adminView ? customCategories.map(item => ({ id: item.id, title: item.name })) : []),
+  ];
+  const categoryOf = (row: PluginRow) => {
+    if (!adminView) return row.category;
+    const id = categoryAssignments[row.key] ?? row.category;
+    return categories.some(item => item.id === id) ? id : categories.find(item => item.id === "other")?.id ?? categories[0]?.id ?? id;
+  };
   const usages = new Map<string, LibraryUsage>();
   for (const row of rows) {
     if (row.library !== undefined) {
@@ -797,22 +819,21 @@ export function PluginsPage() {
   const statusOf = (row: PluginRow): PluginStatus => pluginStatus(row, usages.get(row.key) ?? null);
   const unsatisfiedCount = rows.filter((row) => row.module?.unsatisfied !== undefined).length;
   const searching = query.trim() !== "" || incompatibleOnly || category !== "";
-  const inTab = (row: PluginRow) => !qaMarket || marketTab === "plugins" || (marketTab === "skills" ? !!row.library?.skills.length : !!row.library?.mcpServers.length);
   const visible = rows.filter(
-    (row) => inTab(row) && (!qaMarket || !category || row.category === category) && rowMatches(row, query) && (!incompatibleOnly || row.module?.unsatisfied !== undefined),
+    (row) => ((!qaMarket && !adminView) || !category || categoryOf(row) === category) && rowMatches(row, query) && (!incompatibleOnly || row.module?.unsatisfied !== undefined),
   );
   const sections = groupRows(visible, statusOf, groupBy, categories);
   const categoryTitle = (id: string) => categories.find((c) => c.id === id)?.title ?? id;
 
-  const card = (row: PluginRow) => (
+  const pluginCard = (row: PluginRow) => (
     <PluginCard
-      framed={qaMarket || groupBy === "none"}
+      framed={qaMarket || adminView || groupBy === "none"}
       key={row.key}
       row={row}
       status={statusOf(row)}
       usage={usages.get(row.key) ?? null}
-      categoryTitle={categoryTitle(row.category)}
-      showCategory={groupBy !== "category"}
+      categoryTitle={categoryTitle(categoryOf(row))}
+      showCategory={adminView || groupBy !== "category"}
       targets={targets}
       installed={installed}
       unknown={unknown}
@@ -860,20 +881,48 @@ export function PluginsPage() {
       onMcpChanged={refreshAgentMcp}
     />
   );
+  const assignCategory = async (row: PluginRow, next: string) => {
+    const previous = categoryAssignments[row.key];
+    setCategoryAssignments(current => ({ ...current, [row.key]: next }));
+    try {
+      if (next === row.category) await controlRequest(`/api/control/admin/plugin-categories/assignment/${encodeURIComponent(row.key)}`, "DELETE");
+      else await controlRequest("/api/control/admin/plugin-categories/assign", "PUT", { pluginKey: row.key, categoryId: next });
+      setCategoryError("");
+    } catch (cause) {
+      setCategoryAssignments(current => {
+        const restored = { ...current };
+        if (previous === undefined) delete restored[row.key];
+        else restored[row.key] = previous;
+        return restored;
+      });
+      setCategoryError(apiErrorText(cause));
+    }
+  };
+  const card = (row: PluginRow) => adminView ? (
+    <div className="admin-plugin-card" key={row.key}>
+      {pluginCard(row)}
+      <div className="admin-plugin-card-category">
+        <label htmlFor={`plugin-category-${row.key}`}>所属分类</label>
+        <select id={`plugin-category-${row.key}`} aria-label={`${row.name} 所属分类`} value={categoryOf(row)} onChange={event => void assignCategory(row, event.target.value)}>
+          {categories.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
+        </select>
+      </div>
+    </div>
+  ) : pluginCard(row);
 
   // The scrollbar gutter stays reserved: a search that shortens the page below the viewport
   // would otherwise take the scrollbar with it and shift everything sideways as it is typed.
   return (
-    <PageFrame className={`[scrollbar-gutter:stable] ${qaMarket ? "qa-plugin-market" : ""}`}>
+    <PageFrame width={adminView ? "full" : undefined} className={`${adminView ? "admin-plugin-frame" : "[scrollbar-gutter:stable]"} ${qaMarket && !adminView ? "qa-plugin-market" : ""}`} contentClassName={adminView ? "admin-plugin-content" : undefined}>
       {/* The options loaded plugins declare live on the Settings dialog's Plugins page, an
           admin's page; the header's Settings button opens the dialog there rather than sending
           anyone through the user menu to find it. */}
       <PageHeader
-        title={qaMarket ? "插件市场" : S.plugins.pageTitle}
+        title={adminView ? "插件管理" : qaMarket ? "插件市场" : S.plugins.pageTitle}
         info={S.plugins.pageDesc}
         actions={
           <PluginsHeaderActions
-            hideFilters={qaMarket}
+            hideFilters={qaMarket || adminView}
             query={query}
             onQuery={setQuery}
             groupBy={groupBy}
@@ -939,25 +988,26 @@ export function PluginsPage() {
         )}
         <IncompatibleNotice filtered={incompatibleOnly} unsatisfied={unsatisfiedCount} />
       </PageHeader>
-      {viewingHere && <ManagedResourceSection kind={qaMarket && marketTab === "skills" ? "skills" : "plugins"} />}
-      {qaMarket && <>
+      {viewingHere && !adminView && <ManagedResourceSection kind="plugins" />}
+      {qaMarket && !adminView && (
         <div className="qm-toolbar">
-          <div className="qm-tabs" aria-label="市场资源类型">
-            {([['plugins', '插件'], ['skills', '技能'], ['mcp', 'MCP']] as const).map(([id, label]) => <button key={id} type="button" aria-pressed={marketTab === id} onClick={() => { setMarketTab(id); setCategory(""); setQuery(""); }}>{label}<span>{id === 'skills' ? (skillMarket.count ?? '…') : rows.filter(r => id === 'plugins' || r.library?.mcpServers.length).length}</span></button>)}
-          </div>
-          <div className="qm-search"><SearchInput icon size="sm" value={query} onChange={setQuery} aria-label="搜索市场资源" placeholder={marketTab === 'skills' ? '搜索技能' : marketTab === 'mcp' ? '搜索 MCP' : '搜索插件'} /></div>
-          {marketTab !== 'skills' && <div className="qm-group-select"><Select size="sm" aria-label={S.plugins.groupByLabel} value={groupBy} onChange={e => chooseGroupBy(e.target.value as PluginGroupBy)}>{PLUGIN_GROUP_BYS.map(by => <option key={by} value={by}>{S.plugins.groupBy[by]}</option>)}</Select></div>}
+          <div className="qm-search"><SearchInput icon size="sm" value={query} onChange={setQuery} aria-label="搜索插件" placeholder="搜索插件" /></div>
+          <div className="qm-group-select"><Select size="sm" aria-label={S.plugins.groupByLabel} value={groupBy} onChange={e => chooseGroupBy(e.target.value as PluginGroupBy)}>{PLUGIN_GROUP_BYS.map(by => <option key={by} value={by}>{S.plugins.groupBy[by]}</option>)}</Select></div>
         </div>
-        {marketTab === 'skills' && projectId && <><QaSkillMarket key={projectId} market={skillMarket} query={query} /><QaPersonalResources key={'personal-'+projectId} query={query} /></>}
-        {marketTab === 'plugins' && <div className="qm-showcase">{categories.filter(c => rows.some(r => r.category === c.id)).slice(0, 4).map((c, i) => <button type="button" className={`qm-category qm-category-${i}`} key={c.id} aria-pressed={category === c.id} onClick={() => setCategory(category === c.id ? '' : c.id)}><strong>{c.title}</strong>{rows.filter(r => r.category === c.id).slice(0, 3).map(r => <span key={r.key}>{rowTitle(r, locale)}</span>)}<small>浏览分类　›</small></button>)}</div>}
-        {marketTab !== 'skills' && <div className="qm-chips" aria-label="插件分类"><button type="button" aria-pressed={!category} onClick={() => setCategory('')}>全部</button>{categories.filter(c => rows.some(r => inTab(r) && r.category === c.id)).map(c => <button type="button" key={c.id} aria-pressed={category === c.id} onClick={() => setCategory(c.id)}>{c.title}</button>)}</div>}
-
-      </>}
+      )}
       <SettingsDialog
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         section="plugins"
       />
+      {adminView && categoryDialogOpen && <Modal open title={editingCategoryId ? "编辑插件分类" : "添加插件分类"} onClose={() => setCategoryDialogOpen(false)} footer={<><Button size="sm" onClick={() => setCategoryDialogOpen(false)}>取消</Button><Button size="sm" variant="primary" disabled={!newCategoryName.trim() || categoryBusy} onClick={async () => {
+        const name = newCategoryName.trim();
+        if (categories.some(item => item.id !== editingCategoryId && item.title.toLocaleLowerCase() === name.toLocaleLowerCase())) { setCategoryError("分类名称已存在。"); return; }
+        setCategoryBusy(true); setCategoryError("");
+        try { const created = editingCategoryId ? null : await controlRequest("/api/control/admin/plugin-categories", "POST", { name }); if (editingCategoryId) await controlRequest(`/api/control/admin/plugin-categories/${editingCategoryId}`, "PUT", { name }); await reloadCategories(); setCategory(editingCategoryId ?? created.id); setCategoryDialogOpen(false); }
+        catch (cause) { setCategoryError(apiErrorText(cause)); }
+        finally { setCategoryBusy(false); }
+      }}>{editingCategoryId ? "保存" : "添加分类"}</Button></>}><label className="block text-sm">分类名称<input autoFocus className="mt-2 w-full rounded border bg-transparent p-2" value={newCategoryName} maxLength={40} onChange={event => setNewCategoryName(event.target.value)} placeholder="如：性能测试" /></label>{categoryError && <p role="alert" className="mt-3 text-sm text-red-600">{categoryError}</p>}</Modal>}
       {isAdmin && projectId !== null && (
         <ImportPluginModal
           open={importOpen}
@@ -968,7 +1018,7 @@ export function PluginsPage() {
         />
       )}
 
-      {qaMarket && marketTab === 'skills' ? null : error ? (
+      {error ? (
         <div className="mt-2 flex items-center gap-3">
           <p className={`text-sm ${toneInk.danger}`}>{error}</p>
           <Button size="sm" onClick={() => window.location.reload()}>
@@ -984,6 +1034,54 @@ export function PluginsPage() {
               <Skeleton className="mt-3 h-6 w-36" />
             </SkeletonCard>
           ))}
+        </div>
+      ) : adminView ? (
+        <div className="admin-plugin-columns">
+          <aside className="admin-plugin-categories" aria-label="所属分类">
+            <p className="admin-plugin-category-heading">所属分类</p>
+            <nav>
+              <button type="button" className={category === "" ? "active" : ""} aria-current={category === "" ? "true" : undefined} onClick={() => setCategory("")}><span className="admin-plugin-category-mark">全</span><span className="admin-plugin-category-name">全部插件</span><small>{rows.length}</small></button>
+              {categories.map((item, index) => <div key={item.id} className={`admin-plugin-category-row${index === 0 ? " first" : ""}`}><button type="button" className={category === item.id ? "active" : ""} aria-current={category === item.id ? "true" : undefined} onClick={() => setCategory(item.id)}><span className="admin-plugin-category-mark">{item.title.slice(0, 1)}</span><span className="admin-plugin-category-name">{item.title}</span><small>{rows.filter(row => categoryOf(row) === item.id).length}</small></button><span className="admin-plugin-category-actions"><button type="button" aria-label={`编辑分类 ${item.title}`} title="编辑分类" onClick={() => { setEditingCategoryId(item.id); setNewCategoryName(item.title); setCategoryError(""); setCategoryDialogOpen(true); }}><GlyphIcon d={ICONS.pencil} size={14} /></button><button type="button" aria-label={`删除分类 ${item.title}`} title="删除分类" disabled={categoryBusy} onClick={async () => {
+                if (rows.some(row => categoryOf(row) === item.id)) { setCategoryError("请先移走此分类下的全部插件。"); toastError("请先移走此分类下的全部插件。"); return; }
+                if (!window.confirm(`删除分类「${item.title}」？`)) return;
+                setCategoryBusy(true); setCategoryError("");
+                try { await controlRequest(`/api/control/admin/plugin-categories/${item.id}`, "DELETE"); if (category === item.id) setCategory(""); await reloadCategories(); }
+                catch (cause) { setCategoryError(apiErrorText(cause)); }
+                finally { setCategoryBusy(false); }
+              }}><GlyphIcon d={ICONS.trash} size={14} /></button></span></div>)}
+            </nav>
+            <button type="button" className="admin-plugin-add-category" onClick={() => { setEditingCategoryId(null); setNewCategoryName(""); setCategoryError(""); setCategoryDialogOpen(true); }}>＋ 添加分类</button>
+            {categoryError && <p role="alert" className="admin-plugin-category-error">{categoryError}</p>}
+          </aside>
+          <section className="admin-plugin-results" aria-label="插件列表">
+            <div className="admin-plugin-results-head"><h2>{category ? categoryTitle(category) : "全部插件"}</h2><span>{visible.length} 个插件</span><input type="search" aria-label="搜索插件" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索插件名称或描述" /></div>
+            <div className="admin-plugin-results-scroll">{visible.length ? <div className="admin-plugin-grid">{visible.map(card)}</div> : <p className="admin-plugin-empty">{S.plugins.noMatch}</p>}</div>
+          </section>
+        </div>
+      ) : qaMarket ? (
+        <div className="qm-split">
+          <aside className="qm-side" aria-label="插件分类">
+            <p className="qm-side-title">分类</p>
+            <nav>
+              <button type="button" aria-pressed={category === ""} onClick={() => setCategory("")}>全部插件<span>{rows.length}</span></button>
+              {categories.filter((c) => rows.some((r) => r.category === c.id)).map((c) => (
+                <button type="button" key={c.id} aria-pressed={category === c.id} onClick={() => setCategory(category === c.id ? "" : c.id)}>
+                  {c.title}<span>{rows.filter((r) => r.category === c.id).length}</span>
+                </button>
+              ))}
+            </nav>
+          </aside>
+          <div className="qm-content">
+            {sections.map((section) => (
+              <div key={section.id} className="qm-cat-block">
+                {section.title && (
+                  <div className="qm-cat-head"><strong>{section.title}</strong><span>{section.rows.length} 个插件</span></div>
+                )}
+                <CardGrid>{section.rows.map(card)}</CardGrid>
+              </div>
+            ))}
+            {sections.length === 0 && <p className="qm-empty">{S.plugins.noMatch}</p>}
+          </div>
         </div>
       ) : (
         <div className="space-y-3">

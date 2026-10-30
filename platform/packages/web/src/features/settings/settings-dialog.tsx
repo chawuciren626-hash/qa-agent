@@ -15,7 +15,6 @@
  * does nothing until it answers; an instant control's write holds nothing.
  */
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router";
 import { ICONS, PagedDialog, guardLeave, useGuardedClose } from "@prismshadow/penguin-ui";
 import type { PagedDialogGroup } from "@prismshadow/penguin-ui";
 import { S } from "../../lib/strings";
@@ -91,7 +90,6 @@ export function SettingsDialog({
   accountCenter?: boolean;
 }) {
   // uploadLimits feeds the Upload limits page's "?" (sectionInfo below); the rest pick pages.
-  const navigate = useNavigate();
   const { user, desktopMode, sessionVia, accountClient, uploadLimits } = useAuth();
   const sections = visibleSettingsSections({
     isAdmin: user?.isAdmin === true,
@@ -179,7 +177,7 @@ export function SettingsDialog({
       {current === "appearance" && <AppearanceSection />}
       {current === "shortcuts" && <ShortcutsSection />}
       {current === "archived" && <ArchivedSessionsSection />}
-      {current === "account" && <AccountSection canChangePassword={offersChangePassword({ desktopMode, sessionVia })} {...(accountClient ? { onOpenAccount: () => { requestClose(); navigate("/accounts"); } } : {})} />}
+      {current === "account" && <AccountSection canChangePassword={offersChangePassword({ desktopMode, sessionVia })} />}
       {current === "browser" && <BrowserSection />}
       {current === "proxy" && <ProxySection />}
       {current === "uploads" && <UploadsSection />}

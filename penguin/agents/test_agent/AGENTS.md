@@ -47,7 +47,7 @@ create_run会自动按原文归档本轮用户文字及消息中的本会话附�
 1. 使用project-action.mjs catalog读取真实runtime_context及invocation。工程资料按engine_root/shared_docs_root解析，会话工作区只存任务数据。
 2. 新任务使用create_run返回的run_id，再plan_run。exec_command支持qa_request字段时，把完整动作对象放入该字段，cmd使用catalog提供的execute命令和output/action-requests下的唯一请求文件名；宿主钩子会先保存原样请求再执行，不必另调write_file。不支持该字段时先write_file成功再execute。不能猜身份、路径或把JSON拼进Shell命令。请求落盘不代表动作成功，结果未知时不能盲目重放。
    派发请求直接复制plan_run、extend_plan或run_status返回的dispatch_templates；不要自行拼写角色名或Skill名。模板是映射，不代表前置条件已满足，执行准备仍按本节规则指定mode。
-3. dispatch成功后直接将返回的短`delegation`对象传给run_subagent，目标角色必填，不改写prompt或追加业务目标。完整合同由子Agent按受管引用读取，总控不另读合同再转抄。只有回显缺失或截断时才read_file读取`delegation_path`恢复同一对象；不要猜测缺失部分。`description`仅为中文展示说明，不改变授权。守卫拒绝时纠正当前对象，不重复dispatch，不要求用户技术解锁。
+3. dispatch成功后直接将返回的`delegation`对象传给run_subagent，目标角色必填，不改写prompt或追加业务目标。其中的任务书摘要由归档输入、已交接上游产物、阶段清单和交付清单生成；它不是新的业务确认，未决预期仍保持未决。完整合同由子Agent按受管引用读取，总控不另读合同再转抄。只有回显缺失或截断时才read_file读取`delegation_path`恢复同一对象；不要猜测缺失部分。`description`仅为中文展示说明，不改变授权。守卫拒绝时纠正当前对象，不重复dispatch，不要求用户技术解锁。
    delegation中的短prompt已经登记绑定；其中引用的完整合同文件由子Agent读取。不要把合同文件正文展开后替换prompt，也不要把原始用户请求追加到prompt。
    dispatch只登记任务，不会启动子Agent；child_started=false时必须实际调用run_subagent，不能回复“后台正在运行”就结束。内部未启动提醒沿用原派发，不新建run、不重复dispatch。已调用但结果未知时等待，不重复启动。
 4. 专业工作必须由对应子Agent完成。真实子调用正常返回后优先使用handoff_template交接；执行准备补实际脚本路径。不要再重复complete/request_confirmation，不靠完成登记反复探测草稿。

@@ -12,6 +12,7 @@
  */
 import fs from "node:fs/promises";
 import { provisionQaProject } from "./qa-project-defaults.js";
+import { qaEnabled } from "./qa-engine.js";
 import {
   DEFAULT_PROJECT_ID,
   projectDir,
@@ -110,8 +111,9 @@ export class ProjectService implements ProjectLifecycle {
   /**
    * Create a Project: the id is chosen by the creator (a semantic id, checked for
    * duplicates against both the DB and the directory — 409 if taken), the initial
-   * config is written (display name defaults to the id), the built-in Agent is
-   * initialized, and the Project's Benchmarks are written (the only time they are).
+   * config is written (display name defaults to the id). Admin Projects and
+   * upstream mode receive the built-in Agent and example Benchmarks; personal
+   * testing Projects receive only testing roles.
    * A non-admin's id is forced to be "<username>-<suffix>", where the suffix is
    * lowercase letters, digits, and underscores only — the hyphen is a reserved
    * separator, usernames never contain a hyphen, so the first hyphen is the
@@ -168,7 +170,10 @@ export class ProjectService implements ProjectLifecycle {
       // The presets' promotions live in web.db, keyed to the row inserted above (and removed
       // with it by the rollback below).
       await this.projectConfig.seedPresetPromotions(projectId);
-      await this.provisionProjectDefaults(projectId);
+      // In the testing product, personal Projects start with testing roles only.
+      // The General Agent and its sample Benchmarks remain available in admin
+      // Projects and in the unmodified upstream PenguinHarness mode.
+      if (!qaEnabled || owner.isAdmin) await this.provisionProjectDefaults(projectId);
       const testingRoles = await provisionQaProject(this.root, projectId);
       testingRoles.forEach((agentId, index) => this.agents.insertOrIgnore({
         projectId, agentId, createdAt: new Date(Date.now() + index).toISOString(),

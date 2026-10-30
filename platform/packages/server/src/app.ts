@@ -57,7 +57,7 @@ import { SessionsRepo } from "./db/repos/sessions.js";
 import { UiPrefsRepo } from "./db/repos/ui-prefs.js";
 import { UsersRepo } from "./db/repos/users.js";
 import type { UserRow } from "./db/repos/users.js";
-import { jsonOnlyWrites, sameOriginWrites } from "./auth/middleware.js";
+import { authMiddleware, jsonOnlyWrites, sameOriginWrites } from "./auth/middleware.js";
 import { AMSP_PREFIX, amspAllowOrigin } from "./amsp/cors.js";
 import { mintApiToken, storeApiToken } from "./auth/api-token.js";
 import type { Identity } from "./terminal/identity.js";
@@ -175,6 +175,8 @@ import type { Errors } from "./mechanisms/observability.js";
 import type { Access } from "./mechanisms/projects.js";
 import type { Auth, Admin, Users, AuthSessions } from "./mechanisms/identity.js";
 import { AccountClient } from "./auth/account-client.js";
+import { accountCenterGate } from "./http/account-center.js";
+import { ControlStore, controlRoutes } from "./http/control-plane.js";
 import type { AuthState } from "./hmr/capabilities.js";
 import type { LiveStreams } from "./auth/live-streams.js";
 
@@ -432,6 +434,8 @@ export function createApp(boot: ServerBoot): Hono<AppEnv> {
     const ms = Math.round(performance.now() - start);
     log(`${c.req.method} ${c.req.path} ${c.res.status} ${ms}ms`);
   });
+  const accountCenter = process.env.AITEST_ACCOUNT_CENTER === "1";
+  app.use("*", accountCenterGate(accountCenter));
 
   // An event stream's socket that sends nothing for STREAM_IDLE_MS is destroyed (Node lets the
   // first expiry pass while a write is pending, so a stuck write is cut within two). A live
@@ -528,7 +532,13 @@ export function createApp(boot: ServerBoot): Hono<AppEnv> {
     });
     boot.tree.api<AuthState>("RuntimeModule", "AuthState").accountClient = bridge;
     app.use("*", bridge.middleware(token => deps.desktop?.redeemLoginToken(token) === true));
-  } else app.get("/api/account-client/config", c => c.json({enabled:false}));
+  } else app.get("/api/account-client/config", c => c.json({enabled:false,central:accountCenter}));
+
+  if (accountCenter) {
+    const store = new ControlStore(boot.db);
+    app.use("/api/control/*", authMiddleware(authService(), deps.config.trustProxy));
+    app.route("/api/control", controlRoutes(store));
+  }
 
   // THE seam: every route is one the platform may take over by push — the upgrade channel
   // included, which the platform declares and contributes like any other group
