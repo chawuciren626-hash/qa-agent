@@ -65,3 +65,85 @@ jobs:
             output/engineering-tests/**/stderr.log
           if-no-files-found: warn
           retention-days: 7
+
+  platform-qa:
+    name: Windows / Platform QA
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      AITEST_ENGINE_ROOT: ${{ github.workspace }}
+    defaults:
+      run:
+        working-directory: platform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.18.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: platform/pnpm-lock.yaml
+      - name: Install locked platform dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build platform packages
+        run: pnpm -r build
+      - name: Typecheck platform server and web
+        run: |
+          pnpm --filter @prismshadow/penguin-server typecheck
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm --filter @prismshadow/penguin-web typecheck
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run Q1 Q2 Q3 server tests
+        run: |
+          $tests = @(
+            "test/qa-integration.test.ts",
+            "test/qa-project-overview.test.ts",
+            "test/qa-personal-resources.test.ts",
+            "test/qa-project-knowledge.test.ts",
+            "test/qa-quality-traceability.test.ts",
+            "test/qa-task-context.test.ts",
+            "test/qa-skill-selection.test.ts",
+            "test/qa-send-round-selection.test.ts"
+          )
+          pnpm --filter @prismshadow/penguin-server exec vitest run @tests --reporter=json --outputFile=qa-server-results.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run Q1 Q2 Q3 web tests
+        run: |
+          $tests = @(
+            "test/qa-task-detail.test.ts",
+            "test/qa-result-views.test.ts",
+            "test/qa-project-pagination.test.ts",
+            "test/case-review-table.test.ts",
+            "test/personal-skill-selection.test.ts",
+            "test/project-knowledge-page.test.ts",
+            "test/project-knowledge-model.test.ts",
+            "test/quality-traceability-views.test.ts",
+            "test/quality-traceability-api.test.ts"
+          )
+          pnpm --filter @prismshadow/penguin-web exec vitest run @tests --reporter=json --outputFile=qa-web-results.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert QA tests ran without skips
+        run: |
+          $suites = @(
+            @{ file = "packages/server/qa-server-results.json"; count = 8 },
+            @{ file = "packages/web/qa-web-results.json"; count = 9 }
+          )
+          foreach ($suite in $suites) {
+            $report = Get-Content -LiteralPath $suite.file -Raw | ConvertFrom-Json
+            if ($report.testResults.Count -ne $suite.count -or $report.numPassedTests -lt 1 -or $report.numPendingTests -ne 0 -or $report.numFailedTests -ne 0) {
+              throw "QA gate failed for $($suite.file): expected $($suite.count) files, at least one passed test, zero skipped and zero failed."
+            }
+          }
+      - name: Upload QA test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-qa-${{ github.run_attempt }}
+          path: |
+            platform/packages/server/qa-server-results.json
+            platform/packages/web/qa-web-results.json
+          if-no-files-found: warn
+          retention-days: 7

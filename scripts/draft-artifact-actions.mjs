@@ -14,6 +14,7 @@ import { browserLifecycle, browserCoverageMarkdown } from './browser-lifecycle.m
 import { ArtifactSafetyError } from './recovery-policy.mjs';
 import { assertUnlinked } from './skill-resources.mjs';
 import { reportDeliveryTitle } from './test-tracks.mjs';
+import { reportFactBody } from './report-fact-body.mjs';
 
 function assertArtifactBoundary(dir,path) {
   try {assertUnlinked(dir,resolve(dir,path));}
@@ -139,6 +140,7 @@ export async function runDraftArtifactAction(root, parent, action, runId, { sign
     const record = { action, run_id: runId, stage, dispatch_id: dispatch.dispatch_id, parent_session: parent, before: snapshot([...definition.inputs, ...definition.outputs, ...taskInputs], 'before'), status: 'started' };
     writeJson(resolve(base, 'generation.json'), record);
     let args;
+    let canonicalReportPath;
     if (action === 'export_report') args = [...[definition.inputs[0], definition.inputs[1], definition.inputs[2], 'report/test_report.docx','report/test_report.pdf', ...(definition.inputs[3]?[definition.inputs[3]]:[])].map(p => resolve(dir, p)), '--html-only', '--title='+reportDeliveryTitle(root,runId)];
     else if (action.startsWith('export_')) args = [...definition.inputs, ...definition.outputs].map(p => resolve(dir, p));
     else args = [`--run-id=${runId}`];
@@ -170,13 +172,25 @@ export async function runDraftArtifactAction(root, parent, action, runId, { sign
       writeJson(resolve(base, 'report-evidence.json'), index);
       // Render a derived snapshot; preserve the agent draft and all original execution bytes.
       const renderPath = resolve(base, 'report-with-facts.md');
-      writeFileSync(renderPath, readRunFile(dir, 'report/test_report.md').data.toString('utf8') + '\n\n' + reportFactsMarkdown(index) + '\n\n' + resultFidelityMarkdown(fidelity.results) + '\n\n' + coverageText, { flag: 'wx' });
+      writeFileSync(renderPath, reportFactBody({runId, results:fidelity.results,
+        issues:JSON.parse(readRunFile(dir,'report/issues.json').data), evidence:reportFactsMarkdown(index),
+        fidelity:resultFidelityMarkdown(fidelity.results), coverage:coverageText}), { flag: 'wx' });
+      canonicalReportPath=renderPath;
       args[0] = renderPath;
       record.report_facts = `${archive}/report-evidence.json`;
+    } else if (action === 'export_report') {
+      const renderPath = resolve(base, 'report-with-facts.md');
+      writeFileSync(renderPath, reportFactBody({runId,
+        results:JSON.parse(readRunFile(dir,'report/reportable-results.json').data),
+        issues:JSON.parse(readRunFile(dir,'defects/defect-records.json').data),
+        metrics:JSON.parse(readRunFile(dir,'report/quality-metrics.json').data)}), {flag:'wx'});
+      canonicalReportPath=renderPath;
+      args[0] = renderPath;
     }
     try {
       const result = await runProjectCommand(root, { kind: definition.kind ?? 'node', script: definition.script, args, runId, signal });
       record.status = result.status; record.command_evidence = result.evidence_dir;
+      if(result.status==='completed' && canonicalReportPath) writeFileSync(resolve(dir,'report/test_report.md'),readFileSync(canonicalReportPath));
       if (result.result?.termination_confirmed) record.after = snapshot(definition.outputs, 'after');
       return { ...result, artifact_archive: archive, generated_artifacts: definition.outputs, approval_granted: false };
     } catch (error) { record.status = 'runner_error'; record.error = error.message; throw error; }

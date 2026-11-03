@@ -64,7 +64,7 @@ export function extendRunPlan(root, project, runId, requested, reason) {
     }
     manifest.orchestration.events.push({ type: 'plan_extended', at, requested_stages: [...requested], added_stages: added.map(s => s.id), reason });
     plan.updated_at = at;
-    manifest.orchestration.resume_from = plan.stages.find(s => s.selected && (!['completed', 'skipped'].includes(manifest.stages?.[s.id]?.status) || (manifest.stages?.[s.id]?.status === 'completed' && s.confirmation === 'after' && !hasApprovedConfirmation(manifest, s.id))))?.id ?? 'completed';
+    manifest.orchestration.resume_from = plan.stages.find(s => s.selected && (!['completed', 'skipped'].includes(manifest.stages?.[s.id]?.status) || (manifest.stages?.[s.id]?.status === 'completed' && (s.confirmation === 'after' || s.result_confirmation === 'after') && !hasApprovedConfirmation(manifest, s.id))))?.id ?? 'completed';
     manifest.status = recomputeRunStatus(manifest);
     manifest.updated_at = at;
     writeJson(manifestPath, manifest);

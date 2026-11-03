@@ -77,11 +77,11 @@ describe("navKeysFor", () => {
 });
 
 describe("AITestHarness user-view navigation", () => {
-  it("hides the three unused modules for both roles while retaining the upstream manifest", () => {
+  it("hides model configuration, plugin market and the unused modules for both roles while retaining the upstream manifest", () => {
     expect(navKeysFor(true)).toEqual(expect.arrayContaining(["machines", "usage", "benchmark"]));
-    expect(productNavKeysFor(true)).not.toEqual(expect.arrayContaining(["machines", "usage", "benchmark"]));
-    expect(productNavEntryKeysFor(true)).toEqual(["newChat", "agents", "models", "plugins"]);
-    expect(productNavEntryKeysFor(false)).toEqual(["newChat", "models", "plugins"]);
+    expect(productNavKeysFor(true)).not.toEqual(expect.arrayContaining(["models", "plugins", "machines", "usage", "benchmark"]));
+    expect(productNavEntryKeysFor(true)).toEqual(["newChat", "agents"]);
+    expect(productNavEntryKeysFor(false)).toEqual(["newChat"]);
   });
 });
 

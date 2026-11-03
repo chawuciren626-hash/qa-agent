@@ -1,11 +1,25 @@
 ---
 name: api-contract-analysis
+version: 2026.11.02.1
 description: 解析当前任务的 OpenAPI/Swagger 或文字接口契约，形成有来源的接口清单及业务规则，供接口测试点和用例设计使用。
 ---
 
 # 接口契约分析
 
-当前工具 api_task.inspect_contract 读取已归档 JSON/YAML，支持 Swagger 2.0/OpenAPI 3.0。可传 operations 数组按 method+path 选择接口，返回 source_sha256、参数、请求体、响应、security 和限制。不会请求业务接口或跟随外部 $ref。完整用法见共享 skills/api-test-execution/references/protocol.md。
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+
+## 输入与产出
+
+输入为本次任务已归档的 OpenAPI/Swagger JSON 或 YAML、文字规则及用户选择的接口范围。输出是有来源的接口清单、`analysis/api_contract.json`、需求台账与分析文档；解析限制和待澄清业务预期须随产物保留。
+
+## 工作步骤
+
+1. 核对归档材料与目标接口，调用 `api_task.inspect_contract` 读取契约。
+2. 将接口结构与原文业务规则对应，记录来源、未支持引用和真实疑问。
+3. 按本次派发契约生成分析产物并运行对应诊断、导出与校验；只交付当前阶段。
+
+
+当前工具 api_task.inspect_contract 读取已归档 JSON/YAML，支持 Swagger 2.0/OpenAPI 3.0。可传 operations 数组按 method+path 选择接口，返回 source_sha256、参数、请求体、响应、security 和限制。不会请求业务接口或跟随外部 $ref。完整用法见 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 下共享的 `skills/api-test-execution/references/protocol.md`。
 
 将解析结果与原文规则写入 analysis/api_contract.json，并沿用现有需求台账与分析文档；保留来源和未支持项。Word 使用已有 extract_word。文字只能形成有来源的设计，不能猜测路径扫描服务。3.1、循环和外部引用明确列为限制，不伪称完整 Schema 校验。文档中示例响应不是已确认业务预期，实测响应也不能回写预期。
 

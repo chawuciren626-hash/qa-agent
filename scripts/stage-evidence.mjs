@@ -4,7 +4,7 @@ import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { resolve, basename, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { readRunFile, runDirectory } from './design-quality.mjs';
-import { requiredArtifacts, stageRequiredArtifacts, assertArtifactContract } from './artifact-contracts.mjs';
+import { requiredArtifacts, stageRequiredArtifacts, assertArtifactContract, inspectStageArtifacts } from './artifact-contracts.mjs';
 import { assertChildCommands, childCommandPolicy, toolWasNotExecuted } from './child-command-policy.mjs';
 import { CommandUsageError } from './command-contracts.mjs';
 import { assertRecoveryDecisions } from './orchestration-state.mjs';
@@ -75,6 +75,49 @@ export function verifyActionRecoveryReceipt(root, runId, parentId, dispatchedAt,
   return receipt.session_id===parentId && (receipt.run_id===runId || unboundRequest) && receipt.run_id===result.run_id && Date.parse(receipt.at)>=Date.parse(dispatchedAt) && typeof receipt.task_key==='string' && receipt.status===result.status && receipt.exit_code===result.exit_code && receipt.task_key===result.task_key && JSON.stringify(receipt.recovery ?? null)===JSON.stringify(result.recovery ?? null);
 }
 
+function verifiedParentArtifactCorrection(root,runId,stage,parentId,childId,agentRoot,dispatchAt,childRows,key) {
+  if(stage!=='execution' || key!==`${runId}:validate_artifacts:execution`) return false;
+  const failures=childRows.flatMap(row=>{
+    if(row.payload?.type!=='tool_call_output' || typeof row.payload.output!=='string') return [];
+    try {
+      const result=JSON.parse(row.payload.output);
+      return result.task_key===key && result.exit_code!==0 && result.recovery?.category==='artifact_revision' &&
+        verifyActionRecoveryReceipt(root,runId,parentId,dispatchAt,result) ? [row] : [];
+    } catch {return [];}
+  });
+  const failedAt=Date.parse(failures.at(-1)?.timestamp);
+  if(!Number.isFinite(failedAt)) return false;
+  try {
+    const current=inspectStageArtifacts(root,runId,stage);
+    if(current.status!=='passed' || current.errors.length) return false;
+    const base=dataPath(root,'output/action-audit',parentId),commandBase=dataPath(root,'output/command-runs');
+    const parent=readSession(agentRoot,'test_agent',parentId);
+    for(const name of readdirSync(base).filter(name=>/^[a-f0-9-]{36}\.json$/.test(name))) {
+      try {
+        const receiptPath=resolve(base,name);
+        if(realpathSync(receiptPath)!==receiptPath) continue;
+        const receipt=JSON.parse(readFileSync(receiptPath,'utf8'));
+        if(receipt.action!=='validate_artifacts' || receipt.run_id!==runId || receipt.task_key!==key || receipt.status!=='completed' || receipt.exit_code!==0 ||
+          receipt.host_binding?.session_id!==parentId || Date.parse(receipt.at)<=failedAt || !/^[a-f0-9-]{36}$/.test(basename(receipt.command_evidence ?? ''))) continue;
+        const bound=parent.some(row=>row.payload?.type==='tool_call_output' && row.payload.tool_call_id===receipt.host_binding.tool_call_id && (()=>{
+          try {const result=JSON.parse(row.payload.output);return result.action_receipt===receiptPath && result.status==='completed' && result.exit_code===0 && result.command_id===basename(receipt.command_evidence);}
+          catch {return false;}
+        })());
+        if(!bound) continue;
+        const dir=resolve(commandBase,basename(receipt.command_evidence));
+        if(resolve(receipt.command_evidence)!==dir || realpathSync(dir)!==dir) continue;
+        const commandPath=resolve(dir,'command.json'),logPath=resolve(dir,'command.log');
+        if(realpathSync(commandPath)!==commandPath || realpathSync(logPath)!==logPath) continue;
+        const command=JSON.parse(readFileSync(commandPath,'utf8')),output=JSON.parse(readFileSync(logPath,'utf8'));
+        if(command.script==='validate-artifacts.mjs' && command.host_binding?.session_id===parentId && command.host_binding.tool_call_id===receipt.host_binding.tool_call_id && command.status==='completed' && command.result?.code===0 && command.result?.termination_confirmed===true &&
+          output.run_id===runId && output.stage===stage && output.status==='passed' && Array.isArray(output.errors) && !output.errors.length &&
+          JSON.stringify(output.files)===JSON.stringify(current.files)) return true;
+      } catch { /* Another receipt is not evidence for this correction. */ }
+    }
+  } catch { /* An unverifiable correction keeps the child failure pending. */ }
+  return false;
+}
+
 export function readSession(agentRoot, agent, id) {
   const match = /^session-(\d{4}-\d{2}-\d{2})-\d{2}-\d{2}-\d{2}-[a-f0-9]+$/.exec(id ?? '');
   if (!match || !/^[a-z0-9_-]+$/.test(agent)) throw new Error('Valid agent and session ID required');
@@ -97,13 +140,19 @@ export function readSession(agentRoot, agent, id) {
       const launches=rows.slice(0,rows.indexOf(call)).filter(r=>r.payload?.type==='tool_call_output' && commands.get(r.payload.tool_call_id)?.payload.name==='exec_command' && String(r.payload.output).endsWith(`[process running with process_id ${processId}; use input_command to send input or poll for output]`));
       if(launches.length!==1) throw new Error('Archived poll has no unique originating command');
       if(suffix && suffix!==`[process ${processId} had already exited (exit code 0); session removed]`) throw new Error('Archived poll has an unverified terminal suffix');
-    } else if(suffix) throw new Error('Archived command has an unverified suffix');
+    } else if(suffix && !/^\[exit code: [1-9]\d{0,2}\]$/.test(suffix)) throw new Error('Archived command has an unverified suffix');
     const base=resolve(agentRoot,agent,'scratchpad',id,'truncated-tool-output');
     const path=resolve(archived[1]);
     if(!isAbsolute(archived[1]) || resolve(path,'..')!==base || !new RegExp(`^${name}-[a-z0-9-]+\\.log$`,'i').test(basename(path))) throw new Error('Archived command output belongs to another session or has an invalid path');
     if(realpathSync(base)!==base || realpathSync(path)!==path || !statSync(path).isFile() || statSync(path).size>8*1024*1024) throw new Error('Archived command output is redirected, invalid or too large');
     const full=readFileSync(path,'utf8');
     if(!full.trim()) throw new Error('Archived command output is empty');
+    if(name==='exec_command' && suffix) {
+      let failed;
+      try { const result=JSON.parse(full); failed=Number.isInteger(result.exit_code) && result.exit_code>0 && result.status!=='completed'; }
+      catch { failed=false; }
+      if(!failed) throw new Error('Archived command exit marker lacks a failed command receipt');
+    }
     return {...row,payload:{...p,output:full,archived_output_path:path}};
   });
 }
@@ -262,6 +311,7 @@ export function verifyStageEvidence(root, runId, manifest, options, agentRoot = 
       requireControlledCommands:true,
       allowRecovery:/^QA_COMMAND_POLICY_V[23] /.test(dispatch.child_command_policy),
       verifyRecovery:result=>verifyActionRecoveryReceipt(root,runId,parentId,dispatch.at,result),
+      verifyExternalRecovery:key=>verifiedParentArtifactCorrection(root,runId,options.stage,parentId,childId,agentRoot,dispatch.at,child,key),
       verifyPartialBrowserFailure:options.stage==='execution'?partialBrowserFailureVerifier(root,runId,parentId,childId,manifest,partialFailures):undefined,
       stageWriteBoundary:{
         stage:options.stage,

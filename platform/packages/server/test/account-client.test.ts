@@ -2,17 +2,17 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import { randomUUID } from "node:crypto";
-import { createTestApp, apiClient, loginUser } from "./helpers.js";
+import { createTestApp, restartTestApp, apiClient, loginUser } from "./helpers.js";
 import type { TestApp } from "./helpers.js";
 import { readAccountClientConfig } from "../src/auth/account-client.js";
 import type { Http } from "../src/http/app.js";
 
-let server:Server, app:TestApp|undefined, origin:string, offline=false;
+let server:Server, app:TestApp|undefined, origin:string, offline=false, wrongService=false;
 let modules:string[], disabled=false;
 const tokens=new Map<string,string>();
 const captured:{path:string;body:unknown}[]=[];
 beforeEach(async()=>{
-  tokens.clear();captured.length=0;offline=false;
+  tokens.clear();captured.length=0;offline=false;wrongService=false;
   modules=["chat","projects","models","plugins","skills"];disabled=false;
   server=createServer(async(req,res)=>{
     let raw="";for await(const chunk of req)raw+=chunk;
@@ -20,6 +20,7 @@ beforeEach(async()=>{
     captured.push({path:req.url!,body});
     res.setHeader("content-type","application/json");
     if(offline){res.writeHead(503);res.end('{}');return;}
+    if(wrongService){res.setHeader('content-type','text/html');res.writeHead(404);res.end('<!DOCTYPE html><title>File not found</title>');return;}
     if(req.url==="/api/auth/login") {
       if(body.password!=="central-test-password"){res.writeHead(401);res.end('{"error":{"code":"invalid_credentials"}}');return;}
       const token=randomUUID();tokens.set(token,body.userId);
@@ -39,6 +40,29 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app?.cleanup();app=undefined;await new Promise<void>(resolve=>server.close(()=>resolve()));});
 describe('central identity with full local application',()=>{
+  it('restores a local login after the service restarts and still honors central revocation',async()=>{
+    const login=await loginUser(app!.app,'admin','central-test-password');
+    const cookie=login.cookie;
+    expect((await apiClient(app!.app,cookie).get('/api/me')).status).toBe(200);
+    const stored=app!.deps.db.prepare('SELECT central_cookie FROM account_center_sessions').get() as {central_cookie:string};
+    expect(stored.central_cookie).toMatch(/^enc:v1:/);
+    expect(stored.central_cookie).not.toContain('penguin_session=');
+    app=await restartTestApp(app!);
+    expect((await apiClient(app!.app,cookie).get('/api/me')).status).toBe(200);
+    tokens.clear();
+    expect((await apiClient(app!.app,cookie).get('/api/me')).status).toBe(401);
+    expect(app!.deps.db.prepare('SELECT count(*) AS n FROM account_center_sessions').get()!.n).toBe(0);
+  });
+  it('migrates valid legacy plaintext cookies on restart',async()=>{
+    const login=await loginUser(app!.app,'admin','central-test-password');
+    const legacy=`penguin_session=${[...tokens.keys()][0]}`;
+    app!.deps.db.prepare('UPDATE account_center_sessions SET central_cookie=?').run(legacy);
+    app=await restartTestApp(app!);
+    expect((await apiClient(app!.app,login.cookie).get('/api/me')).status).toBe(200);
+    const stored=app!.deps.db.prepare('SELECT central_cookie FROM account_center_sessions').get() as {central_cookie:string};
+    expect(stored.central_cookie).toMatch(/^enc:v1:/);
+    expect(stored.central_cookie).not.toContain(legacy);
+  });
   it('persists administrator categories and refuses to delete occupied categories',async()=>{
     const admin=apiClient(app!.app,(await loginUser(app!.app,'admin','central-test-password')).cookie);
     const ordinary=apiClient(app!.app,(await loginUser(app!.app,'ordinary','central-test-password')).cookie);
@@ -147,6 +171,12 @@ describe('central identity with full local application',()=>{
     offline=false;expect((await api.get('/api/projects')).status).toBe(200);
     tokens.clear();expect((await api.get('/api/projects')).status).toBe(401);
     expect(app!.deps.db.prepare('SELECT count(*) n FROM projects').get()!.n).toBe(count);
+  });
+  it('reports a misplaced HTML service as unavailable during login',async()=>{
+    wrongService=true;
+    const response=await app!.app.request('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({userId:'admin',password:'central-test-password'})});
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({error:{code:'account_center_unavailable',message:'服务端不可用，请联系管理员'}});
   });
   it('refuses arbitrary proxy endpoints and extra business payload fields before forwarding',async()=>{
     const api=apiClient(app!.app,(await loginUser(app!.app,'admin','central-test-password')).cookie);

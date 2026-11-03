@@ -152,6 +152,44 @@ export function bwrapArgs(policy: SandboxPolicy, host: ProfileHost): string[] {
 }
 
 /**
+ * A Playwright attempt needs one writable result tree and a readable engine. Keep other
+ * Windows drives hidden, even when the engine and attempt are on different drives.
+ * This is a profile builder only; callers must still verify the distro, browser and network.
+ */
+export function automationBwrapArgs(
+  engineRoot: string,
+  attemptRoot: string,
+  host: ProfileHost,
+  network: "none" | "open" = "none",
+): string[] {
+  if (host.exposeWindowsDrives) throw new Error("Automation cannot expose Windows drives");
+  if (![engineRoot, attemptRoot].every(value => /^[A-Za-z]:[\\/]/.test(value))) {
+    throw new Error("Automation roots must be local Windows drive paths");
+  }
+  const normalizedEngine = path.win32.normalize(engineRoot);
+  const normalizedAttempt = path.win32.normalize(attemptRoot);
+  const engine = toLinuxPath(normalizedEngine, host.distro);
+  const attempt = toLinuxPath(normalizedAttempt, host.distro);
+  if (engine === null || attempt === null || !engine.startsWith("/mnt/") || !attempt.startsWith("/mnt/")) {
+    throw new Error("Automation roots must be local Windows drive paths");
+  }
+  if (within(engine.toLowerCase(), [attempt.toLowerCase()]) || within(attempt.toLowerCase(), [engine.toLowerCase()])) {
+    throw new Error("Automation engine and attempt roots must be separate");
+  }
+  if (host.kind(normalizedEngine) !== "dir" || host.kind(normalizedAttempt) !== "dir") {
+    throw new Error("Automation engine and attempt roots must exist as directories");
+  }
+  const args = bwrapArgs(
+    { mode: "workspace-write", workspaceRoot: normalizedAttempt, ...(network === "none" ? { network: "none" as const } : {}), writableTemp: true },
+    host,
+  );
+  const seal = args.indexOf("--remount-ro");
+  if (seal < 0) throw new Error("Automation mount profile has no Windows drive seal");
+  args.splice(seal, 0, "--ro-bind", engine, engine);
+  return args;
+}
+
+/**
  * The directories a confined command may start in: a cwd outside every one of them does not
  * exist inside the sandbox, and bwrap refuses a `--chdir` there.
  */

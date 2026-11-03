@@ -1,15 +1,17 @@
 ---
 name: api-testing
+version: 2026.11.02.1
 description: 依据接口契约设计和编写Playwright API测试，覆盖认证权限、错误响应、分页、Schema与幂等副作用；适用于接口专项或UI数据准备，不将API成功当作UI验收通过。
 license: MIT; see LICENSE.txt
 metadata:
-  version: '1.2.0'
   source: fugazi/test-automation-skills-agents
   revision: 65a72d5e74def3c23143bef8757e72cb68e91032
   adapted-from: api-testing
 ---
 
 # API 测试
+
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
 
 复用工程已有Playwright，不引入Java、Supertest或额外依赖。生命周期脚本沿用request能力；独立任务可在已启动的浏览器会话内使用受控api_check核验同源GET/HEAD，不是通用写接口客户端。
 

@@ -1,4 +1,3 @@
-import { ManagedResourceSection } from "../../components/managed-resource-section";
 /**
  * The plugin market: every plugin as one card (plugin-card.tsx) — the library's plugins
  * (Skills and/or a hook package, loaded by core from the @penguinharness/* packages and
@@ -791,7 +790,7 @@ export function PluginsPage() {
 
   const rows = pluginRows(groups ?? [], moduleParts(deployment, index ?? [], view));
   const categories = [
-    ...pluginCategories(groups ?? [], locale).filter(item => !categoryOverrides[item.id]?.deleted).map(item => ({ ...item, title: categoryOverrides[item.id]?.name ?? item.title })),
+    ...pluginCategories(groups ?? [], locale).filter(item => item.id !== "sandbox" && !categoryOverrides[item.id]?.deleted).map(item => ({ ...item, title: categoryOverrides[item.id]?.name ?? item.title })),
     ...(adminView ? customCategories.map(item => ({ id: item.id, title: item.name })) : []),
   ];
   const categoryOf = (row: PluginRow) => {
@@ -820,7 +819,7 @@ export function PluginsPage() {
   const unsatisfiedCount = rows.filter((row) => row.module?.unsatisfied !== undefined).length;
   const searching = query.trim() !== "" || incompatibleOnly || category !== "";
   const visible = rows.filter(
-    (row) => ((!qaMarket && !adminView) || !category || categoryOf(row) === category) && rowMatches(row, query) && (!incompatibleOnly || row.module?.unsatisfied !== undefined),
+    (row) => row.category !== "sandbox" && ((!qaMarket && !adminView) || !category || categoryOf(row) === category) && rowMatches(row, query) && (!incompatibleOnly || row.module?.unsatisfied !== undefined),
   );
   const sections = groupRows(visible, statusOf, groupBy, categories);
   const categoryTitle = (id: string) => categories.find((c) => c.id === id)?.title ?? id;
@@ -962,12 +961,12 @@ export function PluginsPage() {
             onDismiss={() => dismissTodo(projectId, "plugins", todo.signature)}
           />
         )}
-        {indexFailures.length > 0 && (
+        {!qaMarket && indexFailures.length > 0 && (
           <Notice tone="attention" className="mt-4">
             {S.pluginRegistry.sourceUnavailable(indexFailures.length)}
           </Notice>
         )}
-        {indexPending > 0 && (
+        {!qaMarket && indexPending > 0 && (
           <Notice tone="attention" className="mt-4">
             {S.pluginRegistry.sourcePending(indexPending)}
           </Notice>
@@ -988,7 +987,6 @@ export function PluginsPage() {
         )}
         <IncompatibleNotice filtered={incompatibleOnly} unsatisfied={unsatisfiedCount} />
       </PageHeader>
-      {viewingHere && !adminView && <ManagedResourceSection kind="plugins" />}
       {qaMarket && !adminView && (
         <div className="qm-toolbar">
           <div className="qm-search"><SearchInput icon size="sm" value={query} onChange={setQuery} aria-label="搜索插件" placeholder="搜索插件" /></div>

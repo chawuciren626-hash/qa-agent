@@ -2166,6 +2166,22 @@ describe("compaction-internal messages (#17: history rebuild aligned with the li
     expect(items(m).filter((i) => i.kind === "user_text")).toHaveLength(1);
   });
 
+  it.each([undefined, "harness"] as const)("project context is invisible for legacy and harness messages (%s), live and replayed", (sender) => {
+    const context = "[project_context snapshot=ctx-6b056135-9cd1-4953-808e-998ecb21e53a version=1]\nProject business evidence\n[/project_context]";
+    const records = [userText(context, sender), userText("Test login"), assistantText("Analyzing")];
+    const live = createStreamModel();
+    for (const record of records) pushMessage(live, record);
+    expect(items(live).filter(i => i.kind === "user_text").map(i => (i as UserTextItem).text)).toEqual(["Test login"]);
+    const replay = createStreamModel();
+    pushMessages(replay, records);
+    finalizeHistory(replay);
+    expect(items(replay).filter(i => i.kind === "user_text").map(i => (i as UserTextItem).text)).toEqual(["Test login"]);
+    expect(records[0]!.payload).toMatchObject({ text: context });
+    const ordinary = createStreamModel();
+    pushMessages(ordinary, [userText("Please explain [project_context]"), userText("Other harness notice", "harness")]);
+    expect(items(ordinary).filter(i => i.kind === "user_text")).toHaveLength(2);
+  });
+
   it("legacy <context_summary> prefix (old Traces) is still treated as internal input, not a user bubble", () => {
     // Old Traces contain the angle-bracket form; re-rendering them must keep hiding the
     // summary injection exactly like the current [context_summary] form.

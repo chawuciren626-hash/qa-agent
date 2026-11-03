@@ -418,6 +418,18 @@ export const putCommandPolicy = (
 
 // Model configuration -------------------------------------------------------------------
 
+export interface SharedModelsInfo {
+  enabled: boolean;
+  sourceProjectId?: string;
+  projectIds: string[];
+}
+
+export const getSharedModels = (projectId: string) =>
+  apiFetch<SharedModelsInfo>(`/api/projects/${encodeURIComponent(projectId)}/models/shared`);
+
+export const activateSharedModels = (projectId: string) =>
+  apiFetch<SharedModelsInfo>(`/api/projects/${encodeURIComponent(projectId)}/models/shared/activate`, { method: "POST" });
+
 export const getModels = (projectId: string, machineId: string | null) =>
   apiFetch<ModelsResponse>(`/api/projects/${encodeURIComponent(projectId)}/models`, {
     server: machineId,

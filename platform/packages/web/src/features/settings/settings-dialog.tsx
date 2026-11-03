@@ -42,6 +42,7 @@ import { ChromeExtensionSection } from "./chrome-extension-section";
 import { AgentApiSection } from "./agent-api-section";
 import { PluginsSection } from "./plugins-section";
 import { AdminUsersSection } from "../admin/admin-users-page";
+import { ModelsPage } from "../models/models-page";
 
 /** Rail glyphs (see NAV_ICONS' conventions). */
 const SECTION_ICONS: Record<SettingsSectionKey, string> = {
@@ -50,6 +51,7 @@ const SECTION_ICONS: Record<SettingsSectionKey, string> = {
   general: ICONS.gear,
   /** Sun: appearance. */
   appearance: ICONS.sun,
+  models: ICONS.gear,
   /** Keyboard: shortcuts. */
   shortcuts: ICONS.keyboard,
   /** The archive box the sidebar row's archive action wears: archived chats. */
@@ -68,6 +70,7 @@ const SECTION_ICONS: Record<SettingsSectionKey, string> = {
   chromeExtension: ICONS.plug,
   /** Angle brackets: programs calling the Agents. The plug that marks the API elsewhere is taken here, by the Chrome page above. */
   agentApi: ICONS.angleBrackets,
+  sandbox: ICONS.gear,
   /** Puzzle piece: plugins, the plugin library's own mark. */
   plugins: ICONS.puzzle,
   /** Two people: user management. */
@@ -117,6 +120,7 @@ export function SettingsDialog({
     profile: S.settings.profile,
     general: S.settings.generalTitle,
     appearance: S.settings.appearanceTitle,
+    models: "模型配置",
     shortcuts: S.settings.shortcutsTitle,
     archived: S.settings.archivedTitle,
     account: S.settings.accountTitle,
@@ -126,6 +130,7 @@ export function SettingsDialog({
     company: S.settings.companyModeTitle,
     chromeExtension: S.settings.chromeExtensionTitle,
     agentApi: S.settings.agentApiTitle,
+    sandbox: S.settings.sandboxTitle,
     plugins: S.settings.pluginsTitle,
     users: S.admin.users,
   };
@@ -143,6 +148,7 @@ export function SettingsDialog({
     company: S.settings.companyModeServerInfo,
     chromeExtension: S.settings.chromeExtensionInfo,
     agentApi: S.settings.agentApiHint,
+    sandbox: S.settings.sandboxInfo,
     plugins: S.settings.pluginsInfo,
   };
 
@@ -168,6 +174,7 @@ export function SettingsDialog({
       title={S.settings.title}
       groups={groups}
       active={current}
+      bodyClassName={current === "models" ? "min-h-0 flex-1 overflow-hidden px-0 pb-0 pt-3" : undefined}
       onSelect={(key) => {
         if (key !== current) void guardLeave(() => setActive(key), SETTINGS_SCOPE);
       }}
@@ -175,6 +182,7 @@ export function SettingsDialog({
       {current === "profile" && <ProfileSection />}
       {current === "general" && <GeneralSection workspace={!accountCenter} {...(!accountCenter ? { onOpenUpdates: () => { requestClose(); openAppInfo(); } } : {})} />}
       {current === "appearance" && <AppearanceSection />}
+      {current === "models" && <ModelsPage embedded />}
       {current === "shortcuts" && <ShortcutsSection />}
       {current === "archived" && <ArchivedSessionsSection />}
       {current === "account" && <AccountSection canChangePassword={offersChangePassword({ desktopMode, sessionVia })} />}
@@ -184,6 +192,7 @@ export function SettingsDialog({
       {current === "company" && <CompanySection />}
       {current === "chromeExtension" && <ChromeExtensionSection />}
       {current === "agentApi" && <AgentApiSection />}
+      {current === "sandbox" && <PluginsSection sandboxOnly />}
       {current === "plugins" && (
         <PluginsSection {...(pluginFocus !== undefined ? { focus: pluginFocus } : {})} />
       )}

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, realpathSync, rmSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, dirname } from 'node:path';
-import { syncPenguinAgents } from '../../scripts/sync-penguin-agents.mjs';
+import { syncPenguinAgents, sharedInstructionsForRole } from '../../scripts/sync-penguin-agents.mjs';
 import { validateSkillResources, skillResources, contained } from '../../scripts/skill-resources.mjs';
 import { releaseResources } from '../../scripts/check-release-resources.mjs';
 import { independentPrompt } from '../../scripts/independent-task.mjs';
@@ -100,7 +100,7 @@ test('all current role packages install with their optional skills and readable 
   const engine = resolve(import.meta.dirname, '../..');
   const manifest = JSON.parse(readFileSync(resolve(engine, 'penguin/agents.json')));
   const workflow = JSON.parse(readFileSync(resolve(engine, 'config/orchestration-workflow.json')));
-  assert.equal(manifest.agents.length, 8);
+  assert.equal(manifest.agents.length, 10);
   for (const agent of manifest.agents) mkdirSync(resolve(f.target, agent.id, 'agent_state'), { recursive: true });
   syncPenguinAgents(engine, f.target, { apply: true });
   for (const agent of manifest.agents) for (const skill of agent.skills) {
@@ -113,6 +113,15 @@ test('all current role packages install with their optional skills and readable 
     const agent = manifest.agents.find(agent => agent.id === stage.agent);
     assert.ok(stage.skills.every(skill => agent.skills.includes(skill)));
   }
+  const installedRole=id=>readFileSync(resolve(f.target,id,'agent_state/AGENTS.md'),'utf8');
+  for(const id of ['android_test_agent','miniprogram_test_agent']){
+    assert.match(installedRole(id),/当前测试能力范围/);
+    assert.match(installedRole(id),/工具入口与目录/);
+    assert.doesNotMatch(installedRole(id),/task功能测试使用browser_task|全流程URL测试优先使用浏览器策略/);
+    assert.doesNotMatch(installedRole(id),/<!-- \/?qa-roles/);
+  }
+  assert.match(installedRole('automation_execution_agent'),/task功能测试使用browser_task/);
+  assert.doesNotMatch(installedRole('automation_execution_agent'),/<!-- \/?qa-roles/);
   assert.equal(syncPenguinAgents(engine, f.target).status, 'in_sync');
 });
 
@@ -130,10 +139,10 @@ test('installed instructions separate task and lifecycle without legacy mandator
   for (const agent of manifest.agents) {
     const installed = readFileSync(resolve(f.target, agent.id, 'agent_state/AGENTS.md'), 'utf8');
     assert.match(installed, /### 任务与确认策略/);
-    assert.match(installed, /相同有效批准不重复索取/);
+    assert.match(installed, /相同有效执行批准不重复索取/);
     assert.match(installed, /未知副作用/);
     for (const phrase of obsolete) assert.ok(!installed.includes(phrase), `${agent.id}: obsolete ${phrase}`);
-    if (agent.id !== 'test_agent') {
+    if (!['test_agent','android_test_agent','miniprogram_test_agent'].includes(agent.id)) {
       assert.ok(installed.indexOf('## 独立任务（task）') < installed.indexOf('## 生命周期模式（lifecycle）'));
       assert.ok(installed.includes('## 独立任务（task）'));
     }
@@ -193,7 +202,7 @@ test('execution task stops at controlled execution artifacts despite multi-deliv
 test('controller instructions bind role and task while allowing localized display descriptions', () => {
   const prompt=readFileSync(resolve(import.meta.dirname,'../../penguin/agents/test_agent/AGENTS.md'),'utf8');
   assert.match(prompt,/只有回显缺失或截断时才read_file读取`delegation_path`恢复同一对象/);
-  assert.match(prompt,/直接将返回的短`delegation`对象传给run_subagent，目标角色必填/);
+  assert.match(prompt,/直接将返回的`delegation`对象传给run_subagent，目标角色必填/);
   assert.match(prompt,/`description`仅为中文展示说明，不改变授权/);
   assert.match(prompt,/不改写prompt或追加业务目标/);
 });
@@ -203,6 +212,47 @@ test('shared runtime commands do not infer PowerShell from Windows',()=>{
   assert.doesNotMatch(runtime,/当前Windows宿主Shell为PowerShell/);
   assert.match(runtime,/宿主可能使用Bash/);
   assert.match(runtime,/禁止裸写Windows反斜杠路径/);
+});
+
+test('role scoped policy keeps common safeguards and only relevant browser instructions',()=>{
+  const root=resolve(import.meta.dirname,'../..');
+  const source=readFileSync(resolve(root,'penguin/command-runtime.md'),'utf8');
+  const controller=sharedInstructionsForRole(source,'test_agent');
+  const analyst=sharedInstructionsForRole(source,'requirement_analysis_agent');
+  assert.match(controller,/浏览器填写凭据/);
+  assert.doesNotMatch(analyst,/浏览器填写凭据/);
+  assert.match(analyst,/未知副作用/);
+  assert.doesNotMatch(controller,/<!-- \/?qa-roles/);
+  assert.doesNotMatch(analyst,/<!-- \/?qa-roles/);
+  assert.throws(()=>sharedInstructionsForRole('<!-- qa-roles: test_agent -->\na','test_agent'),/Unclosed/);
+  assert.throws(()=>sharedInstructionsForRole('<!-- \/qa-roles -->','test_agent'),/Unmatched/);
+  assert.throws(()=>sharedInstructionsForRole('  <!-- qa-roles: test_agent -->\nprivate\n<!-- /qa-roles -->','test_agent'),/Malformed/);
+});
+
+test('all packaged Skills expose a host-readable version and referenced shared docs are released',()=>{
+  const root=resolve(import.meta.dirname,'../..');
+  const policy=JSON.parse(readFileSync(resolve(root,'config/release-resources.json'),'utf8'));
+  const manifest=JSON.parse(readFileSync(resolve(root,'penguin/agents.json'),'utf8'));
+  const skillNames=new Set(manifest.agents.flatMap(agent=>agent.skills));
+  for(const name of skillNames){
+    const content=readFileSync(resolve(root,'skills',name,'SKILL.md'),'utf8');
+    const frontmatter=content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    assert.ok(frontmatter,`${name}: frontmatter`);
+    const revision=['playwright-execution','requirement-analysis','bug-reporting','test-report-writing'].includes(name)?'2':'1';
+    assert.match(frontmatter[1],new RegExp(`^version: 2026\\.11\\.02\\.${revision}$`,'m'),`${name}: version`);
+  }
+  const docs=new Set();
+  for(const name of skillNames){
+    for(const file of validateSkillResources(root,name)){
+      const content=readFileSync(file.source,'utf8');
+      for(const match of content.matchAll(/docs\/[A-Za-z0-9._-]+\.md/g)) docs.add(match[0]);
+    }
+  }
+  for(const match of readFileSync(resolve(root,'penguin/command-runtime.md'),'utf8').matchAll(/docs\/[A-Za-z0-9._-]+\.md/g)) docs.add(match[0]);
+  for(const file of docs){
+    assert.ok(policy.files.includes(file),`${file}: release allowlist`);
+    assert.ok(existsSync(resolve(root,file)),`${file}: source`);
+  }
 });
 
 test('case lifecycle details are available on demand, not injected into independent instructions',()=>{
@@ -222,9 +272,9 @@ test('shared policy is compact, model-neutral and keeps task memory separate fro
   const runtime = readFileSync(resolve(engine, 'penguin/command-runtime.md'), 'utf8');
   // A source-size regression check, never a runtime task or model budget.
   // Includes the cross-stage capability scope; keep the combined policy bounded.
-  assert.ok(runtime.length < 9000, `Shared instructions grew to ${runtime.length} characters`);
+  assert.ok(runtime.length < 10000, `Shared instructions grew to ${runtime.length} characters`);
   for (const rule of [
-    /task（默认）/, /lifecycle \+ auto/, /显式 staged/, /相同有效批准不重复索取/,
+    /task（默认）/, /lifecycle \+ staged/, /相同有效执行批准不重复索取/,
     /未知副作用/, /recovery.retry_allowed/, /stalled=true/, /termination_confirmed/,
     /通用方法/, /项目事实/, /当前任务状态/, /历史授权不能转成当前授权/,
     /本轮不启用自动长期记忆写入/, /来源仍有效/, /不写入跨会话记忆/,
@@ -243,7 +293,7 @@ test('functional/API scope applies to every business role without disabling runt
   const manifest = JSON.parse(readFileSync(resolve(engine, 'penguin/agents.json')));
   const runtime = readFileSync(resolve(engine, manifest.shared_instructions), 'utf8');
   for (const phrase of ['需求分析、测试点、用例、Web/接口执行、缺陷分析和报告', 'scope=out_of_scope', '不列为必答澄清', '不规划空生命周期', '业务权限', '凭据脱敏', '不直接执行或覆盖历史结果']) assert.ok(runtime.includes(phrase), phrase);
-  assert.equal(manifest.agents.length, 8); // No unimplemented performance/security agents registered.
+  assert.equal(manifest.agents.length, 10); // No unimplemented performance/security agents registered.
   for (const path of ['skills/requirement-analysis/SKILL.md', 'skills/test-point-design/SKILL.md', 'penguin/agents/test_point_agent/AGENTS.md']) {
     const text = readFileSync(resolve(engine, path), 'utf8');
     assert.match(text, /性能\/安全测试/);

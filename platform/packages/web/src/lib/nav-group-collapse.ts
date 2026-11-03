@@ -65,7 +65,7 @@ export function navKeysFor(isAdmin: boolean): readonly NavGroupKey[] {
 }
 
 /** AITestHarness user-view navigation; upstream pages and routes remain available. */
-const HIDDEN_PRODUCT_NAV_KEYS: ReadonlySet<NavGroupKey> = new Set(["machines", "usage", "benchmark"]);
+const HIDDEN_PRODUCT_NAV_KEYS: ReadonlySet<NavGroupKey> = new Set(["models", "plugins", "machines", "usage", "benchmark"]);
 export function productNavKeysFor(isAdmin: boolean): readonly NavGroupKey[] {
   return navKeysFor(isAdmin).filter((key) => !HIDDEN_PRODUCT_NAV_KEYS.has(key));
 }

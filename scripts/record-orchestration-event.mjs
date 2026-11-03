@@ -11,8 +11,10 @@ import { assertBrowserResume } from './browser-task-resume.mjs';
 import { browserLifecycle, browserAuthorization, currentBrowserAuthorization } from './browser-lifecycle.mjs';
 import { createHash } from 'node:crypto';
 import { assertTrackStage, assertSiblingResources } from './test-tracks.mjs';
-import { assertExecutionDesignReady, runDirectory } from './design-quality.mjs';
+import { assertExecutionDesignReady, readRunFile, runDirectory } from './design-quality.mjs';
 import { mobileAuthorization } from './mobile-stage.mjs';
+import { writeStageReviewDocument } from './stage-review-documents.mjs';
+import { verifyInterruptedReportRecovery } from './interrupted-report-recovery.mjs';
 
 const root = resolve(import.meta.dirname, "..");
 const project = JSON.parse(readFileSync(resolve(root, "config/project.json"), "utf8"));
@@ -25,11 +27,12 @@ const options = Object.fromEntries(args.filter((arg) => arg.startsWith("--") && 
 const allowedEvents = new Set(['dispatched', 'completed', 'failed', 'blocked']);
 if (!allowedEvents.has(eventType)) throw new Error('Unsupported stage event; use confirmation scripts for approval and revision.');
 if (!options.stage) throw new Error('Stage is required.');
-const allowedOptions = new Set(['stage', 'agent', 'skills', 'artifacts', 'reason', 'session-id', 'parent-session-id', 'mode', 'dispatch-id', 'resource-keys']);
+const allowedOptions = new Set(['stage', 'agent', 'skills', 'artifacts', 'reason', 'session-id', 'parent-session-id', 'mode', 'dispatch-id', 'resource-keys', 'recovery']);
 for (const key of Object.keys(options)) {
   if (!allowedOptions.has(key)) throw new Error(`Unsupported event option: ${key}`);
 }
 if (options.mode && eventType !== 'dispatched') throw new Error('Mode can only be set when dispatching');
+if (options.recovery && (eventType!=='completed' || options.stage!=='report' || options.recovery!=='interrupted_report')) throw new Error('Unsupported completion recovery');
 withRunLock(root, project, runId, () => {
 const { manifestPath, manifest } = getRunContext(root, project, runId);
 assertStageHistory(manifest, options.stage);
@@ -131,8 +134,18 @@ if (eventType === 'dispatched') {
 }
 if (eventType === 'completed') {
   assertDependencyArtifacts(root, runId, manifest, options.stage);
-  event.evidence = verifyStageEvidence(root, runId, manifest, options);
+  event.evidence = options.recovery ? {
+    verified_at:new Date().toISOString(),parent_session_id:options['parent-session-id'],session_id:options['session-id'],
+    artifacts:(options.artifacts??'').split(',').filter(Boolean).map(path=>{const file=readRunFile(runDirectory(root,runId),path);return {path:file.path,sha256:file.sha256};}),
+    recovery:verifyInterruptedReportRecovery(root,runId,manifest,options['parent-session-id'],(options.artifacts??'').split(',').filter(Boolean),process.env.PENGUIN_AGENT_ROOT)
+  } : verifyStageEvidence(root, runId, manifest, options);
+  if(options.recovery && event.evidence.session_id!==event.evidence.recovery.child_session_id) throw new Error('Recovery child identity mismatch');
   event.evidence.artifact_contract = assertArtifactContract(root, runId, options.stage, { mode: manifest.stages[options.stage].mode, artifacts: (options.artifacts ?? '').split(',').filter(Boolean) });
+  const reviewDocument = writeStageReviewDocument(dirname(manifestPath), options.stage, event.evidence.artifact_contract);
+  if (reviewDocument) {
+    options.artifacts = [...new Set([...(options.artifacts ?? '').split(',').filter(Boolean), reviewDocument])].join(',');
+    event.artifacts = options.artifacts;
+  }
   if(['blocked','failed'].includes(manifest.stages[options.stage].status) && options.stage!=='execution') {
     event.draft_delivery_reconciliation=draftHandoffReconciliation(root,runId,manifest,options.stage,options['parent-session-id']);
   }

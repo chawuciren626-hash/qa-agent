@@ -8,6 +8,7 @@ import { atomicJson, attemptEvent, beginAttempt, blockedResult, finishAttempt, s
 import { runManagedProcess } from './managed-process.mjs';
 import { parsePlaywrightResults } from './playwright-results.mjs';
 import { directoryContext } from './directory-context.mjs';
+import { executionChildEnv } from './execution-child-env.mjs';
 
 export async function executeAttempt(root, runId, { headed = false, signal, runProcess = runManagedProcess, commandId = process.env.QA_EXECUTION_COMMAND_ID } = {}) {
   const context = beginAttempt(root, runId);
@@ -58,7 +59,7 @@ export async function executeAttempt(root, runId, { headed = false, signal, runP
     const preflightArgs = ['scripts/preflight-test-environment.mjs', `--environment=${config.environment}`, `--run-id=${runId}`, `--attempt-id=${context.invocationId}`];
     if (config.environment_registry) preflightArgs.push(`--registry=${config.environment_registry}`);
     else if (directoryContext(root).mode === 'isolated') preflightArgs.push(`--environment-config=${plan.environment_config}`);
-    const preflight = await invoke('preflight', preflightArgs, process.env, preflightTimeoutMs);
+    const preflight = await invoke('preflight', preflightArgs, executionChildEnv(), preflightTimeoutMs);
     if (preflight.code !== 0 || preflight.termination || preflight.error || !processesStopped) return block(`Environment preflight failed: ${preflight.termination ?? preflight.error ?? preflight.code}`, preflight.termination === 'interrupted' ? 'interrupted' : 'blocked');
     const preflightData = read(resolve(context.dir, 'environment/preflight.json'));
     if (preflightData.status !== 'ready' || preflightData.environment_id !== config.environment) return block('Preflight output does not confirm selected environment readiness');
@@ -67,7 +68,7 @@ export async function executeAttempt(root, runId, { headed = false, signal, runP
     authorization = assertExecutionAuthorized(root, runId);
     if (signal?.aborted) return block('Execution interrupted before launch', 'interrupted');
     mkdirSync(resolve(context.dir, 'playwright'), { recursive: true });
-    const test = await invoke('playwright', args, { ...process.env, QA_BASE_URL: config.base_url, QA_TEST_DIR: resourcePath(root, plan.execution_policy.test_dir), QA_RUN_DIR: context.dir.replaceAll('\\', '/'), QA_HEADED: headed ? 'true' : 'false', QA_TIMEOUT_MS: String(config.execution.timeout_ms ?? 30000), QA_WORKERS: String(plan.execution_policy.workers) }, timeoutMs + 10000);
+    const test = await invoke('playwright', args, executionChildEnv(process.env, { QA_BASE_URL: config.base_url, QA_TEST_DIR: resourcePath(root, plan.execution_policy.test_dir), QA_RUN_DIR: context.dir.replaceAll('\\', '/'), QA_HEADED: headed ? 'true' : 'false', QA_TIMEOUT_MS: String(config.execution.timeout_ms ?? 30000), QA_WORKERS: String(plan.execution_policy.workers) }), timeoutMs + 10000);
     if (test.termination || test.error || !processesStopped || test.code === null) return block(`Execution stopped: ${test.termination ?? test.error ?? 'unknown termination'}`, test.termination === 'interrupted' ? 'interrupted' : 'blocked');
     const rawPath = resolve(context.dir, 'playwright/playwright-results.json');
     if (!existsSync(rawPath)) return block('Playwright produced no raw result in current attempt');

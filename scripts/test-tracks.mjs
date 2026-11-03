@@ -30,14 +30,15 @@ export function validateTrackRequest(request) {
   }
   check(Array.isArray(request.stages) && request.stages.length>0 && new Set(request.stages).size===request.stages.length && request.stages.every(id=>Object.hasOwn(stageNames,id)),'Provide unique requested stages');
   check(['task','lifecycle'].includes(request.workflow_mode??'task'),'Invalid workflow mode');
-  check(['auto','staged'].includes(request.review_mode??'auto'),'Invalid review mode');
+  check(['auto','staged'].includes(request.review_mode??(request.workflow_mode==='lifecycle'?'staged':'auto')),'Invalid review mode');
+  check(request.workflow_mode!=='lifecycle' || request.review_mode===undefined || request.review_mode==='staged','Full lifecycle requires staged human review');
   check(['provided_materials','live_product'].includes(request.source_mode??'provided_materials'),'Invalid source mode');
   check(request.source_mode!=='live_product' || (request.workflow_mode??'task')==='task','Live product is task mode only');
 }
 
 export function trackPlan(request,type) {
   const definition=workflowDefinition(),execution=type==='api'?'api_execution':'execution';
-  const workflowMode=request.workflow_mode??'task',reviewMode=request.review_mode??'auto',sourceMode=request.source_mode??'provided_materials';
+  const workflowMode=request.workflow_mode??'task',reviewMode=request.review_mode??(request.workflow_mode==='lifecycle'?'staged':'auto'),sourceMode=request.source_mode??'provided_materials';
   const requested=new Set(request.stages.map(id=>['execution','api_execution'].includes(id)?execution:id));
   if(sourceMode==='live_product')requested.add(execution);
   const stages=definition.stages.map(s=>({...s,depends_on:s.id==='defects'?[execution]:[...s.depends_on]}));
@@ -53,7 +54,8 @@ export function trackPlan(request,type) {
       stage.depends_on=order.slice(0,order.indexOf(stage.id)).filter(id=>selected.has(id)).slice(-1);
       if(sourceMode==='live_product')stage.depends_on=stage.id===execution?[]:selected.has(stage.id)?[execution]:[];
     }
-    stage.confirmation=reviewMode==='staged'?'after':'none';
+    stage.confirmation=workflowMode==='lifecycle' && stage.id===execution && type==='functional'?'before':reviewMode==='staged'?'after':'none';
+    stage.result_confirmation=workflowMode==='lifecycle' && reviewMode==='staged' && stage.id===execution && type==='functional'?'after':undefined;
   }
   if(sourceMode==='live_product')stages.sort((a,b)=>Number(b.id===execution)-Number(a.id===execution));
   return {workflow_id:definition.workflow_id,workflow_version:definition.workflow_version,workflow_mode:workflowMode,review_mode:reviewMode,source_mode:sourceMode,execution_branches:selected.has(execution)?[execution]:[],stages};
@@ -66,7 +68,7 @@ export function planTestTracks(root,runId,request) {
     const {manifest,manifestPath}=getRunContext(root,project,runId),parentDir=runDirectory(root,runId);
     check(!manifest.test_track,'A typed child cannot create replacement tracks');
     check(!manifest.orchestration?.plan?.stages?.length && !manifest.orchestration?.events?.some(e=>e.stage),'Existing task plans cannot be split or reset; preserve their evidence');
-    const spec={tracks:request.tracks.map(t=>({...t,source_paths:[...t.source_paths].sort()})).sort((a,b)=>a.type.localeCompare(b.type)),stages:[...request.stages].sort(),workflow_mode:request.workflow_mode??'task',review_mode:request.review_mode??'auto',source_mode:request.source_mode??'provided_materials',...(request.scope_name!==undefined?{scope_name:safeDeliveryScope(request.scope_name)}:{})};
+    const spec={tracks:request.tracks.map(t=>({...t,source_paths:[...t.source_paths].sort()})).sort((a,b)=>a.type.localeCompare(b.type)),stages:[...request.stages].sort(),workflow_mode:request.workflow_mode??'task',review_mode:request.review_mode??(request.workflow_mode==='lifecycle'?'staged':'auto'),source_mode:request.source_mode??'provided_materials',...(request.scope_name!==undefined?{scope_name:safeDeliveryScope(request.scope_name)}:{})};
     const key=digest(spec),prior=manifest.test_tracks;
     check(!prior || prior.spec_sha256===key,'Test tracks already planned; continue their existing run IDs, never reset or replace them');
     const contextPath='audit/user-input-context.json';

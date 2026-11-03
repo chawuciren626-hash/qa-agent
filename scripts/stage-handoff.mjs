@@ -9,6 +9,7 @@ import { summarizeRun } from './run-status-summary.mjs';
 import { analysisSummary } from './analysis-summary.mjs';
 import { isIndependent, usesTaskArtifacts, inspectIndependentArtifacts } from './independent-task.mjs';
 import { deliveryPresentation } from './delivery-presentation.mjs';
+import { verifyInterruptedReportRecovery } from './interrupted-report-recovery.mjs';
 
 export class HandoffInputError extends CommandUsageError {}
 
@@ -31,12 +32,14 @@ export function inspectStageHandoff(root, parent, request, agentRoot) {
   if(draftReconciliation) draftHandoffReconciliation(root,runId,manifest,stage,parent,agentRoot);
   if(partialReconciliation) partialBrowserDelivery(root,runId,manifest);
   if (current.status==='in_progress' || partialReconciliation || draftReconciliation) {
-    const child = resolveDispatchedChild(root,runId,stage,parent,agentRoot);
-    const evidence=verifyStageEvidence(root,runId,manifest,{stage,'dispatch-id':dispatch.dispatch_id,'parent-session-id':parent,'session-id':child.child_session,artifacts:artifacts.join(',')},agentRoot);
+    const recovery=request.recovery==='interrupted_report';
+    if(recovery && stage!=='report') throw new Error('Interrupted report recovery is report-only');
+    const child = resolveDispatchedChild(root,runId,stage,parent,agentRoot,recovery?{includeInterrupted:true}:{});
+    const evidence=recovery?verifyInterruptedReportRecovery(root,runId,manifest,parent,artifacts,agentRoot):verifyStageEvidence(root,runId,manifest,{stage,'dispatch-id':dispatch.dispatch_id,'parent-session-id':parent,'session-id':child.child_session,artifacts:artifacts.join(',')},agentRoot);
     if(partialReconciliation && !evidence.partial_browser_failures?.some(f=>['failed','timeout'].includes(f.status))) throw new Error('Blocked execution lacks a verified closed browser failure for partial delivery');
     assertDependencyArtifacts(root,runId,manifest,stage);
     assertArtifactContract(root,runId,stage,{mode:prepare?'prepare':'execute',artifacts});
-    commands.push({script:'record-orchestration-event.mjs',args:[runId,'completed',`--stage=${stage}`,`--dispatch-id=${dispatch.dispatch_id}`,`--parent-session-id=${parent}`,`--session-id=${child.child_session}`,`--artifacts=${artifacts.join(',')}`]});
+    commands.push({script:'record-orchestration-event.mjs',args:[runId,'completed',`--stage=${stage}`,`--dispatch-id=${dispatch.dispatch_id}`,`--parent-session-id=${parent}`,`--session-id=${child.child_session}`,`--artifacts=${artifacts.join(',')}`,...(recovery?['--recovery=interrupted_report']:[])]});
   } else {
     if (!recorded || !['completed','awaiting_confirmation','planned'].includes(current.status)) throw new Error('No current completed handoff to resume; do not infer completion from files');
     if (completed.evidence?.parent_session_id!==parent) throw new Error('Completion owner mismatch');
@@ -47,8 +50,8 @@ export function inspectStageHandoff(root, parent, request, agentRoot) {
       }
     } else assertCompletedArtifacts(root,runId,manifest,stage);
   }
-  const confirmation = (manifest.confirmations ?? []).filter(c=>c.stage===stage).at(-1);
-  const needsConfirmation = prepare || plan.confirmation==='after';
+  const confirmation = (manifest.confirmations ?? []).filter(c=>c.stage===stage && (prepare ? c.kind === 'authorization' || !c.kind : c.kind === 'result' || !c.kind && plan.confirmation === 'after')).at(-1);
+  const needsConfirmation = prepare || plan.confirmation==='after' || plan.result_confirmation==='after';
   if (needsConfirmation) {
     const decisionForDispatch = manifest.orchestration.events.some(e=>e.type==='confirmation_requested' && e.stage===stage && e.confirmation_id===confirmation?.id && manifest.orchestration.events.indexOf(e)>manifest.orchestration.events.indexOf(dispatch));
     if (decisionForDispatch && ['rejected','revision_requested'].includes(confirmation.status)) throw new Error('Respect the user revision or rejection; do not reuse the old delivery');

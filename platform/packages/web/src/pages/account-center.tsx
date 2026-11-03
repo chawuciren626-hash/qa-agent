@@ -5,7 +5,7 @@ import "./account-center.css";
 type User = { userId: string; isAdmin: boolean; disabled?: boolean; createdAt: string };
 type Action = { kind: "disable" | "enable" | "revoke" | "reset" | "create"; userId: string };
 const errors: Record<string, string> = {
-  account_center_unavailable: "账号中心暂时无法连接，请恢复连接后重试。本地资料和已有任务保留。",
+  account_center_unavailable: "服务端不可用，请联系管理员",
   owner_admin_required: "此账号不能认领本机管理员资料，请联系管理员。",
   invalid_credentials: "账号、密码不正确，或账号已停用。",
   user_exists: "该用户名已被使用。", registration_closed: "当前未开放注册，请联系管理员。",
@@ -15,8 +15,12 @@ const errors: Record<string, string> = {
   unauthorized: "登录已失效，请重新登录。",
 };
 async function accountRequest(path: string, method = "GET", body?: unknown) {
-  const r = await fetch(path, { method, credentials: "same-origin", headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  const value = r.status === 204 ? null : await r.json();
+  let r: Response;
+  try { r = await fetch(path, { method, credentials: "same-origin", headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }); }
+  catch { throw new Error("服务端不可用，请联系管理员"); }
+  if (r.status !== 204 && !/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(r.headers.get("content-type") ?? ""))
+    throw new Error("服务端不可用，请联系管理员");
+  const value = r.status === 204 ? null : await r.json().catch(() => { throw new Error("服务端不可用，请联系管理员"); });
   if (!r.ok) throw new Error(errors[value?.error?.code] ?? "操作失败，请检查输入或稍后重试。");
   return value;
 }

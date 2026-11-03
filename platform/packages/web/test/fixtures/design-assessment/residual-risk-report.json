@@ -1,0 +1,169 @@
+{
+  "name": "high-risk-untested-with-pending-defect",
+  "description": "A run with a high-risk untested point, no execution results, one confirmed defect and one pending phenomenon in a report registry.",
+  "input": {
+    "coverage": {
+      "projectId": "demo",
+      "sessionId": "session-1",
+      "runId": "run-1",
+      "designRevision": 1,
+      "designStatus": "frozen",
+      "counts": {
+        "points": 2,
+        "cases": 2,
+        "coveredPoints": 1,
+        "uncoveredPoints": 1,
+        "executed": 0,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "blocked": 0,
+        "untestedCases": 2
+      },
+      "rates": { "pointCoverage": 0.5, "caseExecution": 0, "passRate": null },
+      "risk": {
+        "high": { "points": 1, "covered": 1, "executed": 0, "failed": 0, "untested": 1 },
+        "medium": { "points": 0, "covered": 0, "executed": 0, "failed": 0, "untested": 0 },
+        "low": { "points": 1, "covered": 0, "executed": 0, "failed": 0, "untested": 0 }
+      },
+      "gate": {
+        "qualityGate": "blocked",
+        "conclusion": "blocked",
+        "allPassed": false,
+        "complete": false,
+        "evidenceComplete": false,
+        "reasons": ["高风险测试点没有执行结果", "insufficient evidence"]
+      },
+      "points": [
+        {
+          "pointKey": "P-HIGH",
+          "module": "支付",
+          "feature": "重复扣款",
+          "risk": "high",
+          "coveredBy": ["CASE-HIGH"],
+          "status": "untested",
+          "caseCounts": { "passed": 0, "failed": 0, "skipped": 0, "blocked": 0, "notRun": 1 },
+          "untestedReason": "没有执行结果"
+        },
+        {
+          "pointKey": "P-LOW",
+          "module": "订单",
+          "feature": "订单列表",
+          "risk": "low",
+          "coveredBy": [],
+          "status": "untested",
+          "caseCounts": { "passed": 0, "failed": 0, "skipped": 0, "blocked": 0, "notRun": 0 },
+          "untestedReason": "没有关联用例"
+        }
+      ],
+      "untested": [
+        { "kind": "case", "id": "CASE-HIGH", "reason": "执行被阻塞" },
+        { "kind": "point", "id": "P-LOW", "reason": "没有关联用例" }
+      ]
+    },
+    "results": [],
+    "defects": [
+      {
+        "defectId": "DEF-1",
+        "projectId": "demo",
+        "fingerprint": "fingerprint-1",
+        "title": "重复点击导致两次扣款",
+        "category": "product_defect",
+        "status": "confirmed",
+        "confidence": "strong",
+        "severity": "Major",
+        "priority": "P1",
+        "expectedResult": "只扣款一次",
+        "actualResult": "扣款两次",
+        "analysis": "缺少幂等控制",
+        "relatedCases": ["CASE-HIGH"],
+        "evidenceRefs": [],
+        "originSessionId": "session-1",
+        "originRunId": "run-0",
+        "firstSeenAt": "2026-11-01T00:00:00.000Z",
+        "updatedAt": "2026-11-02T00:00:00.000Z",
+        "revision": 2,
+        "eventCount": 3
+      },
+      {
+        "defectId": "DEF-2",
+        "projectId": "demo",
+        "fingerprint": "fingerprint-2",
+        "title": "偶发支付超时提示不明确",
+        "category": "needs_review",
+        "status": "needs_review",
+        "confidence": "low",
+        "severity": "Critical",
+        "priority": "P0",
+        "expectedResult": "提示明确原因",
+        "actualResult": "只显示超时",
+        "analysis": "证据不足，待复核",
+        "relatedCases": [],
+        "evidenceRefs": [],
+        "originSessionId": "session-1",
+        "originRunId": "run-1",
+        "firstSeenAt": "2026-11-02T00:00:00.000Z",
+        "updatedAt": "2026-11-02T00:00:00.000Z",
+        "revision": 1,
+        "eventCount": 1
+      }
+    ],
+    "report": {
+      "report": {
+        "reportId": "REPORT-1",
+        "projectId": "demo",
+        "sessionId": "session-1",
+        "runId": "run-1",
+        "batchId": "batch-1",
+        "designRevision": 1,
+        "revision": 1,
+        "status": "published",
+        "htmlPath": "report/index.html",
+        "htmlSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "conclusion": "blocked",
+        "qualityGate": "blocked",
+        "counts": {
+          "points": 2,
+          "cases": 2,
+          "coveredPoints": 1,
+          "uncoveredPoints": 1,
+          "executed": 0,
+          "passed": 0,
+          "failed": 0,
+          "skipped": 0,
+          "blocked": 0,
+          "untestedCases": 2
+        },
+        "coverage": { "pointCoverage": 0.5, "caseExecution": 0, "passRate": null, "allPassed": false },
+        "untested": [
+          { "kind": "case", "id": "CASE-HIGH", "reason": "执行被阻塞" },
+          { "kind": "point", "id": "P-LOW", "reason": "没有关联用例" }
+        ],
+        "evidence": [],
+        "limitations": ["高风险测试点未执行"],
+        "openDefects": [{ "defectId": "DEF-1", "status": "confirmed", "severity": "Major" }],
+        "resultsFingerprint": "fingerprint-results",
+        "createdAt": "2026-11-02T00:00:00.000Z",
+        "createdBy": "owner",
+        "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "stale": false
+    },
+    "reportLoaded": true
+  },
+  "expected": {
+    "headline": "blocked",
+    "headlineLabel": "阻断",
+    "counts": {
+      "points": 2,
+      "businessCases": 2,
+      "assertions": 0,
+      "passed": 0,
+      "confirmedDefects": 1,
+      "pendingDefects": 1
+    },
+    "confirmedDefectIds": ["DEF-1"],
+    "pendingDefectIds": ["DEF-2"],
+    "uncoveredIds": ["point:P-HIGH", "case:CASE-HIGH", "coverage:incomplete", "evidence:incomplete"]
+  }
+}

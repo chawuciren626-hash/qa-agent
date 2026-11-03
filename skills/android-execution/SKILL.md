@@ -1,12 +1,14 @@
 ---
 name: android-execution
+version: 2026.11.02.1
 description: 通过ADB后端在真实Android设备或模拟器上执行应用启动、控件操作、UI断言、截图与失败取证；区分动作完成、断言通过与基础设施异常，结果未知时不重放，供自动化执行角色在Android派发范围内使用。
 metadata:
-  version: '1.0.0'
   scope: android-adb-backend
 ---
 
 # Android 执行 Skill
+
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
 
 本 Skill 指导在**已授权**的 Android 设备或模拟器上执行一条可追溯的测试链路。当前实现为 ADB 后端：通过 `adb shell input`、`uiautomator dump`、`screencap`、`logcat` 完成观察与操作，不创建 Appium 会话，也不运行 Espresso／Compose／XCUITest 套件。
 

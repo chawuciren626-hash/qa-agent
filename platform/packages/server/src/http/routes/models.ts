@@ -76,10 +76,13 @@ export function publishCredentialsUpdated(deps: ModelsRouteDeps, projectId: stri
  *   reach them or their Sessions keep failing on the old one — or start on the wrong default.
  *   Not awaited: the person editing is not the one who should wait for a set of ssh tunnels.
  */
-export function modelConfigChanged(deps: ModelsRouteDeps, projectId: string): void {
-  deps.manager.invalidateProjectRuntimes(projectId);
-  publishCredentialsUpdated(deps, projectId);
-  void deps.machines.syncConfigEverywhere(projectId);
+export async function modelConfigChanged(deps: ModelsRouteDeps, projectId: string): Promise<void> {
+  const projects=await deps.projectConfigService.publishSharedModels(projectId, true);
+  for(const id of projects) {
+    deps.manager.invalidateProjectRuntimes(id);
+    publishCredentialsUpdated(deps,id);
+    void deps.machines.syncConfigEverywhere(id);
+  }
 }
 
 /** Validate a paired reference object ({ provider, modelId }); shape mismatch throws 400. */
@@ -307,12 +310,28 @@ export function modelsRoutes(deps: ModelsRouteDeps): Hono<AppEnv> {
     return c.json(await deps.projectConfigService.getModels(projectId));
   });
 
+  app.get("/shared", async (c) => {
+    const projectId=requireValidId(c,"projectId");
+    deps.access.requireProjectAccess(c.var.user.userId,projectId);
+    return c.json(await deps.projectConfigService.sharedModelInfo(projectId));
+  });
+
+  app.post("/shared/activate", async (c) => {
+    const projectId=requireValidId(c,"projectId");
+    deps.access.requireProjectOwner(c.var.user.userId,projectId);
+    const info=await deps.projectConfigService.sharedModelInfo(projectId);
+    if(info.enabled) throw new HttpError(409,"shared_models_active","共享模型配置已启用，请刷新页面。");
+    const projects=await deps.projectConfigService.publishSharedModels(projectId,true);
+    for(const id of projects) {deps.manager.invalidateProjectRuntimes(id);publishCredentialsUpdated(deps,id);void deps.machines.syncConfigEverywhere(id);}
+    return c.json({enabled:true,sourceProjectId:projectId,projectIds:projects});
+  });
+
   app.put("/", async (c) => {
     const projectId = requireValidId(c, "projectId");
     deps.access.requireProjectOwner(c.var.user.userId, projectId);
     const req = parseModelsUpdate(await readJson(c));
     const res = await deps.projectConfigService.updateModels(projectId, req);
-    modelConfigChanged(deps, projectId);
+    await modelConfigChanged(deps, projectId);
     return c.json(res);
   });
 
@@ -329,7 +348,7 @@ export function modelsRoutes(deps: ModelsRouteDeps): Hono<AppEnv> {
     const provider = requireProviderId(pathParam(c, "provider"), "provider");
     const patch = parseProviderUpdate(await readJson(c), "body");
     const res = await deps.projectConfigService.setProviderConnection(projectId, provider, patch);
-    modelConfigChanged(deps, projectId);
+    await modelConfigChanged(deps, projectId);
     return c.json(res);
   });
 
@@ -344,7 +363,7 @@ export function modelsRoutes(deps: ModelsRouteDeps): Hono<AppEnv> {
       throw badRequest('mode must be "add" or "restore".');
     }
     const res = await deps.projectConfigService.syncPresets(projectId, body.mode as PresetSyncMode);
-    modelConfigChanged(deps, projectId);
+    await modelConfigChanged(deps, projectId);
     return c.json(res);
   });
 
@@ -385,7 +404,7 @@ export function modelsRoutes(deps: ModelsRouteDeps): Hono<AppEnv> {
       modelId: requireString(body, "modelId", { minLen: 1, maxLen: 200 }),
     };
     const defaultModel = await deps.projectConfigService.setDefaultModelRef(projectId, ref);
-    void deps.machines.syncConfigEverywhere(projectId);
+    await modelConfigChanged(deps,projectId);
     return c.json({ defaultModel } satisfies DefaultModelResponse);
   });
 

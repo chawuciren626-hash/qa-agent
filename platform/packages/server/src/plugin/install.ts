@@ -17,7 +17,7 @@
  * pack time) and the tarball installed, which resolves its dependencies the normal way; the
  * tarball is kept in `<prefix>/archives/`, because npm records the install as a `file:`
  * dependency and reconciles the prefix against it on every later install. Installing runs the
- * package's install scripts exactly as installing it from the registry does — the same trust.
+ * package's install scripts are disabled. Installed code still needs review before activation.
  */
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -90,7 +90,7 @@ async function npm(prefix: string, args: readonly string[], cwd = prefix): Promi
       cwd,
       timeout: INSTALL_TIMEOUT_MS,
       maxBuffer: 8 * 1024 * 1024,
-      env: process.env,
+      env: npmInstallEnv(),
     });
     return stdout;
   } catch (err) {
@@ -99,7 +99,7 @@ async function npm(prefix: string, args: readonly string[], cwd = prefix): Promi
 }
 
 const install = (prefix: string, spec: string) =>
-  npm(prefix, ["install", "--no-audit", "--no-fund", "--omit=dev", "--", spec]);
+  npm(prefix, ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--omit=dev", "--", spec]);
 
 /**
  * Installs (or upgrades) one package into the root's plugin prefix. Returns the version npm
@@ -267,7 +267,7 @@ export async function removePluginPackage(root: string, specifier: string): Prom
   } catch {
     return;
   }
-  await npm(prefix, ["uninstall", "--no-audit", "--no-fund", "--", name]);
+  await npm(prefix, ["uninstall", "--ignore-scripts", "--no-audit", "--no-fund", "--", name]);
   await pruneArchives(prefix);
 }
 
@@ -314,6 +314,17 @@ function npmReason(stderr: string | undefined, err: Error): string {
 /** Windows resolves `npm` through npm.cmd; everywhere else the plain name is on PATH. */
 function npmCommand(): string {
   return process.platform === "win32" ? "npm.cmd" : "npm";
+}
+
+function npmInstallEnv(): NodeJS.ProcessEnv {
+  const allowed = ["PATH", "PATHEXT", "SystemRoot", "WINDIR", "ComSpec", "TEMP", "TMP", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "npm_config_registry", "npm_config_cache", "npm_config_offline", "npm_config_update_notifier"];
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of allowed) {
+    const found = Object.keys(process.env).find((candidate) => candidate.toUpperCase() === key.toUpperCase());
+    if (found) env[found] = process.env[found];
+  }
+  env.npm_config_ignore_scripts = "true";
+  return env;
 }
 
 /**

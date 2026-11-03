@@ -11,8 +11,22 @@ import { readJson, requireString, requireValidId } from '../validate.js';
 import { parseSkillArchive } from './skills.js';
 import { parsePluginArchive } from '../../services/plugin-archive.js';
 import { qaEnabled, qaEngineModule } from '../../services/qa-engine.js';
+import {
+  activeSelectionReferences,
+  cancelSelection,
+  consumeSelection,
+  createRoundSelection,
+  currentSelection,
+  getSelection,
+  selectionDirectory,
+  selectionSkillFiles,
+  selectionView,
+  skillResourceFingerprint,
+  skillResourceVersion,
+  type SkillPick
+} from '../../services/qa-skill-selection.js';
 
-type Resource = { id: string; name: string; kind: 'skill' | 'plugin'; createdAt: string; skills: { name: string; files: Record<string, string> }[]; applied?: Record<string, Record<string,string>> };
+type Resource = { id: string; name: string; kind: 'skill' | 'plugin'; version?: number; contentHash?: string; createdAt: string; skills: { name: string; files: Record<string, string> }[]; applied?: Record<string, Record<string,string>> };
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 const locks = new Set<string>();
 async function exclusive<T>(key: string, fn: () => Promise<T>): Promise<T> {
@@ -23,7 +37,10 @@ async function read(file: string): Promise<Resource> {
   try { return JSON.parse(await fs.readFile(file, 'utf8')); }
   catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') throw new HttpError(404, 'not_found', '个人资源不存在。'); throw e; }
 }
-const summary = ({id, name, kind, createdAt, skills, applied}: Resource) => ({id, name, kind, createdAt, skills: skills.map(s => s.name), appliedAgents:Object.keys(applied ?? {})});
+const summary = (resource: Resource) => ({id:resource.id, name:resource.name, kind:resource.kind, version:skillResourceVersion(resource), contentHash:resource.contentHash ?? skillResourceFingerprint(resource), createdAt:resource.createdAt, skills:resource.skills.map(s => s.name), appliedAgents:Object.keys(resource.applied ?? {})});
+function protectedSkillNames(): Set<string> {
+  return new Set(qaEngineModule('qa-project-bootstrap').qaRoles().flatMap((role: {skills:string[]}) => role.skills.map(name => name.toLowerCase())));
+}
 async function fingerprint(dir: string): Promise<string> {
   const files: string[]=[];
   async function walk(at:string) {
@@ -49,7 +66,8 @@ export function registerQaPersonalResources(app: Hono<AppEnv>, deps: AgentsRoute
     const projectId = requireValidId(c, 'projectId');
     const access = deps.access.requireProjectAccess(c.var.user.userId, projectId);
     const owner = access.ownerUserId === c.var.user.userId;
-    return { projectId, owner, dir: path.join(root, '.qa-personal-resources', hash(c.var.user.userId), projectId) };
+    const userHash = hash(c.var.user.userId);
+    return { projectId, owner, dir: path.join(root, '.qa-personal-resources', userHash, projectId), selectionDir: selectionDirectory(root, userHash, projectId) };
   };
   app.get(base, async c => {
     const { dir, owner } = scope(c);
@@ -87,49 +105,89 @@ export function registerQaPersonalResources(app: Hono<AppEnv>, deps: AgentsRoute
         skills = plugin.skills.map(skill => ({name:skill.name, files:Object.fromEntries(Object.entries({ ...skill.files, "SKILL.md": skill.content }).map(([p,b]) => [p, Buffer.from(b).toString('base64')]))}));
       } finally { await fs.rm(temp, {recursive:true,force:true}); }
     }
-    const resource: Resource = { id:randomUUID(), name, kind, skills, createdAt:new Date().toISOString() };
+    const resource: Resource = { id:randomUUID(), name, kind, version:1, skills, createdAt:new Date().toISOString() };
+    resource.contentHash = skillResourceFingerprint(resource);
     await fs.mkdir(dir, {recursive:true});
     await fs.writeFile(path.join(dir, resource.id + '.json'), JSON.stringify(resource), {flag:'wx'});
     return c.json(summary(resource), 201);
   });
+  const targetSession = (projectId: string, sessionId: string, agentId: string) => {
+    const session = deps.sessionsRepo.findById(sessionId);
+    if (!session || session.projectId !== projectId || session.agentId !== agentId) throw new HttpError(404, 'session_not_found', '任务不存在或不属于该智能体。');
+    return session;
+  };
+  app.get(base + '/selection', async c => {
+    const {projectId, selectionDir} = scope(c);
+    const sessionId = c.req.query('sessionId') ?? '';
+    const agentId = c.req.query('agentId') ?? '';
+    if (!sessionId || !agentId) throw new HttpError(400, 'invalid_selection', '任务和智能体标识必填。');
+    targetSession(projectId, sessionId, agentId);
+    const selection = await currentSelection({dir: selectionDir, sessionId, agentId});
+    return c.json({selection: selection ? selectionView(selection) : null});
+  });
+  app.post(base + '/selection', async c => {
+    const {projectId, dir, selectionDir} = scope(c);
+    const body = await readJson(c);
+    const sessionId = requireString(body, 'sessionId', {minLen: 3, maxLen: 120});
+    const agentId = requireString(body, 'agentId', {minLen: 1, maxLen: 100});
+    if (!/^[A-Za-z0-9_-]+$/.test(agentId)) throw new HttpError(400, 'invalid_agent', '无效智能体。');
+    targetSession(projectId, sessionId, agentId);
+    await deps.agentConfigService.requireExists(projectId, agentId);
+    const raw = body.resources;
+    if (!Array.isArray(raw) || !raw.length || raw.length > 20) throw new HttpError(400, 'invalid_selection', '请选择 1 至 20 个个人资源。');
+    const picks: SkillPick[] = raw.map(item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) throw new HttpError(400, 'invalid_selection', '个人资源选择无效。');
+      const record = item as Record<string, unknown>;
+      if (typeof record.resourceId !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(record.resourceId)) throw new HttpError(400, 'invalid_selection', '个人资源标识无效。');
+      if (record.skills !== undefined && (!Array.isArray(record.skills) || !record.skills.length || record.skills.some(name => typeof name !== 'string'))) throw new HttpError(400, 'invalid_selection', '技能选择无效。');
+      return {resourceId: record.resourceId, ...(record.skills === undefined ? {} : {skills: record.skills as string[]})};
+    });
+    let roundKey: string | undefined;
+    if (body.roundKey !== undefined) {
+      roundKey = requireString(body, 'roundKey', {minLen: 1, maxLen: 200});
+      if (!/^[A-Za-z0-9_.:-]+$/.test(roundKey)) throw new HttpError(400, 'invalid_selection', '请求标识格式无效。');
+    }
+    const result = await createRoundSelection({
+      dir: selectionDir, resourceDir: dir, projectId, userId: c.var.user.userId,
+      sessionId, agentId, picks, roundKey, protectedNames: protectedSkillNames()
+    });
+    return c.json({idempotent: result.idempotent, selection: selectionView(result.selection)}, result.idempotent ? 200 : 201);
+  });
+  app.get(base + '/selection/:selectionId', async c => {
+    const {selectionDir} = scope(c);
+    const selection = await getSelection({dir: selectionDir, id: requireValidId(c, 'selectionId')});
+    return c.json(selectionView(selection));
+  });
+  app.post(base + '/selection/:selectionId/consume', async c => {
+    const {selectionDir} = scope(c);
+    const result = await consumeSelection({dir: selectionDir, id: requireValidId(c, 'selectionId')});
+    return c.json({idempotent: result.idempotent, selection: selectionView(result.selection)});
+  });
+  app.delete(base + '/selection/:selectionId', async c => {
+    const {selectionDir} = scope(c);
+    await cancelSelection({dir: selectionDir, id: requireValidId(c, 'selectionId')});
+    return c.body(null, 204);
+  });
+  app.get(base + '/selection/:selectionId/skills/:skillName/files', async c => {
+    const {selectionDir} = scope(c);
+    const skillName = requireValidId(c, 'skillName');
+    const result = await selectionSkillFiles({dir: selectionDir, id: requireValidId(c, 'selectionId'), skillName});
+    return c.json({name: result.skill.name, resourceId: result.skill.resourceId, resourceVersion: result.skill.resourceVersion, contentHash: result.skill.contentHash, files: result.files});
+  });
   app.delete(base + '/:resourceId', async c => {
-    const {dir} = scope(c); const id = requireValidId(c, 'resourceId');
-    await exclusive(dir + '/' + id, async () => { const file = path.join(dir,id+'.json'); const resource=await read(file); if(Object.keys(resource.applied??{}).length) throw new HttpError(409,'resource_applied','请先移除已应用的副本，再删除个人资源。'); await fs.unlink(file); });
+    const {dir, selectionDir} = scope(c); const id = requireValidId(c, 'resourceId');
+    await exclusive(dir + '/' + id, async () => {
+      const active = await activeSelectionReferences({dir: selectionDir, resourceId: id});
+      if (active.length) throw new HttpError(409, 'resource_in_selection', '该资源正在本轮任务中使用，请先取消选择。');
+      const file = path.join(dir,id+'.json'); const resource=await read(file); if(Object.keys(resource.applied??{}).length) throw new HttpError(409,'resource_applied','请先移除已应用的副本，再删除个人资源。'); await fs.unlink(file);
+    });
     return c.body(null,204);
   });
   app.post(base + '/:resourceId/apply', async c => {
-    const {dir, projectId, owner} = scope(c);
-    if (!owner) throw new HttpError(403,'project_owner_required','仅能应用到本人拥有的项目；共享项目请由项目所有者配置。');
-    const id = requireValidId(c,'resourceId'); const body = await readJson(c);
-    const agentId = requireString(body,'agentId');
-    if (!/^[A-Za-z0-9_-]+$/.test(agentId)) throw new HttpError(400,'invalid_agent','无效智能体。');
-    await deps.agentConfigService.requireExists(projectId,agentId);
-    return exclusive(dir+'/'+id, () => exclusive(path.join(root,projectId,agentId), async () => {
-      if (deps.manager.activeCountForAgent(projectId,agentId)>0) throw new HttpError(409,'agent_busy','请等待该智能体运行结束后再应用资源。');
-      const config = await deps.agentConfigService.getConfig(projectId,agentId);
-      if (config.config.skills.enabled === false) throw new HttpError(409,'skills_disabled','该智能体已禁用 Skills，请联系管理员启用后再应用。');
-      const resource = await read(path.join(dir,id+'.json'));
-      const protectedNames = new Set(qaEngineModule('qa-project-bootstrap').qaRoles().flatMap((r: {skills:string[]}) => r.skills.map(s=>s.toLowerCase())));
-      const target = skillsDir(root,projectId,agentId);
-      for (const skill of resource.skills) {
-        if (protectedNames.has(skill.name.toLowerCase())) throw new HttpError(409,'protected_skill','不能覆盖内置测试 Skill：'+skill.name);
-        if (await fs.lstat(path.join(target,skill.name)).then(()=>true, e=> { if(e.code==='ENOENT') return false; throw e; })) throw new HttpError(409,'skill_exists','已有同名 Skill，未覆盖：'+skill.name);
-      }
-      const written: string[] = [];
-      try {
-        for (const skill of resource.skills) {
-          const dest = path.join(target,skill.name); written.push(dest);
-          await replaceSkillDirectory(dest,Object.entries(skill.files).map(([p,b])=>[p,Buffer.from(b,'base64')] as [string,Buffer]));
-        }
-        await deps.agentConfigService.insertTemplatePlaceholder(projectId,agentId,'skills');
-        const fingerprints:Record<string,string>={};
-        for(const skill of resource.skills) fingerprints[skill.name]=await fingerprint(path.join(target,skill.name));
-        resource.applied={...resource.applied,[agentId]:fingerprints};
-        await saveResource(path.join(dir,id+'.json'),resource);
-      } catch (e) { for (const dest of written) await fs.rm(dest,{recursive:true,force:true}); throw e; }
-      deps.manager.invalidateAgentRuntimes(projectId,agentId);
-      return c.json({applied:true,agentId,skills:resource.skills.map(s=>s.name),scope:'project-agent',mode:'supplement'});
-    }));
+    const {dir, owner} = scope(c);
+    if (!owner) throw new HttpError(403, 'project_owner_required', '仅项目所有者可以管理项目 Agent。');
+    await read(path.join(dir, requireValidId(c, 'resourceId') + '.json'));
+    throw new HttpError(409, 'round_selection_required', '个人 Skill 仅可在任务中选择并对本轮生效。');
   });
   app.post(base + '/:resourceId/remove', async c => {
     const {dir,projectId,owner}=scope(c);

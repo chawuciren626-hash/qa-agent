@@ -122,7 +122,7 @@ export function ConfigMachinePicker({
 /** The server's part of the page: the machine picker and the cards, under a rule. */
 const SERVER_PART = "space-y-4 border-t border-line-muted pt-4";
 
-export function PluginsSection({ focus }: { focus?: string } = {}) {
+export function PluginsSection({ focus, sandboxOnly = false }: { focus?: string; sandboxOnly?: boolean } = {}) {
   const { locale } = useLocale();
   const localized = (en: string | undefined, zhText: string | undefined) =>
     en === undefined ? undefined : localizedText(locale, en, zhText);
@@ -334,7 +334,7 @@ export function PluginsSection({ focus }: { focus?: string } = {}) {
   if (entries === null) {
     return (
       <SettingsSection>
-        {viewRow}
+        {!sandboxOnly && viewRow}
         {picker !== null && <div className={SERVER_PART}>{picker}</div>}
       </SettingsSection>
     );
@@ -343,10 +343,13 @@ export function PluginsSection({ focus }: { focus?: string } = {}) {
   // A card per entry with no parent on the page; an entry whose parent is not listed stands
   // on its own rather than disappearing.
   const names = new Set(entries.map((e) => e.name));
-  const cards = entries.filter((e) => e.parent === undefined || !names.has(e.parent));
+  const cards = entries.filter((e) =>
+    (e.parent === undefined || !names.has(e.parent)) &&
+    (sandboxOnly ? e.name === "sandbox" : e.name !== "sandbox"),
+  );
   return (
     <SettingsSection>
-      {viewRow}
+      {!sandboxOnly && viewRow}
       {(picker !== null || loadError !== null || cards.length > 0) && (
         <div className={SERVER_PART}>
           {picker}
@@ -367,7 +370,7 @@ export function PluginsSection({ focus }: { focus?: string } = {}) {
               onStored={adoptOne}
               onStoredAll={adopt}
               onAction={askAction}
-              onSwitchedOn={offerBackend}
+              onSwitchedOn={sandboxOnly ? () => {} : offerBackend}
             />
           ))}
         </div>
@@ -393,7 +396,7 @@ export function PluginsSection({ focus }: { focus?: string } = {}) {
             : ""}
         </p>
       </ConfirmModal>
-      <SandboxBackendPrompt
+      {!sandboxOnly && <SandboxBackendPrompt
         pkgs={offered}
         machineName={machine === null ? S.plugins.thisServer : nameOf(machine)}
         busy={installing}
@@ -401,7 +404,7 @@ export function PluginsSection({ focus }: { focus?: string } = {}) {
         onLater={(dontAskAgain) => {
           if (!installing) closePrompt(dontAskAgain);
         }}
-      />
+      />}
     </SettingsSection>
   );
 }

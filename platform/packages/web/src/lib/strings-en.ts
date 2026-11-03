@@ -791,6 +791,8 @@ export const en: Strings = {
     },
     /** Admin-only sub-page (server-global): the options loaded plugins declare. */
     pluginsTitle: "Plugins",
+    sandboxTitle: "Runtime sandbox",
+    sandboxInfo: "Server-wide sandbox settings for new tasks in every Project. Shipped backends load without per-Agent installation. Existing tasks keep their starting policy; automation execution needs separate sandbox integration and verification.",
     /** An enum option this machine cannot honour, listed greyed out. */
     pluginOptionUnavailable: (title: string, reason: string) =>
       `${title} (not supported: ${reason})`,
@@ -3685,6 +3687,7 @@ Scenarios:
     send: "Send",
     stop: "Stop",
     compact: "Compact context",
+    personalSkill: "Choose personal Skills for this round: effective only for this send's round and cleared after a successful send",
     approve: "Allow",
     deny: "Deny",
     decisionAllow: "Approved",

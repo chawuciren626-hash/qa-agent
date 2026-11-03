@@ -1,11 +1,12 @@
 ---
 name: test-point-design
+version: 2026.11.02.1
 description: 基于需求分析设计正常、异常和边界场景的测试点。
-metadata:
-  version: '1.2.0'
 ---
 
 # 测试点设计 Skill
+
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
 
 两种模式均可按需读取已安装的test-design-methods：复杂条件/状态用方法参考，表单与业务权限用控件场景参考，只有被测产品含AI功能时才用AI功能参考。候选检查项经本次来源和范围筛选后才形成测试点，不固定扩充条数。
 

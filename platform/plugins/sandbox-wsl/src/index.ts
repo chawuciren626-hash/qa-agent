@@ -51,7 +51,8 @@ import {
 } from "./tasks.js";
 import type { TaskKind, WslSettings } from "./tasks.js";
 
-export { bwrapArgs, chdirRoots, linuxProgram, toLinuxPath } from "./profile.js";
+export { automationBwrapArgs, bwrapArgs, chdirRoots, linuxProgram, toLinuxPath } from "./profile.js";
+export { automationLaunchJob } from "./automation.js";
 export {
   launchJob,
   parseMinirootfs,

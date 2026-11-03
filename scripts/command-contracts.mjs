@@ -63,7 +63,7 @@ export function validateCommandArguments(script, args, runId) {
   if (['generate-analysis-markdown.mjs', 'show-run-status.mjs', 'show-run-plan.mjs', 'get-run-resume-point.mjs'].includes(script)) { requireUsage(args.length === 1, usages[script]); return; }
   if (script === 'record-orchestration-event.mjs') {
     requireUsage(['dispatched', 'completed', 'failed', 'blocked'].includes(args[1]), 'Unknown stage event');
-    const o = parseOptions(args.slice(2), ['stage','agent','skills','artifacts','reason','session-id','parent-session-id','dispatch-id','mode','resource-keys']);
+    const o = parseOptions(args.slice(2), ['stage','agent','skills','artifacts','reason','session-id','parent-session-id','dispatch-id','mode','resource-keys','recovery']);
     requireUsage(stages.includes(o.stage) && session(o['parent-session-id']), 'Stage and parent session required');
     if (args[1] === 'dispatched') {
       requireUsage(o.agent && o.skills && !o['dispatch-id'], 'Dispatch requires agent/skills; dispatch ID is generated');
@@ -72,6 +72,7 @@ export function validateCommandArguments(script, args, runId) {
       requireUsage(o['dispatch-id'] && !o.mode, 'Terminal event requires dispatch ID and no mode');
       requireUsage(args[1] === 'completed' ? session(o['session-id']) && o.artifacts : o.reason, 'Completion requires child session/artifacts; failure requires reason');
     }
+    requireUsage(!o.recovery || (args[1]==='completed' && o.stage==='report' && o.recovery==='interrupted_report'), 'Unsupported completion recovery');
     return;
   }
   requireUsage(stages.includes(args[1]), 'Valid positional stage required');

@@ -8,11 +8,18 @@ import { qaEnabled } from "../services/qa-engine.js";
 
 export function qaAuthorization(access: Access, central?:AccountClientGate): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
-    if (!qaEnabled || !c.var.user || c.var.user.isAdmin) return next();
+    if (!qaEnabled || !c.var.user) return next();
     let path: string;
     try { path = decodeURIComponent(c.req.path); }
     catch { throw new HttpError(400, "invalid_path", "Invalid request path."); }
     const write = !["GET", "HEAD", "OPTIONS"].includes(c.req.method);
+    if (c.var.user.isAdmin) {
+      const project = /^\/api\/projects\/([^/]+)\/agents\/qa(?:\/|$)/.exec(path);
+      if (write && project && access.requireProjectAccess(c.var.user.userId, project[1]!).ownerUserId !== c.var.user.userId) {
+        throw new HttpError(403, "project_owner_required", "管理员不能代替项目创建者修改测试资料或确认规则。");
+      }
+      return next();
+    }
     const deny = () => { throw new HttpError(403, "qa_admin_required", "此操作仅限管理员；个人资源请在自己的项目中维护。"); };
     if(central){
       await central.authorizeUserPath(c.var.user.userId,path,c.req.method);

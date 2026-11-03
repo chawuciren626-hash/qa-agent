@@ -1,14 +1,21 @@
 ---
 name: test-selection
+version: 2026.11.02.1
 description: 按风险、优先级、变更范围、执行成本、数据影响和预算选择测试集。
 metadata:
-  version: '1.1.0'
   source: fugazi/test-automation-skills-agents
   revision: 65a72d5e74def3c23143bef8757e72cb68e91032
   adapted-from: playwright-regression-testing
 ---
 
 # 智能测试选择 Skill
+
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+
+## 输入与产出
+
+输入为结构化用例、变更范围、Profile 和执行预算。输出为 `selection/test-selection.json`，记录每条用例的入选或排除原因与预算影响；它不批准实际产品操作。
+
 
 ## 专业方法
 

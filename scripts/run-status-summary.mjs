@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { stageNames } from './stage-registry.mjs';
-import { assertStageHistory, recomputeRunStatus, stageStatuses } from './orchestration-state.mjs';
+import { assertStageHistory, recomputeRunStatus, stageStatuses, requiresResultConfirmation } from './orchestration-state.mjs';
 
 export function summarizeRun(raw, runId) {
   const manifest = JSON.parse(raw);
@@ -23,8 +23,8 @@ export function summarizeRun(raw, runId) {
     else if (state.status === 'awaiting_confirmation') next = 'wait_for_confirmation';
     else if (state.status === 'in_progress') next = 'inspect_active_dispatch';
     else if (state.status === 'revision_requested') next = 'review_revision_before_dispatch';
-    else if (state.status === 'completed') next = stage.confirmation === 'after' && confirmation?.status !== 'approved' ? 'request_confirmation' : 'stage_recorded_complete';
-    else if (state.status === 'planned') next = stage.confirmation === 'before' && confirmation?.status !== 'approved' ? 'review_preparation_and_request_confirmation' : 'check_dispatch_readiness';
+    else if (state.status === 'completed') next = requiresResultConfirmation(stage) && confirmation?.status !== 'approved' ? 'request_confirmation' : 'stage_recorded_complete';
+    else if (state.status === 'planned') next = stage.confirmation === 'before' && !(manifest.confirmations ?? []).some(c=>c.stage===stage.id && c.status==='approved' && (c.kind==='authorization' || !c.kind)) ? 'review_preparation_and_request_confirmation' : 'check_dispatch_readiness';
     else if (state.status === 'skipped') next = 'skipped';
     return { id: stage.id, selected: Boolean(stage.selected), status: state.status ?? 'unknown', mode: state.mode ?? null,
       confirmation: confirmation ? { id: confirmation.id, status: confirmation.status, reason: confirmation.reason ?? null } : null,

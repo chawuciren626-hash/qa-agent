@@ -29,8 +29,9 @@ export class ProjectAccess implements Access {
   find(userId: string, projectId: string): (ProjectRow & { role: ProjectRole }) | null {
     const row = this.projects.findById(projectId);
     if (!row) return null;
-    if (qaEnabled && this.users.findById(userId)?.isAdmin) return { ...row, role: "owner" };
     if (row.ownerUserId === userId) return { ...row, role: "owner" };
+    // QA administrators may inspect projects, but cannot impersonate their owners.
+    if (qaEnabled && this.users.findById(userId)?.isAdmin) return { ...row, role: "member" };
     if (this.members.isMember(projectId, userId)) return { ...row, role: "member" };
     return null;
   }
@@ -56,7 +57,7 @@ export class ProjectAccess implements Access {
   /** Owner only: 403 when known accessible as a member; 404 when not accessible. */
   requireProjectOwner(userId: string, projectId: string): ProjectRow {
     const row = this.requireProjectAccess(userId, projectId);
-    if (row.role !== "owner") {
+    if (row.role !== "owner" || row.ownerUserId !== userId) {
       throw new HttpError(
         403,
         "owner_required",
@@ -75,7 +76,7 @@ export class ProjectAccess implements Access {
   /** Owned + granted Projects with their display names. */
   async listProjects(userId: string): Promise<ProjectSummary[]> {
     const rows = qaEnabled && this.users.findById(userId)?.isAdmin
-      ? this.projects.listAll().map((row) => ({ ...row, role: "owner" as const }))
+      ? this.projects.listAll().map((row) => ({ ...row, role: row.ownerUserId === userId ? "owner" as const : "member" as const }))
       : this.projects.listAccessible(userId);
     return Promise.all(
       rows.map(async (row) => {

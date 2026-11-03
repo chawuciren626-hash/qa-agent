@@ -3,12 +3,18 @@ import { Button, Modal, PageFrame } from "@prismshadow/penguin-ui";
 import { controlRequest } from "../../api/control";
 import type { ManagedKind } from "../../lib/managed-resources";
 import { RESOURCE_NAMES, type Publication } from "./publications-page";
+import {
+  isValidationSuccess,
+  type ResourceVersion,
+  type ValidationResult,
+  type ValidationSuccess,
+} from "./publication-review";
+import { ValidationResultBody, VersionHistoryList } from "./publication-review-view";
 import { providerInfo } from "@prismshadow/penguin-server/model-catalog";
 import "./central-resources-page.css";
 
 type Form = Pick<Publication, "kind" | "name" | "description" | "payload" | "audience"> & { id?: string; revision?: number };
 type Account = { userId: string; isAdmin: boolean };
-type Version = { version: number; created_at: string; body: { name: string; description: string; payload: Record<string, unknown> } };
 
 function newForm(kind: ManagedKind): Form {
   const payload = kind === "agents" ? { prompt: "", agentsMd: "", modelResource: "", skillResources: [], pluginResources: [] }
@@ -32,7 +38,9 @@ export function CentralResourcesPage({ kind }: { kind: ManagedKind }) {
   const [expandedGroups, setExpandedGroups] = useState<string[]>([]);
   const [form, setForm] = useState<Form | null>(null);
   const [detailTab, setDetailTab] = useState("overview");
-  const [history, setHistory] = useState<Version[] | null>(null);
+  const [history, setHistory] = useState<{ resource: Publication; versions: ResourceVersion[] } | null>(null);
+  const [checking, setChecking] = useState<{ resource: Publication; result: ValidationResult } | null>(null);
+  const [publishing, setPublishing] = useState<{ resource: Publication; result: ValidationSuccess } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const load = useCallback(async () => {
@@ -61,9 +69,14 @@ export function CentralResourcesPage({ kind }: { kind: ManagedKind }) {
   const audienceFields = form && <fieldset className="central-resource-audience"><legend>使用范围</legend><label><input type="checkbox" checked={form.audience.includes("*")} onChange={event => setForm({ ...form, audience: event.target.checked ? ["*"] : [] })} />全部用户</label>{!form.audience.includes("*") && users.filter(user => !user.isAdmin).map(user => <label key={user.userId}><input type="checkbox" checked={form.audience.includes(user.userId)} onChange={event => setForm({ ...form, audience: event.target.checked ? [...form.audience, user.userId] : form.audience.filter(id => id !== user.userId) })} />{user.userId}</label>)}</fieldset>;
   const actions = (resource: Publication) => <div className="central-resource-actions">
     <button onClick={() => openEdit(resource)}>配置与授权</button>
-    <button disabled={busy} onClick={() => void act(async () => { if (!confirm(`发布「${resource.name}」的新版本？`)) return; await controlRequest(`/api/control/admin/resources/${resource.id}/publish`, "POST", { revision: resource.revision }); await load(); })}>发布版本</button>
+    <button disabled={busy} onClick={() => void act(async () => { setChecking({ resource, result: await controlRequest(`/api/control/admin/resources/${resource.id}/validate`, "POST", {}) }); })}>发布前校验</button>
+    <button disabled={busy} onClick={() => void act(async () => {
+      const result: ValidationResult = await controlRequest(`/api/control/admin/resources/${resource.id}/validate`, "POST", {});
+      if (!isValidationSuccess(result)) setChecking({ resource, result });
+      else setPublishing({ resource, result });
+    })}>发布版本</button>
     {resource.published && <button disabled={busy} onClick={() => void act(async () => { if (!confirm(`下架「${resource.name}」？已有本地任务和资料将保留。`)) return; await controlRequest(`/api/control/admin/resources/${resource.id}/withdraw`, "POST", {}); await load(); })}>下架</button>}
-    <button onClick={() => void act(async () => setHistory((await controlRequest(`/api/control/admin/resources/${resource.id}/history`)).versions))}>版本记录</button>
+    <button onClick={() => void act(async () => { setHistory({ resource, versions: (await controlRequest(`/api/control/admin/resources/${resource.id}/history`)).versions }); })}>版本记录</button>
     {!resource.version && <button className="danger" disabled={busy} onClick={() => void act(async () => { if (!confirm(`删除草稿「${resource.name}」？此操作无法恢复。`)) return; await controlRequest(`/api/control/admin/resources/${resource.id}`, "DELETE", { revision: resource.revision }); await load(); })}>删除草稿</button>}
   </div>;
   const card = (resource: Publication) => <article className="central-resource-card" key={resource.id}>
@@ -79,7 +92,7 @@ export function CentralResourcesPage({ kind }: { kind: ManagedKind }) {
     {error && <p role="alert" className="mb-4 text-red-600">{error}</p>}
     {kind === "agents" ? <div className="central-resource-list">{rows.map(card)}</div> : <div className="central-resource-groups">{groups.map(([group, items]) => <section key={group} className="central-resource-group"><button className="central-resource-group-head" onClick={() => toggleGroup(group)} aria-expanded={expandedGroups.includes(group) || !!query}><span className="central-resource-avatar small">{groupLabel(group).slice(0, 1).toUpperCase()}</span><strong>{kind === "models" ? groupLabel(group) : group}</strong><span>{items?.length || 0} 项</span><span className="chevron">⌄</span></button>{(expandedGroups.includes(group) || !!query) && <div className="central-resource-list">{items?.map(card)}</div>}</section>)}{kind === "models" && <button className="central-add-group" onClick={() => setForm(newForm("models"))}>＋ 新增分组 / 模型</button>}</div>}
     {!rows.length && <p className="py-12 text-center text-sm opacity-60">{query ? "没有匹配的配置。" : `暂无公共${RESOURCE_NAMES[kind]}。点击右上角新建。`}</p>}
-    {form && <Modal open title={`${form.id ? "编辑" : "新建"}${RESOURCE_NAMES[kind]}`} onClose={() => { if (!busy && confirm("放弃未保存的修改？")) setForm(null); }} footer={<Button disabled={busy} onClick={() => void saveForm()}>保存草稿</Button>}>
+    {form && <Modal open title={`${form.id ? "编辑" : "新建"}${RESOURCE_NAMES[kind]}`} onClose={() => { if (!busy && confirm("放弃未保存的修改？")) setForm(null); }} footer={<Button size="sm" disabled={busy} onClick={() => void saveForm()}>保存草稿</Button>}>
       <div className="max-h-[65vh] space-y-4 overflow-auto pr-2 text-sm">
         <label className="block">名称<input className={inputClass} maxLength={100} value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label>
         <label className="block">说明<textarea className={inputClass} rows={2} maxLength={2000} value={form.description} onChange={event => setForm({ ...form, description: event.target.value })} /></label>
@@ -88,7 +101,44 @@ export function CentralResourcesPage({ kind }: { kind: ManagedKind }) {
         <p className="text-xs opacity-60">保存为草稿后点击“发布版本”才会更新用户可获取的配置；修改授权立即生效。</p>
       </div>
     </Modal>}
-    </>}{history && <Modal open title="发布版本记录" onClose={() => setHistory(null)}>{history.length ? history.map(version => <details key={version.version} className="mb-3"><summary>v{version.version} · {version.created_at}</summary><pre className="mt-2 max-h-60 overflow-auto whitespace-pre-wrap break-words text-xs">{JSON.stringify({ ...version.body, payload: { ...version.body.payload, ...(version.body.payload.archiveBase64 ? { archiveBase64: "已保存的技能包" } : {}) } }, null, 2)}</pre></details>) : <p>尚无已发布版本。</p>}</Modal>}
+    </>}
+    {history && <Modal open title={`版本记录 · ${history.resource.name}`} onClose={() => { if (!busy) setHistory(null); }}>
+      <p className="mb-4 text-sm opacity-70">回滚会生成一个新的已发布版本并保留全部历史；运行中的任务不自动升级。</p>
+      <VersionHistoryList
+        history={history.versions}
+        kind={history.resource.kind}
+        published={history.resource.published}
+        busy={busy}
+        onRestore={(item) => {
+          const target = history;
+          if (!confirm(`恢复「${target.resource.name}」为 v${item.version}？将生成新版本 v${target.resource.version + 1}。`)) return;
+          void act(async () => {
+            await controlRequest(`/api/control/admin/resources/${target.resource.id}/rollback`, "POST", { version: item.version, revision: target.resource.revision });
+            const refreshed: Publication[] = (await controlRequest("/api/control/admin/resources")).resources;
+            const resource = refreshed.find(row => row.id === target.resource.id) ?? target.resource;
+            const versions: ResourceVersion[] = (await controlRequest(`/api/control/admin/resources/${target.resource.id}/history`)).versions;
+            setResources(refreshed);
+            setHistory({ resource, versions });
+          });
+        }}
+      />
+    </Modal>}
+    {checking && <Modal open title={`发布前校验 · ${checking.resource.name}`} onClose={() => setChecking(null)} footer={<Button size="sm" disabled={busy} onClick={() => setChecking(null)}>关闭</Button>}>
+      <p className="mb-4 text-sm opacity-70">校验只读取当前草稿，不保存、不发布、不安装。</p>
+      <ValidationResultBody result={checking.result} />
+    </Modal>}
+    {publishing && <Modal open title={`发布 ${publishing.resource.name} v${publishing.resource.version + 1}`} onClose={() => { if (!busy) setPublishing(null); }} footer={<>
+      <Button size="sm" disabled={busy} onClick={() => setPublishing(null)}>取消</Button>
+      <Button size="sm" variant="primary" disabled={busy} onClick={() => void act(async () => {
+        const target = publishing;
+        await controlRequest(`/api/control/admin/resources/${target.resource.id}/publish`, "POST", { revision: target.resource.revision });
+        setPublishing(null);
+        await load();
+      })}>确认发布</Button>
+    </>}>
+      <ValidationResultBody result={publishing.result} />
+      <p className="mt-4 text-sm opacity-70">发布只增加一个用户可获取的新版本；不覆盖已获取的本机副本，也不改变运行中的任务。</p>
+    </Modal>}
   </div></PageFrame>;
 }
 

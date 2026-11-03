@@ -55,7 +55,7 @@ import { ManagedResourceSection } from "../../components/managed-resource-sectio
  * in the dialog — and closing it with unsaved edits asks first.
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DragEvent as ReactDragEvent, ReactNode } from "react";
+import type { ComponentProps, DragEvent as ReactDragEvent, ReactNode } from "react";
 import type {
   CredentialInfo,
   ModelProtocolDetectRequest,
@@ -886,11 +886,17 @@ const isModelGroupDrag = (e: ReactDragEvent): boolean =>
 /** Dragging a group needs a pointer that can drag — HTML5 drag-and-drop never fires from touch (the sidebar's query). */
 const DRAG_POINTER_QUERY = "(hover: hover) and (pointer: fine)";
 
-export function ModelsPage() {
+function SettingsModelsFrame({ children, contentClassName = "" }: ComponentProps<typeof PageFrame>) {
+  return <div className={`models-redesign models-settings-frame ${contentClassName}`}>{children}</div>;
+}
+
+export function ModelsPage({ embedded = false }: { embedded?: boolean }) {
   useDocumentTitle(S.models.title);
   const { currentProject, agents } = useProject();
   const projectId = currentProject?.projectId ?? null;
   const isOwner = currentProject?.role === "owner";
+  const [deleteRow, setDeleteRow] = useState<ModelRefDto | null>(null);
+  const [testingRow, setTestingRow] = useState<string | null>(null);
   /** The Models trail's raised badge, or undefined — "Add new models" and the notice appear with it. */
   const todo = useUpdateBadges().todos.models;
   /** What the trail says, read at render time: `S` is a live binding swapped on locale change. */
@@ -1057,6 +1063,7 @@ export function ModelsPage() {
       setUsedTokens(new Map());
     }
   }, [projectId, adopt]);
+
 
   useEffect(() => {
     void load();
@@ -1730,14 +1737,27 @@ export function ModelsPage() {
       })
     : [];
 
+  const testOne = async (row: RowState) => {
+    const key = refMapKey(row.provider, row.modelId);
+    setTestingRow(key);
+    try {
+      const result = await api.testModel(projectId, { provider: row.provider, modelId: row.modelId });
+      if (result.ok) toastSuccess(`连通成功${result.latencyMs !== undefined ? `，耗时 ${result.latencyMs} ms` : ""}`);
+      else toastError(result.message ?? "连通性测试失败");
+    } catch (error) { toastError(apiErrorText(error)); }
+    finally { setTestingRow(null); }
+  };
+
+  const Frame = embedded ? SettingsModelsFrame : PageFrame;
+
   return (
-    <PageFrame width="full" className="models-redesign-frame" contentClassName="models-redesign">
+    <Frame width="full" className="models-redesign-frame" contentClassName="models-redesign">
       {/* The header holds search, the owner-only catalog pair — "Add new models" and "Restore
           defaults" — and the pair of create buttons: the AI path and the group form, offered side
           by side (per-model entry points still live in each group header); on narrow screens the
           actions wrap to their own line and the search box shrinks flexibly, fixed width at >=sm.
           A member reads why nothing here is editable behind the title's "?". */}
-      <PageHeader
+      {!embedded && <PageHeader
         title={S.models.title}
         info={isOwner ? undefined : S.models.readOnlyHint}
         actions={
@@ -1806,7 +1826,13 @@ export function ModelsPage() {
             onDismiss={() => dismissTodo(projectId, "models", todo.signature)}
           />
         )}
-      </PageHeader>
+      </PageHeader>}
+      {embedded && <div className="models-settings-toolbar">
+        <Input size="sm" value={query} onChange={event => setQuery(event.target.value)} placeholder={S.models.searchPlaceholder} />
+        {isOwner && todo && presetHost && <AddNewModelsButton onOpen={() => setSyncConfirmOpen(true)} disabled={busy || rows === null} note={syncNote} />}
+        {isOwner && <Button size="sm" variant="ghost" onClick={() => setRestoreOpen(true)} disabled={busy || rows === null}>{S.models.restoreDefaults}</Button>}
+        {isOwner && <AiCreateButtons size="sm" manualDisabled={rows === null} onAi={() => setAiAddOpen(true)} onManual={() => setAddGroupOpen(true)} />}
+      </div>}
       <ManagedResourceSection kind="models" onApplied={load} />
 
       {/* Above every group, while the TokenDance group has models but no key: its own connect
@@ -1871,8 +1897,17 @@ export function ModelsPage() {
                   <strong>{searching ? S.models.noSearchResults : baseRows.length === 0 ? S.models.empty : "此筛选下暂无模型"}</strong>
                   <span>{searching ? "试试模型名称、ID 或渠道商名称" : "可切换筛选条件或添加模型"}</span>
                   {isOwner && !searching && activeGroup && isAddableGroup(activeGroup.provider.id) && <Button size="sm" onClick={() => setAddingTo(activeGroup.provider.id)}>{S.models.addCustom}</Button>}
-                </div> : <div className="models-card-grid">
-                  {visibleRows.map((row) => <ModelCard key={`${row.provider}:${row.modelId}`}
+                </div> : <div className={embedded ? "models-settings-list" : "models-card-grid"}>
+                  {visibleRows.map((row) => embedded ? <div className="models-settings-row" key={`${row.provider}:${row.modelId}`}>
+                    <span className="models-settings-row-name" title={row.modelId}>{row.displayName || row.modelId}</span>
+                    {sameModelRef(rowRef(row), defaultModel) && <span className="models-settings-default">默认</span>}
+                    <span className="models-settings-row-id" title={row.modelId}>{row.modelId}</span>
+                    {isOwner && <div className="models-settings-row-actions">
+                      <button type="button" onClick={() => { setEditingMovedToCustom(false); setEditing(rowRef(row)); }} aria-label={`编辑 ${row.modelId}`}>编辑</button>
+                      <button type="button" disabled={testingRow === refMapKey(row.provider, row.modelId)} onClick={() => void testOne(row)} aria-label={`测试 ${row.modelId} 连通性`}>{testingRow === refMapKey(row.provider, row.modelId) ? "测试中" : "测试连通性"}</button>
+                      <button type="button" onClick={() => setDeleteRow(rowRef(row))} aria-label={`删除 ${row.modelId}`}>删除</button>
+                    </div>}
+                  </div> : <ModelCard key={`${row.provider}:${row.modelId}`}
                     row={row} group={providers[row.provider]} currency={currency}
                     isDefault={sameModelRef(rowRef(row), defaultModel)}
                     isVisionModel={sameModelRef(rowRef(row), visionModel)}
@@ -1889,6 +1924,11 @@ export function ModelsPage() {
       )}
 
       {loadError && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{loadError}</p>}
+      {deleteRow && rows && <ConfirmModal open title="删除模型" tone="danger" onClose={() => setDeleteRow(null)} onConfirm={() => {
+        const target = deleteRow;
+        setDeleteRow(null);
+        void persist(rows.filter(row => !sameModelRef(rowRef(row), target)), sameModelRef(defaultModel, target) ? undefined : defaultModel, sameModelRef(visionModel, target) ? undefined : visionModel, "模型已删除");
+      }} confirmLabel={S.common.delete} cancelLabel={S.common.cancel}><p>确定删除 {deleteRow.modelId}？</p></ConfirmModal>}
 
       {disconnectFor !== null && (
         <DisconnectConfirm
@@ -2124,7 +2164,7 @@ export function ModelsPage() {
           }}
         />
       )}
-    </PageFrame>
+    </Frame>
   );
 }
 

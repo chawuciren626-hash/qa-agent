@@ -166,10 +166,11 @@ export class ProjectService implements ProjectLifecycle {
     // <username>-default_project directory was left behind).
     try {
       await fs.mkdir(projectDir(this.root, projectId), { recursive: true });
-      await this.projectConfig.writeInitialConfig(projectId, displayName);
+      await this.projectConfig.writeInitialConfig(projectId, displayName, owner.userId);
       // The presets' promotions live in web.db, keyed to the row inserted above (and removed
       // with it by the rollback below).
       await this.projectConfig.seedPresetPromotions(projectId);
+      await this.projectConfig.applySharedModelExtras(projectId, owner.userId);
       // In the testing product, personal Projects start with testing roles only.
       // The General Agent and its sample Benchmarks remain available in admin
       // Projects and in the unmodified upstream PenguinHarness mode.

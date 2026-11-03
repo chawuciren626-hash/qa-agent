@@ -1,6 +1,6 @@
 {
   "workflow_id": "qa-test-lifecycle",
-  "workflow_version": 2,
+  "workflow_version": 3,
   "stages": [
     {
       "id": "analysis",
@@ -79,6 +79,7 @@
         "test_cases"
       ],
       "confirmation": "before",
+      "result_confirmation": "after",
       "lifecycle_artifacts": [
         "execution/test_results.json"
       ],
@@ -99,7 +100,7 @@
       "depends_on": [
         "test_cases"
       ],
-      "confirmation": "none",
+      "confirmation": "after",
       "lifecycle_artifacts": [
         "execution/api/test_results.json",
         "execution/api/task.json"
@@ -119,7 +120,7 @@
       "depends_on": [
         "execution"
       ],
-      "confirmation": "none",
+      "confirmation": "after",
       "lifecycle_artifacts": [
         "defects/defect-records.json"
       ],
@@ -139,7 +140,7 @@
       "depends_on": [
         "defects"
       ],
-      "confirmation": "none",
+      "confirmation": "after",
       "lifecycle_artifacts": [
         "report/test_report.md",
         "report/test_report.html"

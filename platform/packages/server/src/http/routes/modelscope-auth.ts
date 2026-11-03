@@ -32,12 +32,12 @@ function owner(deps: ModelScopeAuthRouteDeps, userId: string, projectId: string)
   deps.access.requireProjectOwner(userId, projectId);
 }
 
-function publishIfChanged(
+async function publishIfChanged(
   deps: ModelScopeAuthRouteDeps,
   projectId: string,
   changed: boolean,
-): void {
-  if (changed) modelConfigChanged(deps, projectId);
+): Promise<void> {
+  if (changed) await modelConfigChanged(deps, projectId);
 }
 
 export function modelScopeAuthRoutes(deps: ModelScopeAuthRouteDeps): Hono<AppEnv> {
@@ -63,7 +63,7 @@ export function modelScopeAuthRoutes(deps: ModelScopeAuthRouteDeps): Hono<AppEnv
       userId: c.var.user.userId,
       flowId: flowId(c.req.param("flowId") ?? ""),
     });
-    publishIfChanged(deps, projectId, result.changed === true);
+    await publishIfChanged(deps, projectId, result.changed === true);
     const { changed: _changed, ...response } = result;
     return c.json(response satisfies ModelScopeAuthFlowStatusResponse);
   });
@@ -76,7 +76,7 @@ export function modelScopeAuthRoutes(deps: ModelScopeAuthRouteDeps): Hono<AppEnv
       userId: c.var.user.userId,
       flowId: flowId(c.req.param("flowId") ?? ""),
     });
-    publishIfChanged(deps, projectId, result.changed === true);
+    await publishIfChanged(deps, projectId, result.changed === true);
     const { changed: _changed, ...response } = result;
     return c.json(response satisfies ModelScopeAuthFlowStatusResponse);
   });

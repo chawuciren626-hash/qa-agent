@@ -33,6 +33,21 @@ test('native truncated command output reads only the same session archive and pr
   save(resolve(archiveDir,'exec_command-missing.log'));assert.throws(()=>readSession(root,agent,id));
   const foreign=resolve(root,'foreign-archive');renameSync(archiveDir,foreign);symlinkSync(foreign,archiveDir,process.platform==='win32'?'junction':'dir');save(archive);assert.throws(()=>readSession(root,agent,id),/redirected/);
 });
+test('archived failed command accepts a terminal exit marker only with a failed receipt',()=>{
+  const root=mkdtempSync(resolve(tmpdir(),'qa-archived-failure-')),agent=request.agent,id=request.childId;
+  const dir=resolve(root,agent,'traces/2026-10-09'),archiveDir=resolve(root,agent,'scratchpad',id,'truncated-tool-output');
+  mkdirSync(dir,{recursive:true});mkdirSync(archiveDir,{recursive:true});
+  const archive=resolve(archiveDir,'exec_command-failed.log'),trace=resolve(dir,`${id}_001.jsonl`);
+  const failed=JSON.stringify({status:'failed',exit_code:2,script:'validate-artifacts.mjs'});
+  const save=(suffix,full=failed)=>{
+    writeFileSync(archive,full);
+    writeFileSync(trace,[{payload:{type:'tool_call',name:'exec_command',tool_call_id:'x',arguments:{cmd:'node project-action.mjs'}}},{payload:{type:'tool_call_output',tool_call_id:'x',output:`{ truncated JSON\n[output archived: ${archive}]${suffix}`}}].map(JSON.stringify).join('\n'));
+  };
+  save('\n[exit code: 1]');assert.equal(readSession(root,agent,id)[1].payload.output,failed);
+  save('\n[exit code: 0]');assert.throws(()=>readSession(root,agent,id),/unverified suffix/);
+  save('\n[exit code: 1]',JSON.stringify({status:'completed',exit_code:0}));assert.throws(()=>readSession(root,agent,id),/failed command receipt/);
+});
+
 test('asynchronous archived poll restores full JSON only for its originating process and preserves failures',()=>{
   const root=mkdtempSync(resolve(tmpdir(),'qa-poll-')),agent=request.agent,id=request.childId;
   const dir=resolve(root,agent,'traces/2026-10-09'),archiveDir=resolve(root,agent,'scratchpad',id,'truncated-tool-output');

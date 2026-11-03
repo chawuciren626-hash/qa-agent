@@ -1,11 +1,12 @@
 ---
 name: test-case-writing
+version: 2026.11.02.1
 description: 根据测试点生成符合项目 JSON Schema 的结构化测试用例。
-metadata:
-  version: '1.3.0'
 ---
 
 # 测试用例编写 Skill
+
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
 
 两种模式均可按需读取已安装的test-design-methods中的控件、业务权限或AI功能场景参考。检查清单只用于查漏；预期仍须有当前有效依据，未确认建议不进入expected，不为套模板扩大平台、条数或执行范围。
 

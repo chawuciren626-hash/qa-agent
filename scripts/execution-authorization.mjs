@@ -66,7 +66,7 @@ export function assertExecutionAuthorized(root, runId) {
   for (const dependency of stage.depends_on ?? []) {
     const approval = manifest.confirmations?.filter(c => c.stage === dependency).at(-1);
     const dependencyPlan = manifest.orchestration?.plan?.stages.find(s => s.id === dependency);
-    if (manifest.stages?.[dependency]?.status !== 'completed' || (dependencyPlan?.confirmation === 'after' && approval?.status !== 'approved')) throw new Error('Execution dependency not approved');
+    if (manifest.stages?.[dependency]?.status !== 'completed' || ((dependencyPlan?.confirmation === 'after' || dependencyPlan?.result_confirmation === 'after') && approval?.status !== 'approved')) throw new Error('Execution dependency not approved');
   }
   const confirmation = manifest.confirmations?.filter(c => c.stage === 'execution').at(-1);
   if (confirmation?.status !== 'approved' || !confirmation.execution_snapshot) throw new Error('Current execution approval required');

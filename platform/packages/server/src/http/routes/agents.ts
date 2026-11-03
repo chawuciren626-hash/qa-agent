@@ -11,7 +11,10 @@
  */
 import { Hono } from "hono";
 import type { ServerConfig } from "../../config.js";
+import type { Db } from "../../hmr/capabilities.js";
 import { registerQaProjectRoutes } from "./qa-project.js";
+import { registerQaProjectKnowledgeRoutes } from "./qa-project-knowledge.js";
+import { registerQaQualityTraceabilityRoutes } from "./qa-quality-traceability.js";
 import type {
   AgentCreateResponse,
   AgentsResponse,
@@ -44,6 +47,8 @@ import type { AgentApi } from "../../mechanisms/agent-api.js";
 /** What this route group reaches — bound by its module (src/modules). */
 export interface AgentsRouteDeps {
   config?: ServerConfig;
+  /** The runtime's single SQLite handle, for the Q2 project knowledge tables. */
+  db: Db;
   agentApi: AgentApi;
   agentConfigService: AgentConfig;
   agentService: AgentLifecycle;
@@ -76,6 +81,8 @@ function employedError(agentId: string, employers: readonly Employment[]): HttpE
 export function agentsRoutes(deps: AgentsRouteDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   registerQaProjectRoutes(app, deps);
+  registerQaProjectKnowledgeRoutes(app, deps);
+  registerQaQualityTraceabilityRoutes(app, deps);
 
   app.get("/", async (c) => {
     // Defensive id validation: don't rely on the implicit invariant that requireProjectAccess always runs before path construction.

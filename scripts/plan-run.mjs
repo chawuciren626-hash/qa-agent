@@ -19,6 +19,7 @@ if (!['web','android','miniprogram'].includes(executionPlatform)) throw new Erro
 if (!['provided_materials','live_product'].includes(sourceMode) || (sourceMode==='live_product' && workflowMode!=='task')) throw new Error('Invalid source mode for this workflow');
 if (!['task','lifecycle'].includes(workflowMode)) throw new Error('workflow-mode must be task or lifecycle');
 if (!['auto','staged'].includes(reviewMode)) throw new Error('review-mode must be auto or staged');
+if (workflowMode === 'lifecycle' && reviewMode !== 'staged') throw new Error('Full lifecycle requires staged human review');
 if (!runId) throw new Error("用法: node scripts/plan-run.mjs --run-id=<run_id> [--stages=analysis,test_points,...]");
 const branches=requested.includes('api_execution') ? requested.filter(id=>['execution','api_execution'].includes(id)) : ['execution'];
 for(const stage of workflow.stages) if(stage.id==='defects') stage.depends_on=[...branches];
@@ -40,7 +41,7 @@ const { manifestPath, manifest } = getRunContext(root, project, runId);
 assertTrackStage(manifest,undefined);
 if (manifest.orchestration?.plan?.stages?.length) throw new Error("运行计划已存在，不能覆盖。同一任务继续后续阶段请使用 extend_plan；不要重建运行或重置已完成阶段。");
 const now = new Date().toISOString();
-const planStages = workflow.stages.map((definition) => ({ ...definition, depends_on: workflowMode==='task'?[]:definition.depends_on, confirmation: workflowMode==='task'?(reviewMode==='staged'?'after':'none'):reviewMode === 'auto' && definition.confirmation === 'after' ? 'none' : definition.confirmation, selected: selected.has(definition.id) }));
+const planStages = workflow.stages.map((definition) => ({ ...definition, depends_on: workflowMode==='task'?[]:definition.depends_on, confirmation: workflowMode==='task'?(reviewMode==='staged'?'after':'none'):reviewMode === 'auto' && definition.confirmation === 'after' ? 'none' : definition.confirmation, result_confirmation: workflowMode==='lifecycle' && reviewMode==='staged' ? definition.result_confirmation : undefined, selected: selected.has(definition.id) }));
 if (executionPlatform!=='web') {
   const execution = planStages.find(stage=>stage.id==='execution');
   execution.agent = executionPlatform==='android'?'android_test_agent':'miniprogram_test_agent';

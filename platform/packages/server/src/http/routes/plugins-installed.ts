@@ -352,8 +352,8 @@ export function installedPluginRoutes(deps: InstalledPluginsDeps): Hono<AppEnv> 
   /**
    * Takes back a package an install just put in the prefix and refuses the install: one under the
    * name of a shipped module (409 `plugin_shipped`), or one that is no plugin (400
-   * `not_a_plugin`). Its install scripts have run by now, and the refusal says so — and says so
-   * too when taking it back failed, which leaves it for the operator to remove.
+   * `not_a_plugin`). Lifecycle scripts are disabled during installation. A failed
+   * rollback leaves the package for the operator to remove.
    */
   const refuseInstalled = async (
     name: string,
@@ -361,11 +361,11 @@ export function installedPluginRoutes(deps: InstalledPluginsDeps): Hono<AppEnv> 
     code: string,
     why: string,
   ): Promise<never> => {
-    let undone = `It was removed again, but its install scripts had already run on the server.`;
+    let undone = `It was removed again. Install scripts were disabled.`;
     try {
       await deps.packages.remove(deps.root, name);
     } catch (err) {
-      undone = `Its install scripts had already run on the server, and removing it failed (${err instanceof Error ? err.message : String(err)}): remove it from ${pluginsPrefix(deps.root)} by hand.`;
+      undone = `Install scripts were disabled, but removing the package failed (${err instanceof Error ? err.message : String(err)}): remove it from ${pluginsPrefix(deps.root)} by hand.`;
     }
     throw new HttpError(status, code, `${why} ${undone}`);
   };

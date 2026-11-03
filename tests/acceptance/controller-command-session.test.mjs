@@ -336,6 +336,20 @@ test('historical validation-only stop self-recovers while execution and unknown 
     } else await assert.rejects(operation,/Controller session stopped/);
   }
 });
+test('a missing execution confirmation with no dispatch recovers without replaying product work',async()=>{
+  const f=fixture(),runId=`run-${randomUUID()}`,dir=resolve(root,'output/command-runs',randomUUID());
+  mkdirSync(dir,{recursive:true});mkdirSync(resolve(root,'output/runs',runId),{recursive:true});
+  writeFileSync(resolve(root,'output/runs',runId,'manifest.json'),JSON.stringify({run_id:runId,stages:{execution:{status:'planned'}},confirmations:[],orchestration:{events:[]}}));
+  writeFileSync(resolve(dir,'command.json'),JSON.stringify({script:'resolve-stage-confirmation.mjs',status:'failed',result:{code:1,termination_confirmed:true,termination:null,signal:null}}));
+  writeFileSync(resolve(dir,'command.log'),'file:///synthetic/scripts/resolve-stage-confirmation.mjs:23\nError: 找不到 execution 阶段待处理的确认请求。\n');
+  await withControllerSession(root,f.id,async()=>({status:'failed',exit_code:1,evidence_dir:dir,result:{termination_confirmed:true}}),{agentRoot:f.agentRoot,recoveryContext:{action:'resolve_confirmation',stage:'execution',run_id:runId}});
+  assert.equal(readControllerSession(root,f.id).status,'stopped');
+  let called=0;
+  await withControllerSession(root,f.id,async()=>{called++;return {status:'completed',exit_code:0};},{agentRoot:f.agentRoot,recoveryContext:{action:'dispatch',stage:'execution',run_id:runId}});
+  const state=readControllerSession(root,f.id);
+  assert.equal(called,1);assert.equal(state.status,'ready');assert.equal(state.failure,null);
+  assert.ok(state.events.some(event=>event.type==='missing_execution_confirmation_recovered'&&event.product_actions_replayed===false));
+});
 
 test('lifecycle help is complete and rejects unknown, duplicate and misplaced inputs', () => {
   for (const name of ['create-run.mjs','plan-run.mjs','record-orchestration-event.mjs','request-stage-confirmation.mjs','resolve-stage-confirmation.mjs']) assert.ok(commandHelp(name).usages[name]);

@@ -52,7 +52,7 @@ export function privateSnapshot(structure,secrets,privacy) {
 
 // Executes in the page, returning values only to worker memory. Never serialize
 // this result as evidence or tool output. It is a bounded heuristic, not DLP/OCR.
-export function inspectPagePrivacy() {
+export function inspectPagePrivacy(secretValues=[]) {
   const values=new Set(),masks=new Set();let truncated=false;
   const sensitive=label=>/(?:pass(?:word|wd)|secret|(?:api|access|private|client)[\s_-]*(?:key|token)|authorization|bearer|(?:^|[\s_-])(?:key|token)(?:$|[\s_-])|密钥|令牌|密码|口令|身份证|证件号|手机号|手机号码|电子邮箱|邮箱|email|phone|mobile)/i.test(label.replace(/([a-z])([A-Z])/g,'$1 $2'));
   const selector=e=>{
@@ -81,18 +81,20 @@ export function inspectPagePrivacy() {
     if(e.matches('[data-sensitive],[data-secret]')) {add(content,e);continue;}
     if(e.matches('label,dt,th') && content.length<=100 && sensitive(content)) {
       const sibling=e.nextElementSibling;
-      if(sibling && sibling.textContent.length<=100000) add('value' in sibling?sibling.value:sibling.textContent,sibling);
+      if(sibling && sibling.textContent.length<=100000 && (!sibling.children.length || 'value' in sibling)) add('value' in sibling?sibling.value:sibling.textContent,sibling);
     }
-    if(content.length>20000) continue;
+    if(content.length>20000 || (e.children.length && !e.matches('label,dt,th,[data-sensitive],[data-secret]'))) continue;
+    if(secretValues.some(value=>typeof value==='string' && value && content.includes(value))) masks.add(selector(e));
     const parts=[...content.matchAll(/(?:api[_ -]?key|access[_ -]?token|client[_ -]?secret|password|secret|token|authorization|密钥|令牌|密码|口令)\s*[:=：]\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s,;<>]+))/gi)];
     for(const match of parts) add(match[1] ?? match[2] ?? match[3],e);
+    if(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*|\bsk-[A-Za-z0-9_-]{16,}\b|[A-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)/i.test(content)) masks.add(selector(e));
   }
   return {values:[...values],mask_selectors:[...masks],truncated};
 }
 
 export async function refreshBrowserPrivacy(page,secrets) {
   try {
-    const observed=await page.evaluate(inspectPagePrivacy);
+    const observed=await page.evaluate(inspectPagePrivacy,[...secrets]);
     if(!observed || !Array.isArray(observed.values) || !Array.isArray(observed.mask_selectors)) throw new Error('Invalid privacy observation');
     for(const value of observed.values) if(value) secrets.add(value);
     return {status:observed.truncated?'incomplete':'observed',mask_selectors:observed.mask_selectors,
@@ -118,10 +120,8 @@ export async function capturePrivateScreenshot(page,path,secrets,diagnose=error=
   try {
     const privacy=await refreshBrowserPrivacy(page,secrets);
     if(privacy.status!=='observed') return {captured:false,warning:{phase:'screenshot',category:'privacy_observation_'+privacy.status}};
-    const masks=[page.locator('input,textarea,select,[contenteditable=true],canvas,img,video,iframe')];
+    const masks=[page.locator('input,textarea,select,[contenteditable=true],canvas,video,iframe,img[data-sensitive],img[data-secret],img[alt*="password" i],img[alt*="secret" i],img[alt*="token" i]')];
     for(const selector of privacy.mask_selectors) masks.push(page.locator(selector));
-    for(const secret of secrets) if(secret) masks.push(page.getByText(secret,{exact:false}));
-    for(const pattern of sensitiveTextPatterns()) masks.push(page.getByText(pattern));
     await page.screenshot({path,mask:masks,timeout:8000});
     return {captured:true};
   } catch(error) {return {captured:false,warning:diagnose(error)};}

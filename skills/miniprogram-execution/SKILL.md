@@ -1,12 +1,14 @@
 ---
 name: miniprogram-execution
+version: 2026.11.02.1
 description: 通过微信开发者工具自动化后端执行小程序启动、页面操作、UI/数据断言、截图与失败取证；区分开发者工具验证与真机验证，结果未知时不重放，供自动化执行角色在小程序派发范围内使用。
 metadata:
-  version: '1.0.0'
   scope: wechat-devtools-automator-backend
 ---
 
 # 小程序执行 Skill
+
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
 
 本 Skill 指导在**已授权**的微信小程序项目上执行一条可追溯的测试链路。当前实现为微信开发者工具 + `miniprogram-automator` 后端，不连接真机，不调用 `miniprogram-ci` 上传代码，也不读取微信账号凭据。
 

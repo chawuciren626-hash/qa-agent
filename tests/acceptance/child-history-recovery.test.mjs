@@ -16,6 +16,16 @@ test('catalog recovery accepts Node 24 entry errors and archived help, never arc
   assert.throws(()=>assertChildCommands([call('exec_command','execute',{cmd:'node scripts/project-action.mjs execute'}),output('execute',help)],options),/unreadable/);
   assert.throws(()=>assertChildCommands([lookup,output('catalog',help,'fatal')],options),/unreadable/);
 });
+
+test('detached read-only catalog with an empty poll does not block later verified actions',()=>{
+  const background='[command running in background with process_id proc-a; its completion will arrive as a user message — no need to poll. Use input_command to interact (kill: true stops it)]';
+  const catalog=[call('exec_command','catalog',{cmd:'node scripts/project-action.mjs catalog'}),output('catalog',background),call('input_command','poll',{process_id:'proc-a'}),output('poll','[no output]')];
+  assert.doesNotThrow(()=>assertChildCommands([...catalog,call('exec_command','execute',{cmd:'node scripts/project-action.mjs execute'}),output('execute',success)],options));
+  assert.throws(()=>assertChildCommands(catalog.slice(0,2),options),/unreadable/);
+  assert.throws(()=>assertChildCommands([call('exec_command','catalog',{cmd:'node scripts/project-action.mjs execute'}),...catalog.slice(1)],options),/unreadable/);
+  const failedPoll=[...catalog];failedPoll[3]=output('poll','failed','fatal');
+  assert.throws(()=>assertChildCommands(failedPoll,options),/unreadable/);
+});
 const launch = () => [
   call('exec_command', 'launch', { cmd: 'node scripts/project-action.mjs execute' }),
   output('launch', '[process running with process_id proc-a; use input_command to send input or poll for output]')

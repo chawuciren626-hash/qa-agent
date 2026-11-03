@@ -2136,7 +2136,9 @@ export function Sidebar({
           : collapsibleNavPages.map(renderNavEntry)}
       </SidebarNavGroup>
 
-      {!inCompany && <button className="mx-3 my-2 rounded px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800" onClick={() => go("/qa/library")}>项目资料</button>}
+      {!inCompany && allowedModule(user,"library") && <button className="mx-3 my-2 rounded px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800" onClick={() => go("/qa/library")}>项目资料</button>}
+      {!inCompany && allowedModule(user,"library") && <button className="mx-3 mb-2 rounded px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800" onClick={() => go("/qa/knowledge")}>项目知识</button>}
+      {!inCompany && allowedModule(user,"projects") && <button className="mx-3 mb-2 rounded px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800" onClick={() => go("/qa/quality")}>质量追踪</button>}
       {inCompany ? (
         navOrg !== null ? (
           /* Company mode: the organization's channels, where development mode lists

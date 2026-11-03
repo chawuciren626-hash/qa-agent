@@ -1,8 +1,8 @@
 ---
 name: playwright-execution
+version: 2026.11.02.2
 description: 在独立浏览器任务或生命周期模式下准备、执行Playwright测试并归档证据；按派发模式选择入口，准备脚本不等于已执行。
 metadata:
-  version: '2.7.0'
   source: fugazi/test-automation-skills-agents
   revision: 65a72d5e74def3c23143bef8757e72cb68e91032
   adapted-from: playwright-e2e-testing authoring references
@@ -10,11 +10,15 @@ metadata:
 
 # Playwright 执行 Skill
 
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+
 连续步骤可使用browser_task的sequence（2至4步），引用本次派发已返回snapshot的observed_request_id，仅使用其中可见控件的CSS定位器。支持fill/select/check/assert，最多最后一步click/press并携带assertion；不要预编排未观察的新页面。逐步保存回执，失败或结果不明即停止，同批ID重试只读旧结果，不恢复整批。后续动作根据已保存结果重新决定，不能重复未知提交。
 
 snapshot可携带上次返回的if_sha256；返回unchanged时复用对应sha256的已有快照，缺少基线则不传if_sha256重新观察。它不证明页面已就绪，不缓存权限或业务判定。默认仍保留完整结构化证据、失败截图及瞬时反馈。
 
 ## 全流程浏览器策略
+
+先读取受控生成的 `execution/browser-case-plan.json`；它绑定当前 `design/test_cases.json` 哈希。按其顺序落实用例的前置条件、数据、步骤和预期。页面观察只用于定位与确认当前状态，不自行重写业务用例；每条用例完成前核对未执行步骤及原因。`finish.case_reviews` 用 `{case_id,completed_step_indices:[从1开始的已执行步骤序号],untested:[原因]}` 逐条记录，`finish.untested` 汇总未测范围。未复核完整的用例保持 partial。待业务确认用例不执行断言。
 
 派发合同为LIFECYCLE BROWSER时，使用browser_task，不走下文脚本准备入口，不写环境JSON或执行计划。读取已交付design/test_cases.json，断言带case_ref:{source_path:"design/test_cases.json",case_id:"真实编号"}；依据/假设待确认的用例不作业务断言。保留原始断言，finish后读取browser-coverage.json，未测项存在则execution-task.outcome=partial。关联断言不代表整条设计用例全部步骤完成。人工登录暂停及续接沿用同一浏览器，不重新登录或重放提交。缺陷/报告使用浏览器结果，不伪造脚本执行批次。
 
@@ -24,7 +28,7 @@ snapshot可携带上次返回的if_sha256；返回unchanged时复用对应sha256
 
 finish可附untested:["未验证的范围及原因"]，例如环境异常导致创建成功路径未验证。工具据此交付partial，继续缺陷分析和报告，不索取解锁。没有未测声明不证明全覆盖；普通产品断言失败也不等于执行未完成。HTTP 503、超时和断言失败本身不能确定产品缺陷；结合相关证据判定环境/脚本/产品原因，证据不足保留needs_review。final答复按实际断言范围和coverage说明完成内容及未测项，不转述宽泛expected作为通过结论。
 
-推进与人工介入遵守公共运行指令“任务与确认策略”，不新增阶段确认或环境配置前置。
+推进与人工介入遵守公共运行指令“任务与确认策略”；本 Skill 不自设确认节点或环境配置前置。
 
 workflow_mode=task的功能测试使用browser_task，格式见catalog.field_rules.browser_task。直接输入来源URL和用户要求的测试范围，不需要环境配置或前序用例。start默认显示浏览器；snapshot观察后定位；fill/click/press/select/check交互；assert记录实际结果。用户请求仅授权其范围内的测试，不能扩大至无关删除、通知、支付或权限操作。敏感fill设置secret=true。登录/验证码/MFA使用pause保留窗口，返回“等待人工操作，原任务未完成”，不生成阻断审查。human_protocol=1由宿主在总控显示人工卡片，用户确认后续接原子会话与原派发；先snapshot检查登录是否生效，再继续未执行步骤，不重新start、不重复登录/提交。不调用finish或报告完成来结束人工等待。仅旧版human_protocol缺失/0才兼容resume_browser派发。每次操作request_id稳定，传输不确定时重用原ID获取回执，禁止重复提交。finish关闭浏览器并生成实际结果后，再写execution-task.json和validate_artifacts。纯只读探索仍可用explore_url，不代表功能已测。不安装依赖。下文执行准备及授权计划只适用于lifecycle脚本策略，不适用于LIFECYCLE BROWSER策略。
 
@@ -100,4 +104,4 @@ human_handoff_timing单独记录人工交接窗口，包含消息传递和派发
 - 编写或维护脚本时：按需读取[定位、等待、fixtures与POM](references/authoring-patterns.md)。不需要为简单测试强制引入POM。
 - 接口用例或UI数据准备：按需读取已安装的api-testing Skill；接口断言不能代替UI验收。
 
-独立task交付实际browser_task证据与execution-task.json；lifecycle交付运行内execution/scripts、计划及真实批次结果。所有模式保留失败与未测范围，不自行安装依赖、绕过入口或扩大执行授权。工程docs路径相对Engine directory；本Skill的references路径相对本Skill目录。
+独立task交付实际browser_task证据与execution-task.json；lifecycle交付运行内execution/scripts、计划及真实批次结果。所有模式保留失败与未测范围，不自行安装依赖、绕过入口或扩大执行授权。

@@ -29,6 +29,12 @@ export function usesTaskArtifacts(root,runId,stage) {
 const assert=(ok,message)=>{if(!ok) throw new CommandUsageError(message);};
 const text=v=>typeof v==='string' && v.trim().length>0;
 const strings=v=>Array.isArray(v) && v.every(text);
+export function verifiedSourcesFor(manifest,stage) {
+  const dispatch=manifest.orchestration?.events?.filter(event=>event.type==='dispatched' && event.stage===stage).at(-1);
+  if(dispatch?.available_sources) return dispatch.available_sources;
+  const completed=manifest.orchestration?.events?.filter(event=>event.type==='completed').flatMap(event=>event.evidence?.artifact_contract?.files ?? []) ?? [];
+  return [...new Map(completed.map(file=>[file.path,file])).values()];
+}
 export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifacts=[]}={}) {
   const files=new Map(), errors=[];
   let executionOutcome, dataDiagnostics, expectationDiagnostics;
@@ -60,8 +66,8 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
     if(stage==='analysis') for(const event of manifest.orchestration?.events ?? []) {
       if(event.feedback_input) assert(task.source_paths.includes(event.feedback_input.path),'Include the supplied clarification in analysis sources');
     }
-    const currentDispatch=manifest.orchestration?.events?.filter(e=>e.type==='dispatched' && e.stage===stage).at(-1);
-    const verified=currentDispatch?.available_sources ?? manifest.orchestration?.events?.filter(e=>e.type==='completed').flatMap(e=>e.evidence?.artifact_contract?.files ?? []) ?? [];
+    // A reviewed case edit creates a later sealed version of the same path.
+    const verified=verifiedSourcesFor(manifest,stage);
     for(const path of task.source_paths) {
       const data=readRunFile(dir,path);
       assert(path.startsWith('inputs/') || verified.some(f=>f.path===path && f.sha256===data.sha256),'Sources must be supplied inputs or unchanged earlier deliverables, not fabricated prerequisites');
@@ -209,7 +215,10 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
           assert((responseAssertion?['click','press','api_check']:['assert','click','press']).includes(receipt.operation) && receipt.status==='completed' && isDeepStrictEqual(receipt.result?.[assertionKey],row),'Case differs from actual browser assertion');
           const cmd=json(`audit/commands/${receipt.command_id}/command.json`);
           const output=JSON.parse(capture(`audit/commands/${receipt.command_id}/command.log`).toString('utf8'));
-          assert(cmd.script==='browser-task.mjs' && cmd.run_id===runId && cmd.status==='completed' && cmd.result?.termination_confirmed===true && isDeepStrictEqual(output[assertionKey],row),'Assertion lacks completed controlled command evidence');
+          const sequenceStep=output.steps?.find(step=>step.request_id===receipt.request_id && step.receipt===row.evidence_paths[0]);
+          const assertionRecorded=isDeepStrictEqual(output[assertionKey],row) ||
+            (['sequence_completed','sequence_stopped'].includes(output.status) && sequenceStep?.assertion_status===row.status && ['ready','passed'].includes(sequenceStep.status));
+          assert(cmd.script==='browser-task.mjs' && cmd.run_id===runId && cmd.status==='completed' && cmd.result?.termination_confirmed===true && assertionRecorded,'Assertion lacks completed controlled command evidence');
           row.evidence_paths.forEach(capture);
         }
         assert(result.summary.total===result.cases.length,'Interactive result total mismatch');
@@ -218,9 +227,9 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
         executionOutcome={status:observation.partial?'blocked':result.summary.failed?'failed':'passed',disposition:'report_actual_assertions',scope:'user_requested_browser_task'};
         if(browserFlow) {
           const coverage=json('execution/browser-coverage.json');
-          assert(isDeepStrictEqual(coverage,browserCoverage(dir,manifest,result)),'Browser coverage differs from actual evidence');
+          assert(isDeepStrictEqual(coverage,browserCoverage(dir,manifest,result,coverage.case_reviews ?? [])),'Browser coverage differs from actual evidence');
           assert(observation.evidence.some(f=>f.path==='execution/browser-coverage.json'),'Coverage lacks controlled finish provenance');
-          if(coverage.untested_cases.length) assert(task.outcome==='partial','Untested designed cases require a partial delivery');
+          if(coverage.incomplete_cases?.length ?? coverage.untested_cases.length) assert(task.outcome==='partial','Incomplete designed cases require a partial delivery');
         }
       } else {
       assert(!browserFlow,'Lifecycle functional execution cannot be replaced by reachability');
@@ -292,7 +301,7 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
         const apiRows=verified.some(f=>f.path==='execution/api/test_results.json')?json('execution/api/test_results.json').cases:[];
         const permitted=new Set([...actual.cases,...apiRows].map(r=>r.case_id));
         assert(result.cases?.every(r=>permitted.has(r.case_id)),'Report contains unsupported browser results');
-        if(coverage.untested_cases.length || actual.status==='partial') assert(task.outcome==='partial','Incomplete browser scope must remain partial in report');
+        if((coverage.incomplete_cases?.length ?? coverage.untested_cases.length) || actual.status==='partial') assert(task.outcome==='partial','Incomplete browser scope must remain partial in report');
       }
       assert(result && typeof result==='object' && !Array.isArray(result),'report/reportable-results.json: expected a JSON object with run_id, cases and summary');
       assert(result.run_id===runId,`report/reportable-results.json: run_id must equal ${runId}`);

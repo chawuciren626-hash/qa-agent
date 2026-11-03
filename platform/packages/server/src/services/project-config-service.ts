@@ -30,6 +30,7 @@
 import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import { parse as parseToml } from "smol-toml";
 import {
   CHAT_APPROVAL_MODES,
@@ -140,10 +141,26 @@ import type {
   ModelProviderAuthToken,
   ModelProviderAuthTokens,
   ModelPromotions,
+  Projects,
   ProjectConfigStore,
 } from "../mechanisms/projects.js";
 
 export type RawTable = Record<string, unknown>;
+
+const sharedModelKeys = ["providers", "models", "default_model", "vision_model"] as const;
+type SharedModelRecord = {
+  version: 1; ownerUserId: string; sourceProjectId: string; updatedAt: string;
+  models: RawTable; promotions: ModelPromotion[];
+  modelScopeToken?: Omit<ModelProviderAuthToken,"updatedAt">;
+};
+function modelPart(raw: RawTable): RawTable {
+  return Object.fromEntries(sharedModelKeys.filter(key => raw[key] !== undefined).map(key => [key, structuredClone(raw[key])]));
+}
+function withModelPart(raw: RawTable, models: RawTable): RawTable {
+  const next={...raw};
+  for(const key of sharedModelKeys) { if(models[key] === undefined) delete next[key]; else next[key]=structuredClone(models[key]); }
+  return next;
+}
 
 /**
  * API key masking: length <=12 -> `***`, otherwise `first4…last4`; plaintext is
@@ -774,12 +791,14 @@ export class ProjectConfigService implements ProjectConfigStore {
    */
   private readonly cache = new Map<string, { mtimeMs: number; table: RawTable }>();
   private readonly providerCredentialLocks = new Map<string, Promise<unknown>>();
+  private readonly sharedModelLocks = new Map<string, Promise<unknown>>();
   private modelApiKeyResolver:
     ((context: ModelRequestContext) => Promise<string | undefined>) | undefined;
 
   @Use() private readonly paths!: Paths;
   /** Optional for narrow service tests; the production Projects module always provides it. */
   @Use() private readonly promotions?: ModelPromotions;
+  @Use() private readonly projects?: Projects;
   /** Optional for narrow service tests; OAuth refresh metadata lives in web.db, not TOML. */
   @Use() private readonly providerAuthTokens?: ModelProviderAuthTokens;
   private get root(): string {
@@ -788,6 +807,81 @@ export class ProjectConfigService implements ProjectConfigStore {
 
   private filePath(projectId: string): string {
     return projectConfigPath(this.root, projectId);
+  }
+
+  private sharedModelPath(ownerUserId: string): string {
+    return path.join(this.root,".account-models",`${createHash("sha256").update(ownerUserId).digest("hex")}.json`);
+  }
+
+  private async readSharedModels(ownerUserId: string): Promise<SharedModelRecord | null> {
+    let raw: string;
+    try { raw=await fs.readFile(this.sharedModelPath(ownerUserId),"utf8"); }
+    catch(error) { if((error as NodeJS.ErrnoException).code==="ENOENT") return null; throw error; }
+    const record=JSON.parse(raw) as SharedModelRecord;
+    if(record.version!==1 || record.ownerUserId!==ownerUserId || !record.models || !Array.isArray(record.models.models) || !Array.isArray(record.promotions))
+      throw new Error("Invalid account model settings; existing Project config preserved");
+    return record;
+  }
+
+  async sharedModelInfo(projectId: string): Promise<{enabled:boolean;sourceProjectId?:string;projectIds:string[]}> {
+    const owner=this.projects?.findById(projectId)?.ownerUserId;
+    if(!owner) return {enabled:false,projectIds:[projectId]};
+    const shared=await this.readSharedModels(owner);
+    return {enabled:shared!==null,...(shared?{sourceProjectId:shared.sourceProjectId}:{}),projectIds:this.projects!.listByOwner(owner).map(row=>row.projectId)};
+  }
+
+  async applySharedModelExtras(projectId: string, ownerUserId: string): Promise<void> {
+    const shared=await this.readSharedModels(ownerUserId);
+    if(!shared) return;
+    this.promotions?.replaceAll(projectId,shared.promotions);
+    if(shared.modelScopeToken) this.providerAuthTokens?.upsert(projectId,shared.modelScopeToken);
+  }
+
+  async publishSharedModels(projectId: string, activate = false): Promise<string[]> {
+    const row=this.projects?.findById(projectId);
+    if(!row) return [projectId];
+    const owner=row.ownerUserId;
+    if(!activate && !await this.readSharedModels(owner)) return [projectId];
+    const previous=this.sharedModelLocks.get(owner) ?? Promise.resolve();
+    let release!:()=>void;
+    const gate=new Promise<void>(resolve=>{release=resolve;});
+    const current=previous.catch(()=>undefined).then(()=>gate);
+    this.sharedModelLocks.set(owner,current);
+    await previous.catch(()=>undefined);
+    try {
+      const raw=await this.readRaw(projectId);
+      const record: SharedModelRecord={version:1,ownerUserId:owner,sourceProjectId:projectId,updatedAt:new Date().toISOString(),models:modelPart(raw),promotions:this.promotions?.list(projectId) ?? [],
+        ...(this.providerAuthTokens?.get(projectId,MODELSCOPE_PROVIDER_ID) ? {modelScopeToken:(() => {const token=this.providerAuthTokens!.get(projectId,MODELSCOPE_PROVIDER_ID)!; return {provider:token.provider,refreshToken:token.refreshToken,...(token.accessTokenExpiresAt?{accessTokenExpiresAt:token.accessTokenExpiresAt}:{})};})()} : {})};
+      const targets=this.projects!.listByOwner(owner).map(item=>item.projectId).filter(id=>id!==projectId);
+      const backups: Array<{projectId:string;raw:RawTable;promotions:ModelPromotion[];token:ModelProviderAuthToken|undefined}>=[];
+      const archive=path.join(this.root,".account-models","history",createHash("sha256").update(owner).digest("hex"),randomUUID());
+      await fs.mkdir(archive,{recursive:true,mode:0o700});
+      try {
+        for(const target of targets) {
+          const before=await this.readRaw(target);
+          const promotions=this.promotions?.list(target) ?? [];
+          const token=this.providerAuthTokens?.get(target,MODELSCOPE_PROVIDER_ID);
+          backups.push({projectId:target,raw:before,promotions,token});
+          await atomicWriteFile(path.join(archive,`${target}.json`),JSON.stringify({models:modelPart(before),promotions,token}),{mode:0o600,followSymlinks:false});
+          await this.writeRaw(target,withModelPart(before,record.models));
+          this.promotions?.replaceAll(target,record.promotions);
+          if(record.modelScopeToken) this.providerAuthTokens?.upsert(target,record.modelScopeToken);
+          else this.providerAuthTokens?.delete(target,MODELSCOPE_PROVIDER_ID);
+        }
+        const sharedPath=this.sharedModelPath(owner);
+        await fs.mkdir(path.dirname(sharedPath),{recursive:true,mode:0o700});
+        await atomicWriteFile(sharedPath,JSON.stringify(record),{mode:0o600,followSymlinks:false});
+      } catch(error) {
+        for(const backup of backups.reverse()) {
+          await this.writeRaw(backup.projectId,backup.raw);
+          this.promotions?.replaceAll(backup.projectId,backup.promotions);
+          if(backup.token) this.providerAuthTokens?.upsert(backup.projectId,backup.token);
+          else this.providerAuthTokens?.delete(backup.projectId,MODELSCOPE_PROVIDER_ID);
+        }
+        throw error;
+      }
+      return [projectId,...targets];
+    } finally { release(); if(this.sharedModelLocks.get(owner)===current) this.sharedModelLocks.delete(owner); }
   }
 
   setModelApiKeyResolver(
@@ -965,8 +1059,9 @@ export class ProjectConfigService implements ProjectConfigStore {
    * first-party vendor group, which names no base URL, MMSP's client reads the vendor's
    * environment variable).
    */
-  async writeInitialConfig(projectId: string, name: string): Promise<void> {
+  async writeInitialConfig(projectId: string, name: string, ownerUserId?: string): Promise<void> {
     const preset = presetProjectConfig();
+    const shared=ownerUserId ? await this.readSharedModels(ownerUserId) : null;
     await this.writeRaw(projectId, {
       name,
       ...(preset.default_model !== undefined ? { default_model: preset.default_model } : {}),
@@ -975,6 +1070,7 @@ export class ProjectConfigService implements ProjectConfigStore {
       ...(preset.command_policy !== undefined ? { command_policy: preset.command_policy } : {}),
       ...(preset.providers !== undefined ? { providers: preset.providers } : {}),
       models: preset.models,
+      ...(shared ? shared.models : {}),
     });
   }
 

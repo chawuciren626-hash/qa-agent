@@ -96,6 +96,7 @@ import type { ForkTarget } from "./task-stats-line";
 import { latestTaskHasSubagent, modelTaskStartCount, taskStartCount } from "./agent-topology";
 import { ChatInput } from "./chat-input";
 import type { ComposerControl } from "./chat-input";
+import { SessionPersonalSkill } from "./session-personal-skill";
 import { onPluginConfigSaved } from "../../lib/plugin-config-event";
 import { approvalModeChoices } from "./approval-mode";
 import type { ComposerReference } from "../../lib/workspace-tree";
@@ -295,6 +296,8 @@ export function ChatPage({ fixedAgentId }: { fixedAgentId?: string } = {}) {
   const [credentialGuide, setCredentialGuide] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [modeSaving, setModeSaving] = useState(false);
+  // `/personal-skill` opens the round-scoped personal Skill chooser for the Session on screen.
+  const [personalSkillOpen, setPersonalSkillOpen] = useState(false);
   /** This server's model configuration for the Project (the page's own while it acts here). */
   const [localModelsRead, setLocalModels] = useState<Scoped<ModelsResponse> | null>(null);
   // Only the current Project's: the read is reset in an effect, and the draft (remounted per
@@ -2220,7 +2223,7 @@ export function ChatPage({ fixedAgentId }: { fixedAgentId?: string } = {}) {
   // model picker switches this conversation's model in place (confirmed, compacting first);
   // approval mode and the thinking level stay editable; /model opens a NEW conversation on
   // another model and leaves this one as it is.
-  const input = selected && (
+  const input = selected && selected.source !== "subagent" && (
     <ChatInput
       controlRef={composerRef}
       status={stream.taskState}
@@ -2273,6 +2276,7 @@ export function ChatPage({ fixedAgentId }: { fixedAgentId?: string } = {}) {
         : {})}
       goalPlugin={goalPlugin}
       onSkillsChange={onDraftSkillsChange}
+      onPersonalSkills={() => setPersonalSkillOpen(true)}
       onHandoff={onHandoff}
       initialText={sessionDraft.text ?? ""}
       onTextChange={onDraftTextChange}
@@ -2783,6 +2787,14 @@ export function ChatPage({ fixedAgentId }: { fixedAgentId?: string } = {}) {
                                 regular stop (one abort ends the whole goal loop). */}
                             {stream.goal && <GoalStatusBanner goal={stream.goal} />}
                             {input}
+                            {selected && (
+                              <SessionPersonalSkill
+                                sessionId={selected.sessionId}
+                                agentId={selected.agentId}
+                                open={personalSkillOpen}
+                                onClose={() => setPersonalSkillOpen(false)}
+                              />
+                            )}
                           </div>
                         </WallpaperSurface>
                       </>

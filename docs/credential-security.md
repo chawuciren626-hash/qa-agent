@@ -4,6 +4,8 @@
 
 ## 存储与能力边界
 
+本地账号中心会话的中央 Cookie 在数据库中使用 AES-256-GCM 密封；密钥文件位于同一私有数据根的 `account-center-cookie.key`，不属于源码或发布资源。服务启动时将有效旧明文记录迁移为密文；密钥缺失或密文校验失败会拒绝恢复会话。该措施针对单独泄露数据库的情形，不等于操作系统凭据库保护；旧 SQLite WAL、迁移前备份仍可能保存历史明文，备份须按敏感数据管理。
+
 当前安装版PenguinHarness将模型凭据内联保存在项目的`.project_config.toml`。宿主原生文件工具会检查该文件及`.vault.toml`的名称和实际链接目标，阻止直接读取。
 
 已核对安装版`loadAgentVault/saveAgentVault`：vault通过TOML解析和序列化保存，并注入Agent子进程环境变量。没有在该存取路径发现加密步骤；设置文件mode不等于加密，也不等于Windows ACL隔离。不能将模型key随意迁入vault并假设模型客户端支持变量引用，更不能把迁移称为加密完成。

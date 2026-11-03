@@ -1,11 +1,25 @@
 ---
 name: api-test-execution
+version: 2026.11.02.1
 description: 使用独立 HTTP worker 执行已设计的接口场景，保存逐请求断言证据，处理关联、凭据引用、取消和部分结果；不启动浏览器。
 ---
 
 # 接口执行
 
-先读共享 skills/api-test-execution/references/protocol.md 的声明式场景格式。api_task.prepare 只适配已有用例，不能创建缺失预期；start 返回后通过 status 查看后台状态，终结后 collect。每个 request_id 在本次 dispatch/attempt 内唯一，已有回执永不重发。不要在超时或中断后新建 run 绕过未知副作用。
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+
+## 输入与产出
+
+输入为已设计的接口场景、目标环境、当前会话可用的凭据引用和用户授权范围。输出为 worker 逐请求证据、断言结果、未执行原因及可供缺陷和报告角色使用的执行结果。
+
+## 工作步骤
+
+1. 读取协议并核对场景预期、目标、写操作授权和资源键。
+2. 用 `api_task.prepare` 适配已有用例，再 `start` 一次；通过 `status` 跟踪原 worker。
+3. 终结后 `collect` 证据，核对源用例、场景、请求及断言统计，并按本次派发契约交付。
+
+
+先按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 定位共享 `skills/api-test-execution/references/protocol.md`，读取声明式场景格式。api_task.prepare 只适配已有用例，不能创建缺失预期；start 返回后通过 status 查看后台状态，终结后 collect。每个 request_id 在本次 dispatch/attempt 内唯一，已有回执永不重发。不要在超时或中断后新建 run 绕过未知副作用。
 
 Bearer、Basic、API Key 和 Cookie 使用本会话 qa-secret:// 引用；响应提取也只以安全引用保存。步骤串行、场景按 depends_on 调度；共享可变资源使用相同 resources 键。写操作引用原生用户授权，并声明资源；不会把“测一下”扩展成生产支付、通知、权限变更或批量删除。
 

@@ -54,6 +54,9 @@ import { isGoalOutcome } from "../../runtime/goal-events.js";
 import { deleteSessionTree } from "../../services/session-deletion.js";
 import type { SessionDeletionDeps } from "../../services/session-deletion.js";
 import { HttpError } from "../errors.js";
+import { qaEnabled, qaEngineModule } from "../../services/qa-engine.js";
+import { prepareQaTaskContext } from "../../services/qa-task-context.js";
+import type { KnowledgeDb } from "../../services/qa-project-knowledge.js";
 import { registerQaSessionRoutes, qaLoginConfirmation } from "./qa-sessions.js";
 import { sseEndpoint, streamRevocation } from "../sse.js";
 import {
@@ -85,6 +88,7 @@ import type {
 
 /** What this route group reaches — bound by its module (src/modules). */
 export interface SessionsRouteDeps {
+  db: KnowledgeDb;
   agentConfigService: AgentConfig;
   channels: ChannelHub;
   config: ServerConfig;
@@ -128,7 +132,7 @@ import {
 import type { AttachmentLimits } from "../../services/attachment-limits.js";
 import { Bind, Component, Use } from "@prismshadow/penguin-core/kernel";
 import type { ClassCtx } from "@prismshadow/penguin-core/kernel";
-import { Channels, Config, Desktop } from "../../hmr/capabilities.js";
+import { Channels, Config, Db, Desktop } from "../../hmr/capabilities.js";
 import { Sessions as ManagerIface, SessionServiceIface } from "../../runtime/session-manager.js";
 import { Messaging } from "../../runtime/messaging/bridge.js";
 
@@ -1207,6 +1211,16 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
       row.sessionId,
     );
     try {
+      // Lock the project's sources at the first task dispatch and provide the selected
+      // personal Skill only to this round. This path is shared by UI and API sends.
+      const qaRole = qaEnabled && (qaEngineModule("qa-project-bootstrap").qaRoles() as { id: string }[])
+        .some(role => role.id === row.agentId);
+      const qaContext = qaRole ? await prepareQaTaskContext({
+        db: deps.db, findSession: id => deps.sessionsRepo.findById(id), root: deps.config.root,
+        projectId: row.projectId, agentId: row.agentId, sessionId: row.sessionId,
+        userId: c.var.user.userId, requestText: parsed.texts.join("\n")
+      }) : null;
+      if (qaContext) input.unshift(userText(qaContext.text, "harness"));
       if (driver !== null) deps.drivers?.note(row.sessionId, driver);
       // 202: the Task executes on the server, decoupled from the SSE connection; sessionId is the current actual id (the new id after self-heal).
       const { sessionId, queued } = await deps.manager.startTask(row.sessionId, input, {
@@ -1214,6 +1228,11 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
         // Original content, kept while the input waits in the follow-up queue so a recall
         // (DELETE /follow-ups/:id) can hand it back; unused when the task starts directly.
         recall: recallStore(parsed.texts.join("\n"), parsed.images, parsed.attachments, written),
+      });
+      // The task has already been accepted. A bookkeeping failure must not turn the
+      // accepted 202 into a client retry that submits the same task twice.
+      if (qaContext) await qaContext.consumeSelection().catch(error => {
+        console.error("Failed to consume accepted QA round Skill selection", error);
       });
       if (driver !== null && sessionId !== row.sessionId) deps.drivers?.note(sessionId, driver);
       return c.json({ sessionId, queued } satisfies TaskCreateResponse, 202);
@@ -1285,6 +1304,7 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
   // when the child's record does not exist or cannot be revived; 409 subagent_busy when the
   // child cannot take the message right now.
   app.post("/:sessionId/subagents/:childSessionId/message", async (c) => {
+    if (process.env.AITEST_ENGINE_ROOT) throw new HttpError(403,"subagent_controller_only","Subagent input is managed by the parent controller.");
     const row = resolveSession(c);
     const body = await readJson(c);
     const text = typeof body.text === "string" ? body.text.trim() : "";
@@ -1319,6 +1339,7 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
   // 202 aborted; 204 when the child is already idle or unknown (both
   // are "nothing left to stop", and the panel treats them alike).
   app.post("/:sessionId/subagents/:childSessionId/abort", (c) => {
+    if (process.env.AITEST_ENGINE_ROOT) throw new HttpError(403,"subagent_controller_only","Stop the parent task to stop its children.");
     const row = resolveSession(c);
     const aborted = deps.manager.abortSubagentRun(row.sessionId, pathParam(c, "childSessionId"));
     return c.body(null, aborted ? 202 : 204);
@@ -1791,6 +1812,7 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
 })
 export class SessionApiRoutes {
   @Use() private readonly config!: Config;
+  @Use() private readonly db!: Db;
   @Use() private readonly channels!: Channels;
   @Use() private readonly manager!: ManagerIface;
   @Use() private readonly machines!: Machines;
@@ -1847,6 +1869,7 @@ export class SessionApiRoutes {
     const sessionsRepo = this.sessionsRepo;
     const channels = this.channels as ChannelHub;
     const sessionsDeps = {
+      db: this.db,
       agentConfigService,
       channels,
       config: this.config,
@@ -1913,6 +1936,7 @@ export class SessionApiRoutes {
     });
     this.agentsRoutes = agentsRoutes({
       config: this.config,
+      db: this.db,
       agentApi: this.agentApi,
       agentConfigService,
       agentService: this.agents,

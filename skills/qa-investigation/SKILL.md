@@ -1,15 +1,17 @@
 ---
 name: qa-investigation
+version: 2026.11.02.1
 description: 对具体失败进行基于证据的根因调查，区分故障频率、产品/脚本/环境/数据原因和未确认问题；用于多步骤失败分析，不直接修复产品、启动复测或关闭缺陷。
 license: MIT; see LICENSE.txt
 metadata:
-  version: '1.1.0'
   source: fugazi/test-automation-skills-agents
   revision: 65a72d5e74def3c23143bef8757e72cb68e91032
   adapted-from: qa-investigation
 ---
 
 # 失败根因调查
+
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
 
 先查已有证据，再提出可验证假设；目标是解释失败，不是使报告变绿。简单错误可直接给出有依据的分析，不强制创建长调查日志。
 

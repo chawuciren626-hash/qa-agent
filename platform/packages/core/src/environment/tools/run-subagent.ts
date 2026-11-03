@@ -200,10 +200,10 @@ export function createSubagentTool(
         };
       }
 
-      // An interruption within the startup window kills the child session (consistent with
-      // exec_command); once switched to background, this listener is removed in `finally`.
-      // A detach is not on this listener: it leaves the child running, which is the point.
-      const onAbort = (): void => session.kill();
+      // QA keeps the child Session after a parent stop so the parent can continue the
+      // same conversation and dispatch on its next turn. The current child run stops.
+      const qaRetainOnAbort = qaIsWorkspace(ctx.workspaceDir);
+      const onAbort = (): void => { if (qaRetainOnAbort) session.abortRun(); else session.kill(); };
       let registered = false;
       signal?.addEventListener("abort", onAbort, { once: true });
       const windowSignal = collectUntil(signal, detachSignal);
@@ -216,7 +216,14 @@ export function createSubagentTool(
           ...(approve ? { approve } : {}),
         });
 
-        if (signal?.aborted) return { status: "aborted" };
+        if (signal?.aborted) {
+          if (qaRetainOnAbort) {
+            const id = manager.register(session);
+            registered = true;
+            yield partialToolCallOutput({ eventType: "delta", output: `[subagent retained with subagent_id ${id}; parent stopped; continue this child with input_subagent after the user resumes]`, toolCallId });
+          }
+          return { status: "aborted" };
+        }
         if (session.running) {
           // Still running: register as a background session, returning subagent_id for
           // input_subagent to continue accessing it.

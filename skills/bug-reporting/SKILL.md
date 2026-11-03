@@ -1,11 +1,12 @@
 ---
 name: bug-reporting
+version: 2026.11.02.2
 description: 基于测试失败结果、日志和截图分类问题，生成可追溯的 Bug 草稿。
-metadata:
-  version: '1.3.0'
 ---
 
 # Bug 记录 Skill
+
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
 
 task和lifecycle遇到多种可能原因时，均可按需读取已安装的qa-investigation及其失败分类参考。只利用本次材料分析，不因此补建执行批次、启动复测或把反复失败直接定为产品缺陷。
 
@@ -28,7 +29,7 @@ task和lifecycle遇到多种可能原因时，均可按需读取已安装的qa-i
 
 新版执行批次的bugs.json必须为`{run_id, invocation_id, bugs: [...]}`，invocation_id引用真实最新批次；normalize-defects会拒绝旧批次分析，并在标准记录中保留批次ID。先重建当前证据评估。最新批次阻塞时，不沿用上轮失败或成功结论。细则见`docs/execution-attempts.md`。
 
-交付前运行`npm run artifacts:validate -- <run_id> defects`，详见`docs/artifact-contracts.md`。标准defect-records包含本run_id、records与分类summary；无问题时records可为空，但每个实际失败用例必须有分类记录（不能确定时needs_review）。related_cases引用本次实际失败ID，evidence_refs引用本run文件，重复问题使用有效duplicate_of，置信度不得超过关联证据评估。校验失败交回来源阶段修复，不改写真实执行结果。
+交付前通过 project-action 调用 `validate_artifacts`（stage=defects），详见`docs/artifact-contracts.md`。标准defect-records包含本run_id、records与分类summary；无问题时records可为空，但每个实际失败用例必须有分类记录（不能确定时needs_review）。related_cases引用本次实际失败ID，evidence_refs引用本run文件，重复问题使用有效duplicate_of，置信度不得超过关联证据评估。校验失败交回来源阶段修复，不改写真实执行结果。
 
 ### 适用场景
 
@@ -52,7 +53,7 @@ task和lifecycle遇到多种可能原因时，均可按需读取已安装的qa-i
 3. 判断失败类型：产品缺陷、脚本问题、环境问题、数据问题、待确认。
 4. 对产品缺陷生成 Bug 草稿，对非产品问题说明原因和处理建议。
 5. 写入 `bugs.json`、`bugs.md` 后通过project-action调用normalize_defects（只需run_id），生成标准记录，再validate_artifacts（stage=defects）。仅按recovery.retry_allowed修正未确认草稿；若提示已登记观察不一致，保留原观察，交总控按生命周期治理处理，不改ID或删台账绕过。详见docs/draft-artifact-recovery.md。
-6. 需要跨运行比较时，通过统一命令入口运行build-defect-index.mjs作为补充；不作为本run基本交付必需前置，不得把历史相似项重复作为新问题描述。
+6. 跨运行比较是单独请求的补充工作，需使用工程规定的受控入口生成缺陷索引；本次派发未提供该入口时只交付当前运行结果，不自行执行 `build-defect-index.mjs`。不得把历史相似项重复作为新问题描述。
 
 ### 质量标准
 

@@ -222,8 +222,24 @@ function terminalCommandOutput(rows, index, initial, allowRecovery) {
   return terminal;
 }
 
+// Some hosts detach a read-only catalog lookup and return its completion as a
+// background notification. The poll then contains no catalog body. A catalog
+// has no business side effects, so later structured action receipts remain the
+// evidence for delivery; this exception must never apply to execute.
+function backgroundCatalogWithoutOutput(rows, index, initial) {
+  const match = String(initial.payload.output ?? '').match(/^\[command running in background with process_id (proc-[A-Za-z0-9-]+); its completion will arrive as a user message — no need to poll\. Use input_command to interact \(kill: true stops it\)\]$/);
+  if (!match || toolOutcome(initial.payload) !== 'completed') return false;
+  const polls = rows.slice(index + 1).filter(row => row.payload?.type === 'tool_call' && row.payload.name === 'input_command').filter(row => {
+    try { const args = parseToolArguments(row); return args.process_id === match[1] && args.kill !== true; }
+    catch { return false; }
+  });
+  if (polls.length !== 1) return false;
+  const outputs = rows.slice(index + 1).filter(row => row.payload?.type === 'tool_call_output' && row.payload.tool_call_id === polls[0].payload.tool_call_id);
+  return outputs.length === 1 && toolOutcome(outputs[0].payload) === 'completed' && String(outputs[0].payload.output ?? '').trim() === '[no output]';
+}
+
 // Only inspect structured tool calls/results, never model reasoning or prose claims.
-export function assertChildCommands(rows, { allowRecovery = false, allowUnresolvedRecovery = false, requireControlledCommands = false, verifyRecovery = () => false, verifyPartialBrowserFailure = () => false, stageWriteBoundary = null } = {}) {
+export function assertChildCommands(rows, { allowRecovery = false, allowUnresolvedRecovery = false, requireControlledCommands = false, verifyRecovery = () => false, verifyPartialBrowserFailure = () => false, verifyExternalRecovery = () => false, stageWriteBoundary = null } = {}) {
   assertStageWrites(rows,{stageWriteBoundary,allowRecovery});
   const pending = new Set();
   const pendingReads = new Map();
@@ -252,6 +268,7 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     catch { throw new Error('Child command arguments unreadable'); }
     const outputs = rows.slice(index + 1).filter(item => item.payload?.type === 'tool_call_output' && item.payload.tool_call_id === row.payload.tool_call_id);
     if (outputs.length !== 1) throw new Error('Child command has unknown terminal response; review required');
+    if (allowRecovery && isCatalogLookup(args?.cmd) && backgroundCatalogWithoutOutput(rows,index,outputs[0])) continue;
     const response = terminalCommandOutput(rows, index, outputs[0], allowRecovery);
     if(allowRecovery && wasRedirectedBeforeExecution(rows,index,response,row.payload.tool_call_id)) continue;
     if (!isControlledCommand(args?.cmd)) {
@@ -358,6 +375,7 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     const inProcess = result.execution_mode === 'in_process' && result.launches_child === false && typeof result.action_receipt === 'string';
     if (result.status === 'completed' && (result.exit_code !== 0 || (!inProcess && result.result?.termination_confirmed !== true))) throw new Error('Child process completion is unconfirmed');
   }
+  for(const key of pending) if(verifyExternalRecovery(key)) pending.delete(key);
   if (pending.size && !allowUnresolvedRecovery) throw new Error('Recoverable errors were not resolved by a verified successful action');
   if(pendingReads.size && !allowUnresolvedRecovery) throw new Error('Source read correction requires a matching native read and verified stage validation');
   if (pendingInspection) throw new Error('Read-only inspection failure was not corrected');

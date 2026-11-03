@@ -12,7 +12,7 @@ import { validateResponseCheck, observeBusinessResponse } from './browser-respon
 import { dataLedgerPath, validDataKey, prepareOwnedData, ownedDataForEffect, beginDataEffect, completeDataEffect, summarizeDataLedger } from './browser-data-ledger.mjs';
 import { validateCountMetadata, resolveCaseReference, summarizeExecutionCounts, uiCheckFingerprint } from './execution-counts.mjs';
 import { validateApiCheck, validateFault, runReadOnlyApiCheck, createOneShotFault } from './browser-api-controls.mjs';
-import { browserLifecycle, currentBrowserAuthorization, assertBrowserTarget, assertBrowserDesignCheck, browserCoverage } from './browser-lifecycle.mjs';
+import { browserLifecycle, browserCasePlan, currentBrowserAuthorization, assertBrowserTarget, assertBrowserDesignCheck, browserCoverage } from './browser-lifecycle.mjs';
 import { ownProcessIdentity, ownerHasExited } from './process-identity.mjs';
 import { saveBrowserProgress } from './browser-result-recovery.mjs';
 import { publishRecoveredBrowserResults } from './browser-recovery-delivery.mjs';
@@ -41,7 +41,7 @@ export const browserOperationFields=Object.freeze({
   sequence:['observed_request_id','steps'],start:['url','source_path','scope','headless'],health:[],recover:[],snapshot:['scope','if_sha256'],goto:['url','source_path'],
   fill:['target','value','value_ref','secret_ref','secret'],click:['target','assertion','preconditions','response_check','data_effect','fault','dialog_policy'],press:['target','key','assertion','preconditions','response_check','data_effect','fault','dialog_policy'],select:['target','value','value_ref'],
   check:['target','checked'],assert:['target','condition','value','value_ref','text_mode','case_id','title','expected','case_ref','recheck_of','ready','expected_basis'],
-  pause:['kind','question'],finish:['summary','limitations','untested'],data_prepare:['key'],api_check:['check']
+  pause:['kind','question'],finish:['summary','limitations','untested','case_reviews'],data_prepare:['key'],api_check:['check']
 });
 
 // A one-shot CLI must not retain a pooled socket after its reply is written.
@@ -269,13 +269,20 @@ export function validateBrowserOperation(op) {
   if (op.type==='pause') assert(['captcha','mfa','access','business_question','risk_decision'].includes(op.kind) && typeof op.question==='string' && op.question.trim(),'Only genuine human intervention may pause');
   if (op.type==='finish') assert(typeof op.summary==='string' && op.summary.trim() && Array.isArray(op.limitations) && op.limitations.every(v=>typeof v==='string'),'Finish needs summary and limitations');
   if (op.type==='finish' && op.untested!==undefined) assert(Array.isArray(op.untested) && op.untested.length<=100 && op.untested.every(v=>typeof v==='string' && v.trim() && v.length<=2000),'untested must be an array of nonempty scope descriptions (up to 100)');
+  if (op.type==='finish' && op.case_reviews!==undefined) assert(Array.isArray(op.case_reviews) && op.case_reviews.length<=500 && op.case_reviews.every(r=>r && typeof r.case_id==='string' && r.case_id.trim() && Array.isArray(r.completed_step_indices) && r.completed_step_indices.every(Number.isInteger) && (r.untested===undefined || Array.isArray(r.untested) && r.untested.every(s=>typeof s==='string' && s.trim()))),'case_reviews must list completed design step indices and untested reasons');
 }
 
 function binding(dir) {
   const manifest=load(resolve(dir,'manifest.json'));
   const dispatch=manifest.orchestration?.events?.filter(e=>e.type==='dispatched' && e.stage==='execution').at(-1);
   assert((manifest.orchestration?.plan?.workflow_mode==='task' || browserLifecycle(manifest)) && manifest.stages?.execution?.status==='in_progress' && dispatch?.dispatch_id,'Requires an active browser execution dispatch');
-  if(browserLifecycle(manifest)) assert(readRunFile(dir,'design/test_cases.json').sha256===currentBrowserAuthorization(manifest)?.design_sha256,'Authorized design changed');
+  if(browserLifecycle(manifest)) {
+    assert(readRunFile(dir,'design/test_cases.json').sha256===currentBrowserAuthorization(manifest)?.design_sha256,'Authorized design changed');
+    if(existsSync(resolve(dir,'execution/browser-case-plan.json'))) {
+      const stored=JSON.parse(readRunFile(dir,'execution/browser-case-plan.json').data);
+      assert(JSON.stringify(stored)===JSON.stringify(browserCasePlan(dir,manifest)),'Browser case plan differs from authorized design');
+    }
+  }
   return dispatch;
 }
 
@@ -597,7 +604,8 @@ async function worker(root,runId) {
         const untested=(op.untested ?? []).map(scrub);
         let incomplete=state.human_resolution?.decision==='cancel' || untested.length>0 || unacknowledged || !!state.dialog_issues || ['waiting_human','needs_inspection','starting'].includes(state.status) || !cases.length || cases.some(row=>['blocked','skipped','unknown'].includes(row.status));
         const currentManifest=load(resolve(dir,'manifest.json'));
-        if(browserLifecycle(currentManifest)) incomplete ||= browserCoverage(dir,currentManifest,{cases}).untested_cases.length>0;
+        const designCoverage=browserLifecycle(currentManifest)?browserCoverage(dir,currentManifest,{cases},op.case_reviews ?? []):null;
+        if(designCoverage) incomplete ||= designCoverage.incomplete_cases.length>0;
         secretReferences.clear();humanTiming.end('finished_without_resume');state.human_handoff_timing=humanTiming.snapshot();
         await browser?.close();closed=true;state.status='closed';state.finished_at=new Date().toISOString();
         const summary={total:cases.length,...Object.fromEntries(['passed','failed','blocked','skipped'].map(s=>[s,cases.filter(c=>c.status===s).length]))};
@@ -608,8 +616,8 @@ async function worker(root,runId) {
         networkLog.flush();
         const paths=[...evidence,'execution/test_results.json',...['execution/browser-network.json','execution/browser-network.jsonl'].filter(path=>existsSync(resolve(dir,path)))];
         const manifest=load(resolve(dir,'manifest.json'));
-        if(browserLifecycle(manifest)) {
-          writeJson(resolve(dir,'execution/browser-coverage.json'),browserCoverage(dir,manifest,results));
+        if(designCoverage) {
+          writeJson(resolve(dir,'execution/browser-coverage.json'),designCoverage);
           paths.push('execution/browser-coverage.json');
         }
         const observation={...state,mode:'interactive_browser',command_id:commandId,summary:scrub(op.summary),cleanup,limitations:[...op.limitations.map(scrub),...(unacknowledged?['An operation acknowledgement remains unresolved; retain its receipt and do not replay the write.']:[]),...(cleanup.possible_residuals?[`Tracked test data may remain: ${cleanup.possible_residuals}. See ${dataLedgerPath}; do not repeat uncertain cleanup.`]:[]),...(state.capture_warnings?[`Screenshots unavailable for ${state.capture_warnings} operations; use retained structured observations.`]:[]),'Application-initiated HTTP APIs supported; new cross-origin documents, popups, downloads and WebSockets are not supported.'],partial:incomplete,evidence:paths.map(p=>({path:p,sha256:readRunFile(dir,p).sha256}))};

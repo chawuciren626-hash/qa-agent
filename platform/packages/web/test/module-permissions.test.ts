@@ -9,6 +9,17 @@ describe("module navigation and route authorization", () => {
     expect(pageModule("/chat", "?view=library-extra")).toBe("chat");
     expect(pageModule("/chat/session", "")).toBe("chat");
   });
+  it("guards every QA page with its corresponding module", () => {
+    expect(pageModule("/qa/library")).toBe("library");
+    expect(pageModule("/qa/knowledge")).toBe("library");
+    expect(pageModule("/qa/quality")).toBe("projects");
+    expect(pageModule("/qa/project/tasks/session-1")).toBe("projects");
+    expect(pageModule("/qa/personal-skills")).toBe("skills");
+    const user={isAdmin:false,modulePermissions:["projects"]};
+    expect(allowedModule(user,pageModule("/qa/quality")!)).toBe(true);
+    expect(allowedModule(user,pageModule("/qa/knowledge")!)).toBe(false);
+    expect(allowedModule(user,pageModule("/qa/personal-skills")!)).toBe(false);
+  });
   it("denies missing central grants and preserves explicit administrator access", () => {
     expect(allowedModule(null, "agents")).toBe(false);
     expect(allowedModule({isAdmin:false,modulePermissions:[]}, "agents")).toBe(false);

@@ -923,6 +923,8 @@ export const zh = {
     },
     /** Admin-only sub-page (server-global): the options loaded plugins declare. */
     pluginsTitle: "插件",
+    sandboxTitle: "运行沙箱",
+    sandboxInfo: "平台级运行沙箱配置，对所有项目的新任务生效。沙箱后端由安装版提供，无需逐个 Agent 安装。已有任务沿用启动时的策略；自动化执行链路需单独完成隔离接入与验收。",
     /** An enum option this machine cannot honour, listed greyed out. */
     pluginOptionUnavailable: (title: string, reason: string) => `${title}（不支持：${reason}）`,
     /** A switch one of whose positions this machine cannot honour, under the switch. */
@@ -3861,6 +3863,7 @@ Benchmark：
     send: "发送",
     stop: "停止",
     compact: "压缩上下文",
+    personalSkill: "选择本轮个人技能：仅本次发送所在轮生效，发送成功后自动清空",
     approve: "允许",
     deny: "拒绝",
     decisionAllow: "已批准",

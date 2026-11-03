@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, symlink
 import { readControllerSession } from '../../scripts/controller-command-session.mjs';
 import { resolve } from 'node:path';
 import { executeAction, actionCommand } from '../../scripts/structured-actions.mjs';
-import { inspectIndependentArtifacts, taskResultPath } from '../../scripts/independent-task.mjs';
+import { inspectIndependentArtifacts, taskResultPath, verifiedSourcesFor } from '../../scripts/independent-task.mjs';
 import { assertCompletedArtifacts } from '../../scripts/artifact-contracts.mjs';
 import { inspectHandoff, reconcileHandoff } from '../../scripts/controller-handoff.mjs';
 import { createServer } from 'node:http';
@@ -13,6 +13,12 @@ import xlsx from '../../scripts/spreadsheet-runtime.mjs';
 import { validateExplorationTarget } from '../../scripts/explore-task-url.mjs';
 const root=resolve(import.meta.dirname,'../..');
 const roles={analysis:['requirement_analysis_agent','requirement-analysis'],test_points:['test_point_agent','test-point-design'],test_cases:['test_case_agent','test-case-writing'],execution:['automation_execution_agent','playwright-execution'],defects:['defect_analysis_agent','bug-reporting'],report:['test_report_agent','test-report-writing']};
+
+test('report uses the latest sealed case design after a reviewed edit',()=>{
+  const files=sha256=>[{path:'design/test_cases.json',sha256}];
+  const events=[{type:'completed',stage:'test_cases',evidence:{artifact_contract:{files:files('old')}}},{type:'completed',stage:'test_cases',evidence:{artifact_contract:{files:files('reviewed')}}},{type:'dispatched',stage:'report'}];
+  assert.deepEqual(verifiedSourcesFor({orchestration:{events}},'report'),files('reviewed'));
+});
 
 test('URL sources accept archived extensionless text but reject binary, traversal and absent URLs',()=>{
   const url='http://127.0.0.1:4317/healthy?scope=acceptance';
@@ -243,8 +249,24 @@ test('independent report missing or malformed draft stays correctable and then e
     assert.equal(existsSync(resolve(f.dir,'report/test_report.pdf')),false);
     assert.equal(existsSync(resolve(f.dir,'report/test_report.docx')),false);
     assert.match(readFileSync(resolve(f.dir,'report/test_report.html'),'utf8'),/执行事实（工具提取）/);
-    assert.equal(readFileSync(resolve(f.dir,'report/test_report.md'),'utf8'),'# Report\nNo product tests executed.');
+    assert.match(readFileSync(resolve(f.dir,'report/test_report.md'),'utf8'),/执行状态：受阻。记录总数 0/);
+    assert.equal(readFileSync(resolve(f.dir,retry.artifact_archive,'before/report/test_report.md'),'utf8'),'# Report\nNo product tests executed.');
   }
+});
+
+test('contradictory agent conclusion cannot enter the delivered report',async()=>{
+  const f=await fixture('report');
+  f.put('report/test_report.md',`# Report\n${f.id} 全部通过，零风险，完整覆盖。`);
+  f.put('report/reportable-results.json',{run_id:f.id,status:'blocked',summary:{total:0,passed:0,failed:0,blocked:0,skipped:0},cases:[]});
+  f.put('report/issues.json',[]);
+  const exported=await f.send({action:'export_report'});
+  assert.equal(exported.exit_code,0,JSON.stringify(exported));
+  for(const path of ['report/test_report.md','report/test_report.html']) {
+    const delivered=readFileSync(resolve(f.dir,path),'utf8');
+    assert.doesNotMatch(delivered,/全部通过，零风险，完整覆盖/);
+    assert.match(delivered,/未测范围|未评估/);
+  }
+  assert.match(readFileSync(resolve(f.dir,exported.artifact_archive,'before/report/test_report.md'),'utf8'),/全部通过，零风险，完整覆盖/);
 });
 
 test('report export includes imported timing facts and preserves source and agent draft',async()=>{
@@ -268,7 +290,8 @@ test('report export includes imported timing facts and preserves source and agen
   const sheet=xlsx.readFile(resolve(f.dir,'report/test_cases.xlsx')).Sheets['测试用例'];
   assert.equal(sheet.G6.v,'EXPECTED_SOURCE');assert.match(sheet.H6.v,/ACTUAL_SOURCE/);assert.match(sheet.H6.v,/导入记录/);assert.equal(sheet.I6.v,'通过（模拟）');
   assert.deepEqual(readFileSync(resolve(f.dir,'inputs/results.json')),before);
-  assert.equal(readFileSync(resolve(f.dir,'report/test_report.md'),'utf8'),'# Timing report\nImported observations.');
+  assert.match(readFileSync(resolve(f.dir,'report/test_report.md'),'utf8'),/来源：inputs\/results.json/);
+  assert.equal(readFileSync(resolve(f.dir,exported.artifact_archive,'before/report/test_report.md'),'utf8'),'# Timing report\nImported observations.');
   const validated=inspectIndependentArtifacts(root,f.id,'report');
   assert.equal(validated.status,'passed',JSON.stringify(validated.errors));
   const workbook=xlsx.readFile(resolve(f.dir,'report/test_cases.xlsx'));

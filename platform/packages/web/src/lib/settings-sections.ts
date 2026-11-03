@@ -28,6 +28,7 @@ export type SettingsSectionKey =
   | "profile"
   | "general"
   | "appearance"
+  | "models"
   | "shortcuts"
   | "archived"
   | "account"
@@ -37,6 +38,7 @@ export type SettingsSectionKey =
   | "company"
   | "chromeExtension"
   | "agentApi"
+  | "sandbox"
   | "plugins"
   | "users";
 
@@ -68,6 +70,7 @@ const SECTION_RULES: ReadonlyArray<SettingsSection & { visible(viewer: SettingsV
     { key: "profile", group: "personal", visible: () => true },
     { key: "general", group: "personal", visible: () => true },
     { key: "appearance", group: "personal", visible: () => true },
+    { key: "models", group: "personal", visible: (v) => !v.accountCenter },
     // Keyboard shortcuts are the account's, and apply in every session of it.
     { key: "shortcuts", group: "personal", visible: () => true },
     // The conversations not in the sidebar — archived by hand, or opened by a program and not
@@ -87,7 +90,8 @@ const SECTION_RULES: ReadonlyArray<SettingsSection & { visible(viewer: SettingsV
     { key: "chromeExtension", group: "server", visible: (v) => v.isAdmin },
     // Whether any Agent's public API answers at all: server-global, like the Chrome switch.
     { key: "agentApi", group: "server", visible: (v) => v.isAdmin },
-    // The sandbox, and the options loaded plugins declare (server-global, like the plugins themselves).
+    { key: "sandbox", group: "server", visible: (v) => v.isAdmin },
+    // Options declared by other loaded plugins.
     { key: "plugins", group: "server", visible: (v) => v.isAdmin },
     // Single-user under the desktop shell: the server rejects the admin user routes there.
     { key: "users", group: "server", visible: (v) => v.isAdmin && !v.desktopMode },

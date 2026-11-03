@@ -1,0 +1,60 @@
+{
+  "name": "simple-supported",
+  "description": "A simple case whose expected sentence is quoted verbatim from a loaded requirement source.",
+  "input": {
+    "sources": {
+      "inputs/requirements.txt": "用户提交正确手机号后，页面显示登录成功。"
+    },
+    "rules": [
+      {
+        "ruleId": "RULE-1",
+        "statement": "用户提交正确手机号后，页面显示登录成功。",
+        "status": "confirmed",
+        "source": "inputs/requirements.txt"
+      }
+    ],
+    "points": [
+      {
+        "id": "TP-1",
+        "module": "登录",
+        "feature": "手机号登录",
+        "description": "提交正确手机号后登录成功",
+        "risk": "中",
+        "coverage_type": ["functional"],
+        "rule_ids": ["RULE-1"]
+      }
+    ],
+    "cases": [
+      {
+        "case_id": "CASE-1",
+        "title": "手机号登录成功",
+        "priority": "P1",
+        "type": "functional",
+        "preconditions": ["已注册账号"],
+        "steps": ["输入正确手机号", "点击提交"],
+        "expected": "页面显示登录成功",
+        "automation_feasible": true,
+        "related_test_point": "TP-1",
+        "coverage_type": ["functional"],
+        "expected_basis": [
+          {
+            "expected": "页面显示登录成功",
+            "kind": "requirement",
+            "source_path": "inputs/requirements.txt",
+            "quote": "页面显示登录成功"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "pointComplexity": "low",
+    "pointRisk": "medium",
+    "caseComplexity": "medium",
+    "caseStatus": "executable",
+    "expectedBasis": "supported",
+    "designValidity": "supported",
+    "executability": "supported",
+    "coverageSufficiency": "supported"
+  }
+}

@@ -585,6 +585,7 @@ export function ChatInput({
   initialGoal,
   goalPlugin = null,
   onSkillsChange,
+  onPersonalSkills,
   onHandoff,
   initialText,
   onTextChange,
@@ -792,6 +793,13 @@ export function ChatInput({
   goalPlugin?: GoalPluginGate | null;
   /** Callback when selected skills change (check/prune; the clear after a successful send does not call back, same as onTextChange). */
   onSkillsChange?: (names: string[]) => void;
+  /**
+   * Opens the round-scoped personal Skill chooser (`/personal-skill`). Supplied for an active
+   * Session only: the choice is pinned to that Session's next accepted round, so a draft — which
+   * has no Session yet — cannot carry one. The chooser itself lives in the parent, which owns the
+   * Project and the Q1 selection endpoints; this composer only offers the way in.
+   */
+  onPersonalSkills?: () => void;
   /** Draft's initial text (restored on mount; paired with onTextChange for draft auto-caching). */
   initialText?: string;
   /**
@@ -1358,6 +1366,21 @@ export function ChatInput({
             },
           ]
         : []),
+      // Round-scoped personal Skills (Q1): the chooser is the parent's modal, because the
+      // selection is pinned to this Session's next accepted round and loaded from the Project's
+      // personal-resources endpoints. The token is consumed immediately, like /model.
+      ...(onPersonalSkills
+        ? [
+            {
+              cmd: "/personal-skill",
+              desc: S.chat.personalSkill,
+              run: () => {
+                clearInput();
+                onPersonalSkills();
+              },
+            },
+          ]
+        : []),
       // Each installed skill gets its own entry: `/<skill_name>` toggles that skill's selection (without sending), description follows the UI language.
       ...skillSlashItems(skills, locale).map((s) => ({
         cmd: s.cmd,
@@ -1373,6 +1396,7 @@ export function ChatInput({
     onCompact,
     onSwitchModel,
     onHandoff,
+    onPersonalSkills,
     models,
     agents,
     onTextChange,

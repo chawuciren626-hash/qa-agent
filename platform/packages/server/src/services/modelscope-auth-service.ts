@@ -645,7 +645,7 @@ export class ModelScopeAuthProvider {
       bridgeUrl: this.config.modelscopeBridgeUrl ?? normalizeModelScopeBridgeUrl(undefined),
       applyCredential: async (projectId, credential, options) => {
         if (credential.refreshToken !== undefined) {
-          return this.projectConfig.setGroupApiKeyWithProviderAuthToken(
+          const applied = await this.projectConfig.setGroupApiKeyWithProviderAuthToken(
             projectId,
             MODELSCOPE_PROVIDER_ID,
             credential.accessToken,
@@ -655,12 +655,16 @@ export class ModelScopeAuthProvider {
             },
             options,
           );
+          if (applied > 0) await this.projectConfig.publishSharedModels(projectId, true);
+          return applied;
         }
-        return this.projectConfig.setGroupApiKey(
+        const applied = await this.projectConfig.setGroupApiKey(
           projectId,
           MODELSCOPE_PROVIDER_ID,
           credential.accessToken,
         );
+        if (applied > 0) await this.projectConfig.publishSharedModels(projectId, true);
+        return applied;
       },
       readStoredCredential: (projectId) =>
         this.providerAuthTokens.get(projectId, MODELSCOPE_PROVIDER_ID),

@@ -660,8 +660,6 @@ export function createWorkspaceUI(deps) {
         nav("项目视图", "folder", "/qa/project"),
         nav("定时任务", "clock", "/chat?view=schedules"),
         nav("项目资料", "book", "/chat?view=library"),
-        nav("模型配置", "box", "/models"),
-        nav("插件市场", "puzzle", "/plugins"),
       ),
       h(
         "div",

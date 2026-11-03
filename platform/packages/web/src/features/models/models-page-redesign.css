@@ -50,6 +50,33 @@
 .dark .models-filters button.is-selected::after { background: #6e9dff; }
 .models-panel-body { flex: 1; min-height: 0; padding: 12px 24px 24px; overflow-y: auto; overscroll-behavior-y: contain; }
 .models-card-grid { display: grid; grid-template-columns: repeat(3, minmax(250px, 1fr)); gap: 16px; align-content: start; }
+.models-settings-frame { height: 100%; min-height: 0; }
+.models-settings-frame .models-workspace { min-height: 0; }
+.models-settings-frame .models-sidebar { width: 132px; }
+.models-settings-frame .models-sidebar-heading { padding-left: 10px; }
+.models-settings-frame .models-provider-list { padding-left: 4px; padding-right: 4px; }
+.models-settings-frame .models-provider-row { padding-left: 9px; gap: 5px; }
+.models-settings-frame .models-provider-logo { width: 16px; height: 16px; }
+.models-settings-frame .models-provider-count { font-size: 10px; }
+.models-settings-frame .models-panel-heading { min-height: 52px; padding: 8px 16px; }
+.models-settings-frame .models-panel-logo { width: 24px; height: 24px; }
+.models-settings-frame .models-filters { padding: 0 16px; }
+.models-settings-frame .models-panel-body { padding: 8px 16px 16px; }
+.models-settings-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 12px 10px; }
+.models-settings-toolbar input { flex: 1 1 180px; min-width: 0; }
+.models-settings-frame .models-panel-actions { gap: 2px; }
+.models-settings-frame .models-panel-actions button { font-size: 11px; }
+.models-settings-list { display: flex; flex-direction: column; gap: 4px; }
+.models-settings-row { display: flex; align-items: center; min-height: 42px; gap: 5px; padding: 6px 8px; border: 1px solid #e8e8eb; border-radius: 8px; font-size: 11px; }
+.dark .models-settings-row { border-color: #30323a; }
+.models-settings-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.models-settings-default { flex: none; color: #2563eb; }
+.models-settings-row-id { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #74747c; }
+.models-settings-row-actions { display: flex; flex: none; align-items: center; gap: 1px; }
+.models-settings-row-actions button { padding: 4px 3px; border-radius: 5px; color: #55565d; white-space: nowrap; }
+.models-settings-row-actions button:hover { background: #ededf0; }
+.dark .models-settings-row-actions button:hover { background: #30323a; }
+.models-settings-row-actions button:disabled { opacity: .5; cursor: wait; }
 .models-card-grid > * { min-height: 132px; border-radius: 10px; box-shadow: 0 1px 2px rgb(16 18 24 / 5%); transition: box-shadow 120ms ease, border-color 120ms ease; }
 .models-card-grid > *:hover { box-shadow: 0 2px 8px rgb(16 18 24 / 9%); }
 .models-card-grid > * > button { padding: 12px 16px; gap: 6px; }

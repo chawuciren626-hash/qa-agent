@@ -9,6 +9,9 @@ export function pageModule(path:string,search=""):string|undefined {
     return view==="library"?"library":view==="schedules"?"schedules":"chat";
   }
   if(path.startsWith("/qa/library"))return "library";
+  if(path.startsWith("/qa/knowledge"))return "library";
+  if(path.startsWith("/qa/quality"))return "projects";
+  if(path.startsWith("/qa/personal-skills"))return "skills";
   if(path.startsWith("/qa/project"))return "projects";
   return ["agents","models","plugins","skills","machines","usage","benchmark"].find(key=>path===`/${key}`||path.startsWith(`/${key}/`));
 }

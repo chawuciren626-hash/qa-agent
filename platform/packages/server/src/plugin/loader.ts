@@ -563,10 +563,14 @@ export async function loadPlugins(
   const failed = new Map<string, string>();
   const pushedAssets = assetsDir === undefined ? await committedAssetsDir(root) : assetsDir;
   const bases = pluginBases(root, pushedAssets);
-  // The closure over this root's Projects, and nothing else. A plugin the BUILD ships is
-  // available without a download — that is what `builtin` means — but availability is not
-  // consent: it loads when a Project asks for it, like every other plugin.
-  const specifiers = await readPluginClosure(root, machineId);
+  // Sandbox backends shipped with this build are platform infrastructure. Their policy
+  // remains server-global and disabled until an administrator enables it in Settings.
+  const shipped = new Set(await discoverBuiltinPlugins(bases));
+  const native = process.platform === "win32" ? "@penguinharness/sandbox-wsl"
+    : process.platform === "darwin" ? "@penguinharness/sandbox-seatbelt"
+    : "@penguinharness/sandbox-bwrap";
+  const automatic = [native, "@penguinharness/sandbox-dsh"].filter(name => shipped.has(name));
+  const specifiers = [...new Set([...automatic, ...await readPluginClosure(root, machineId)])];
   const loaded: LoadedPlugin[] = [];
   for (const specifier of specifiers) {
     // Reused only when the SAME FILE is behind the name. A push writes the builtin plugins to

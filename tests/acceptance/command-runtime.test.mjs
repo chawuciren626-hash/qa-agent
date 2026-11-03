@@ -97,6 +97,9 @@ test('registered prelaunch contracts reject missing positional run, mixed scope 
     ['generate-analysis-markdown.mjs', ['run-synthetic', '--help']]
   ]) assert.throws(() => validateCommandArguments(script, args, runId), CommandUsageError);
   assert.doesNotThrow(() => validateCommandArguments('validate-artifacts.mjs', ['run-synthetic', 'analysis'], 'run-synthetic'));
+  const report=['run-synthetic','completed','--stage=report','--parent-session-id=session-2026-11-03-12-00-00-abcd1234','--dispatch-id=dispatch-1','--session-id=session-2026-11-03-12-01-00-abcd1234','--artifacts=report/test_report.html','--recovery=interrupted_report'];
+  assert.doesNotThrow(() => validateCommandArguments('record-orchestration-event.mjs',report,'run-synthetic'));
+  assert.throws(() => validateCommandArguments('record-orchestration-event.mjs',report.map(arg=>arg==='--stage=report'?'--stage=analysis':arg),'run-synthetic'),CommandUsageError);
 });
 
 test('help and usage errors return machine-readable responses without launching a project script', () => {

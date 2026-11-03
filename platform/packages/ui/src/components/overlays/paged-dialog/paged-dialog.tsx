@@ -50,6 +50,7 @@ export function PagedDialog<K extends string>({
   onSelect,
   children,
   closeLabel,
+  bodyClassName,
 }: {
   open: boolean;
   onClose: () => void;
@@ -62,6 +63,7 @@ export function PagedDialog<K extends string>({
   children: ReactNode;
   /** The close cross's accessible name; defaults to the interface's word for "close". */
   closeLabel?: string;
+  bodyClassName?: string;
 }) {
   const showGroupHeadings = groups.length > 1;
   const activeItem = groups.flatMap((g) => g.items).find((item) => item.key === active);
@@ -108,7 +110,7 @@ export function PagedDialog<K extends string>({
             </h2>
             <CloseButton onClose={onClose} label={closeLabel} />
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-3 sm:px-6 sm:pb-6">
+          <div className={bodyClassName ?? "min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-3 sm:px-6 sm:pb-6"}>
             {children}
           </div>
         </div>

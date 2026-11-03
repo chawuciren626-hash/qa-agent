@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { CommandUsageError } from './command-contracts.mjs';
 import { assertCompletedArtifacts } from './artifact-contracts.mjs';
 import { assertStageHistory, getRunContext, recomputeRunStatus, withRunLock, writeJson } from './orchestration-state.mjs';
 
@@ -12,6 +13,7 @@ export function setReviewMode(root, runId, mode) {
     const {manifest,manifestPath}=getRunContext(root,project,runId);
     const plan=manifest.orchestration?.plan;
     if (!plan?.stages?.length) throw new Error('Plan the run before changing review mode');
+    if (plan.workflow_mode === 'lifecycle' && plan.workflow_version >= 3) throw new CommandUsageError('Full lifecycle requires each stage result to be reviewed');
     if (Object.values(manifest.stages ?? {}).some(s=>s.status==='in_progress')) throw new Error('Wait for the current child to finish');
     const changes=[];
     for (const stage of plan.stages.filter(s=>s.selected && s.confirmation==='after')) {

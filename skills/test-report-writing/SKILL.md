@@ -1,11 +1,12 @@
 ---
 name: test-report-writing
+version: 2026.11.02.2
 description: 根据真实测试结果和缺陷记录生成测试报告与风险建议。
-metadata:
-  version: '1.7.0'
 ---
 
 # 测试报告生成 Skill
+
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
 
 组织摘要、覆盖说明或上线建议时，按需读[报告结论与统计口径](references/conclusion-and-coverage.md)。该参考适用于两种模式，沿用现有统计事实源与HTML导出，不增加交付门槛。
 
@@ -52,7 +53,7 @@ metadata:
 
 新版运行同时核对当前invocation_id和独立attempt归档完整性。归档被修改、未封存或证据/缺陷仍属于旧批次时，停止正式交付并报告阻塞；不通过编辑哈希或手改当前结果修复。报告应区分历史轮次与当前轮次，列出超时、中断及残留数据风险，参见`docs/execution-attempts.md`。
 
-交付前运行`npm run artifacts:validate -- <run_id> report`，遵循`docs/artifact-contracts.md`。报告必须明确写出run_id和quality_gate.status原始值；统计、分类、通过率及质量门以当前结果与质量指标为准。结构校验检查 HTML 内容和执行结果，但不替代渲染、客户端打开和人工结论审查。最新blocked/running状态的阻塞报告不能复用历史成功统计或旧缺陷分类，应生成当前空结果说明与对应空分类/评估。不得将阻塞报告登记为执行成功。
+交付前通过 project-action 调用 `validate_artifacts`（stage=report），遵循`docs/artifact-contracts.md`。报告必须明确写出run_id和quality_gate.status原始值；统计、分类、通过率及质量门以当前结果与质量指标为准。结构校验检查 HTML 内容和执行结果，但不替代渲染、客户端打开和人工结论审查。最新blocked/running状态的阻塞报告不能复用历史成功统计或旧缺陷分类，应生成当前空结果说明与对应空分类/评估。不得将阻塞报告登记为执行成功。
 
 ### 适用场景
 

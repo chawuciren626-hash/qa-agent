@@ -57,6 +57,7 @@ describe("visibleSettingsSections", () => {
       "profile",
       "general",
       "appearance",
+      "models",
       "shortcuts",
       "archived",
       "account",
@@ -66,6 +67,7 @@ describe("visibleSettingsSections", () => {
       "company",
       "chromeExtension",
       "agentApi",
+      "sandbox",
       "plugins",
       "users",
     ]);
@@ -80,6 +82,7 @@ describe("visibleSettingsSections", () => {
       "profile",
       "general",
       "appearance",
+      "models",
       "shortcuts",
       "archived",
       "account",
@@ -95,6 +98,7 @@ describe("visibleSettingsSections", () => {
       "profile",
       "general",
       "appearance",
+      "models",
       "shortcuts",
       "archived",
       "browser",
@@ -103,6 +107,7 @@ describe("visibleSettingsSections", () => {
       "company",
       "chromeExtension",
       "agentApi",
+      "sandbox",
       "plugins",
     ]);
   });
@@ -114,6 +119,7 @@ describe("visibleSettingsSections", () => {
       "profile",
       "general",
       "appearance",
+      "models",
       "shortcuts",
       "archived",
       "account",
@@ -123,6 +129,7 @@ describe("visibleSettingsSections", () => {
       "company",
       "chromeExtension",
       "agentApi",
+      "sandbox",
       "plugins",
     ]);
   });

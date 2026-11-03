@@ -22,7 +22,7 @@ export function validateStageRegistry(raw) {
         !stage.skills.every(skill => typeof skill === 'string' && /^[a-z][a-z0-9-]*$/.test(skill))) fail(`${stage.id}: skills`);
     if (!Array.isArray(stage.depends_on) || !unique(stage.depends_on) ||
         stage.depends_on.some(id => !ids.includes(id) || id === stage.id)) fail(`${stage.id}: dependencies`);
-    if (!['after', 'before', 'none'].includes(stage.confirmation)) fail(`${stage.id}: confirmation`);
+    if (!['after', 'before', 'none'].includes(stage.confirmation) || stage.result_confirmation !== undefined && stage.result_confirmation !== 'after') fail(`${stage.id}: confirmation`);
     for (const key of ['lifecycle_artifacts', 'task_artifacts']) {
       if (!Array.isArray(stage[key]) || !stage[key].length || !unique(stage[key]) || !stage[key].every(path)) fail(`${stage.id}: ${key}`);
     }
@@ -79,6 +79,6 @@ export function dispatchTemplate(id, runId = 'run-example') {
 // Preserve the existing plan schema and keep lifecycle dependencies out of task contracts.
 export function workflowDefinition() {
   return { workflow_id: stageRegistry.workflow_id, workflow_version: stageRegistry.workflow_version,
-    stages: stageDefinitions.map(({ id, agent, skills, depends_on, confirmation }) =>
-      ({ id, agent, skills: [...skills], depends_on: [...depends_on], confirmation })) };
+    stages: stageDefinitions.map(({ id, agent, skills, depends_on, confirmation, result_confirmation }) =>
+      ({ id, agent, skills: [...skills], depends_on: [...depends_on], confirmation, ...(result_confirmation ? { result_confirmation } : {}) })) };
 }

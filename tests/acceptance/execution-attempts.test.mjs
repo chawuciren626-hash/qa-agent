@@ -34,6 +34,8 @@ function raw(status = 'passed') {
 function simulatedProcess(f, { status = 'passed', mutate, noReport = false, termination = null } = {}) {
   return async options => {
     // Inject only at the module boundary; production CLI has no simulation switch.
+    assert.equal(Object.hasOwn(options.env, 'PENGUIN_API_TOKEN'), false);
+    assert.equal(Object.hasOwn(options.env, 'OPENAI_API_KEY'), false);
     writeFileSync(options.logPath, 'Synthetic process output, not browser execution.');
     const dir = dirname(options.logPath);
     if (options.args[0].endsWith('preflight-test-environment.mjs')) {
@@ -106,6 +108,7 @@ test('native command wrapper closes a sealed blocked attempt for reporting witho
   assert.equal(metrics.quality_gate.status, 'blocked');
   assert.equal(metrics.execution.passed, 0);
   writeFileSync(resolve(f.dir, 'report/test_report.md'), `Synthetic report contract fixture ${f.id} blocked; no business execution.`);
+  writeFileSync(resolve(f.dir, 'report/test_report.html'), `<!doctype html><html><body>run_id: ${f.id}; quality_gate: blocked</body></html>`);
   zipFixture(resolve(f.dir, 'report/test_report.docx'), { 'word/document.xml': '<w:document/>', '[Content_Types].xml': '<Types/>' });
   writeFileSync(resolve(f.dir, 'report/test_report.pdf'), '%PDF-1.7\nsynthetic structural fixture only\n%%EOF');
   const report = inspectStageArtifacts(root, f.id, 'report');

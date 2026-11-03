@@ -65,7 +65,7 @@
  */
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderProjectConfigToml, userText, VERSION } from "@prismshadow/penguin-core";
@@ -104,6 +104,7 @@ const catalogPairs = MODEL_CATALOG.filter((m) => m.retired !== true).map(
 );
 /** Response row → comparable paired key (test-only comparison, not the storage format). */
 const pairKey = (m: { provider: string; modelId: string }): string => `${m.provider}\0${m.modelId}`;
+const resetSharedModels = (root: string) => rm(path.join(root, ".account-models"), { recursive: true, force: true });
 /** Fetch a row by its paired ref. */
 const pick = (body: ModelsResponse, provider: string, modelId: string) =>
   body.models.find((m) => m.provider === provider && m.modelId === modelId)!;
@@ -151,6 +152,7 @@ describe("models preset & catalog enrichment", () => {
   });
   let projects = 0;
   beforeEach(async () => {
+    await resetSharedModels(t.root);
     projects += 1;
     const created = (await (
       await api.post("/api/projects", {
@@ -1083,6 +1085,7 @@ describe("the file is the only truth: the catalog seeds a Project and is never a
   });
   let projects = 0;
   beforeEach(async () => {
+    await resetSharedModels(t.root);
     projects += 1;
     const created = (await (
       await api.post("/api/projects", { projectId: `ivy-truth_${projects}`, name: "Truth" })
@@ -1177,6 +1180,7 @@ describe("model-reference rekeying and the connectivity test", () => {
   });
   let projects = 0;
   beforeEach(async () => {
+    await resetSharedModels(t.root);
     projects += 1;
     const created = (await (
       await api.post("/api/projects", {
@@ -1926,6 +1930,7 @@ describe("group connections ([providers.<id>])", () => {
   });
   let projects = 0;
   beforeEach(async () => {
+    await resetSharedModels(t.root);
     projects += 1;
     const created = (await (
       await api.post("/api/projects", { projectId: `erin-groups_${projects}`, name: "Groups" })
@@ -2336,6 +2341,7 @@ describe("preset sync: add new models / restore defaults", () => {
   });
   let projects = 0;
   beforeEach(async () => {
+    await resetSharedModels(t.root);
     projects += 1;
     const created = (await (
       await api.post("/api/projects", { projectId: `gina-sync_${projects}`, name: "Sync" })
@@ -2868,6 +2874,7 @@ describe("models update reaches loaded sessions (invalidation + live unlock)", (
   });
   let projects = 0;
   beforeEach(async () => {
+    await resetSharedModels(t.root);
     loads = 0;
     projects += 1;
     const created = (await (
@@ -2907,7 +2914,7 @@ describe("models update reaches loaded sessions (invalidation + live unlock)", (
   it("PUT publishes credentials_updated to the Project's existing session channels only", async () => {
     insertSession("models-sess-live", projectId);
     insertSession("models-sess-cold", projectId);
-    // A session of ANOTHER project must not receive the event.
+    // A session of another project owned by this account also receives the shared update.
     const other = (await (
       await api.post("/api/projects", { projectId: "inv_owner-other", name: "other" })
     ).json()) as ProjectCreateResponse;
@@ -2925,12 +2932,12 @@ describe("models update reaches loaded sessions (invalidation + live unlock)", (
       .filter((e) => e.event === "server_event")
       .map((e) => (JSON.parse(e.data) as { type: string }).type);
     expect(types).toContain("credentials_updated");
-    // Cross-project channels stay silent, and no channel is created for unsubscribed sessions.
+    // Shared account credentials notify subscribed sessions in both projects.
     expect(
       otherEvents
         .filter((e) => e.event === "server_event")
         .map((e) => (JSON.parse(e.data) as { type: string }).type),
-    ).not.toContain("credentials_updated");
+    ).toContain("credentials_updated");
     expect(t.deps.channels.peek("models-sess-cold")).toBeUndefined();
   });
 

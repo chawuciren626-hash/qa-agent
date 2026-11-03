@@ -13,6 +13,8 @@ export function requestModule(path: string, method: string): string | undefined 
     if (tail[1] === "qa") {
       if (tail[2] === "personal-resources") return "skills";
       if (tail[2] === "overview") return "projects";
+      if (["documents", "knowledge"].includes(tail[2]!)) return "library";
+      if (["tasks", "defects"].includes(tail[2]!)) return "projects";
       if (tail[2] === "initialize") return write ? "agents" : undefined;
     }
     tail = tail.slice(2);

@@ -1316,6 +1316,10 @@ function handleComplete(
   switch (p.type) {
     case "text": {
       if (p.role === "user") {
+        // Project evidence remains in model context and the durable Trace, but is not
+        // a chat turn. Recognize the exact legacy envelope too: older hosts omitted sender.
+        if ((p.sender === undefined || p.sender === "harness") &&
+          /^\[project_context snapshot=ctx-[a-f0-9-]{36} version=\d+\]\r?\n[\s\S]*\r?\n\[\/project_context\]$/.test(p.text)) return;
         // Compaction-summary injection (`[context_summary]` prefix, an
         // internal input in the new context file): not rendered as a user bubble, doesn't
         // start a new Task. The old `<context_summary>` prefix is still recognized — old

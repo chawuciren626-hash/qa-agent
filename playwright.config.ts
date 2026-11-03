@@ -19,6 +19,6 @@ export default defineConfig({
     screenshot: "only-on-failure",
     video: "off"
   },
-  projects: [{ name: "chrome", use: { ...devices["Desktop Chrome"], channel: "chrome" } }],
+  projects: [{ name: "chrome", use: { ...devices["Desktop Chrome"], channel: process.env.QA_BROWSER_CHANNEL === "chromium" ? "chromium" : "chrome" } }],
   outputDir: `${runDir}/playwright/test-artifacts`
 });

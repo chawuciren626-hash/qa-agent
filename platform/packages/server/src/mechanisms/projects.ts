@@ -123,7 +123,11 @@ export abstract class ProjectConfigStore {
   abstract migrateStoredConfigs(): Promise<void>;
   abstract loadConfig(projectId: string): Promise<ProjectConfig>;
   abstract writeRaw(projectId: string, data: RawTable): Promise<void>;
-  abstract writeInitialConfig(projectId: string, name: string): Promise<void>;
+  abstract writeInitialConfig(projectId: string, name: string, ownerUserId?: string): Promise<void>;
+  /** Save this owner's model settings once and apply them to their other Projects. */
+  abstract publishSharedModels(projectId: string, activate?: boolean): Promise<string[]>;
+  abstract applySharedModelExtras(projectId: string, ownerUserId: string): Promise<void>;
+  abstract sharedModelInfo(projectId: string): Promise<{ enabled: boolean; sourceProjectId?: string; projectIds: string[] }>;
   abstract ensurePresetModels(projectId: string): Promise<boolean>;
   abstract seedPresetPromotions(projectId: string): Promise<void>;
   abstract getName(projectId: string): Promise<string | undefined>;

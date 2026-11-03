@@ -122,8 +122,8 @@ p { margin: 0; color: #4b5563; }
  * key up, open tabs unlock, and the machines this Project uses receive it. One helper for
  * every write path, so a key minted here reaches a machine the same way one pasted does.
  */
-function credentialsChanged(deps: ModelOauthRouteDeps, projectId: string): void {
-  modelConfigChanged(deps, projectId);
+async function credentialsChanged(deps: ModelOauthRouteDeps, projectId: string): Promise<void> {
+  await modelConfigChanged(deps, projectId);
 }
 
 /**
@@ -268,7 +268,7 @@ export function modelOAuthRoutes(deps: ModelOauthRouteDeps): Hono<AppEnv> {
     if (!result.ok) {
       return c.json({ ok: false, error: result.error } satisfies ModelOAuthCodeResponse);
     }
-    credentialsChanged(deps, projectId);
+    await credentialsChanged(deps, projectId);
     return c.json({ ok: true, applied: result.applied } satisfies ModelOAuthCodeResponse);
   });
 
@@ -289,7 +289,7 @@ export function modelOAuthRoutes(deps: ModelOauthRouteDeps): Hono<AppEnv> {
     const state = await deps.modelOAuth.poll({ flowId, userId: c.var.user.userId, projectId });
     // Set only on the poll that redeemed, so the follow-up fires once, exactly as it does on
     // the pasted-code route.
-    if (state.applied !== undefined) credentialsChanged(deps, projectId);
+    if (state.applied !== undefined) await credentialsChanged(deps, projectId);
     return c.json({
       status: state.status,
       provider: state.provider,

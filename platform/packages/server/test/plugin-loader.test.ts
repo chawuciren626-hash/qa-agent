@@ -403,6 +403,17 @@ describe("builtin plugins", () => {
     expect(result.loaded[0]!.modules.map((m) => m.manifest.name)).toEqual(["One"]);
   });
 
+  it("loads the shipped native sandbox as platform infrastructure without a Project install", async () => {
+    const assets = path.join(root, "hmr", "store", "assets", "sandbox");
+    const name = process.platform === "win32" ? "@penguinharness/sandbox-wsl"
+      : process.platform === "darwin" ? "@penguinharness/sandbox-seatbelt"
+      : "@penguinharness/sandbox-bwrap";
+    await writeBuiltin(path.join(assets, "plugins"), name, "SandboxTest");
+    const result = await loadPlugins(root, assets);
+    expect(result.failed.size).toBe(0);
+    expect(result.loaded.map(plugin => plugin.specifier)).toContain(name);
+  });
+
   it("resolves a package through its exports' import condition, as npm shipped it", async () => {
     // The sandbox backends declare `exports: { ".": { types, import: "./dist/index.js" } }`
     // and no `require` condition; the loader reads the entry an importer would, not what

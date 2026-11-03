@@ -15,13 +15,13 @@ const legacy = [
   ['test_points', 'test_point_agent', 'test-point-design', ['analysis'], 'after'],
   ['test_cases', 'test_case_agent', 'test-case-writing', ['test_points'], 'after'],
   ['execution', 'automation_execution_agent', 'playwright-execution', ['test_cases'], 'before'],
-  ['defects', 'defect_analysis_agent', 'bug-reporting', ['execution'], 'none'],
-  ['report', 'test_report_agent', 'test-report-writing', ['defects'], 'none']
+  ['defects', 'defect_analysis_agent', 'bug-reporting', ['execution'], 'after'],
+  ['report', 'test_report_agent', 'test-report-writing', ['defects'], 'after']
 ];
 
 test('registry preserves the six legacy contracts and returns detached plan projections', () => {
   const workflow = workflowDefinition();
-  assert.deepEqual(workflow.stages.filter(s=>s.id!=='api_execution'), legacy.map(([id, agent, skill, depends_on, confirmation]) => ({ id, agent, skills: [skill], depends_on, confirmation })));
+  assert.deepEqual(workflow.stages.filter(s=>s.id!=='api_execution'), legacy.map(([id, agent, skill, depends_on, confirmation]) => ({ id, agent, skills: [skill], depends_on, confirmation, ...(id==='execution'?{result_confirmation:'after'}:{}) })));
   workflow.stages[1].depends_on.push('report');
   assert.deepEqual(stageDefinition('test_points').depends_on, ['analysis']);
   assert.throws(() => stageDefinitions[0].skills.push('other'), TypeError);
@@ -83,7 +83,7 @@ test('real planning CLI keeps each role independent, explicit lifecycle dependen
     const id = `run-registry-${randomUUID()}`;
     for (const [script, args] of [
       ['create-run', [`--run-id=${id}`]],
-      ['plan-run', [`--run-id=${id}`, `--stages=${stage}`, `--workflow-mode=${mode}`, '--review-mode=auto', `--source-mode=${source}`]]
+      ['plan-run', [`--run-id=${id}`, `--stages=${stage}`, `--workflow-mode=${mode}`, `--review-mode=${mode==='lifecycle'?'staged':'auto'}`, `--source-mode=${source}`]]
     ]) {
       const result = spawnSync(process.execPath, [`scripts/${script}.mjs`, ...args], { cwd: root, encoding: 'utf8' });
       assert.equal(result.status, 0, result.stderr);

@@ -155,7 +155,17 @@ test('dispatch mapping errors stay recoverable and plan supplies authoritative t
 async function returnedAnalysis(review_mode='staged') {
   const f=fixture();
   await f.execute({action:'create_run',run_id:f.run_id});
-  await f.execute({action:'plan_run',run_id:f.run_id,stages:['analysis'],review_mode});
+  if(review_mode==='auto') {
+    const planned=await f.execute({action:'plan_run',run_id:f.run_id,stages:['analysis'],review_mode:'staged'});
+    assert.equal(planned.exit_code,0,JSON.stringify(planned));
+    // Model a persisted pre-staged lifecycle run; new planning must not create one.
+    const path=resolve(root,'output/runs',f.run_id,'manifest.json');
+    const manifest=JSON.parse(readFileSync(path,'utf8'));
+    manifest.orchestration.plan.workflow_version=2;
+    manifest.orchestration.plan.review_mode='auto';
+    for(const stage of manifest.orchestration.plan.stages) if(stage.confirmation==='after') stage.confirmation='none';
+    writeFileSync(path,JSON.stringify(manifest));
+  } else await f.execute({action:'plan_run',run_id:f.run_id,stages:['analysis'],review_mode});
   const dispatched=await f.execute({action:'dispatch',run_id:f.run_id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis']});
   const {dir}=designArtifacts(root,f.run_id);
   const child=`session-2026-10-09-00-00-01-${randomUUID().replaceAll('-','')}`;
@@ -197,16 +207,29 @@ test('explicit fatal child return is closed as failed, never completed or retrie
   assert.deepEqual(await reconcileHandoff(root,f.id,f.agentRoot),{});
 });
 
-test('new structured plans continue verified draft stages while execution still needs authorization',async()=>{
+test('new full lifecycle plans review each stage while execution still needs separate authorization',async()=>{
   const f=fixture();
   assert.equal((await f.execute({action:'create_run',run_id:f.run_id})).exit_code,0);
   const planned=await executeAction(root,f.id,()=>JSON.stringify({action:'plan_run',run_id:f.run_id,stages:['execution'],workflow_mode:'lifecycle'}),{agentRoot:f.agentRoot});
   assert.equal(planned.exit_code,0,JSON.stringify(planned));
   const manifest=JSON.parse(readFileSync(resolve(root,'output/runs',f.run_id,'manifest.json')));
-  assert.equal(manifest.orchestration.plan.review_mode,'auto');
-  for(const stage of ['analysis','test_points','test_cases']) assert.equal(manifest.orchestration.plan.stages.find(s=>s.id===stage).confirmation,'none');
+  assert.equal(manifest.orchestration.plan.review_mode,'staged');
+  for(const stage of ['analysis','test_points','test_cases','defects','report']) assert.equal(manifest.orchestration.plan.stages.find(s=>s.id===stage).confirmation,'after');
   assert.equal(manifest.orchestration.plan.stages.find(s=>s.id==='execution').confirmation,'before');
+  assert.equal(manifest.orchestration.plan.stages.find(s=>s.id==='execution').result_confirmation,'after');
   assert.throws(()=>assertStageReady(manifest,'execution'),/前置阶段未完成/);
+});
+
+test('new lifecycle planning rejects automatic review at both command and structured action entrances',async()=>{
+  const f=fixture();
+  assert.equal((await f.execute({action:'create_run',run_id:f.run_id})).exit_code,0);
+  const command=spawnSync(process.execPath,[resolve(root,'scripts/plan-run.mjs'),`--run-id=${f.run_id}`,'--stages=analysis','--workflow-mode=lifecycle','--review-mode=auto'],{cwd:root,encoding:'utf8'});
+  assert.notEqual(command.status,0);
+  assert.match(command.stderr,/Full lifecycle requires staged human review/);
+  const structured=await f.execute({action:'plan_run',run_id:f.run_id,stages:['analysis'],workflow_mode:'lifecycle',review_mode:'auto'});
+  assert.notEqual(structured.exit_code,0);
+  assert.equal(existsSync(resolve(root,'output/runs',f.run_id,'manifest.json')),true);
+  assert.equal(JSON.parse(readFileSync(resolve(root,'output/runs',f.run_id,'manifest.json'))).orchestration?.plan,null);
 });
 
 test('lifecycle execution approval reuses exact same-scope user authorization and rejects harness text',async()=>{
@@ -239,24 +262,24 @@ test('lifecycle execution approval reuses exact same-scope user authorization an
   assert.equal(receipt.authorization_source.sha256,saved.approval_source.sha256);
 });
 
-test('existing pending draft delivery switches to autonomous continuation without business approval',async()=>{
+test('full lifecycle pending draft cannot bypass stage review by switching to auto',async()=>{
   const f=await returnedAnalysis();
   assert.equal((await f.execute({action:'extend_plan',run_id:f.run_id,stages:['test_points'],reason:'Continue design'})).exit_code,0);
   assert.equal((await f.execute(f.request)).data.stage_status,'awaiting_confirmation');
   const result=await f.execute({action:'set_review_mode',run_id:f.run_id,review_mode:'auto'});
-  assert.equal(result.exit_code,0);
-  assert.deepEqual(result.data.continued_stages,['analysis']);
-  assert.equal(result.data.approval_granted,false);
+  assert.equal(result.exit_code,2,JSON.stringify(result));
+  assert.match(result.error,/Full lifecycle requires each stage result to be reviewed/);
+  assert.equal(result.classification,'input_rejected');
+  assert.equal(result.recovery.category,'input_correction');
+  assert.equal(readControllerSession(root,f.id).status,'ready');
+  // A rejected preference must not lock out the user's later review and next dispatch.
+  assert.equal((await f.execute({action:'run_status',run_id:f.run_id})).exit_code,0);
   const manifest=f.read();
-  assert.equal(manifest.stages.analysis.status,'completed');
-  assert.equal(manifest.confirmations.at(-1).status,'not_required');
+  assert.equal(manifest.stages.analysis.status,'awaiting_confirmation');
+  assert.equal(manifest.confirmations.at(-1).status,'pending');
   assert.ok(!manifest.confirmations.some(c=>c.status==='approved'));
-  assert.equal(manifest.orchestration.events.filter(e=>e.stage==='analysis').at(-1).type,'review_mode_continued');
-  assert.doesNotThrow(()=>assertStageReady(manifest,'test_points'));
-  assert.equal((await f.execute({action:'set_review_mode',run_id:f.run_id,review_mode:'auto'})).data.unchanged,true);
-  const revised=await f.execute({action:'resolve_confirmation',run_id:f.run_id,stage:'analysis',decision:'revision_requested',reason:'Synthetic user requirement change'});
-  assert.equal(revised.exit_code,0);
-  assert.equal(f.read().stages.analysis.status,'revision_requested');
+  assert.throws(()=>assertStageReady(manifest,'test_points'));
+  assert.equal(manifest.orchestration.plan.review_mode,'staged');
 });
 
 test('diagnosis remains read-only and revision gets a new generation budget without resetting old failures',async()=>{

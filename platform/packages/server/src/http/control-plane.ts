@@ -1,8 +1,10 @@
 /** Public configuration only: this store never reads a project, credential store or workspace. */
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { strFromU8 } from "fflate";
 import type { DatabaseSync } from "node:sqlite";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { parseSkillFrontmatter } from "@prismshadow/penguin-core";
 import { HttpError } from "./errors.js";
 import type { AppEnv } from "../auth/middleware.js";
 import { parseSkillArchive } from "./routes/skills.js";
@@ -60,6 +62,30 @@ export function publicPayload(kind:ResourceKind,value:unknown):Record<string,unk
 export function resourceDependencies(r:Pick<PublicResource,"kind"|"payload">):{id:string;kind:ResourceKind}[]{
   const p=r.payload;return [...(p.modelResource?[{id:String(p.modelResource),kind:"models" as const}]:[]),...(Array.isArray(p.skillResources)?p.skillResources.map(id=>({id:String(id),kind:"skills" as const})):[]),...(Array.isArray(p.pluginResources)?p.pluginResources.map(id=>({id:String(id),kind:"plugins" as const})):[])];
 }
+const sha256=(value:Uint8Array|string)=>createHash("sha256").update(value).digest("hex");
+/** A public, non-secret view of a validated payload; archives are reduced to names and hashes. */
+export function publicPayloadSummary(kind:ResourceKind,payload:Record<string,unknown>):Record<string,unknown>{
+  if(kind==="skills"){
+    let name=String(payload.skillName??""),description="",files:string[]=[],bytes=0,hash="";
+    if(typeof payload.archiveBase64==="string"){
+      const archive=Buffer.from(payload.archiveBase64,"base64");
+      const parsed=parseSkillArchive(archive);
+      const skillMd=parsed.files.get("SKILL.md");
+      name=parsed.name;description=skillMd?parseSkillFrontmatter(strFromU8(skillMd))?.description??"":"";
+      files=[...parsed.files.keys()].sort();bytes=archive.byteLength;hash=sha256(archive);
+    }else{
+      const content=String(payload.content??"");const meta=parseSkillFrontmatter(content);
+      description=meta?.description??"";files=content?["SKILL.md"]:[];bytes=Buffer.byteLength(content);hash=content?sha256(content):"";
+    }
+    return {kind,name:name,skillName:name,description,fileCount:files.length,files,sizeBytes:bytes,contentHash:hash?`sha256:${hash}`:""};
+  }
+  if(kind==="plugins"){
+    if(payload.source==="upstream-library")return {kind,pluginName:String(payload.pluginName??""),pluginVersion:String(payload.pluginVersion??""),source:"upstream-library"};
+    return {kind,pluginName:String(payload.pluginName??""),source:"managed",skillResources:[...(payload.skillResources as string[]??[])],instructionsLength:String(payload.instructions??"").length};
+  }
+  if(kind==="agents")return {kind,modelResource:String(payload.modelResource??""),skillResources:[...(payload.skillResources as string[]??[])],pluginResources:[...(payload.pluginResources as string[]??[])],promptLength:String(payload.prompt??"").length,agentsMdLength:String(payload.agentsMd??"").length,...(payload.maxTurns===undefined?{}:{maxTurns:payload.maxTurns})};
+  return {kind,provider:String(payload.provider??""),modelId:String(payload.modelId??""),contextWindow:payload.contextWindow??null,maxTokens:payload.maxTokens??null};
+}
 export class ControlStore {
   readonly system: AdminSystemStore;
   constructor(readonly db:DatabaseSync){db.exec(`
@@ -89,9 +115,63 @@ export class ControlStore {
     if(visited.has(id))return false;visited.add(id);
     try{const r=this.get(id);return r.published&&(admin||(this.modules(userId,false).includes(r.kind)&&(r.audience.includes("*")||r.audience.includes(userId))))&&resourceDependencies(r).every(d=>this.get(d.id).kind===d.kind&&this.accessible(d.id,userId,admin,new Set(visited)));}catch{return false;}
   }
+  private assertDependencies(r:PublicResource){for(const d of resourceDependencies(r)){const dep=this.get(d.id);if(dep.kind!==d.kind||!this.accessible(d.id,"",true))fail("依赖资源必须先发布且类型正确。");if(r.audience.includes("*")&&!dep.audience.includes("*"))fail("面向全部用户的模板不能依赖受限资源。");for(const u of r.audience)if(u!=="*"&&!this.accessible(d.id,u,false))fail("部分授权用户无权使用依赖资源。");}}
   publish(actor:string,id:string,revision:unknown){const r=this.get(id,true);if(r.revision!==revision)throw new HttpError(409,"revision_conflict","请刷新资源后再发布。");
-    for(const d of resourceDependencies(r)){const dep=this.get(d.id);if(dep.kind!==d.kind||!this.accessible(d.id,actor,true))fail("依赖资源必须先发布且类型正确。");if(r.audience.includes("*")&&!dep.audience.includes("*"))fail("面向全部用户的模板不能依赖受限资源。");for(const u of r.audience)if(u!=="*"&&!this.accessible(d.id,u,false))fail("部分授权用户无权使用依赖资源。");}
+    this.assertDependencies(r);
     const next=r.version+1, now=new Date().toISOString();this.db.exec("BEGIN IMMEDIATE");try{this.db.prepare("INSERT INTO public_resource_versions VALUES (?,?,?,?)").run(id,next,JSON.stringify({kind:r.kind,name:r.name,description:r.description,payload:r.payload,audience:r.audience}),now);this.db.prepare("UPDATE public_resources SET version=?,published=1,revision=revision+1,updated_at=? WHERE id=?").run(next,now,id);this.audit(actor,"publish",id);this.db.exec("COMMIT");}catch(e){this.db.exec("ROLLBACK");throw e;}return this.get(id,true);}
+  /** Validate a payload without saving it; dependencies may be unpublished drafts but must exist and match. */
+  validate(kind:string,value:unknown){
+    if(!(KINDS as readonly string[]).includes(kind))fail("未知资源类型。");
+    const resourceKind=kind as ResourceKind;
+    const payload=publicPayload(resourceKind,value);
+    const dependencies=resourceDependencies({kind:resourceKind,payload});
+    const warnings:string[]=[];
+    for(const dependency of dependencies){
+      let found:PublicResource|undefined;
+      try { found=this.get(dependency.id); } catch {
+        try { found=this.get(dependency.id,true);warnings.push(`依赖 ${dependency.id} 尚未发布。`); } catch { fail(`依赖资源不存在：${dependency.id}`); }
+      }
+      if(found!.kind!==dependency.kind)fail("依赖资源类型不正确。");
+    }
+    return {valid:true as const,kind:resourceKind,summary:publicPayloadSummary(resourceKind,payload),dependencies,warnings};
+  }
+  history(id:string){
+    const row=this.row(id);const currentVersion=Number(row.version);
+    const rows=this.db.prepare("SELECT version,body,created_at FROM public_resource_versions WHERE resource_id=? ORDER BY version DESC").all(id) as {version:number;body:string;created_at:string}[];
+    return rows.map(item=>{
+      let body:Record<string,unknown>;
+      try { body=object(JSON.parse(item.body)); } catch { body={}; }
+      const kind=(typeof body.kind==="string"&&(KINDS as readonly string[]).includes(body.kind)?body.kind:row.kind) as ResourceKind;
+      let summary:Record<string,unknown>;
+      try { summary={...publicPayloadSummary(kind,object(body.payload??{})),name:String(body.name??"")}; }
+      catch { summary={kind,name:String(body.name??"")}; }
+      return {version:Number(item.version),created_at:String(item.created_at),current:Number(item.version)===currentVersion,published:Number(item.version)===currentVersion&&!!row.published,summary,audience:Array.isArray(body.audience)?body.audience:[],body};
+    });
+  }
+  /** Restores a published version's content as the next immutable version; history is never rewritten. */
+  rollback(actor:string,id:string,targetVersion:number,revision:unknown){
+    const row=this.row(id);
+    if(row.revision!==revision)throw new HttpError(409,"revision_conflict","请刷新资源后再回滚。");
+    if(!Number.isSafeInteger(targetVersion)||targetVersion<1)fail("回滚目标版本无效。");
+    const source=this.db.prepare("SELECT body FROM public_resource_versions WHERE resource_id=? AND version=?").get(id,targetVersion) as {body:string}|undefined;
+    if(!source)throw new HttpError(404,"version_not_found","回滚目标版本不存在。");
+    const body=object(JSON.parse(source.body));
+    if(body.kind!==row.kind)fail("历史版本类型与当前资源不一致。");
+    const kind=row.kind as ResourceKind;
+    const name=str(body.name,100),description=str(body.description??"",2000,true),payload=publicPayload(kind,body.payload);
+    const audience=strings(body.audience??[]);
+    const candidate:PublicResource={id,kind,name,description,payload,audience,revision:Number(row.revision),version:Number(row.version),published:true,updatedAt:String(row.updated_at)};
+    this.assertDependencies(candidate);
+    const next=Number(row.version)+1,now=new Date().toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try{
+      this.db.prepare("INSERT INTO public_resource_versions VALUES (?,?,?,?)").run(id,next,JSON.stringify({kind,name,description,payload,audience}),now);
+      this.db.prepare("UPDATE public_resources SET draft=?,version=?,published=1,revision=revision+1,audience=?,updated_at=? WHERE id=?").run(JSON.stringify({kind,name,description,payload}),next,JSON.stringify(audience),now,id);
+      this.audit(actor,"rollback",id);
+      this.db.exec("COMMIT");
+    }catch(e){this.db.exec("ROLLBACK");throw e;}
+    return this.get(id,true);
+  }
   withdraw(actor:string,id:string){this.row(id);this.db.prepare("UPDATE public_resources SET published=0,revision=revision+1,updated_at=? WHERE id=?").run(new Date().toISOString(),id);this.audit(actor,"withdraw",id);}
   deleteDraft(actor:string,id:string,revision:unknown){
     const row=this.row(id);
@@ -110,12 +190,26 @@ export function controlRoutes(store:ControlStore):Hono<AppEnv>{
   app.get("/catalog",c=>{const u=c.var.user;return c.json({resources:store.list().filter(r=>store.accessible(r.id,u.userId,u.isAdmin))});});
   app.get("/catalog/:id",c=>c.json({resources:store.bundle(c.req.param("id"),c.var.user.userId,c.var.user.isAdmin)}));
   app.get("/admin/resources",c=>c.json({resources:store.list(true)}));
+  app.post("/admin/resources/validate",async c=>{
+    const body=await c.req.json().catch(()=>null) as {kind?:unknown;payload?:unknown}|null;
+    if(!body||typeof body.kind!=="string")throw new HttpError(400,"invalid_public_configuration","请选择资源类型。");
+    try{return c.json(store.validate(body.kind,body.payload));}
+    catch(error){if(error instanceof HttpError&&error.status===400)return c.json({valid:false,error:{code:error.code,message:error.message}});throw error;}
+  });
+  app.post("/admin/resources/:id/validate",c=>{
+    try{const draft=store.get(c.req.param("id"),true);return c.json(store.validate(draft.kind,draft.payload));}
+    catch(error){if(error instanceof HttpError&&error.status===400)return c.json({valid:false,error:{code:error.code,message:error.message}});throw error;}
+  });
   app.post("/admin/resources",async c=>c.json(store.save(c.var.user.userId,await c.req.json()),201));
   app.put("/admin/resources/:id",async c=>c.json(store.save(c.var.user.userId,await c.req.json(),c.req.param("id"))));
   app.delete("/admin/resources/:id",async c=>{store.deleteDraft(c.var.user.userId,c.req.param("id"),(await c.req.json()).revision);return c.json({ok:true});});
   app.post("/admin/resources/:id/publish",async c=>c.json(store.publish(c.var.user.userId,c.req.param("id"),(await c.req.json()).revision)));
+  app.post("/admin/resources/:id/rollback",async c=>{
+    const body=await c.req.json().catch(()=>null) as {version?:unknown;revision?:unknown}|null;
+    return c.json(store.rollback(c.var.user.userId,c.req.param("id"),Number(body?.version),body?.revision));
+  });
   app.post("/admin/resources/:id/withdraw",c=>{store.withdraw(c.var.user.userId,c.req.param("id"));return c.json({ok:true});});
-  app.get("/admin/resources/:id/history",c=>{store.row(c.req.param("id"));return c.json({versions:store.db.prepare("SELECT version,body,created_at FROM public_resource_versions WHERE resource_id=? ORDER BY version DESC").all(c.req.param("id")).map(r=>({...r,body:JSON.parse(String(r.body))}))});});
+  app.get("/admin/resources/:id/history",c=>{store.row(c.req.param("id"));return c.json({versions:store.history(c.req.param("id"))});});
   app.get("/admin/permissions/:id",c=>c.json({modules:store.modules(c.req.param("id"),c.req.param("id")==="admin")}));
   app.put("/admin/permissions/:id",async c=>c.json({modules:store.setModules(c.var.user.userId,c.req.param("id"),(await c.req.json()).modules)}));
   app.get("/admin/roles",c=>c.json(store.system.roleSummary()));
@@ -126,7 +220,7 @@ export function controlRoutes(store:ControlStore):Hono<AppEnv>{
   app.get("/admin/audit",c=>{
     const page=Math.max(1,Math.min(100000,Number(c.req.query("page"))||1));
     const type=c.req.query("type")??"",keyword=(c.req.query("keyword")??"").trim().slice(0,100);
-    const actions:Record<string,string[]>={publish:["publish"],withdraw:["withdraw"],draft:["save","delete_draft"],permissions:["permissions","role_assign","role_menus","role_create","role_update","role_delete","menus"],login:["login"]};
+    const actions:Record<string,string[]>={publish:["publish","rollback"],rollback:["rollback"],withdraw:["withdraw"],draft:["save","delete_draft"],permissions:["permissions","role_assign","role_menus","role_create","role_update","role_delete","menus"],login:["login"]};
     const selected=actions[type]??[];
     const clauses=["1=1"],args:(string|number)[]=[];
     if(type&&selected.length){clauses.push(`a.action IN (${selected.map(()=>"?").join(",")})`);args.push(...selected);}

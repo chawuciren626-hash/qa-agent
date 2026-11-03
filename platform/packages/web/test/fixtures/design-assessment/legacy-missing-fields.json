@@ -1,0 +1,27 @@
+{
+  "name": "legacy-missing-fields",
+  "description": "Old artifacts with no expected_basis, no observations and a point that omits descriptive fields stay readable; the assessment reports unknown/not_recorded instead of inventing support.",
+  "input": {
+    "sources": {},
+    "rules": [],
+    "points": [
+      { "id": "TP-OLD" }
+    ],
+    "cases": [
+      {
+        "case_id": "CASE-OLD",
+        "title": "旧用例",
+        "steps": ["打开页面"],
+        "expected": "页面打开"
+      }
+    ]
+  },
+  "expected": {
+    "pointComplexity": "unknown",
+    "caseComplexity": "medium",
+    "caseStatus": "needs_revision",
+    "expectedBasis": "not_recorded",
+    "executability": "unknown",
+    "designReadable": true
+  }
+}

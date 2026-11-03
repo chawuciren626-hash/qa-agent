@@ -1689,7 +1689,7 @@ export class SessionManager {
    */
   recallSteering(sessionId: string, steerId: string): RecallStore {
     const entry = this.entries.get(sessionId);
-    if (entry) {
+    if (process.env.AITEST_ENGINE_ROOT && entry) {
       const queued = entry.pendingSteering.findIndex((p) => p.info.id === steerId);
       if (queued >= 0) {
         const pending = entry.pendingSteering[queued]!;
@@ -1783,8 +1783,6 @@ export class SessionManager {
       return stopped;
     }
     if (!entry || !entry.abort) return false;
-    // Deny only the MAIN session's pending approvals: an approval blocks the run the user is
-    // stopping. A subagent child survives the parent's stop, and so does its question.
     entry.approvals.denyMain();
     entry.abort.abort();
     return true;

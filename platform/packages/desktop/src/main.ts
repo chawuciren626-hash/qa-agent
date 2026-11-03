@@ -442,6 +442,12 @@ function showMainWindow(): void {
   win.focus();
 }
 
+/** Explicitly reopening the installed product starts at the project view. */
+function openMainWindow(): void {
+  if (qaInstall) navigateMainWindow("/user/qa/project");
+  else showMainWindow();
+}
+
 /**
  * Tray navigation. The window is a plain browser, so a destination is just a URL to load —
  * no IPC channel into the Web App. Before boot resolves an origin there is nowhere to go, and
@@ -563,7 +569,7 @@ function openTray(): void {
     iconPath: resolveTrayIcon(app.getAppPath(), process.platform),
     appName: app.name,
     locale: trayLocale,
-    onShowWindow: showMainWindow,
+    onShowWindow: openMainWindow,
     onNavigate: navigateMainWindow,
     onQuit: () => app.quit(),
     log: (line) => logLine(`[shell] ${line}`),
@@ -781,7 +787,7 @@ if (!app.requestSingleInstanceLock()) {
       `${process.platform} ${process.arch}, ${Math.round(os.totalmem() / 2 ** 30)} GB memory); log ${logFile}`,
   );
 
-  app.on("second-instance", () => showMainWindow());
+  app.on("second-instance", () => openMainWindow());
 
   // Every renderer and child process that dies says so in the log: the app window's page (which
   // the window then reloads), a browser tab's, DevTools', the GPU process, the embedded server.
@@ -813,7 +819,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   // Dock click: the window may be hidden in the tray rather than gone, so show before recreate.
-  app.on("activate", () => showMainWindow());
+  app.on("activate", () => openMainWindow());
 
   // Quit path, in two steps. before-quit — or, for an update's restart, the updater's own
   // announcement, which on macOS comes INSTEAD of it until every window is gone — only marks

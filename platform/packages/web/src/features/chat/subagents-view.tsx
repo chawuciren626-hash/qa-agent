@@ -20,17 +20,13 @@
  * conversation visible (found by walking the origin chain); the graph simply has no
  * highlighted node.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { RefObject } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import type {
   ApprovalMode,
-  SessionSandbox,
   ModelInfo,
   SessionInfo,
-  SessionPatchRequest,
   SubagentRuntimeInfo,
-  TaskInputPart,
 } from "@prismshadow/penguin-server/api";
 import {
   AgentAvatar,
@@ -40,18 +36,12 @@ import {
   ICON_SIZE,
   StatusIcon,
   Text,
-  toastError,
 } from "@prismshadow/penguin-ui";
-import { ApiError } from "../../api/client";
-import { abortSubagent, messageSubagent, patchSession } from "../../api/endpoints";
-import { apiErrorText } from "../../lib/api-error";
+import { } from "../../api/endpoints";
 import { S } from "../../lib/strings";
-import type { NestedSessionMeta, StreamModel } from "../../lib/amsp/stream-model";
-import { ChatInput } from "./chat-input";
-import type { ComposerControl } from "./chat-input";
+import type { StreamModel } from "../../lib/amsp/stream-model";
 import type { PermissionPick } from "../../lib/permission-level";
 import { noteSessionSeen } from "../../lib/session-seen";
-import { machineForSession } from "../../lib/session-machines";
 import { useProject } from "../../state/project";
 import { useSessions } from "../../state/sessions";
 import {
@@ -65,8 +55,6 @@ import type { TopologyNode } from "./agent-topology";
 import { AgentTopologyView } from "./agent-topology-view";
 import { MessageStream } from "./message-stream";
 import type { StreamRenderContext } from "./message-stream";
-import { useAgentSkills } from "./use-agent-skills";
-import type { ComposerReference } from "../../lib/workspace-tree";
 
 interface Selection {
   sessionId: string;
@@ -83,12 +71,6 @@ export function SubagentsView({
   focusRequest,
   taskScope,
   subagents,
-  models,
-  approvalMode,
-  approvalModes,
-  onChangePermission,
-  modeSaving,
-  parentThinkingLevel,
 }: {
   session: SessionInfo;
   model: StreamModel;
@@ -118,12 +100,6 @@ export function SubagentsView({
   const { sessions } = useSessions();
   const navigate = useNavigate();
   const [selected, setSelected] = useState<Selection | null>(null);
-  // The selected child's composer, for the stream above it: "Add to conversation" in the
-  // child's selection menu stages the excerpt there, in the conversation it was selected in.
-  const childComposerRef = useRef<ComposerControl | null>(null);
-  const addChildExcerpt = useCallback((reference: ComposerReference) => {
-    childComposerRef.current?.addReference(reference);
-  }, []);
 
   // A chip click focuses that child (fresh-object identity: re-clicking the same chip re-fires).
   useEffect(() => {
@@ -289,188 +265,13 @@ export function SubagentsView({
                 items={activeModel.items}
                 version={version}
                 ctx={childCtx}
-                onAddExcerpt={addChildExcerpt}
+                onAddExcerpt={() => {}}
                 findRegion="subagent"
               />
             )}
           </div>
-          {/* Keyed by child too: switching nodes must not carry a half-typed message over. */}
-          <SubagentComposer
-            key={`composer-${active.sessionId}`}
-            controlRef={childComposerRef}
-            sessionId={session.sessionId}
-            childSessionId={active.sessionId}
-            running={activeRunning}
-            meta={activeModel.meta}
-            contextNow={activeModel.stats.contextNow}
-            deliveredInputs={countDeliveredInputs(activeModel)}
-            models={models}
-            approvalMode={approvalMode}
-            approvalModes={approvalModes}
-            sandbox={session.sandbox}
-            onChangePermission={onChangePermission}
-            modeSaving={modeSaving}
-            fallbackThinkingLevel={activeNode?.spawnThinkingLevel ?? parentThinkingLevel}
-          />
         </>
       )}
-    </div>
-  );
-}
-
-/**
- * User-side inputs already visible in the child's stream (follow-up prompts and delivered
- * steering interjections alike): the composer's "queued" hint retires when this grows past
- * its value at queue time — whichever way the message reached the child.
- */
-function countDeliveredInputs(model: StreamModel): number {
-  let n = 0;
-  for (const item of model.items) {
-    if (item.kind === "user_text" || item.kind === "user_steering") n += 1;
-  }
-  return n;
-}
-
-/**
- * The selected child's composer (#272): the SAME ChatInput as the main conversation, in its
- * subagent variant — body, skills and slash skill commands, per-turn thinking level, context
- * ring (the child's own usage), locked-model badge, and the approval-mode selector (the
- * PARENT session's mode — child approvals are judged by it). Send semantics are a user input
- * on the child, whatever its state: steering while it runs, a follow-up round while idle, a
- * revival (resume-session) when it was released; the stop face on the action button aborts
- * only the child's current run. All of it lands on the same core channel input_subagent uses.
- */
-function SubagentComposer({
-  controlRef,
-  sessionId,
-  childSessionId,
-  running,
-  meta,
-  contextNow,
-  deliveredInputs,
-  models,
-  approvalMode,
-  approvalModes,
-  sandbox,
-  onChangePermission,
-  modeSaving,
-  fallbackThinkingLevel,
-}: {
-  /** Handed to the ChatInput: the child stream's selection menu stages excerpts through it. */
-  controlRef: RefObject<ComposerControl | null>;
-  sessionId: string;
-  childSessionId: string;
-  running: boolean;
-  meta: NestedSessionMeta | null;
-  contextNow: number;
-  deliveredInputs: number;
-  models: ModelInfo[];
-  approvalMode: ApprovalMode;
-  approvalModes: readonly ApprovalMode[];
-  /** The PARENT session's sandbox policy. */
-  sandbox: SessionSandbox;
-  /** Edits the PARENT session's approval mode and sandbox policy — a child runs under its root's. */
-  onChangePermission: (pick: PermissionPick) => void | Promise<unknown>;
-  modeSaving: boolean;
-  /** Display fallback for the thinking picker while the user hasn't picked: the spawn call's explicit level, else the parent session's effective level (what the child inherited). */
-  fallbackThinkingLevel: string;
-}) {
-  const { currentProject } = useProject();
-  const projectId = currentProject?.projectId ?? null;
-  // Skills of the CHILD's agent (it may differ from the parent's): candidates for the
-  // toolbar dropdown and the slash menu. A child shares its parent's Workspace, so its Agent
-  // is the one on the parent Session's machine.
-  const { skills } = useAgentSkills(projectId, meta?.agentId ?? null, machineForSession(sessionId));
-
-  // The level pinned on the child Session from this panel ("" = untouched, the child runs at
-  // its own level): mirrors the main composer's per-session pick, scoped to this child —
-  // written through PATCH on the child; core applies it from the child's next LLM request.
-  const [turnLevel, setTurnLevel] = useState("");
-  const pinChildLevel = (level: string): void => {
-    setTurnLevel(level);
-    void patchSession(childSessionId, {
-      thinkingLevel: level as SessionPatchRequest["thinkingLevel"],
-    }).catch((err: unknown) => toastError(apiErrorText(err)));
-  };
-
-  const modelRef = meta ? { provider: meta.provider, modelId: meta.modelId } : null;
-  const contextWindow = modelRef
-    ? models.find((m) => m.provider === modelRef.provider && m.modelId === modelRef.modelId)
-        ?.contextWindow
-    : undefined;
-
-  const send = (text: string) => messageSubagent(sessionId, childSessionId, text);
-  const sendFailure = (err: unknown): void => {
-    toastError(
-      err instanceof ApiError && err.code === "subagent_gone"
-        ? S.subagentPanel.subagentGone
-        : err instanceof Error
-          ? err.message
-          : String(err),
-    );
-  };
-
-  return (
-    <div className="shrink-0 border-t border-gray-100 px-2 pb-2 pt-2 dark:border-gray-800/60">
-      {/* The transcript's reading column (MessageStream caps its messages at max-w-3xl), as the
-          main conversation's composer does: a dock at full screen is as wide as the chat column
-          or wider, and the composer must line up with the messages above it rather than span
-          the surface. A docked panel is narrower than the cap, so there it changes nothing. */}
-      <div className="mx-auto max-w-3xl">
-        <ChatInput
-          variant="subagent"
-          controlRef={controlRef}
-          status={running ? "running" : "idle"}
-          onSend={async (input: TaskInputPart[]) => {
-            const text = input
-              .filter((p): p is { type: "text"; text: string } => p.type === "text")
-              .map((p) => p.text)
-              .join("\n\n")
-              .trim();
-            if (!text) return false;
-            try {
-              await send(text);
-              return true;
-            } catch (err) {
-              sendFailure(err);
-              return false;
-            }
-          }}
-          onSteer={async (text: string) => {
-            try {
-              await send(text);
-              // steered/started/resumed alike: the message reached the child (the race where
-              // the round settled mid-send simply started the next one). The queued hint
-              // retires when the child's stream shows the delivered input.
-              return "queued";
-            } catch (err) {
-              sendFailure(err);
-              return "failed";
-            }
-          }}
-          steeringDeliveredCount={deliveredInputs}
-          onStop={async () => {
-            await abortSubagent(sessionId, childSessionId).catch(() => undefined);
-          }}
-          modelRef={modelRef}
-          models={models}
-          // Display: the user's pick for this child, else what the child actually runs at
-          // (spawn-pinned level, else the parent's effective level it inherited). A pick is
-          // PATCHed onto the child Session and applies from its next LLM request.
-          turnThinkingLevel={turnLevel || fallbackThinkingLevel}
-          onChangeTurnThinkingLevel={pinChildLevel}
-          {...(contextWindow !== undefined ? { contextWindow } : {})}
-          contextNow={contextNow}
-          vision={false}
-          approvalMode={approvalMode}
-          approvalModes={approvalModes}
-          sandbox={sandbox}
-          onChangePermission={onChangePermission}
-          modeSaving={modeSaving}
-          agents={[]}
-          skills={skills}
-        />
-      </div>
     </div>
   );
 }

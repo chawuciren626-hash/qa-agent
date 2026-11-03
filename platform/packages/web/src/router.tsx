@@ -20,7 +20,7 @@ import { allowedModule, pageModule } from "./lib/module-permissions";
  * instead: the router then runs in memory from that path, so the app navigates without
  * touching the host document's URL — the only seam the app needs to be mounted elsewhere.
  */
-import { useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import {
   Navigate,
   useLocation,
@@ -46,10 +46,15 @@ import { LocalWorkspacePage } from "./pages/local-workspace";
 import { ChatPage } from "./features/chat/chat-page";
 import { QaSectionPage } from "./features/qa/workspace-ui";
 import { QaProjectView } from "./features/qa/project-view";
+import { QaTaskDetail } from "./features/qa/task-detail";
+import { ProjectKnowledgePage } from "./features/qa/project-knowledge-page";
+import { QualityTraceabilityPage } from "./features/qa/quality-traceability-page";
+import { PersonalSkillsPage } from "./features/qa/personal-skills-page";
 import { AgentsPage } from "./features/agents/agents-page";
 import { AgentSettingsPage } from "./features/agents/agent-settings-page";
 import { PluginsPage } from "./features/plugins/plugins-page";
 import { ModelsPage } from "./features/models/models-page";
+import { requestSettings } from "./features/settings/settings-request";
 import { UsagePage } from "./features/usage/usage-page";
 import { BenchmarkPage } from "./features/benchmark/benchmark-page";
 import { BenchmarkDetailPage } from "./features/benchmark/benchmark-detail-page";
@@ -87,6 +92,11 @@ function TestingChatPage() {
   const { search } = useLocation();
   const view = new URLSearchParams(search).get("view");
   return view === "library" || view === "schedules" ? <QaSectionPage view={view} /> : <ChatPage />;
+}
+
+function ModelsSettingsRedirect() {
+  useEffect(() => requestSettings({ section: "models" }), []);
+  return <Navigate to="/chat" replace />;
 }
 
 function renderPage(page: PageEntry): React.ReactNode {
@@ -144,10 +154,11 @@ function RequireAuthBare({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-/** When already logged in, visiting /login redirects straight to the chat page. */
+/** Signed-in users start in the project view. */
 function LoginRoute() {
   const { user } = useAuth();
-  if (user) return <Navigate to="/chat" replace />;
+  if (user === undefined) return null;
+  if (user) return <Navigate to="/qa/project" replace />;
   return <IntegratedAccountPage login fallback={<LoginPage />} />;
 }
 
@@ -203,7 +214,7 @@ function appRoutes(admin = false, accountCenter = false) {
         />
       ))}
       <Route element={<RequireAuth admin={admin} />}>
-        <Route index element={<Navigate to={admin ? "/overview" : "/chat"} replace />} />
+        <Route index element={<Navigate to={admin ? "/overview" : "/qa/project"} replace />} />
         {admin && <>
           <Route path="/overview" element={<AdminOverviewPage />} />
           <Route path="/chat/:sessionId?" element={<AdminAssistantPage />} />
@@ -221,14 +232,18 @@ function appRoutes(admin = false, accountCenter = false) {
             server-side (403); the sidebar hides their row, so a member only ever reaches
             one by typing the URL. */}
         {PAGES.filter(page => !admin || page.key !== "chat").map((page) => (
-          <Route key={page.id} path={page.path} element={renderPage(page)} />
+          <Route key={page.id} path={page.path} element={!admin && page.key === "models" ? <ModelsSettingsRedirect /> : renderPage(page)} />
         ))}
         {/* Company mode: /org resolves to an organization (or the empty landing), and an
             organization opens on its overview — the page that says what the whole
             organization is doing; its channels are the sidebar's own list beside it. Both
             fall back to /chat while company mode is unavailable (see OrgLayout). */}
         <Route path="/qa/library" element={<QaSectionPage view="library" />} />
+        <Route path="/qa/knowledge" element={<ProjectKnowledgePage />} />
+        <Route path="/qa/quality" element={<QualityTraceabilityPage />} />
+        <Route path="/qa/personal-skills" element={<PersonalSkillsPage />} />
         <Route path="/qa/project" element={<QaProjectView />} />
+        <Route path="/qa/project/tasks/:sessionId" element={<QaTaskDetail />} />
         <Route path="/org" element={<OrgIndexRedirect />} />
         <Route path="/org/:projectId/:orgId" element={<OrgLayout />}>
           <Route index element={<Navigate to="overview" replace />} />
@@ -243,7 +258,7 @@ function appRoutes(admin = false, accountCenter = false) {
         </Route>
         {/* Settings and user management live in the settings dialog now (see
             SettingsDialog); their old routes fall through to the catch-all. */}
-        <Route path="*" element={<Navigate to="/chat" replace />} />
+        <Route path="*" element={<Navigate to={admin ? "/overview" : "/qa/project"} replace />} />
       </Route>
     </Route>,
   );

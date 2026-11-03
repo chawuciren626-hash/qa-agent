@@ -33,8 +33,8 @@ function owner(deps: PlatformAuthRouteDeps, userId: string, projectId: string): 
   deps.access.requireProjectOwner(userId, projectId);
 }
 
-function publishIfChanged(deps: PlatformAuthRouteDeps, projectId: string, changed: boolean): void {
-  if (changed) modelConfigChanged(deps, projectId);
+async function publishIfChanged(deps: PlatformAuthRouteDeps, projectId: string, changed: boolean): Promise<void> {
+  if (changed) await modelConfigChanged(deps, projectId);
 }
 
 export function platformAuthRoutes(deps: PlatformAuthRouteDeps): Hono<AppEnv> {
@@ -56,7 +56,7 @@ export function platformAuthRoutes(deps: PlatformAuthRouteDeps): Hono<AppEnv> {
     const projectId = requireValidId(c, "projectId");
     owner(deps, c.var.user.userId, projectId);
     const synced = await deps.platformAuth.sync(projectId);
-    publishIfChanged(deps, projectId, synced.added > 0 || synced.updated > 0);
+    await publishIfChanged(deps, projectId, synced.added > 0 || synced.updated > 0);
     return c.json({
       ...(await deps.projectConfigService.getModels(projectId)),
       added: synced.added,
@@ -72,7 +72,7 @@ export function platformAuthRoutes(deps: PlatformAuthRouteDeps): Hono<AppEnv> {
       userId: c.var.user.userId,
       flowId: flowId(c.req.param("flowId") ?? ""),
     });
-    publishIfChanged(deps, projectId, result.changed === true);
+    await publishIfChanged(deps, projectId, result.changed === true);
     const { changed: _changed, ...response } = result;
     return c.json(response satisfies PlatformAuthFlowStatusResponse);
   });
@@ -85,7 +85,7 @@ export function platformAuthRoutes(deps: PlatformAuthRouteDeps): Hono<AppEnv> {
       userId: c.var.user.userId,
       flowId: flowId(c.req.param("flowId") ?? ""),
     });
-    publishIfChanged(deps, projectId, result.changed === true);
+    await publishIfChanged(deps, projectId, result.changed === true);
     const { changed: _changed, ...response } = result;
     return c.json(response satisfies PlatformAuthFlowStatusResponse);
   });

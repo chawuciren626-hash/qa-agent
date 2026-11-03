@@ -7,6 +7,13 @@ import { useAuth } from "../../state/auth";
 import { useProject } from "../../state/project";
 import type { ManagedKind, ManagedResource } from "../../lib/managed-resources";
 import { agentPublication, modelPublication, pluginPublication } from "./publication-source";
+import {
+  isValidationSuccess,
+  type ResourceVersion,
+  type ValidationResult,
+  type ValidationSuccess,
+} from "./publication-review";
+import { ValidationResultBody, VersionHistoryList } from "./publication-review-view";
 
 export const RESOURCE_NAMES: Record<ManagedKind, string> = { agents: "智能体", models: "模型", plugins: "插件", skills: "技能" };
 export interface Publication extends ManagedResource { audience: string[]; revision: number; published: boolean }
@@ -22,7 +29,12 @@ export function PublicationsPage({ central = false, resourceKind }: { central?: 
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<Publication | null>(null);
   const [choosing, setChoosing] = useState<Publication | "new" | null>(null);
-  const [history, setHistory] = useState<any[] | null>(null);
+  /** The history dialog: the resource it belongs to and the versions the server returned. */
+  const [history, setHistory] = useState<{ resource: Publication; versions: ResourceVersion[] } | null>(null);
+  /** A validation the administrator asked for, shown before any publish is offered. */
+  const [checking, setChecking] = useState<{ resource: Publication; result: ValidationResult } | null>(null);
+  /** A publication waiting for its confirmation; it carries the validation it passed. */
+  const [publishing, setPublishing] = useState<{ resource: Publication; result: ValidationSuccess } | null>(null);
   const [busy, setBusy] = useState(false);
   const load = useCallback(async () => {
     const [catalog, accounts] = await Promise.all([
@@ -47,19 +59,25 @@ export function PublicationsPage({ central = false, resourceKind }: { central?: 
       <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => setEditing(structuredClone(resource))}>授权与依赖</Button>
         {!central && <Button size="sm" onClick={() => setChoosing(resource)}>从本机配置更新草稿</Button>}
         <Button size="sm" disabled={busy} onClick={() => void act(async () => {
-          if (!confirm(`发布「${resource.name}」的新版本？现有本机配置不会被自动覆盖。`)) return;
-          await controlRequest(`/api/control/admin/resources/${resource.id}/publish`, "POST", { revision: resource.revision }); await load();
+          setChecking({ resource, result: await controlRequest(`/api/control/admin/resources/${resource.id}/validate`, "POST", {}) });
+        })}>发布前校验</Button>
+        <Button size="sm" disabled={busy} onClick={() => void act(async () => {
+          const result: ValidationResult = await controlRequest(`/api/control/admin/resources/${resource.id}/validate`, "POST", {});
+          if (!isValidationSuccess(result)) { setChecking({ resource, result }); return; }
+          setPublishing({ resource, result });
         })}>发布版本</Button>
         {resource.published && <Button size="sm" disabled={busy} onClick={() => void act(async () => {
           if (!confirm("下架将停止新的获取和使用，保留已有任务与本机资料。继续？")) return;
           await controlRequest(`/api/control/admin/resources/${resource.id}/withdraw`, "POST", {}); await load();
         })}>下架</Button>}
-        <Button size="sm" onClick={() => void act(async () => setHistory((await controlRequest(`/api/control/admin/resources/${resource.id}/history`)).versions))}>版本记录</Button>
+        <Button size="sm" onClick={() => void act(async () => {
+          setHistory({ resource, versions: (await controlRequest(`/api/control/admin/resources/${resource.id}/history`)).versions });
+        })}>版本记录</Button>
       </div>
       <details className="mt-3 text-xs"><summary>查看待发布内容</summary><pre className="mt-2 whitespace-pre-wrap break-words">{JSON.stringify(previewPayload(resource.payload), null, 2)}</pre></details>
     </section>)}</div>
     {!resources.some(resource => resource.kind === kind) && <p className="py-8 opacity-60">尚未发布{RESOURCE_NAMES[kind]}。请先在原有功能页完成配置，再明确选择要公开的内容。</p>}
-    {editing && <Modal open title="授权与依赖" onClose={() => { if (confirm("放弃本次未保存的授权编辑？")) setEditing(null); }} footer={<Button disabled={busy} onClick={() => void act(async () => {
+    {editing && <Modal open title="授权与依赖" onClose={() => { if (confirm("放弃本次未保存的授权编辑？")) setEditing(null); }} footer={<Button size="sm" disabled={busy} onClick={() => void act(async () => {
       const { kind, name, description, payload, audience, revision } = editing;
       await controlRequest(`/api/control/admin/resources/${editing.id}`, "PUT", { kind, name, description, payload, audience, revision }); setEditing(null); await load();
     })}>保存</Button>}>
@@ -75,7 +93,43 @@ export function PublicationsPage({ central = false, resourceKind }: { central?: 
         })}</fieldset>)}
       </div>}
     </Modal>}
-    {history && <Modal open title="已发布版本" onClose={() => setHistory(null)}>{history.map(version => <details key={version.version} className="mb-3"><summary>v{version.version} · {version.created_at}</summary><pre className="whitespace-pre-wrap break-words text-xs">{JSON.stringify({ ...version.body, payload: previewPayload(version.body.payload) }, null, 2)}</pre></details>)}</Modal>}
+    {history && <Modal open title={`版本记录 · ${history.resource.name}`} onClose={() => { if (!busy) setHistory(null); }}>
+      <p className="mb-4 text-sm opacity-70">回滚会把历史内容记录为一个新版本，不改写、不删除任何历史版本；运行中的任务不受影响。</p>
+      <VersionHistoryList
+        history={history.versions}
+        kind={history.resource.kind}
+        published={history.resource.published}
+        busy={busy}
+        onRestore={(item) => {
+          const target = history;
+          if (!confirm(`恢复「${target.resource.name}」为 v${item.version}？将生成新版本 v${target.resource.version + 1}。`)) return;
+          void act(async () => {
+            await controlRequest(`/api/control/admin/resources/${target.resource.id}/rollback`, "POST", { version: item.version, revision: target.resource.revision });
+            const refreshed: Publication[] = (await controlRequest("/api/control/admin/resources")).resources;
+            const resource = refreshed.find(row => row.id === target.resource.id) ?? target.resource;
+            const versions: ResourceVersion[] = (await controlRequest(`/api/control/admin/resources/${target.resource.id}/history`)).versions;
+            setResources(refreshed);
+            setHistory({ resource, versions });
+          });
+        }}
+      />
+    </Modal>}
+    {checking && <Modal open title={`发布前校验 · ${checking.resource.name}`} onClose={() => setChecking(null)} footer={<Button size="sm" disabled={busy} onClick={() => setChecking(null)}>关闭</Button>}>
+      <p className="mb-4 text-sm opacity-70">校验只读取当前草稿，不保存、不发布、不安装。发布前请确认技能包或说明中没有个人资料与凭据。</p>
+      <ValidationResultBody result={checking.result} />
+    </Modal>}
+    {publishing && <Modal open title={`发布 ${publishing.resource.name} v${publishing.resource.version + 1}`} onClose={() => { if (!busy) setPublishing(null); }} footer={<>
+      <Button size="sm" disabled={busy} onClick={() => setPublishing(null)}>取消</Button>
+      <Button size="sm" variant="primary" disabled={busy} onClick={() => void act(async () => {
+        const target = publishing;
+        await controlRequest(`/api/control/admin/resources/${target.resource.id}/publish`, "POST", { revision: target.resource.revision });
+        setPublishing(null);
+        await load();
+      })}>确认发布</Button>
+    </>}>
+      <ValidationResultBody result={publishing.result} />
+      <p className="mt-4 text-sm opacity-70">发布只增加一个用户可获取的新版本；不覆盖已获取的本机副本，也不改变运行中的任务。</p>
+    </Modal>}
     {choosing && !central && <LocalPublicationDialog key={`${kind}:${choosing === "new" ? "new" : choosing.id}`} kind={kind} existing={choosing === "new" ? undefined : choosing} onClose={() => setChoosing(null)} onSaved={async () => { setChoosing(null); await load(); }} />}
   </PageFrame>;
 }
@@ -129,7 +183,7 @@ function LocalPublicationDialog({ kind, existing, onClose, onSaved }: { kind: Ma
     } catch (cause) { setError(cause instanceof Error ? cause.message : "读取失败"); }
     finally { setBusy(false); }
   }
-  return <Modal open title={`选择要公开的${RESOURCE_NAMES[kind]}`} onClose={() => { if (!busy && (!prepared || confirm("放弃本次尚未保存的发布草稿？"))) onClose(); }} footer={<Button disabled={!prepared || busy} onClick={async () => {
+  return <Modal open title={`选择要公开的${RESOURCE_NAMES[kind]}`} onClose={() => { if (!busy && (!prepared || confirm("放弃本次尚未保存的发布草稿？"))) onClose(); }} footer={<Button size="sm" disabled={!prepared || busy} onClick={async () => {
     if (!prepared || !confirm("确认将预览中的公共内容同步到中央草稿库？不会上传项目、会话、模型密钥或智能体完整状态快照。")) return;
     setBusy(true);
     try {

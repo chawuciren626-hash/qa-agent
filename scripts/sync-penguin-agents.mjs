@@ -15,6 +15,32 @@ export function mergeFallbackInstructions(current, prompt) {
 
 const snapshot=files=>JSON.stringify(files.map(file=>[file.relative,createHash('sha256').update(readFileSync(file.source)).digest('hex')]));
 
+/** Render the one maintained runtime policy for the role being installed.
+ * Role markers must be unindented whole lines: <!-- qa-roles: role_a,role_b -->
+ * and <!-- /qa-roles -->. Malformed comment markers fail before any sync writes.
+ */
+export function sharedInstructionsForRole(source, roleId) {
+  const output=[];
+  let roles=null;
+  for(const line of source.split(/\r?\n/)) {
+    const open=line.match(/^<!-- qa-roles: ([a-z0-9_,]+) -->$/);
+    if(open) {
+      if(roles!==null) throw new Error('Nested shared instruction role block');
+      roles=new Set(open[1].split(','));
+      continue;
+    }
+    if(line==='<!-- /qa-roles -->') {
+      if(roles===null) throw new Error('Unmatched shared instruction role block');
+      roles=null;
+      continue;
+    }
+    if(/^\s*<!--[^\r\n]*qa-roles[^\r\n]*-->\s*$/.test(line)) throw new Error('Malformed shared instruction role marker');
+    if(roles===null || roles.has(roleId)) output.push(line);
+  }
+  if(roles!==null) throw new Error('Unclosed shared instruction role block');
+  return output.join('\n').replace(/\n{3,}/g,'\n\n').trimEnd()+'\n';
+}
+
 export function syncPenguinAgents(root, targetRoot, { apply = false } = {}) {
   root = resolve(root); targetRoot = resolve(targetRoot);
   const manifest = JSON.parse(readFileSync(resolve(root, 'penguin/agents.json'), 'utf8'));
@@ -41,7 +67,7 @@ export function syncPenguinAgents(root, targetRoot, { apply = false } = {}) {
     if (!existsSync(stateDir)) throw new Error(`目标 Agent 不存在: ${stateDir}。请先在 PenguinHarness 创建 ${agent.id}。`);
     const prompt = resolve(root, agent.prompt);
     assertUnlinked(root, prompt);
-    add(agent.id, prompt, resolve(stateDir, 'AGENTS.md'), readFileSync(prompt, 'utf8') + (shared ? '\n' + shared : ''));
+    add(agent.id, prompt, resolve(stateDir, 'AGENTS.md'), readFileSync(prompt, 'utf8') + (shared ? '\n' + sharedInstructionsForRole(shared,agent.id) : ''));
     for (const skill of agent.skills ?? []) {
       for (const file of validateSkillResources(root, skill)) {
         add(agent.id, file.source, resolve(stateDir, 'skills', skill, file.relative), readFileSync(file.source));

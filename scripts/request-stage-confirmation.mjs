@@ -18,9 +18,10 @@ if (manifest.confirmations.some((item) => item.stage === stage && item.status ==
 manifest.stages ??= {};
 manifest.orchestration ??= { events: [] };
 const stagePlan = getPlanStage(manifest, stage);
-if (!stagePlan?.selected || stagePlan.confirmation === "none") throw new Error(`${stage} 阶段未配置人工确认。`);
-const expectedStatus = stagePlan.confirmation === "before" ? "planned" : "completed";
-const revisingBeforeExecution = stagePlan.confirmation === "before" && manifest.stages[stage]?.status === "revision_requested";
+const resultReview = stagePlan?.result_confirmation === 'after' && manifest.stages[stage]?.status === 'completed';
+if (!stagePlan?.selected || stagePlan.confirmation === "none" && !resultReview) throw new Error(`${stage} 阶段未配置人工确认。`);
+const expectedStatus = stagePlan.confirmation === "before" && !resultReview ? "planned" : "completed";
+const revisingBeforeExecution = stagePlan.confirmation === "before" && !resultReview && manifest.stages[stage]?.status === "revision_requested";
 if (manifest.stages[stage]?.status !== expectedStatus && !revisingBeforeExecution) {
   throw new Error(`${stage} 阶段当前状态为 ${manifest.stages[stage]?.status ?? "未计划"}，不能在 ${stagePlan.confirmation} 时请求确认。`);
 }
@@ -28,15 +29,16 @@ const confirmation = {
   id: `confirm-${stage}-${Date.now()}`,
   stage,
   status: "pending",
+  kind: expectedStatus === 'planned' ? 'authorization' : 'result',
   requested_at: timestamp,
   artifacts: artifactArgs
 };
-if (stagePlan.confirmation === 'after') {
+if (expectedStatus === 'completed') {
   confirmation.artifact_contract = assertCompletedArtifacts(root, runId, manifest, stage);
   if (artifactArgs.some(path => !confirmation.artifact_contract.files.some(file => file.path === path))) throw new Error('Confirmation references an unvalidated artifact');
   if (!artifactArgs.length) confirmation.artifacts = confirmation.artifact_contract.files.map(file => file.path);
 }
-if (stage === 'execution' && manifest.orchestration?.plan?.workflow_mode!=='task') confirmation.execution_snapshot = executionSnapshot(root, runId);
+if (stage === 'execution' && expectedStatus === 'planned' && manifest.orchestration?.plan?.workflow_mode!=='task') confirmation.execution_snapshot = executionSnapshot(root, runId);
 if (['analysis', 'test_points', 'test_cases'].includes(stage)) confirmation.semantic_review = {
   automated_scope: 'structure_references_and_hashes_only',
   checklist: ['Check original source authority and quoted context', 'Separate requirement, observation and assumption', 'Do not add precise codes, text or boundaries absent from approved requirements', 'Review pending/conflicted and excluded scope; no blanket promotion to confirmed', 'Check requirement coverage and expected behavior independently of implementation']

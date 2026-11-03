@@ -329,8 +329,7 @@ export function PermissionSelect({
         <SettingsDialog
           open={settingsOpen}
           onClose={() => setSettingsOpen(false)}
-          section="plugins"
-          pluginFocus="sandbox"
+          section="sandbox"
         />
       )}
     </>

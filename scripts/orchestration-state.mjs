@@ -113,7 +113,16 @@ export function selectedPlanStages(manifest) {
 }
 
 export function hasApprovedConfirmation(manifest, stageId) {
-  return (manifest.confirmations ?? []).filter((item) => item.stage === stageId).at(-1)?.status === 'approved';
+  const resultOnly = getPlanStage(manifest,stageId)?.result_confirmation === 'after';
+  return (manifest.confirmations ?? []).filter((item) => item.stage === stageId && (!resultOnly || item.kind === 'result')).at(-1)?.status === 'approved';
+}
+
+export function requiresResultConfirmation(stage) {
+  return stage?.confirmation === 'after' || stage?.result_confirmation === 'after';
+}
+
+export function hasExecutionAuthorization(manifest, stageId) {
+  return (manifest.confirmations ?? []).filter(item => item.stage === stageId && item.kind === 'authorization').at(-1)?.status === 'approved';
 }
 
 export function hasPendingConfirmation(manifest, stageId) {
@@ -187,12 +196,12 @@ export function assertStageReady(manifest, stageId) {
   if (unfinished.length) throw new Error(`阶段 ${stageId} 的前置阶段未完成: ${unfinished.join(", ")}`);
   const unapprovedDependencies = (stage.depends_on ?? []).filter((dependency) => {
     const dependencyPlan = getPlanStage(manifest, dependency);
-    return dependencyPlan?.confirmation === "after" && !hasApprovedConfirmation(manifest, dependency);
+    return requiresResultConfirmation(dependencyPlan) && !hasApprovedConfirmation(manifest, dependency);
   });
   if (unapprovedDependencies.length) {
     throw new Error(`阶段 ${stageId} 的前置阶段尚未批准: ${unapprovedDependencies.join(", ")}`);
   }
-  if (stage.confirmation === "before" && !hasApprovedConfirmation(manifest, stageId)) {
+  if (stage.confirmation === "before" && !hasExecutionAuthorization(manifest, stageId) && !(manifest.confirmations ?? []).some(item=>item.stage===stageId && !item.kind && item.status==='approved')) {
     throw new Error(`阶段 ${stageId} 需要执行前人工批准。`);
   }
   return stage;
@@ -217,6 +226,6 @@ export function assertStageHistory(manifest, stageId) {
   if (!last) return;
   const expected = { dispatched: 'in_progress', completed: 'completed', preparation_completed: 'planned', failed: 'failed', blocked: 'blocked', stage_recovered: 'revision_requested', quality_revision_required: 'revision_requested', confirmation_requested: 'awaiting_confirmation', review_mode_continued: 'completed' }[last.type]
     ?? (last.type === 'stage_added_to_plan' ? 'planned' : null)
-    ?? (last.type === 'confirmation_resolved' ? (last.decision === 'approved' ? (getPlanStage(manifest, stageId)?.confirmation === 'before' ? 'planned' : 'completed') : last.decision === 'rejected' ? 'blocked' : 'revision_requested') : null);
+    ?? (last.type === 'confirmation_resolved' ? (last.decision === 'approved' ? (last.kind === 'authorization' || !last.kind && getPlanStage(manifest, stageId)?.confirmation === 'before' && !getPlanStage(manifest, stageId)?.result_confirmation ? 'planned' : 'completed') : last.decision === 'rejected' ? 'blocked' : 'revision_requested') : null);
   if (expected && manifest.stages?.[stageId]?.status !== expected) throw new Error('Stage status differs from its latest audit event; refusing manual state override');
 }

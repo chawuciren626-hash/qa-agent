@@ -17,6 +17,7 @@ import type { UserInfo } from "../api/types.js";
 import type { LiveStreams } from "./live-streams.js";
 import { HttpError } from "../http/errors.js";
 import { toUserInfo } from "./service.js";
+import { AccountCookieSeal } from "./account-cookie-seal.js";
 
 export interface AccountClientConfig { origin: string; ownerUserId: string }
 export function readAccountClientConfig(root: string, env: NodeJS.ProcessEnv): AccountClientConfig | undefined {
@@ -41,12 +42,39 @@ export class AccountClient {
   private readonly creating = new Map<string, Promise<string>>();
   private readonly shellClaims = new Set<string>();
   private readonly cfg: AccountClientConfig;
+  private readonly cookieSeal: AccountCookieSeal;
   constructor(private readonly deps: Deps) {
     this.cfg = deps.config.accountClient!;
     // Explicit binding, including the center origin: changing servers cannot adopt another person's files.
     deps.db.exec("CREATE TABLE IF NOT EXISTS account_center_bindings (origin TEXT NOT NULL, remote_id TEXT NOT NULL, local_id TEXT NOT NULL UNIQUE, PRIMARY KEY(origin, remote_id))");
+    // The local session cookie survives an app restart. Keep its central proof alongside the
+    // already durable local auth_sessions row, then revalidate it with the center on first use.
+    // This table lives only in the private local data root, never in project exports.
+    deps.db.exec("CREATE TABLE IF NOT EXISTS account_center_sessions (token_hash TEXT PRIMARY KEY, origin TEXT NOT NULL, local_id TEXT NOT NULL, remote_json TEXT NOT NULL, central_cookie TEXT NOT NULL, expires_at TEXT NOT NULL)");
+    const encryptedRowsExist = Boolean(deps.db.prepare("SELECT 1 AS found FROM account_center_sessions WHERE central_cookie LIKE 'enc:v1:%' LIMIT 1").get());
+    this.cookieSeal = new AccountCookieSeal(deps.config.root, encryptedRowsExist);
     const previous = deps.db.prepare("SELECT origin FROM account_center_bindings LIMIT 1").get();
     if (previous && previous.origin !== this.cfg.origin) throw new Error("Account center changed: explicit local data migration required");
+    const now = Date.now();
+    for (const row of deps.db.prepare("SELECT s.token_hash, s.origin, s.local_id, s.remote_json, s.central_cookie, s.expires_at, a.user_id AS auth_user, a.expires_at AS auth_expires FROM account_center_sessions s LEFT JOIN auth_sessions a ON a.token_hash=s.token_hash").all()) {
+      const hash = String(row.token_hash);
+      const storedCookie = String(row.central_cookie);
+      const cookie = AccountCookieSeal.isSealed(storedCookie) ? this.cookieSeal.open(storedCookie) : storedCookie;
+      try {
+        const remote = JSON.parse(String(row.remote_json)) as UserInfo;
+        const expires = Date.parse(String(row.expires_at));
+        const authExpires = Date.parse(String(row.auth_expires ?? ""));
+        const localId = String(row.local_id);
+        const bound = deps.db.prepare("SELECT local_id FROM account_center_bindings WHERE origin=? AND remote_id=?").get(this.cfg.origin, remote.userId);
+        if (row.origin !== this.cfg.origin || row.auth_user !== localId || bound?.local_id !== localId ||
+          !deps.users().findById(localId) || !remote.userId || typeof remote.isAdmin !== "boolean" ||
+          !/^penguin_session=[^;\s]+$/.test(cookie) ||
+          !Number.isFinite(expires) || expires <= now || !Number.isFinite(authExpires) || authExpires <= now) throw Error("stale session");
+        if (!AccountCookieSeal.isSealed(storedCookie)) deps.db.prepare("UPDATE account_center_sessions SET central_cookie=? WHERE token_hash=?")
+          .run(this.cookieSeal.seal(cookie), hash);
+        this.sessions.set(hash, { remote, localId, cookie, expires: Math.min(expires, authExpires) });
+      } catch { deps.db.prepare("DELETE FROM account_center_sessions WHERE token_hash=?").run(hash); }
+    }
   }
   accepts(token: string): boolean {
     const binding = this.sessions.get(sessionTokenHash(token));
@@ -54,17 +82,22 @@ export class AccountClient {
   }
   private drop(hash: string, binding: Binding) {
     this.sessions.delete(hash);
+    this.deps.db.prepare("DELETE FROM account_center_sessions WHERE token_hash=?").run(hash);
     this.deps.sessions().delete(hash);
     this.deps.streams().endForUser(binding.localId);
   }
   private async remote(endpoint: string, method = "GET", body?: unknown, binding?: Binding): Promise<Response> {
+    let response: Response;
     try {
-      return await (this.deps.fetch ?? fetch)(this.cfg.origin + endpoint, {
+      response = await (this.deps.fetch ?? fetch)(this.cfg.origin + endpoint, {
         method, redirect: "error", signal: AbortSignal.timeout(5000),
         headers: { "content-type": "application/json", ...(binding ? { cookie: binding.cookie } : {}) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
-    } catch { throw new HttpError(503, "account_center_unavailable", "账号中心暂时无法连接，请恢复连接后重试。本地资料和已有任务保留。"); }
+    } catch { throw new HttpError(503, "account_center_unavailable", "服务端不可用，请联系管理员"); }
+    if (response.status !== 204 && !/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(response.headers.get("content-type") ?? ""))
+      throw new HttpError(503, "account_center_unavailable", "服务端不可用，请联系管理员");
+    return response;
   }
   async validate(token: string): Promise<void> {
     const hash = sessionTokenHash(token), binding = this.sessions.get(hash);
@@ -83,6 +116,9 @@ export class AccountClient {
         binding.modules=policy.modules??[]; binding.menuKeys=policy.menuKeys??[]; binding.resourceIds=policy.resourceIds??[];
         const renewed = response.headers.getSetCookie().find(v => v.startsWith("penguin_session="));
         if (renewed) binding.cookie = renewed.split(";")[0]!;
+        binding.expires = Date.now() + this.deps.config.authSessionTtlMs;
+        this.deps.db.prepare("UPDATE account_center_sessions SET central_cookie=?, expires_at=? WHERE token_hash=?")
+          .run(this.cookieSeal.seal(binding.cookie), new Date(binding.expires).toISOString(), hash);
       })().finally(() => this.checks.delete(binding));
       this.checks.set(binding, check);
     }
@@ -348,7 +384,7 @@ export class AccountClient {
       return c.json(await applyPublicResource(this.deps.db,body,bundle.resources,dispatch));
     }
     const valid=(c.req.method==="GET"&&/^\/api\/control\/(access|catalog(?:\/[a-z0-9-]+)?|admin\/(resources(?:\/[a-z0-9-]+\/history)?|permissions\/[a-z][a-z0-9_]*|roles|menus|audit))$/.test(endpoint)) ||
-      (["POST","PUT"].includes(c.req.method)&&/^\/api\/control\/admin\/(resources(?:\/[a-z0-9-]+(?:\/(publish|withdraw))?)?|permissions\/[a-z][a-z0-9_]*|roles(?:\/[a-f0-9-]{36})?|role-members\/[a-z][a-z0-9_]*|menus)$/.test(endpoint)) ||
+      (["POST","PUT"].includes(c.req.method)&&/^\/api\/control\/admin\/(resources(?:\/validate|\/[a-z0-9-]+(?:\/(publish|withdraw|rollback|validate))?)?|permissions\/[a-z][a-z0-9_]*|roles(?:\/[a-f0-9-]{36})?|role-members\/[a-z][a-z0-9_]*|menus)$/.test(endpoint)) ||
       (c.req.method==="DELETE"&&/^\/api\/control\/admin\/(resources\/[a-z0-9-]+|roles\/[a-f0-9-]{36})$/.test(endpoint));
     if(!valid)throw new HttpError(404,"not_found","未知管理接口。");
     const response=await this.remote(endpoint,c.req.method,c.req.method==="GET"?undefined:await c.req.json(),held.binding);
@@ -401,6 +437,8 @@ export class AccountClient {
     const via = shell && this.shellClaims.has(shell) ? "desktop" : "password";
     const {token}=this.deps.sessions().issue({userId:localId,via,now:new Date(),ttlMs:this.deps.config.authSessionTtlMs});
     this.sessions.set(sessionTokenHash(token),{remote:user,localId,cookie,expires:Date.now()+this.deps.config.authSessionTtlMs});
+    this.deps.db.prepare("INSERT INTO account_center_sessions(token_hash,origin,local_id,remote_json,central_cookie,expires_at) VALUES (?,?,?,?,?,?)")
+      .run(sessionTokenHash(token),this.cfg.origin,localId,JSON.stringify(user),this.cookieSeal.seal(cookie),new Date(Date.now()+this.deps.config.authSessionTtlMs).toISOString());
     setCookie(c,sessionCookieName(c.req.url,c.req.header("origin")!==undefined),token,cookieOptions(c,this.deps.config.authSessionTtlMs,this.deps.config.trustProxy));
     const info=toUserInfo(this.deps.users().findById(localId)!);
     return c.json({user:{...info,passwordIsInitial:false}});

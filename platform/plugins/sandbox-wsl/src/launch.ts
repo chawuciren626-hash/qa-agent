@@ -13,6 +13,16 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { isWslNotice, toLinuxPath, within } from "./profile.js";
 
+/** WSLENV can forward named Windows secrets into Linux; never inherit it for a confined job. */
+export function launcherEnvironment(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { WSL_UTF8: "1" };
+  for (const name of ["SystemRoot", "WINDIR", "PATH", "PATHEXT", "USERPROFILE", "LOCALAPPDATA", "TEMP", "TMP"]) {
+    const key = Object.keys(parent).find(candidate => candidate.toLowerCase() === name.toLowerCase());
+    if (key !== undefined && parent[key] !== undefined) env[name] = parent[key];
+  }
+  return env;
+}
+
 /** What the provider hands the launcher. */
 export interface LaunchJob {
   wsl: string;
@@ -24,6 +34,8 @@ export interface LaunchJob {
   chdirRoots: string[];
   /** The command, already in its Linux spelling. */
   command: string[];
+  /** Automation jobs cannot inherit WSLENV or host credentials. */
+  isolatedEnvironment?: boolean;
 }
 
 /** The wsl.exe arguments for a job started in `cwd`. */
@@ -104,7 +116,7 @@ function main(): void {
   const child = spawn(job.wsl, wslArgs(job, process.cwd()), {
     stdio: ["inherit", "inherit", "pipe"],
     windowsHide: true,
-    env: { ...process.env, WSL_UTF8: "1" },
+    env: job.isolatedEnvironment ? launcherEnvironment() : { ...process.env, WSL_UTF8: "1" },
   });
   const filter = noticeFilter((chunk) => process.stderr.write(chunk));
   child.stderr.setEncoding("utf8");

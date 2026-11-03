@@ -123,7 +123,19 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
       assert(row.design_contract.basis.every(basis => point.rule_ids.includes(basis.rule_id)), `${row.case_id}: basis rule not covered by related test point`);
     }
     const design = inspectDesign({ root, runId, source: resolve(dir, 'design/test_cases.json'), execution: false });
-    for (const point of pointRows) assert(rows.some(row => row.related_test_point === point.id), `${point.id}: missing test case coverage`);
+    const removedPoints = new Set();
+    if (existsSync(resolve(dir,'design/test_cases-review.json'))) {
+      const review=json('design/test_cases-review.json');
+      assert(review.run_id===runId && Array.isArray(review.deletions),'Invalid case review');
+      for (const entry of review.deletions) {
+        assert(/^[A-Za-z0-9_-]+$/.test(entry.actor_user_id ?? '') && /^audit\/case-review\/[a-f0-9-]+$/.test(entry.archive ?? '') && Number.isFinite(Date.parse(entry.at)), 'Invalid user deletion record');
+        const archived=json(`${entry.archive}/design/test_cases.json`);
+        const prior=Array.isArray(archived)?archived:archived.cases ?? archived.test_cases;
+        assert(prior?.some(row=>row.case_id===entry.case_id && row.related_test_point===entry.test_point),'Deletion differs from archived original');
+        if (!rows.some(row=>row.case_id===entry.case_id)) removedPoints.add(entry.test_point);
+      }
+    }
+    for (const point of pointRows) assert(rows.some(row => row.related_test_point === point.id) || removedPoints.has(point.id), `${point.id}: missing test case coverage`);
     assert(!design.errors.length, design.errors.join('; '));
     design.files.forEach(file => capture(file.path));
     return rows;

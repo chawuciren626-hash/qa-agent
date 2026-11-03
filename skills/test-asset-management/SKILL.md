@@ -1,11 +1,17 @@
 ---
 name: test-asset-management
+version: 2026.11.02.1
 description: 管理可复用测试规则、测试数据策略、定位器、断言、接口契约和缺陷模式。
-metadata:
-  version: '1.0.0'
 ---
 
 # 测试资产管理 Skill
+
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+
+## 输入与产出
+
+输入为本次任务可核对的需求规则、环境范围、观察证据和现有资产目录。输出为带稳定 ID、版本、来源及适用范围的候选资产；全局登记须走独立的人工确认入口。
+
 
 ## 资产目录
 

@@ -203,6 +203,8 @@ test('observed sequence executes once, preserves step receipts and supports unch
   assert.equal((await f.browser(operation)).status,'sequence_completed');assert.deepEqual(readFileSync(resolve(f.dir,'execution/browser-evidence/batch-fill.json')),before);
   const finish=await f.browser({type:'finish',request_id:'finish',summary:'Synthetic batch',limitations:[]});assert.ok(finish);
   const results=JSON.parse(readFileSync(resolve(f.dir,'execution/test_results.json')));assert.equal(results.cases.length,1);assert.equal(results.cases[0].status,'passed');
+  writeJson(resolve(f.dir,'execution/execution-task.json'),{run_id:f.id,stage:'execution',outcome:'completed',summary:'Synthetic sequence assertion',source_paths:['inputs/request.txt'],questions:[],limitations:[]});
+  assert.deepEqual(inspectIndependentArtifacts(root,f.id,'execution').errors,[]);
 });
 
 for(const recover of [false,true]) test(`lifecycle browser execution ${recover?'recovers after worker exit':'finishes normally'} and hands partial truthful results to defects and HTML reports`,async t=>{
@@ -210,6 +212,10 @@ for(const recover of [false,true]) test(`lifecycle browser execution ${recover?'
   await new Promise(done=>server.listen(0,'127.0.0.1',done));
   t.after(async()=>{server.closeAllConnections();await new Promise(done=>server.close(done));});
   const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url,{lifecycle:true});
+  const casePlan=JSON.parse(readFileSync(resolve(f.dir,'execution/browser-case-plan.json')));
+  assert.deepEqual(casePlan.cases.map(row=>row.case_id),['TC-1','TC-2']);
+  assert.deepEqual(casePlan.cases[0].steps,['Inspect heading']);
+  assert.match(readFileSync(resolve(root,'output/delegations',`${f.dispatched.data.event.dispatch_id}.prompt.txt`),'utf8'),/browser-case-plan\.json/);
   t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1300);});
   await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic local heading checks only',headless:true});
   await f.browser({type:'pause',request_id:'login',kind:'access',question:'Synthetic login completed?'});
@@ -229,8 +235,9 @@ for(const recover of [false,true]) test(`lifecycle browser execution ${recover?'
     finished=await f.browser({type:'recover',request_id:'recover-partial'});
     assert.equal(finished.status,'recovered_partial');
     assert.deepEqual(readFileSync(resolve(f.dir,'execution/browser-evidence/failed.json')),receiptBefore);
-  } else finished=await f.browser({type:'finish',request_id:'finish',summary:'One mapped case, one untested',limitations:['Synthetic checks only']});
+  } else finished=await f.browser({type:'finish',request_id:'finish',summary:'One mapped case, one untested',limitations:['Synthetic checks only'],case_reviews:[{case_id:'TC-1',completed_step_indices:[1],untested:[]}]});
   assert.equal(finished.partial,true);
+  if(!recover) assert.deepEqual(JSON.parse(readFileSync(resolve(f.dir,'execution/browser-coverage.json'))).completed_case_ids,['TC-1']);
   const task=(stage,source_paths)=>({run_id:f.id,stage,outcome:'partial',summary:'Synthetic lifecycle delivery',questions:[],limitations:['Not all designed cases were tested'],source_paths});
   writeJson(resolve(f.dir,'execution/execution-task.json'),task('execution',['inputs/request.txt','design/test_cases.json']));
   await f.returnChild(resumed.delegation);

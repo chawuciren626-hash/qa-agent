@@ -1,11 +1,12 @@
 ---
 name: requirement-analysis
+version: 2026.11.02.2
 description: 分析需求中的功能、业务规则、风险和待澄清问题。
-metadata:
-  version: '1.1.0'
 ---
 
 # 需求分析 Skill
+
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
 
 材料有歧义、矛盾或不可测表述时，按需读[需求缺口与风险取舍](references/requirement-gaps.md)。适用于task和lifecycle，不新增文档上传后的固定确认节点。
 
@@ -24,7 +25,7 @@ metadata:
 需求静态评审按需读取已安装的test-design-methods Skill的语义与覆盖检查；仅用于发现会改变预期的歧义，不新增固定问答或前序产物要求。
 
 
-用户补充材料由apply_analysis_feedback按原话归档，通过revision_context.feedback_input传入；登记为user_confirmation并逐项更新旧规则。只回答一部分的规则要拆分，不能把剩余未知也标成confirmed；排除范围同步所有关联规则，不能只写在备注。展示本次变更和保留的未决项，新版交总控按保存的确认策略处理；auto无新业务歧义时不重复确认。
+用户补充材料由apply_analysis_feedback按原话归档，通过revision_context.feedback_input传入；登记为user_confirmation并逐项更新旧规则。只回答一部分的规则要拆分，不能把剩余未知也标成confirmed；排除范围同步所有关联规则，不能只写在备注。展示本次变更和保留的未决项，新版交总控按保存的确认策略处理；历史 auto 计划沿用已保存的确认策略。
 
 分类影响测试设计：context用于背景/架构说明，environment用于运行准备前提，它们保留来源但不自动要求业务测试点。范围内真实可验证行为、兼容性或环境验收约束归functional/constraint。性能/安全测试要求保留原文和引用，按公共能力范围标out_of_scope，reason明确为当前能力排除，不能伪称原文排除或改成背景。混合背景与行为必须拆分并保留引用；不能为消除覆盖报错把行为改成背景。旧规则缺category时仍按原覆盖要求处理，分类调整也属于需求修订，保留来源和变化记录，按保存的确认策略处理。
 

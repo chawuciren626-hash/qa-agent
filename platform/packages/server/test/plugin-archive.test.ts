@@ -23,7 +23,7 @@
  *   would not read, and an archive past the caps, read before it inflates.
  * - Nothing replaces a module the build ships: a zip under its name is refused before it
  *   installs, a link that turns out to be one is taken back; so is a link to a package that is no
- *   plugin, and both refusals say its install scripts have already run.
+ *   plugin, and both refusals state install scripts were disabled.
  * - What POST installs is a registry name or an https link; a path, a plain http, ssh or file
  *   link, credentials in a link, an alias behind a name and a link to a folder or a file inside a
  *   GitHub repository are refused before npm runs.
@@ -497,7 +497,7 @@ describe("plugin import and export", () => {
       expect(linked.status).toBe(409);
       const shipped = (await linked.json()) as { error: { code: string; message: string } };
       expect(shipped.error.code).toBe("plugin_shipped");
-      expect(shipped.error.message).toMatch(/install scripts had already run/);
+      expect(shipped.error.message).toMatch(/Install scripts were disabled/);
       expect(npm.removed).toEqual(["@acme/sandbox-x"]);
     } finally {
       if (programEntry !== undefined) process.argv[1] = programEntry;
@@ -514,7 +514,7 @@ describe("plugin import and export", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: { code: string; message: string } };
     expect(body.error.code).toBe("not_a_plugin");
-    expect(body.error.message).toMatch(/install scripts had already run/);
+    expect(body.error.message).toMatch(/Install scripts were disabled/);
     expect(npm.removed).toEqual(["@acme/sandbox-x", "left-pad"]);
     expect(await projectConfig()).not.toContain("left-pad");
   });

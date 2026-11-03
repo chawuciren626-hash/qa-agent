@@ -27,8 +27,11 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () =>
     await app?.cleanup();
   });
   it("restricts initialization to owners, installs ten roles, and preserves existing edits on repeat", async () => {
+    const admin = apiClient(app.app, (await loginAdmin(app.app)).cookie);
     expect((await outsider.get(base)).status).toBe(404);
     expect((await member.post(base + "/initialize", {})).status).toBe(403);
+    expect((await admin.post(base + "/initialize", {})).status).toBe(403);
+    expect(((await (await admin.get(base)).json()) as { canInitialize: boolean }).canInitialize).toBe(false);
     const result = await owner.post(base + "/initialize", {});
     expect(result.status, JSON.stringify(await result.clone().json())).toBe(200);
     expect(((await (await member.get(base)).json()) as { enabled: boolean }).enabled).toBe(true);

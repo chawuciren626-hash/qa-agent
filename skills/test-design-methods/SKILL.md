@@ -1,15 +1,17 @@
 ---
 name: test-design-methods
+version: 2026.11.02.1
 description: 根据需求选择等价类、边界值、决策表和状态迁移方法，评审覆盖与可验证预期；用于需求审查、测试点和用例设计，不执行测试或替换交付契约。
 license: MIT; see LICENSE.txt
 metadata:
-  version: '1.1.0'
   source: fugazi/test-automation-skills-agents
   revision: 65a72d5e74def3c23143bef8757e72cb68e91032
   adapted-from: qa-manual-istqb
 ---
 
 # 测试设计方法
+
+路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
 
 本Skill提供专业方法，产物仍按当前阶段主Skill的格式交付；不新增阶段、必填Schema字段或用户确认节点。
 

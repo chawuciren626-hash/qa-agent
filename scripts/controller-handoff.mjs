@@ -36,7 +36,8 @@ export function inspectHandoff(root,parentId,agentRoot) {
       try {
       if(!['in_progress','completed','blocked','failed'].includes(current.status)) continue;
       const dispatch=manifest.orchestration?.events?.filter(e=>e.type==='dispatched' && e.stage===stage).at(-1);
-      const decision=(manifest.confirmations ?? []).filter(c=>c.stage===stage).at(-1);
+      const planStage=manifest.orchestration?.plan?.stages.find(s=>s.id===stage);
+      const decision=(manifest.confirmations ?? []).filter(c=>c.stage===stage && (current.status==='completed' && planStage?.result_confirmation==='after' ? c.kind==='result' : true)).at(-1);
       if(dispatch?.['parent-session-id']!==parentId || ['pending','approved','rejected'].includes(decision?.status)) continue;
       const artifacts=stageRequiredArtifacts(root,runId,stage);if(!artifacts?.length) continue;
       if(['in_progress','blocked','failed'].includes(current.status)) {
@@ -61,7 +62,7 @@ export function inspectHandoff(root,parentId,agentRoot) {
         }
         inspectStageHandoff(root,parentId,{run_id:runId,stage,artifacts},agentRoot);
         pending.push({dispatch_id:dispatch.dispatch_id,request:{action:'complete',run_id:runId,stage,dispatch_id:dispatch.dispatch_id,artifacts}});
-      } else if(stage!=='execution' && manifest.orchestration.plan.stages.find(s=>s.id===stage)?.confirmation==='after') {
+      } else if(manifest.orchestration.plan.stages.find(s=>s.id===stage)?.confirmation==='after' || manifest.orchestration.plan.stages.find(s=>s.id===stage)?.result_confirmation==='after') {
         const completed=manifest.orchestration.events.filter(e=>e.type==='completed' && e.stage===stage).at(-1);
         if(completed?.evidence?.parent_session_id!==parentId || completed['dispatch-id']!==dispatch.dispatch_id) continue;
         assertArtifactContract(root,runId,stage);
