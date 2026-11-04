@@ -69,6 +69,37 @@ test('sealed failed tests are handled without changing their raw exit or authori
   assert.equal(handledExecutionCommand(root, f.id, commandId, processResult), null);
 });
 
+test('WSL selection requires matching authorized environment configuration', async () => {
+  const f = fixture(false);
+  const planPath = resolve(f.dir, 'execution/execution-plan.json');
+  const plan = read(planPath);
+  plan.execution_policy.sandbox_backend = 'wsl';
+  writeJsonFile(planPath, plan);
+  const manifestPath = resolve(f.dir, 'manifest.json');
+  const manifest = read(manifestPath);
+  manifest.confirmations.push({ id: 'synthetic-approval', stage: 'execution', status: 'approved', execution_snapshot: executionSnapshot(root, f.id), approval_source: { kind: 'native_user_message', session_id: 'synthetic-parent', timestamp: '2026-10-14T00:00:00Z', sha256: 'a'.repeat(64) } });
+  writeJsonFile(manifestPath, manifest);
+  const result = await executeAttempt(root, f.id, { runProcess: simulatedProcess(f) });
+  assert.equal(result.status, 'blocked');
+  assert.match(result.reason, /Execution sandbox selection differs/);
+  assert.equal(existsSync(resolve(result.attempt_dir, 'playwright-command.json')), false);
+});
+
+test('host plan cannot silently override an authorized WSL environment', async () => {
+  const f = fixture(false);
+  const config = read(f.config);
+  config.execution.sandbox_backend = 'wsl';
+  writeJsonFile(f.config, config);
+  const manifestPath = resolve(f.dir, 'manifest.json');
+  const manifest = read(manifestPath);
+  manifest.confirmations.push({ id: 'synthetic-approval', stage: 'execution', status: 'approved', execution_snapshot: executionSnapshot(root, f.id), approval_source: { kind: 'native_user_message', session_id: 'synthetic-parent', timestamp: '2026-10-14T00:00:00Z', sha256: 'a'.repeat(64) } });
+  writeJsonFile(manifestPath, manifest);
+  const result = await executeAttempt(root, f.id, { runProcess: simulatedProcess(f) });
+  assert.equal(result.status, 'blocked');
+  assert.match(result.reason, /Execution sandbox selection differs/);
+  assert.equal(existsSync(resolve(result.attempt_dir, 'playwright-command.json')), false);
+});
+
 test('native command wrapper closes a sealed blocked attempt for reporting without executing cases', async () => {
   const f = fixture(false);
   const before = readFileSync(resolve(f.dir, 'manifest.json'), 'utf8');

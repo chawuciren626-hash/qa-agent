@@ -19,6 +19,13 @@ export function wslExe(env: NodeJS.ProcessEnv = process.env): string {
 
 /** Where this backend keeps its state, its downloads and the distro's disk. */
 export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.PENGUIN_SANDBOX_WSL_DATA_DIR;
+  if (configured !== undefined) {
+    if (!path.win32.isAbsolute(configured) || !/^[A-Za-z]:[\\/]/.test(configured)) {
+      throw new Error("PENGUIN_SANDBOX_WSL_DATA_DIR must be an absolute local drive path");
+    }
+    return path.win32.normalize(configured);
+  }
   const local =
     env.LOCALAPPDATA ??
     path.win32.join(env.USERPROFILE ?? "C:\\Users\\Default", "AppData", "Local");
@@ -121,11 +128,16 @@ export async function readHost(): Promise<HostFacts> {
   }
   const version = await runWsl(["--version"], { timeoutMs: 20_000 });
   if (version.code !== 0) {
-    return {
-      wsl: "missing",
-      problem: (version.stdout || version.stderr).split("\n")[0] ?? "",
-      distros: [],
-    };
+    // Windows 10's inbox WSL supports --status and --import, but has no --version option.
+    // A successful status check is enough to use it; a missing kernel still fails here.
+    const status = await runWsl(["--status"], { timeoutMs: 20_000 });
+    if (status.code !== 0) {
+      return {
+        wsl: "missing",
+        problem: (status.stdout || status.stderr || version.stdout || version.stderr).split("\n")[0] ?? "",
+        distros: [],
+      };
+    }
   }
   const list = await runWsl(["--list", "--quiet"], { timeoutMs: 20_000 });
   const distros =
@@ -137,7 +149,7 @@ export async function readHost(): Promise<HostFacts> {
       : [];
   return {
     wsl: "installed",
-    version: versionOf(version.stdout),
+    version: version.code === 0 ? versionOf(version.stdout) : "Windows inbox",
     distros,
   };
 }

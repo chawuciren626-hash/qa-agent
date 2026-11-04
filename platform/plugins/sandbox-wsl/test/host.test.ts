@@ -12,9 +12,10 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import { PassThrough } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { runWsl } from "../src/host.js";
+import { readHost, runWsl } from "../src/host.js";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 
@@ -31,6 +32,28 @@ function wslProcess() {
 beforeEach(() => vi.clearAllMocks());
 
 describe("WSL output", () => {
+  it("recognizes Windows inbox WSL when status works without a version option", async () => {
+    const exists = vi.spyOn(fs, "existsSync").mockReturnValue(true);
+    try {
+      const version = wslProcess();
+      const status = wslProcess();
+      const list = wslProcess();
+      const result = readHost();
+      version.stdout.write(Buffer.from("Usage: wsl.exe [Argument]", "utf16le"));
+      version.emit("close", 1);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      status.stdout.write(Buffer.from("Default Version: 2", "utf16le"));
+      status.emit("close", 0);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      list.stdout.write(Buffer.from("penguin-sandbox\r\n", "utf16le"));
+      list.emit("close", 0);
+      expect(await result).toEqual({ wsl: "installed", version: "Windows inbox", distros: ["penguin-sandbox"] });
+    } finally {
+      exists.mockRestore();
+    }
+  });
   it.each([false, true])("preserves split UTF-16LE Chinese diagnostics (BOM: %s)", async (bom) => {
     const child = wslProcess();
     const result = runWsl(["--version"]);

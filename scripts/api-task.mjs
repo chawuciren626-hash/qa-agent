@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { applicationDataRoot, assertPlainPath } from './application-data.mjs';
 import { readRunFile, runDirectory, assertConfirmedExecutionCases, assertExecutionDesignReady } from './design-quality.mjs';
-import { inspectApiContract, apiHash } from './api-contract.mjs';
+import { apiHash } from './api-contract.mjs';
+import { inspectApiContractInRuntime } from './api-contract-sandbox.mjs';
 import { validateApiCases } from './api-engine.mjs';
 import { executionSummary } from './execution-summary.mjs';
 import { CommandUsageError } from './command-contracts.mjs';
@@ -70,7 +71,8 @@ export async function apiTask(root, runId, owner, op, { nativeMessages = [] } = 
           try {
             const response=await context.get(op.url,{timeout:15000,maxRedirects:0,maxRetries:0});
             if(!response.ok() || Number(response.headers()['content-length']??0)>4*1024*1024) throw new Error('API document unavailable or oversized');
-            const bytes=await response.body();inspectApiContract(bytes);
+            const bytes=await response.body();
+            await inspectApiContractInRuntime(root, runId, bytes, { operations: op.operations ?? [], source_path: `inputs/api-contract-${apiHash(op.url)}.json` });
             // The URL cache is run-local and immutable; a new version is a new explicit input.
             writeFileSync(assertPlainPath(cached),bytes,{flag:'wx'});
           } finally {await context.dispose();}
@@ -78,7 +80,7 @@ export async function apiTask(root, runId, owner, op, { nativeMessages = [] } = 
         sourcePath=`inputs/api-contract-${apiHash(op.url)}.json`;
       }
       const file = sourceFile(dir, sourcePath);
-      return inspectApiContract(file.data, { operations: op.operations ?? [], source_path: sourcePath });
+      return await inspectApiContractInRuntime(root, runId, file.data, { operations: op.operations ?? [], source_path: sourcePath });
     }
     const dispatch = manifest.orchestration?.events?.filter(e => e.type === 'dispatched' && e.stage === 'api_execution').at(-1);
     if (dispatch?.['parent-session-id'] !== owner || !dispatch.dispatch_id || manifest.stages?.api_execution?.status !== 'in_progress') throw new Error('Current owned API dispatch required');
@@ -109,7 +111,7 @@ export async function apiTask(root, runId, owner, op, { nativeMessages = [] } = 
       if (existsSync(statePath)) { const prior = apiRead(statePath); if (prior.plan_sha256 !== planHash) throw new Error('Prepared API design is immutable; use a new explicit revision, not a replay'); return publicState(prior); }
       const sourcePaths=[...new Set(plan.scenarios.flatMap(s=>s.case_source?[s.case_source.source_path]:s.source_refs.map(r=>r.source_path)))];
       const binding = { run_id: runId, stage: 'api_execution', dispatch_id: dispatch.dispatch_id, attempt_id: randomUUID(), owner, child_session:process.env.PENGUIN_SESSION_ID ?? null, agent_root:process.env.PENGUIN_AGENT_ROOT ?? null, run_dir: dir, private_dir: privateDir, engine_root: root, source_path: op.cases_path, source_paths:sourcePaths, source_sha256: file.sha256, plan_sha256: planHash };
-      const contract = op.contract_path ? inspectApiContract(sourceFile(dir, op.contract_path).data, { source_path: op.contract_path }) : { limitations: ['No machine-readable contract supplied; only explicit design expectations are checked'] };
+      const contract = op.contract_path ? await inspectApiContractInRuntime(root, runId, sourceFile(dir, op.contract_path).data, { source_path: op.contract_path }) : { limitations: ['No machine-readable contract supplied; only explicit design expectations are checked'] };
       apiWrite(resolve(dir, 'execution/api/contract.json'), contract);
       apiWrite(resolve(dir, 'execution/api/cases.json'), { ...binding, owner: undefined, agent_root:undefined, private_dir: undefined, engine_root: undefined, run_dir: undefined, plan });
       apiWrite(resolve(privateDir, 'plan.json'), plan);

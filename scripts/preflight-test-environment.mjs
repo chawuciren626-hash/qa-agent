@@ -45,7 +45,8 @@ const chromeCandidates = [
   process.env["PROGRAMFILES(X86)"] && resolve(process.env["PROGRAMFILES(X86)"], "Google/Chrome/Application/chrome.exe"),
   process.env.LOCALAPPDATA && resolve(process.env.LOCALAPPDATA, "Google/Chrome/Application/chrome.exe")
 ].filter(Boolean);
-check("chrome", chromeCandidates.some(existsSync), `候选路径: ${chromeCandidates.join("; ")}`);
+const wslSelected = (runConfig?.execution?.sandbox_backend ?? environment.sandbox_backend) === 'wsl';
+check("chrome", wslSelected || chromeCandidates.some(existsSync), wslSelected ? 'WSL browser checked by the sandbox adapter before execution' : `候选路径: ${chromeCandidates.join("; ")}`);
 const reportRuntime = probePython();
 check("report_runtime", reportRuntime.status === 'ready', reportRuntime.status === 'ready' ? `python-docx 与 reportlab 可用: ${reportRuntime.executable}` : reportRuntime.reason);
 const status = checks.every((item) => item.status === "ready") ? "ready" : "not_ready";

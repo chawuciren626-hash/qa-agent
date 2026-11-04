@@ -55,7 +55,7 @@ export const UBUNTU_ARCHIVE = "http://archive.ubuntu.com/ubuntu";
 export const UBUNTU_SECURITY = "http://security.ubuntu.com/ubuntu";
 export const ALPINE_MIRROR = "https://dl-cdn.alpinelinux.org/alpine";
 /** `nodejs` is what runs the harness's hook scripts and its file-tool helper inside the distro (see core's fs-worker.ts); the rest is what a shell session expects to find. */
-export const DEFAULT_PACKAGES = ["git", "curl", "nodejs"];
+export const DEFAULT_PACKAGES = ["git", "curl", "nodejs", "python3"];
 /** The account commands run as inside the distro: not root, so bwrap is the only way up. */
 export const SANDBOX_USER = "penguin";
 
@@ -450,7 +450,8 @@ export function provisionScript(
         ? []
         : [
             // Both archives, since a mirror that carries one carries the other.
-            `sed -i 's|${UBUNTU_ARCHIVE}/*|${mirror}/|; s|${UBUNTU_SECURITY}/*|${mirror}/|' /etc/apt/sources.list.d/ubuntu.sources`,
+            // Rewrite the deb822 URI lines, including a mirror left by an interrupted run.
+            `sed -i 's|^URIs: .*|URIs: ${mirror}/|' /etc/apt/sources.list.d/ubuntu.sources`,
           ]),
       'echo "apt-get update"',
       "apt-get update",
@@ -517,11 +518,12 @@ export async function initialize(
         "--exec",
         "/bin/sh",
         "-c",
-        ". /etc/os-release; echo id=$ID",
+        '. /etc/os-release; echo "id=$ID version=$VERSION_ID"',
       ],
       { timeoutMs: 60_000 },
     );
     const id = /id=(\w+)/.exec(os.stdout)?.[1] ?? "";
+    if (version === "") version = /\bversion=([0-9.]+)/.exec(os.stdout)?.[1] ?? "";
     if (id !== "" && id !== settings.base) {
       return fail(
         `${distro} already exists and is ${BASE_TITLES[id === "alpine" ? "alpine" : "ubuntu"]}, not ${baseName}. Remove it first, or set the base Linux back to what it is.`,

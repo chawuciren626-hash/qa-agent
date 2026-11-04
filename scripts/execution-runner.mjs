@@ -1,4 +1,5 @@
 import { resourcePath } from './directory-context.mjs';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { assertExecutionAuthorized } from './execution-authorization.mjs';
@@ -9,6 +10,7 @@ import { runManagedProcess } from './managed-process.mjs';
 import { parsePlaywrightResults } from './playwright-results.mjs';
 import { directoryContext } from './directory-context.mjs';
 import { executionChildEnv } from './execution-child-env.mjs';
+import { wslAutomationInvocation } from './wsl-automation.mjs';
 
 export async function executeAttempt(root, runId, { headed = false, signal, runProcess = runManagedProcess, commandId = process.env.QA_EXECUTION_COMMAND_ID } = {}) {
   const context = beginAttempt(root, runId);
@@ -46,11 +48,15 @@ export async function executeAttempt(root, runId, { headed = false, signal, runP
     if (!existsSync(playwright)) return block('Local Playwright is unavailable; nothing was downloaded');
     const timeoutMs = plan.execution_policy.global_timeout_ms ?? 900000;
     const preflightTimeoutMs = plan.execution_policy.preflight_timeout_ms ?? 60000;
-    const invoke = async (phase, args, env, limit) => {
+    const invoke = async (phase, args, env, limit, launch = null) => {
       if (signal?.aborted) return { code: null, termination: 'interrupted', termination_confirmed: true };
       updateAttempt(context, phase, { authorization });
-      atomicJson(resolve(context.dir, `${phase}-command.json`), { executable: process.execPath, args, timeout_ms: limit });
-      const result = await runProcess({ command: process.execPath, args, cwd: root, env, timeoutMs: limit, logPath: resolve(context.dir, `${phase}.log`), signal, onSpawn: pid => trackAttemptProcess(context, pid, phase) });
+      const command = launch?.command ?? process.execPath;
+      const commandArgs = launch?.args ?? args;
+      // The WSL job contains the target URL and is carried in argv. Keep it out of archived evidence.
+      const recordedArgs = launch ? [commandArgs[0], '[WSL job omitted]'] : commandArgs;
+      atomicJson(resolve(context.dir, `${phase}-command.json`), { executable: command, args: recordedArgs, timeout_ms: limit, ...(launch ? { backend: launch.backend, job_sha256: createHash('sha256').update(commandArgs[1]).digest('hex') } : {}) });
+      const result = await runProcess({ command, args: commandArgs, cwd: launch?.cwd ?? root, env: launch?.env ?? env, timeoutMs: limit, logPath: resolve(context.dir, `${phase}.log`), signal, onSpawn: pid => trackAttemptProcess(context, pid, phase) });
       processesStopped = result.termination_confirmed === true;
       if (processesStopped && result.pid) stopTrackingProcess(context, result.pid);
       attemptEvent(context, 'process_ended', { phase, ...result });
@@ -68,7 +74,17 @@ export async function executeAttempt(root, runId, { headed = false, signal, runP
     authorization = assertExecutionAuthorized(root, runId);
     if (signal?.aborted) return block('Execution interrupted before launch', 'interrupted');
     mkdirSync(resolve(context.dir, 'playwright'), { recursive: true });
-    const test = await invoke('playwright', args, executionChildEnv(process.env, { QA_BASE_URL: config.base_url, QA_TEST_DIR: resourcePath(root, plan.execution_policy.test_dir), QA_RUN_DIR: context.dir.replaceAll('\\', '/'), QA_HEADED: headed ? 'true' : 'false', QA_TIMEOUT_MS: String(config.execution.timeout_ms ?? 30000), QA_WORKERS: String(plan.execution_policy.workers) }), timeoutMs + 10000);
+    const backend = plan.execution_policy.sandbox_backend ?? 'host';
+    if (backend !== (config.execution?.sandbox_backend ?? 'host')) return block('Execution sandbox selection differs from the authorized environment');
+    const launch = backend === 'wsl' ? await wslAutomationInvocation({
+      root, context, testDir: resourcePath(root, plan.execution_policy.test_dir), playwrightCli: playwright,
+      baseUrl: config.base_url, args: args.slice(1), headed, timeoutMs: config.execution.timeout_ms ?? 30000,
+      workers: plan.execution_policy.workers,
+    }) : null;
+    let test;
+    try {
+      test = await invoke('playwright', args, executionChildEnv(process.env, { QA_BASE_URL: config.base_url, QA_TEST_DIR: resourcePath(root, plan.execution_policy.test_dir), QA_RUN_DIR: context.dir.replaceAll('\\', '/'), QA_HEADED: headed ? 'true' : 'false', QA_TIMEOUT_MS: String(config.execution.timeout_ms ?? 30000), QA_WORKERS: String(plan.execution_policy.workers) }), timeoutMs + 10000, launch);
+    } finally { await launch?.close?.(); }
     if (test.termination || test.error || !processesStopped || test.code === null) return block(`Execution stopped: ${test.termination ?? test.error ?? 'unknown termination'}`, test.termination === 'interrupted' ? 'interrupted' : 'blocked');
     const rawPath = resolve(context.dir, 'playwright/playwright-results.json');
     if (!existsSync(rawPath)) return block('Playwright produced no raw result in current attempt');

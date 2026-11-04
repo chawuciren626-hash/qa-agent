@@ -5,7 +5,7 @@ import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import {loadProductLayout} from './product-layout.mjs';
 import {assertPlainPath,within} from './application-data.mjs';
-import {releaseResources} from './check-release-resources.mjs';
+import {releaseResources,assertReleaseImportClosure} from './check-release-resources.mjs';
 
 const digest=file=>createHash('sha256').update(readFileSync(file)).digest('hex');
 const copy=(from,to)=>{mkdirSync(dirname(to),{recursive:true});copyFileSync(from,to);};
@@ -41,6 +41,7 @@ export function stageSourceRuntime({source,installation,stage}) {
   const policy=JSON.parse(readFileSync(resolve(source,'config/release-resources.json'),'utf8'));
   releaseResources(source,policy);
   const extra=['scripts/qa-project-bootstrap.mjs','scripts/trace-outcome.mjs','scripts/source-runtime.mjs'];
+  assertReleaseImportClosure(source,[...policy.files,...extra]);
   const engine=resolve(stage,'app/engine'),app=resolve(stage,'runtime/penguin/resources/app');
   mkdirSync(stage,{recursive:true});
   const config=JSON.parse(readFileSync(installation,'utf8'));
@@ -57,6 +58,14 @@ export function stageSourceRuntime({source,installation,stage}) {
   writeFileSync(resolve(engine,'config/session-workspaces.json'),JSON.stringify({version:1,enabled:true,project_id:layout.project_id,controller_agent:'test_agent',default_workspace:layout.paths.workspaces}));
   copy(resolve(engine,'config/test-assets.example.json'),resolve(engine,'config/test-assets.json'));
   for(const folder of ['dist','bin','plugins']) cpSync(resolve(desktop,folder),resolve(app,folder),{recursive:true,filter:p=>!p.endsWith('.map')});
+  // Source-mode deployments must carry the verified local WSL sandbox changes, not the
+  // previously installed registry copy under desktop/plugins/node_modules.
+  const wslSource=resolve(source,'platform/plugins/sandbox-wsl');
+  const wslTarget=resolve(app,'plugins/node_modules/@penguinharness/sandbox-wsl');
+  if(!existsSync(resolve(wslSource,'dist/index.js'))||!existsSync(resolve(wslSource,'dist/launch.js'))) throw Error('Build source WSL sandbox plugin first');
+  for(const file of ['package.json','ifaces.json']) copy(resolve(wslSource,file),resolve(wslTarget,file));
+  cpSync(resolve(wslSource,'dist'),resolve(wslTarget,'dist'),{recursive:true,filter:p=>!p.endsWith('.map')});
+  cpSync(resolve(wslSource,'setup'),resolve(wslTarget,'setup'),{recursive:true});
   cpSync(resolve(source,'platform/packages/web/dist'),resolve(app,'web-dist'),{recursive:true});
   const pkg=JSON.parse(readFileSync(resolve(desktop,'package.json'),'utf8'));
   writeFileSync(resolve(app,'package.json'),JSON.stringify({name:'aitestharness-desktop',version:pkg.version,private:true,type:'module',main:'dist/main.js',dependencies:pkg.dependencies},null,2));

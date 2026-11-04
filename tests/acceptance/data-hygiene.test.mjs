@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { cleanupPlan } from '../../scripts/plan-archive-cleanup.mjs';
-import { releaseResources } from '../../scripts/check-release-resources.mjs';
+import { releaseResources, assertReleaseImportClosure } from '../../scripts/check-release-resources.mjs';
 import { prepareTestWorkspace } from '../../scripts/run-engineering-tests.mjs';
 
 test('cleanup only proposes backed-up unchanged test files and keeps tracked/history/changed data',t=>{
@@ -31,6 +31,16 @@ test('release allowlist refuses local configuration, runtime data, and traversal
   mkdirSync(resolve(root,'penguin/ui'),{recursive:true});writeFileSync(resolve(root,'penguin/ui/workspace-ui.css'),'/* fixture */');
   assert.equal(releaseResources(root,{version:1,files:['scripts/project-action.mjs','penguin/ui/workspace-ui.css']}).exe_ready,false);
   for(const file of ['output/report.md','output/styles.css','penguin/agents/styles.css','inputs/requirement.md','config/test-env.json','config/test-assets.json','scripts/../secret','scripts/tmp-stats.mjs']) assert.throws(()=>releaseResources(root,{version:1,files:[file]}));
+});
+
+test('release resources reject a runtime script with an omitted local import',t=>{
+  const root=realpathSync(mkdtempSync(resolve(tmpdir(),'qa-release-import-')));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  mkdirSync(resolve(root,'scripts'));
+  writeFileSync(resolve(root,'scripts/entry.mjs'),"import { value } from './dependency.mjs';\nconsole.log(value);\n");
+  writeFileSync(resolve(root,'scripts/dependency.mjs'),'export const value = 1;\n');
+  assert.throws(()=>assertReleaseImportClosure(root,['scripts/entry.mjs']),/dependency\.mjs/);
+  assert.equal(assertReleaseImportClosure(root,['scripts/entry.mjs','scripts/dependency.mjs']).status,'import_closure_valid');
 });
 
 test('engineering workspace isolates generated inputs, configuration and dependencies without reinstalling',()=>{

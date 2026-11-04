@@ -10,6 +10,7 @@ import { runDirectory } from './design-quality.mjs';
 import { CommandUsageError, validateCommandArguments } from './command-contracts.mjs';
 import { handledExecutionCommand } from './execution-outcome.mjs';
 import { applicationDataRoot, assertPlainPath } from './application-data.mjs';
+import { resolveWslRuntime } from './wsl-automation.mjs';
 
 function executable(path) {
   return existsSync(path) && statSync(path).isFile() && (process.platform !== 'win32' || /\.exe$/i.test(path));
@@ -78,9 +79,14 @@ export async function runProjectCommand(root, { kind, script, args = [], runId, 
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 1800000) throw new Error('Timeout must be 100..1800000 milliseconds');
   if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string')) throw new Error('Arguments must be strings');
   validateCommandArguments(script, args, runId);
-  const target = scriptTarget(root, kind, script);
+  let sandboxedDocument = false;
+  if (kind === 'python' && script === 'extract-word-input.py' && process.platform === 'win32' && context.mode === 'isolated') {
+    try { sandboxedDocument = existsSync(resolve(resolveWslRuntime(root, env).dataDir, 'state.json')); }
+    catch { /* Preserve the local parser on hosts without a managed WSL distro. */ }
+  }
+  const target = sandboxedDocument ? scriptTarget(root, 'node', 'extract-word-sandbox.mjs') : scriptTarget(root, kind, script);
   let runtime = process.execPath;
-  if (kind === 'python') {
+  if (kind === 'python' && !sandboxedDocument) {
     env = { ...env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
     const python = probePython(env);
     if (python.status !== 'ready') throw new Error(python.reason);
@@ -95,7 +101,7 @@ export async function runProjectCommand(root, { kind, script, args = [], runId, 
   const executionRun = kind === 'node' && script === 'run-ui-tests.mjs' ? args.find(arg => arg.startsWith('--run-id='))?.slice(9) : null;
   if (executionRun) env.QA_EXECUTION_COMMAND_ID = id;
   const recordPath = resolve(dir, 'command.json');
-  const record = { version: 1, command_id: id, run_id: runId ?? null, runtime, script, argument_count: args.length, shell: false, timeout_ms: timeoutMs, started_at: new Date().toISOString(), status: 'running', owner_pid: process.pid, child_pid: null };
+  const record = { version: 1, command_id: id, run_id: runId ?? null, runtime, script, ...(sandboxedDocument ? { sandbox_backend: 'wsl' } : {}), argument_count: args.length, shell: false, timeout_ms: timeoutMs, started_at: new Date().toISOString(), status: 'running', owner_pid: process.pid, child_pid: null };
   if(/^session-[0-9-]+[a-f0-9]+$/.test(env.PENGUIN_SESSION_ID ?? '') && /^[A-Za-z0-9_-]{1,160}$/.test(env.QA_HOST_TOOL_CALL_ID ?? '')) record.host_binding={session_id:env.PENGUIN_SESSION_ID,tool_call_id:env.QA_HOST_TOOL_CALL_ID};
   writeJson(recordPath, record);
   const result = await runManagedProcess({ command: runtime, args: [target, ...args], cwd: root, env, timeoutMs, logPath: resolve(dir, 'command.log'), signal, onSpawn: pid => { record.child_pid = pid; writeJson(recordPath, record); } });

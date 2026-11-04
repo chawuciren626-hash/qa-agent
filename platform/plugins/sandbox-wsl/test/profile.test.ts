@@ -264,12 +264,10 @@ describe("host output and releases", () => {
     expect(script).not.toContain("sed -i");
   });
 
-  it("points both Ubuntu archives at a mirror when one is set", () => {
+  it("rewrites both Ubuntu archive URIs, including after an interrupted mirror setup", () => {
     const script = provisionScript("ubuntu", "https://mirror.example/ubuntu", []);
     expect(script).toContain(
-      "sed -i 's|http://archive.ubuntu.com/ubuntu/*|https://mirror.example/ubuntu/|; " +
-        "s|http://security.ubuntu.com/ubuntu/*|https://mirror.example/ubuntu/|' " +
-        "/etc/apt/sources.list.d/ubuntu.sources",
+      "sed -i 's|^URIs: .*|URIs: https://mirror.example/ubuntu/|' /etc/apt/sources.list.d/ubuntu.sources",
     );
   });
 

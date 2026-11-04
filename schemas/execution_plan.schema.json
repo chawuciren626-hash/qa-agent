@@ -39,6 +39,7 @@
       }
     },
     "execution_policy": { "type": "object", "properties": {
+      "sandbox_backend": { "enum": ["host", "wsl"] },
       "global_timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 86400000 },
       "preflight_timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 300000 }
     } }

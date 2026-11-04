@@ -58,6 +58,7 @@ export function productEnvironment(layout,env=process.env) {
   const pathKey=Object.keys(result).find(k=>k.toLowerCase()==='path') ?? 'PATH';
   result[pathKey]=[dirname(layout.paths.node),...(layout.paths.python?[dirname(layout.paths.python)]:[]),result[pathKey]??''].filter(Boolean).join(delimiter);
   return {...result,PENGUIN_HOME:layout.paths.host_data,PENGUIN_AGENT_ROOT:layout.agent_root,QA_APP_DATA_ROOT:layout.paths.qa_data,
+    PENGUIN_SANDBOX_WSL_DATA_DIR:resolve(layout.paths.qa_data,'sandbox-wsl'),
     QA_WORKSPACE_ROOT:layout.paths.workspaces,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8',
     ...(layout.paths.python?{QA_PYTHON:layout.paths.python}:{}),...(layout.paths.browsers?{PLAYWRIGHT_BROWSERS_PATH:layout.paths.browsers}:{})};
 }

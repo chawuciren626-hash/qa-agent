@@ -58,6 +58,7 @@ export function validateExecutionPlan(plan) {
     try { normalizeContract(testCase); } catch (error) { errors.push(error.message); }
   }
   if (!Number.isSafeInteger(plan.execution_policy?.workers) || plan.execution_policy.workers < 1) errors.push("execution_policy.workers 必须是正整数。");
+  if (plan.execution_policy?.sandbox_backend !== undefined && !['host', 'wsl'].includes(plan.execution_policy.sandbox_backend)) errors.push('Unsupported execution sandbox backend');
   for (const [key, fallback, min, max] of [['global_timeout_ms', 900000, 1000, 86400000], ['preflight_timeout_ms', 60000, 1000, 300000]]) {
     const value = plan.execution_policy?.[key] ?? fallback;
     if (!Number.isSafeInteger(value) || value < min || value > max) errors.push(`${key} must be an integer between ${min} and ${max}`);

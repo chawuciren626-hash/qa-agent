@@ -16,6 +16,8 @@ const runDir = runDirectory(root, runId);
 const sourcePath = resourcePath(root, sourceArg);
 if (!existsSync(sourcePath)) throw new Error(`找不到测试用例文件: ${sourcePath}`);
 const environment = JSON.parse(readFileSync(resourcePath(root, environmentConfig), "utf8"));
+const sandboxBackend = environment.execution?.sandbox_backend ?? 'host';
+if (!['host', 'wsl'].includes(sandboxBackend)) throw new Error('Unsupported execution sandbox backend');
 const selection = selectionArg ? JSON.parse(readRunFile(runDir, resourcePath(root, selectionArg)).data.toString('utf8')) : null;
 if (selection && selection.run_id !== runId) throw new Error("选择结果的 run_id 与执行计划不一致。");
 const allCases = extractCases(JSON.parse(readRunFile(runDir, sourcePath).data.toString('utf8')));
@@ -42,6 +44,7 @@ const plan = {
   design_gate: designReceipt(checked),
   execution_policy: {
     test_dir: testDir,
+    sandbox_backend: sandboxBackend,
     workers: allParallelSafe ? configuredWorkers : 1,
     global_timeout_ms: environment.execution?.global_timeout_ms ?? 900000,
     preflight_timeout_ms: environment.execution?.preflight_timeout_ms ?? 60000,

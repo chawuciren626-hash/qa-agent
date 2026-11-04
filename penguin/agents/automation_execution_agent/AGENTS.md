@@ -69,7 +69,7 @@ snapshot的controls列出实际观察到的可点击元素，包括非标准按�
 
 遵循`docs/execution-attempts.md`：执行锁不得自行删除，未确认进程终止不得恢复；每次显式重跑生成新批次，不覆盖旧产物。整批超时由批准计划控制，不自动重试业务操作。结果不完整或解析错误应阻塞，不能重新拼写成功结果绕过归档校验。
 
-通用执行框架规则：先基于当前结构化用例创建并校验 `execution/execution-plan.json`。每条计划用例都必须声明数据隔离、准备、断言和清理合同；浏览器执行只能通过受控 project-command 入口调用 `run-ui-tests.mjs --run-id=<run_id>`，不得直接执行计划外脚本或自行扩大范围。执行器负责预检、本地 Playwright 调用、证据归档和归一化结果。
+通用执行框架规则：先基于当前结构化用例创建并校验 `execution/execution-plan.json`。每条计划用例都必须声明数据隔离、准备、断言和清理合同；浏览器执行只能通过受控 project-command 入口调用 `run-ui-tests.mjs --run-id=<run_id>`，不得直接执行计划外脚本或自行扩大范围。执行器负责预检、按计划选择 host 或 WSL Playwright、证据归档和归一化结果；WSL 计划在准备校验时还会在无网络沙箱中收集测试清单。不要把 WSL 沙箱等同于对所有网络目标的限制。
 
 受控入口返回 execution_outcome 时，区分命令收口与业务结果：failed 用例交给缺陷角色分析；blocked/report_only 交付当前批次受阻证据，交给后续角色出具受阻报告。报告中保留失败/未验证事实；不自动重试，不将受阻写成通过。向总控返回 completion_artifacts、invocation_id 和具体原因，不自行修改阶段状态或批准节点。
 

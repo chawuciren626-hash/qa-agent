@@ -34,6 +34,7 @@ test('existing layout permits external roots while preserving isolation',t=>{
 test('product environment scopes paths and removes caller session ownership and inherited database routing',t=>{
   const {layout}=fixture(t);const env=productEnvironment(layout,{Path:'old',QA_DIRECTORY_CONTEXT:'private',PENGUIN_WEB_DB:'other.db',PENGUIN_DESKTOP_TOKEN:'secret'});
   assert.equal(env.PENGUIN_HOME,layout.paths.host_data);assert.equal(env.PENGUIN_AGENT_ROOT,layout.agent_root);
+  assert.equal(env.PENGUIN_SANDBOX_WSL_DATA_DIR,resolve(layout.paths.qa_data,'sandbox-wsl'));
   assert.equal(env.QA_DIRECTORY_CONTEXT,undefined);assert.equal(env.PENGUIN_WEB_DB,undefined);assert.equal(env.PENGUIN_DESKTOP_TOKEN,undefined);
   assert.ok(env.Path.startsWith(dirname(layout.paths.node)));assert.equal(env.PATH,undefined);
 });
