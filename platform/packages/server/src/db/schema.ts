@@ -642,5 +642,68 @@ CREATE TABLE IF NOT EXISTS task_content_snapshots ( -- actual skill/plugin/model
   created_at       TEXT NOT NULL,
   UNIQUE(session_id, bundle_hash)
 );
-__TRAE_BATCH6_PLACEHOLDER__
+CREATE TABLE IF NOT EXISTS connectors (          -- local/server connector registry
+  connector_id        TEXT PRIMARY KEY,
+  owner_user_id       TEXT NOT NULL,
+  project_id          TEXT,
+  name                TEXT NOT NULL,
+  kind                TEXT NOT NULL,
+  execution_location  TEXT NOT NULL,
+  recipient           TEXT NOT NULL,
+  transport_scope     TEXT NOT NULL,
+  authorization       TEXT NOT NULL,
+  enabled             INTEGER NOT NULL,
+  credential_fingerprint TEXT,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS connectors_owner ON connectors(owner_user_id, project_id);
+CREATE TABLE IF NOT EXISTS connector_credentials ( -- sealed token; fingerprint only elsewhere
+  connector_id  TEXT PRIMARY KEY,
+  sealed_value  TEXT NOT NULL,
+  fingerprint   TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS connector_audit (     -- redacted audit of every controlled call
+  audit_id            TEXT PRIMARY KEY,
+  connector_id        TEXT NOT NULL,
+  user_id             TEXT NOT NULL,
+  project_id          TEXT,
+  tool_name           TEXT NOT NULL,
+  execution_location  TEXT NOT NULL,
+  recipient           TEXT NOT NULL,
+  transport_scope     TEXT NOT NULL,
+  decision_id         TEXT,
+  outcome             TEXT NOT NULL,
+  reason              TEXT,
+  duration_ms         INTEGER NOT NULL,
+  credential_fingerprint TEXT,
+  fields_json         TEXT NOT NULL,
+  created_at          TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trusted_plugin_versions ( -- verified plugin packages by version
+  plugin_id              TEXT NOT NULL,
+  version                TEXT NOT NULL,
+  package_sha256         TEXT NOT NULL,
+  publisher              TEXT NOT NULL,
+  trust_state            TEXT NOT NULL,
+  status                 TEXT NOT NULL,
+  manifest_json          TEXT NOT NULL,
+  executable_hashes_json TEXT NOT NULL,
+  installed_at           TEXT NOT NULL,
+  PRIMARY KEY (plugin_id, version)
+);
+CREATE TABLE IF NOT EXISTS trusted_plugin_state ( -- active version pointer
+  plugin_id      TEXT PRIMARY KEY,
+  active_version TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS plugin_session_pins (  -- sessions keep their fixed plugin version
+  session_id TEXT NOT NULL,
+  plugin_id  TEXT NOT NULL,
+  version    TEXT NOT NULL,
+  pinned_at  TEXT NOT NULL,
+  PRIMARY KEY (session_id, plugin_id)
+);
+CREATE INDEX IF NOT EXISTS plugin_session_pins_version ON plugin_session_pins(plugin_id, version);
 `;

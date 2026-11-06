@@ -7,8 +7,8 @@ const prefix = "enc:v1:";
 export class AccountCookieSeal {
   private readonly key: Buffer;
 
-  constructor(root: string, encryptedRowsExist: boolean) {
-    const file = path.join(root, "account-center-cookie.key");
+  constructor(root: string, encryptedRowsExist: boolean, keyFile = "account-center-cookie.key") {
+    const file = path.join(root, keyFile);
     const existing = fs.lstatSync(file, { throwIfNoEntry: false });
     if (!existing) {
       if (encryptedRowsExist) throw new Error("Account center cookie key is missing; encrypted sessions cannot be restored");
