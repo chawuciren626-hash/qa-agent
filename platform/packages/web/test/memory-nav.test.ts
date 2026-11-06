@@ -33,7 +33,12 @@ describe("memoryNavForRequest / memoryNavBack", () => {
 function scopeInfo(
   overrides: Partial<MemoryScopeInfo> & Pick<MemoryScopeInfo, "scopeKey" | "kind">,
 ): MemoryScopeInfo {
-  return { fileCount: 0, hasIndex: true, ...overrides };
+  return {
+    fileCount: 0,
+    hasIndex: true,
+    ...overrides,
+    scopeType: overrides.scopeType ?? (overrides.kind === "workspace" ? "workspace" : "project_agent"),
+  };
 }
 
 function fileInfo(name: string, title = name): MemoryFileInfo {
@@ -41,9 +46,17 @@ function fileInfo(name: string, title = name): MemoryFileInfo {
 }
 
 const LISTING: ScopeFiles[] = [
-  { info: scopeInfo({ scopeKey: "user", kind: "user" }), files: [fileInfo("prefs.md", "Prefs")] },
   {
-    info: scopeInfo({ scopeKey: "ws-1", kind: "workspace", workspacePath: "/w/app" }),
+    info: scopeInfo({ scopeKey: "user", kind: "user", scopeType: "project_agent" }),
+    files: [fileInfo("prefs.md", "Prefs")],
+  },
+  {
+    info: scopeInfo({
+      scopeKey: "ws-1",
+      kind: "workspace",
+      scopeType: "workspace",
+      workspacePath: "/w/app",
+    }),
     files: [fileInfo("conventions.md")],
   },
 ];
