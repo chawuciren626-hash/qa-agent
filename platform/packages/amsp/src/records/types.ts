@@ -160,6 +160,13 @@ export interface SessionMetaPayload {
   /** Absolute path to the Workspace. */
   workspace: string;
   /**
+   * The authenticated person whose local user preferences this Session injects, when the
+   * host has one. Fixed at creation: a resume keeps this owner rather than switching to the
+   * resuming caller's preferences. Absent for scheduled, API and CLI Sessions, and on Traces
+   * written before the field existed.
+   */
+  memory_owner_user_id?: string;
+  /**
    * What kind of conversation this is (see {@link SessionSource}), recorded in every context's
    * meta. A Trace written before the field was required may lack it or carry the retired
    * `benchmark`; readers narrow what they read through `normalizeSessionSource`.

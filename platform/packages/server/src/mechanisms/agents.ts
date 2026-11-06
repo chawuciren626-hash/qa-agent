@@ -17,6 +17,7 @@ import type {
   MemoryOverviewResponse,
   MemoryScopeExport,
   MemoryScopeInfo,
+  MemorySnapshotInfo,
   VaultResponse,
   VaultUpdateRequest,
   WorkspaceFilesResponse,
@@ -125,6 +126,11 @@ export abstract class Memory {
     scopeKey: string,
     fileName: string,
   ): Promise<void>;
+  abstract listSnapshots(
+    projectId: string,
+    agentId: string,
+    sessionId: string,
+  ): Promise<MemorySnapshotInfo[]>;
 }
 
 /** Benchmarks: the mechanism BenchmarkService implements. */

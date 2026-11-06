@@ -434,12 +434,19 @@ function memorySection(
   // The Workspace placeholders substitute over the whole joined block, so one written into
   // the main prompt resolves too (with a real value in a persistent Workspace, blank
   // otherwise) instead of leaking literally.
-  return joined
+  const rendered = joined
     .split(WORKSPACE_MEMORY_INDEX_PLACEHOLDER)
     .join(workspace ? indexForInjection(workspace.index) : "")
     .split(WORKSPACE_MEMORY_DIR_PLACEHOLDER)
     .join(workspace?.dir ?? "")
     .trim();
+  // The local user preference block is appended after the config-authored halves: it is a
+  // different owner (the authenticated person, not this Project's Agent) and its text is
+  // generated from saved entries, so it is not editable as a prompt half. It renders only
+  // through `{{MEMORY}}`, like every other Memory scope.
+  const preferences = memory.userPreferences?.block.trim();
+  if (!preferences) return rendered;
+  return rendered ? `${rendered}\n\n${preferences}` : preferences;
 }
 
 /**

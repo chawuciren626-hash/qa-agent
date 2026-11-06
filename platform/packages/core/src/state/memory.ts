@@ -40,6 +40,11 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { agentsDir, memoryScopeDir } from "./paths.js";
+import {
+  UserPreferenceError,
+  resolveUserPreferences,
+  type ResolvedUserPreferences,
+} from "./user-preferences.js";
 
 /** Per-scope index file name, also excluded from a scope's topic listing. */
 export const MEMORY_INDEX_FILENAME = "MEMORY.md";
@@ -99,6 +104,12 @@ export interface SessionMemory {
   userIndex: string;
   /** The Workspace scope; `undefined` in a temporary Workspace, where the User scope is the only place to write. */
   workspace?: SessionWorkspaceMemory;
+  /**
+   * The authenticated user's cross-project preferences. Absent when the host supplied no user
+   * (a scheduled or CLI Session), or when Memory is disabled. The existing `userDir` above is
+   * the Project/Agent scope and is intentionally *not* a local user preference store.
+   */
+  userPreferences?: ResolvedUserPreferences;
 }
 
 /**
@@ -283,13 +294,21 @@ export async function resolveSessionMemory(args: {
   agentId: string;
   workspaceDir: string;
   enabled: boolean;
+  /** The authenticated user, when the host has one; its preferences are a separate scope. */
+  userId?: string;
 }): Promise<SessionMemory | null> {
   if (!args.enabled) return null;
   try {
     const userDir = await ensureUserMemoryDir(args.root, args.projectId, args.agentId);
     const userIndex = await readScopeIndex(userDir);
+    const userPreferences = await resolveUserPreferences(args.root, args.userId);
+    const shared = {
+      userDir,
+      userIndex,
+      ...(userPreferences !== null ? { userPreferences } : {}),
+    };
     if (await isTemporaryWorkspace(args.root, args.projectId, args.workspaceDir)) {
-      return { userDir, userIndex };
+      return shared;
     }
     const workspacePath = await realPathOrResolve(args.workspaceDir);
     const key = workspaceMemoryKeyForRealPath(workspacePath);
@@ -300,8 +319,16 @@ export async function resolveSessionMemory(args: {
       workspaceKey: key,
       workspacePath,
     });
-    return { userDir, userIndex, workspace: { key, dir, index: await readScopeIndex(dir) } };
-  } catch {
+    return { ...shared, workspace: { key, dir, index: await readScopeIndex(dir) } };
+  } catch (err) {
+    // Ownership and identity failures are not "Memory is unavailable": silently continuing
+    // would run a context with no preferences while hiding a tampered store.
+    if (
+      err instanceof UserPreferenceError &&
+      (err.code === "ownership_mismatch" || err.code === "invalid_user_id")
+    ) {
+      throw err;
+    }
     return null;
   }
 }

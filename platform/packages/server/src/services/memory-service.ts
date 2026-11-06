@@ -36,6 +36,7 @@ import {
   memoryDir,
   memoryScopeDir,
   parseMemoryFrontmatter,
+  listUserPreferenceSnapshots,
   readWorkspaceMarker,
 } from "@prismshadow/penguin-core";
 import type {
@@ -47,6 +48,7 @@ import type {
   MemoryOverviewResponse,
   MemoryScopeExport,
   MemoryScopeInfo,
+  MemorySnapshotInfo,
   MemoryTransferFile,
 } from "../api/types.js";
 import { HttpError } from "../http/errors.js";
@@ -266,6 +268,7 @@ export class MemoryService implements Memory {
     const workspaces = await Promise.all(
       entries.map((key) => this.scopeInfo(path.join(base, key), key, "workspace")),
     );
+    // (scopeInfo derives `scopeType` from `kind`; `user` is the Project/Agent scope.)
     workspaces.sort((a, b) => {
       if (a.updatedAt && b.updatedAt) return b.updatedAt.localeCompare(a.updatedAt);
       if (a.updatedAt) return -1;
@@ -295,6 +298,7 @@ export class MemoryService implements Memory {
     return {
       scopeKey: key,
       kind,
+      scopeType: kind === "workspace" ? "workspace" : "project_agent",
       ...(workspacePath !== undefined ? { workspacePath } : {}),
       fileCount: files.length,
       hasIndex: await this.hasIndexFile(dir),
@@ -534,6 +538,26 @@ export class MemoryService implements Memory {
    * name in ordinary prose, or a link to a different file, survives. This is the only write the
    * API performs on Memory content — everything else is the model's, through a chat Session.
    */
+  /**
+   * The task-start local-preference snapshots a Session's contexts recorded. Metadata only:
+   * ids, scopes, owners, source tasks, content hashes and the model target — never a body.
+   */
+  async listSnapshots(
+    projectId: string,
+    agentId: string,
+    sessionId: string,
+  ): Promise<MemorySnapshotInfo[]> {
+    const snapshots = await listUserPreferenceSnapshots(
+      this.root,
+      projectId,
+      agentId,
+      sessionId,
+    );
+    // The core type is structurally the DTO; the cast documents that the API contract is the
+    // narrower one (no preference bodies exist in either).
+    return snapshots as MemorySnapshotInfo[];
+  }
+
   async deleteFile(
     projectId: string,
     agentId: string,

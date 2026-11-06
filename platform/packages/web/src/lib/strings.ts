@@ -2662,6 +2662,55 @@ export const zh = {
     importDone: (added: number, overwritten: number, removed: number): string =>
       `已导入：新增 ${added} 条，覆盖 ${overwritten} 条，删除 ${removed} 条`,
     importNothingNew: "没有可导入的内容——文件里的记忆这一组都已经有了",
+    /** 当前登录用户自己的跨项目偏好，存于所有 Project 之外。 */
+    preferencesSection: "我的偏好（所有项目）",
+    preferencesHint:
+      "只有在这里显式保存才会写入。偏好跨 Project 与 Agent 生效，按登录用户 ID 隔离，并以数据而非指令的形式进入模型上下文。停用只保留条目并停止注入到下一个任务。",
+    preferencesEmpty: "还没有个人偏好",
+    preferencesAdd: "添加偏好",
+    preferencesAddTitle: "添加个人偏好",
+    preferencesEditTitle: "编辑个人偏好",
+    preferencesTitleLabel: "标题",
+    preferencesTitlePlaceholder: "例如：始终使用简体中文回答",
+    preferencesContentLabel: "偏好内容",
+    preferencesContentPlaceholder: "希望在每个项目中都适用的内容是什么？",
+    preferencesSave: "保存偏好",
+    preferencesUpdated: (when: string): string => `更新于 ${when}`,
+    preferencesSourceExplicit: "由你保存",
+    preferencesSourceImport: "由你导入",
+    preferencesSourceTask: (task: string): string => `来源任务：${task}`,
+    preferencesConflict: "存在另一条启用的同标题偏好",
+    preferencesResolveConflict: "停用较旧的同标题条目",
+    preferencesDisable: "停用",
+    preferencesEnable: "启用",
+    preferencesDisabled: "已停用——保留但不注入",
+    preferencesDeleteTitle: "删除这条偏好？",
+    preferencesDeleteConfirm: (title: string): string =>
+      `将为该用户删除「${title}」。如果只是想停止注入，可以改为停用。`,
+    preferencesExport: "导出偏好",
+    preferencesImport: "导入偏好",
+    preferencesImportTitle: "导入个人偏好",
+    preferencesImportFile: (name: string, bytes: number, hash: string): string =>
+      `${name} — ${bytes} 字节 — sha256 ${hash.slice(0, 12)}…`,
+    preferencesImportWhy:
+      "下面的预览读取自你选择的文件。确认之前不会写入任何内容，确认时文件内容必须仍与预览版本一致。",
+    preferencesImportModeLabel: "当偏好 ID 已存在时",
+    preferencesImportModeSkip: "保留现有条目",
+    preferencesImportModeSkipHint: "只添加当前用户没有的 ID。",
+    preferencesImportModeOverwrite: "采用文件中的版本",
+    preferencesImportModeOverwriteHint: "替换相同 ID 的条目。",
+    preferencesImportModeReplace: "替换全部偏好",
+    preferencesImportModeReplaceHint: "删除文件中没有的每一条偏好。",
+    preferencesImportPlan: (added: number, overwritten: number, removed: number): string =>
+      `本次导入将新增 ${added} 条、覆盖 ${overwritten} 条、删除 ${removed} 条。`,
+    preferencesImportConfirm: "导入",
+    preferencesImportChanged: "文件在预览之后发生了变化，请重新预览后再导入。",
+    preferencesImportInvalid: "这个文件不是用户偏好导出文件。",
+    preferencesImportDone: (added: number, overwritten: number, removed: number): string =>
+      `已导入：新增 ${added} 条，覆盖 ${overwritten} 条，删除 ${removed} 条`,
+    preferencesImportNothingNew: "没有可导入的内容——所有偏好都已存在",
+    preferencesSnapshotHint:
+      "每个任务都会记录它实际获得的偏好 ID 与哈希，因此之后的修改不会改写正在运行或已恢复的任务所看到的内容。",
   },
 
   vault: {

@@ -5,6 +5,7 @@
  * This module only provides constants and pure path functions; it never creates directories or reads/writes files.
  * Docs: /docs/sessions-and-traces § "Data layout".
  */
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
@@ -127,6 +128,31 @@ export function memoryScopeDir(
   scopeKey: string,
 ): string {
   return path.join(memoryDir(root, projectId, agentId), scopeKey);
+}
+
+/**
+ * `<agentStateDir>/memory-snapshots`, the task-start memory snapshots. One directory per
+ * Session, one JSON file per context; metadata only (see state/user-preferences.ts).
+ */
+export function memorySnapshotsDir(root: string, projectId: string, agentId: string): string {
+  return path.join(agentStateDir(root, projectId, agentId), "memory-snapshots");
+}
+
+/**
+ * The data root's local-user container (`<root>/.local-users`). The leading dot is outside the
+ * Project id rule, so no Project directory can collide with it.
+ */
+export function userPreferencesRoot(root: string): string {
+  return path.join(root, ".local-users");
+}
+
+/**
+ * `<root>/.local-users/<u-…>/preferences`, one authenticated user's cross-project preference
+ * store. The segment is a hash; ownership is recorded in the directory's own marker.
+ */
+export function userPreferencesDir(root: string, userId: string): string {
+  const key = createHash("sha256").update(userId, "utf8").digest("hex").slice(0, 16);
+  return path.join(userPreferencesRoot(root), `u-${key}`, "preferences");
 }
 
 /** `<agentStateDir>/skills`. */

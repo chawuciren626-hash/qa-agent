@@ -853,6 +853,9 @@ export class SessionService {
         ...(args.thinkingLevel !== undefined ? { thinkingLevel: args.thinkingLevel } : {}),
         // The source is recorded in core session_meta (Trace); the index row stores none.
         ...(args.source !== undefined ? { source: args.source } : {}),
+        // The authenticated person's local preferences are keyed by this id, never by the
+        // Project or a display name. An absent id (scheduler, API, CLI) means no such scope.
+        ...(args.userId !== undefined ? { ownerUserId: args.userId } : {}),
       });
     } catch (err) {
       // A missing credential is its own category (the frontend shows localized text
@@ -893,6 +896,7 @@ export class SessionService {
       // Creation is the first activity; the first driven run advances it (see SessionManager.drive).
       lastActiveAt: createdAt,
       createdAt,
+      ...(args.userId !== undefined ? { ownerUserId: args.userId } : {}),
     };
     this.deps.sessions.insert(row);
     this.deps.manager.adopt(row, session);
