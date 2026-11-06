@@ -5,6 +5,7 @@ import { extractCases } from "./execution-plan.mjs";
 import { verifyCurrentAttempt } from './execution-attempts.mjs';
 import { governedDefects } from './defect-lifecycle.mjs';
 import { defectGateReasons, qualityGateStatus } from './quality-gate.mjs';
+import { severityStandardCounts } from './defect-severity.mjs';
 
 const root = resolve(import.meta.dirname, "..");
 const runId = process.argv.find((arg) => arg.startsWith("--run-id="))?.slice(9);
@@ -54,7 +55,7 @@ if (failedCases.some(item => !(evidence.assessments ?? []).some(assessment => as
 if (failedCases.some(item => !records.some(record => record.related_cases?.includes(item.case_id)))) reasons.push('untriaged_failures');
 if (blocked) reasons.push("blocked_execution");
 if ((evidence.summary?.insufficient ?? 0) > 0) reasons.push("insufficient_failed_evidence");
-reasons.push(...defectGateReasons(records, lifecycle.history));
+reasons.push(...defectGateReasons(records, lifecycle.history, governance));
 if ([...records, ...lifecycle.history].some(record => !['closed', 'rejected'].includes(record.lifecycle_status) && (governance.quality_gate?.risk_on_severity ?? []).includes(record.severity))) reasons.push('high_severity_defect');
 const gateStatus = qualityGateStatus(governance.quality_gate, reasons);
 const metrics = {
@@ -92,7 +93,8 @@ const metrics = {
     categories: by(records, (record) => record.category),
     lifecycle: by(records, (record) => record.lifecycle_status),
     confidence: by(records, (record) => record.confidence),
-    severity: by(records, (record) => record.severity)
+    severity: by(records, (record) => record.severity),
+    severity_standard: severityStandardCounts(records)
   },
   governance: { ...lifecycle, integrity_error: lifecycleError },
   quality_gate: { status: gateStatus, reasons }

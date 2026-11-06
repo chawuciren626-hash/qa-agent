@@ -72,6 +72,7 @@ export interface ScheduleSessionCreatorShape {
   createSession(args: {
     projectId: string;
     agentId: string;
+    userId?: string;
     workspace?: string;
     modelId?: string;
     provider?: string;
@@ -507,9 +508,11 @@ export class Scheduler implements Scheduling {
     }
     // New-Session mode: each fire opens a new session (optional workspace and paired model ref; same semantics as opening a session manually).
     try {
+      const ownerUserId = this.projects.findById(projectId)?.ownerUserId;
       const info = await this.sessionCreator.createSession({
         projectId,
         agentId,
+        ...(ownerUserId ? { userId: ownerUserId } : {}),
         ...(def.workspace !== undefined ? { workspace: def.workspace } : {}),
         ...(def.modelId !== undefined ? { modelId: def.modelId } : {}),
         ...(def.provider !== undefined ? { provider: def.provider } : {}),

@@ -862,7 +862,7 @@ const promptDraftOf = (res: AgentConfigResponse): PromptDraft => ({
   systemPrompt: res.config.systemPrompt,
 });
 
-function PromptTab({ data, onSave }: FormTabProps) {
+export function PromptTab({ data, onSave }: FormTabProps) {
   // Both editors compare exactly: whitespace is part of a prompt.
   const form = useFormDraft(promptDraftOf(data));
   const [saving, setSaving] = useState(false);
@@ -950,12 +950,13 @@ function PromptTab({ data, onSave }: FormTabProps) {
   );
 }
 
-function RuntimeTab({ data, onSave, projectId }: FormTabProps & { projectId: string }) {
+export function RuntimeTab({ data, onSave, projectId }: FormTabProps & { projectId: string }) {
   const machineId = useAgentLocation();
   const [projectThinking, setProjectThinking] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     setProjectThinking(null);
+    if (!projectId) return;
     void api.getChatDefaults(projectId, machineId).then(
       (res) => {
         if (!cancelled) setProjectThinking(effectiveThinkingLevel("", res.thinkingLevel));
@@ -1119,7 +1120,7 @@ function RuntimeTab({ data, onSave, projectId }: FormTabProps & { projectId: str
   );
 }
 
-function ToolsTab({ data, onSave }: FormTabProps) {
+export function ToolsTab({ data, onSave }: FormTabProps) {
   // S is reassigned on language switch (live binding), so read it during render rather than hoisting to a module-level constant.
   const permissionOptions: ReadonlyArray<OptionMenuChoice<ToolPermission>> = [
     {

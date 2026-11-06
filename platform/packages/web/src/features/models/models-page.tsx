@@ -1,4 +1,5 @@
 import { ManagedResourceSection } from "../../components/managed-resource-section";
+import { controlRequest } from "../../api/control";
 /**
  * Model config page.
  *
@@ -109,6 +110,7 @@ import {
   useGuardedClose,
 } from "@prismshadow/penguin-ui";
 import * as api from "../../api/endpoints";
+
 import { ApiError } from "../../api/client";
 import { S } from "../../lib/strings";
 import { apiErrorText } from "../../lib/api-error";
@@ -890,15 +892,24 @@ function SettingsModelsFrame({ children, contentClassName = "" }: ComponentProps
   return <div className={`models-redesign models-settings-frame ${contentClassName}`}>{children}</div>;
 }
 
-export function ModelsPage({ embedded = false }: { embedded?: boolean }) {
-  useDocumentTitle(S.models.title);
+export function ModelsPage({ embedded = false, central = false }: { embedded?: boolean; central?: boolean }) {
+  return central ? <ModelsPageContent embedded={embedded} projectId={api.CENTRAL_MODEL_CATALOG_ID} isOwner agents={[]} central /> : <LocalModelsPage embedded={embedded} />;
+}
+function LocalModelsPage({ embedded }: { embedded: boolean }) {
   const { currentProject, agents } = useProject();
-  const projectId = currentProject?.projectId ?? null;
-  const isOwner = currentProject?.role === "owner";
+  const todo = useUpdateBadges().todos.models;
+  return <ModelsPageContent embedded={embedded} projectId={currentProject?.projectId ?? null} isOwner={currentProject?.role === "owner"} agents={agents} todo={todo} />;
+}
+function ModelsPageContent({ embedded, projectId, isOwner, agents, todo, central = false }: {
+  embedded: boolean; projectId: string | null; isOwner: boolean;
+  agents: ReturnType<typeof useProject>["agents"];
+  todo?: ReturnType<typeof useUpdateBadges>["todos"]["models"];
+  central?: boolean;
+}) {
+  useDocumentTitle(S.models.title);
   const [deleteRow, setDeleteRow] = useState<ModelRefDto | null>(null);
   const [testingRow, setTestingRow] = useState<string | null>(null);
   /** The Models trail's raised badge, or undefined — "Add new models" and the notice appear with it. */
-  const todo = useUpdateBadges().todos.models;
   /** What the trail says, read at render time: `S` is a live binding swapped on locale change. */
   const syncNote = todo ? S.todo.presetUpdates(todo.count) : "";
   /** The notice's confirmation of adding the new presets is open (it lists the refs the delta named). */
@@ -1127,9 +1138,9 @@ export function ModelsPage({ embedded = false }: { embedded?: boolean }) {
   const groups = useMemo(
     () =>
       rows
-        ? sortModelGroups(groupModelRows(rows, query, groupOrder), groupSorts, new Date(), locale)
+        ? sortModelGroups(groupModelRows(rows, query, groupOrder, providers), groupSorts, new Date(), locale)
         : [],
-    [rows, query, groupOrder, groupSorts, locale, hourTick],
+    [rows, query, groupOrder, groupSorts, locale, hourTick, providers],
   );
   /**
    * Every group the library could show, empty built-ins included — the sequence a drop is
@@ -1718,7 +1729,7 @@ export function ModelsPage({ embedded = false }: { embedded?: boolean }) {
   };
 
   const browseGroups = rows
-    ? sortModelGroups(groupModelRows(rows, "", groupOrder), groupSorts, new Date(), locale)
+    ? sortModelGroups(groupModelRows(rows, "", groupOrder, providers), groupSorts, new Date(), locale).filter(group => !central || group.rows.length > 0 || providers[group.provider.id] !== undefined)
     : [];
   const activeGroup = browseGroups.find((g) => g.provider.id === selectedProvider) ?? browseGroups[0];
   const searchRows = groups.flatMap((g) => g.rows);
@@ -1803,7 +1814,7 @@ export function ModelsPage({ embedded = false }: { embedded?: boolean }) {
                 // without it the manual button would be a dead click. The AI path is left live
                 // precisely because a failed load is one of the things it can repair.
                 manualDisabled={rows === null}
-                onAi={() => setAiAddOpen(true)}
+                onAi={() => central ? toastError("AI 新建需要项目 Agent，请使用手动新建。") : setAiAddOpen(true)}
                 onManual={() => setAddGroupOpen(true)}
               />
             )}
@@ -1831,9 +1842,9 @@ export function ModelsPage({ embedded = false }: { embedded?: boolean }) {
         <Input size="sm" value={query} onChange={event => setQuery(event.target.value)} placeholder={S.models.searchPlaceholder} />
         {isOwner && todo && presetHost && <AddNewModelsButton onOpen={() => setSyncConfirmOpen(true)} disabled={busy || rows === null} note={syncNote} />}
         {isOwner && <Button size="sm" variant="ghost" onClick={() => setRestoreOpen(true)} disabled={busy || rows === null}>{S.models.restoreDefaults}</Button>}
-        {isOwner && <AiCreateButtons size="sm" manualDisabled={rows === null} onAi={() => setAiAddOpen(true)} onManual={() => setAddGroupOpen(true)} />}
+        {isOwner && <AiCreateButtons size="sm" manualDisabled={rows === null} onAi={() => central ? toastError("AI 新建需要项目 Agent，请使用手动新建。") : setAiAddOpen(true)} onManual={() => setAddGroupOpen(true)} />}
       </div>}
-      <ManagedResourceSection kind="models" onApplied={load} />
+      {!central && <ManagedResourceSection kind="models" onApplied={load} />}
 
       {/* Above every group, while the TokenDance group has models but no key: its own connect
           flow, pitched as the way to skip setting keys by hand. */}
@@ -1883,7 +1894,9 @@ export function ModelsPage({ embedded = false }: { embedded?: boolean }) {
                 </div>
                 <div className="models-panel-actions">
                   {searching ? <Button size="sm" variant="ghost" onClick={() => setQuery("")}>清空搜索</Button> : activeGroup && <>
-                    {activeActions.map((action) => <Fragment key={action}>{renderGroupAction(activeGroup, action, groupKeyStored(providers[activeGroup.provider.id]))}</Fragment>)}
+                    {isOwner && <Button size="sm" disabled={busy} onClick={() => setSettingsFor(activeGroup.provider.id)} aria-label={`编辑渠道商 ${activeGroup.provider.label}`}>编辑</Button>}
+                    {isOwner && central && <Button size="sm" variant="danger" disabled={busy} onClick={() => setDeleteGroupFor(activeGroup.provider.id)} aria-label={`删除渠道商 ${activeGroup.provider.label}`}>删除</Button>}
+                    {activeActions.filter(action => !central || action !== "deleteGroup").map((action) => <Fragment key={action}>{renderGroupAction(activeGroup, action, groupKeyStored(providers[activeGroup.provider.id]))}</Fragment>)}
                   </>}
                 </div>
               </div>
@@ -1942,7 +1955,7 @@ export function ModelsPage({ embedded = false }: { embedded?: boolean }) {
       {rows && settingsFor !== null && (
         <ProviderSettingsDialog
           projectId={projectId}
-          provider={providerInfo(settingsFor) ?? userProviderInfo(settingsFor)}
+          provider={{...(providerInfo(settingsFor) ?? userProviderInfo(settingsFor)),label:providers[settingsFor]?.displayName??(providerInfo(settingsFor) ?? userProviderInfo(settingsFor)).label}}
           group={providers[settingsFor]}
           rows={rows.filter((r) => r.provider === settingsFor)}
           detectedEnvKeys={envKeysDetected}
@@ -2010,9 +2023,18 @@ export function ModelsPage({ embedded = false }: { embedded?: boolean }) {
           open
           title={S.models.deleteGroupTitle}
           tone="danger"
+          busy={busy}
           onClose={() => setDeleteGroupFor(null)}
           onConfirm={() => {
             const target = deleteGroupFor;
+            if (central) {
+              setBusy(true);
+              void controlRequest(`/api/control/admin/model-config/${api.CENTRAL_MODEL_CATALOG_ID}/providers/${encodeURIComponent(target)}`, "DELETE")
+                .then(res => { adopt(res); setDeleteGroupFor(null); toastSuccess("渠道商及其模型已删除。"); })
+                .catch(error => toastError(apiErrorText(error)))
+                .finally(() => setBusy(false));
+              return;
+            }
             setDeleteGroupFor(null);
             const removed = rows.filter((r) => r.provider === target);
             if (removed.length === 0) return;
@@ -2031,9 +2053,10 @@ export function ModelsPage({ embedded = false }: { embedded?: boolean }) {
           <p className="text-sm text-gray-700 dark:text-gray-300">
             {/* Offered on user-defined groups only, whose display info is always synthesized. */}
             {S.models.deleteGroupConfirm(
-              userProviderInfo(deleteGroupFor).label,
+              providers[deleteGroupFor]?.displayName??(providerInfo(deleteGroupFor) ?? userProviderInfo(deleteGroupFor)).label,
               rows.filter((r) => r.provider === deleteGroupFor).length,
             )}
+            {central && <span className="mt-2 block">同时删除该渠道商的 API Key、连接配置和优惠配置；如果默认模型或视觉模型属于此分组，其默认选择也将清除。其他渠道商不受影响。</span>}
           </p>
         </ConfirmModal>
       )}

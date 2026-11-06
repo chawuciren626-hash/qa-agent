@@ -46,6 +46,7 @@ import {
   useGuardedClose,
 } from "@prismshadow/penguin-ui";
 import * as api from "../../api/endpoints";
+import { controlRequest } from "../../api/control";
 import { S } from "../../lib/strings";
 import { apiErrorText } from "../../lib/api-error";
 import { SEMANTIC_ID_PATTERN } from "../../lib/semantic-id";
@@ -154,6 +155,8 @@ export interface CreateAgentDialogProps {
   adminStages?: { id: string; name: string }[];
   adminStageId?: string;
   onAdminStageChange?: (stageId: string) => void;
+  /** Central administration uses the same dialog controls with published resource choices. */
+  centralResources?: { id: string; kind: string; name: string; published: boolean }[];
 }
 
 export function CreateAgentDialog(props: CreateAgentDialogProps) {
@@ -170,6 +173,7 @@ function CreateAgentForm({
   adminStages,
   adminStageId,
   onAdminStageChange,
+  centralResources,
 }: CreateAgentDialogProps) {
   const form = useFormDraft(EMPTY, { normalize: normalizeCreate });
   const {
@@ -282,6 +286,7 @@ function CreateAgentForm({
   // submit a name the new one does not carry.
   const { setDraft } = form;
   useEffect(() => {
+    if (centralResources) return;
     setDraft((d) => {
       if (d.dirSkills.length === 0) return d;
       if (dirSkills === null) return { ...d, dirSkills: [] };
@@ -289,7 +294,7 @@ function CreateAgentForm({
       const next = d.dirSkills.filter((n) => available.has(n));
       return next.length === d.dirSkills.length ? d : { ...d, dirSkills: next };
     });
-  }, [dirSkills, setDraft]);
+  }, [centralResources, dirSkills, setDraft]);
 
   /** The picked seed plugins that carry a stdio MCP server: creating the Agent runs their commands on this server. */
   const stdioSeeds =
@@ -301,7 +306,7 @@ function CreateAgentForm({
 
   /** `confirmed`: the stdio confirmation was answered, or nothing picked asks for one. */
   const create = async (confirmed = false) => {
-    if (!projectId || !form.dirty || !idValid || busy) return;
+    if ((!projectId && !centralResources) || !form.dirty || !idValid || busy) return;
     // A seed plugin with a stdio server runs a command on this server whenever a session of the
     // new Agent starts — said, and confirmed, before anything is created, as installing it later
     // from the Plugins page would ask.
@@ -312,6 +317,20 @@ function CreateAgentForm({
     setBusy(true);
     setRefused(undefined);
     try {
+      if (centralResources) {
+        if (snapshotFile) throw new Error("内置快照导入尚未接入；请先创建智能体，再在内置配置中编辑。");
+        const defaults = await controlRequest("/api/control/admin/agent-defaults");
+        const created = await controlRequest("/api/control/admin/resources", "POST", {
+          kind: "agents", name: name.trim() || id, description: description.trim(),
+          payload: { agentId: id, prompt: defaults.prompt, agentsMd: "", modelResource: "",
+            maxTurns: defaults.maxTurns, model: defaults.model, compaction: defaults.compaction,
+            toolsBuiltin: defaults.toolsBuiltin, kernelVersion: defaults.kernelVersion,
+            pluginResources: plugins, skillResources: pickedDirSkills }, audience: [],
+        }) as { id: string };
+        discardUnsaved(form.scope);
+        await onCreated(created.id, null);
+        return;
+      }
       // Name defaults to the id (leave blank to let the server fill it in from the id).
       const body: AgentCreateRequest = { agentId: id };
       if (name.trim()) body.name = name.trim();
@@ -331,6 +350,7 @@ function CreateAgentForm({
           body.directorySkills = pickedDirSkills;
         }
       }
+      if (!projectId) throw new Error("未选择项目");
       const res = await api.createAgent(projectId, body, location);
       // Created: nothing typed is unsaved any more. Forgotten now rather than when the dialog
       // unmounts, since the page navigates to the new Agent right after and the leave guard
@@ -440,7 +460,7 @@ function CreateAgentForm({
           {/* Optional snapshot seed: the new Agent starts from an exported package instead of
             the default template. Picking one hides the two seed fields below — the package
             carries its own skills and hooks, and the server rejects the combination. */}
-          <div>
+          {!centralResources && <div>
             <FieldLabel>{S.agent.createSnapshot}</FieldLabel>
             {snapshotFile === null ? (
               <label
@@ -473,7 +493,7 @@ function CreateAgentForm({
             <FieldHint>
               {snapshotFile === null ? S.agent.createSnapshotHint : S.agent.createSnapshotSkillsOff}
             </FieldHint>
-          </div>
+          </div>}
           {snapshotFile === null && (
             <>
               {/* Seed plugins: the form-variant picker (same trigger as the schedule dialog's
@@ -522,7 +542,18 @@ function CreateAgentForm({
               directory Skill may share a library plugin's Skill name and still be the one installed. */}
               <div>
                 <FieldLabel>{S.agent.createDirSkills}</FieldLabel>
-                <WorkspaceSelect
+                {centralResources ? <FormPicker
+                  size="sm" open={dirSkillsOpen} setOpen={setDirSkillsOpen}
+                  label={pickedDirSkills.length === 0 ? S.agent.createSkillsPlaceholder : S.agent.createSkillsPicked(pickedDirSkills.length)}
+                  muted={pickedDirSkills.length === 0} ariaLabel={S.agent.createDirSkills} disabled={busy} menuClass="w-[26rem]"
+                ><SkillPickList
+                  skills={centralResources.filter(item => item.kind === "skills" && item.published).map(item => ({ name: item.id, description: item.name, version: "已发布" }))}
+                  selected={pickedDirSkills}
+                  onToggle={skillName => setDraft(d => ({ ...d, dirSkills: toggleSkillName(d.dirSkills, skillName) }))}
+                  onSelectAll={names => setDraft(d => ({ ...d, dirSkills: addSkillNames(d.dirSkills, names) }))}
+                  onSelectNone={names => setDraft(d => ({ ...d, dirSkills: removeSkillNames(d.dirSkills, names) }))}
+                  emptyHint={S.agent.createDirSkillsEmpty}
+                /></FormPicker> : <WorkspaceSelect
                   // Keyed by the location: a picker browsing one server is not reused for another.
                   key={location ?? HERE}
                   projectId={projectId ?? ""}
@@ -534,8 +565,8 @@ function CreateAgentForm({
                   fieldLabel={S.agent.createDirSkills}
                   emptyLabel={S.agent.createDirSkillsPick}
                   clearLabel={S.agent.createDirSkillsClear}
-                />
-                {skillsDir && dirSkills !== null && dirSkills.length > 0 && (
+                />}
+                {!centralResources && skillsDir && dirSkills !== null && dirSkills.length > 0 && (
                   <div className="mt-2">
                     <FormPicker
                       size="sm"
@@ -574,7 +605,7 @@ function CreateAgentForm({
                     </FormPicker>
                   </div>
                 )}
-                {dirSkillsError ? (
+                {centralResources ? <FieldHint>从内置已发布技能中选择</FieldHint> : dirSkillsError ? (
                   <FieldError>{dirSkillsError}</FieldError>
                 ) : (
                   <FieldHint>

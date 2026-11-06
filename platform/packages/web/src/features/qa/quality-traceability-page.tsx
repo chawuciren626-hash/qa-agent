@@ -21,10 +21,13 @@ import {
   fetchReportIndex,
 } from "./quality-traceability-api";
 import {
+  DEFECT_SEVERITY_ORDER,
   qualityErrorHint,
+  severityLabel,
   type CaseResultView,
   type CoverageView,
   type DefectDetailView,
+  type DefectSeverity,
   type DefectView,
   type ReportIndexResponse,
 } from "./quality-traceability-model";
@@ -67,6 +70,7 @@ function QualityTraceabilityPageContent() {
   const refresh = useCallback(() => setReload((value) => value + 1), []);
 
   const [defects, setDefects] = useState<DefectView[] | null>(null);
+  const [severityFilter, setSeverityFilter] = useState<DefectSeverity | "all">("all");
   const [nextDefectCursor, setNextDefectCursor] = useState<string | null>(null);
   const [loadingMoreDefects, setLoadingMoreDefects] = useState(false);
   const [defectsError, setDefectsError] = useState<string | null>(null);
@@ -92,6 +96,7 @@ function QualityTraceabilityPageContent() {
     fetchDefects(projectId, {
       ...(scope.sessionId ? { sessionId: scope.sessionId } : {}),
       ...(scope.runId ? { runId: scope.runId } : {}),
+      ...(severityFilter !== "all" ? { severity: severityFilter } : {}),
     })
       .then((data) => {
         if (alive) {
@@ -105,7 +110,7 @@ function QualityTraceabilityPageContent() {
     return () => {
       alive = false;
     };
-  }, [projectId, scope.sessionId, scope.runId, reload]);
+  }, [projectId, scope.sessionId, scope.runId, severityFilter, reload]);
 
   useEffect(() => {
     if (!hasScope || !projectId) {
@@ -163,6 +168,7 @@ function QualityTraceabilityPageContent() {
       const data = await fetchDefects(projectId, {
         ...(scope.sessionId ? { sessionId: scope.sessionId } : {}),
         ...(scope.runId ? { runId: scope.runId } : {}),
+        ...(severityFilter !== "all" ? { severity: severityFilter } : {}),
         cursor: nextDefectCursor,
       });
       setDefects((current) => [...(current ?? []), ...data.defects]);
@@ -257,6 +263,31 @@ function QualityTraceabilityPageContent() {
       </section>
 
       <section aria-label="缺陷" className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <label className="flex items-center gap-1">
+            严重程度筛选
+            <select
+              aria-label="缺陷严重程度筛选"
+              className="rounded border border-[var(--border)] bg-transparent px-2 py-1"
+              value={severityFilter}
+              onChange={(event) => {
+                setSeverityFilter(event.target.value as DefectSeverity | "all");
+                setDefects(null);
+                setNextDefectCursor(null);
+              }}
+            >
+              <option value="all">全部严重程度</option>
+              {DEFECT_SEVERITY_ORDER.map((level) => (
+                <option key={level} value={level}>
+                  {severityLabel(level)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <span className="opacity-70">
+            筛选由服务端执行；未评估和未记录不计为低风险，也不代表没有高严重度缺陷。
+          </span>
+        </div>
         {defectsError && <ErrorNote>{defectsError}</ErrorNote>}
         {detailError && <ErrorNote>{detailError}</ErrorNote>}
         {defects && <DefectStatusView defects={defects} detail={detail} onSelect={selectDefect} />}

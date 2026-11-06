@@ -10,6 +10,7 @@ import { validateExecutionPlan } from './execution-plan.mjs';
 import { loadLatestExecution, verifyCurrentAttempt } from './execution-attempts.mjs';
 import { governedDefects, lifecycleReferences } from './defect-lifecycle.mjs';
 import { defectGateReasons, qualityGateStatus } from './quality-gate.mjs';
+import { severityProblems } from './defect-severity.mjs';
 import { inspectRequirementLedger } from './requirement-provenance.mjs';
 import { assertAnalysisMarkdown } from './analysis-markdown.mjs';
 import { sealedExecutionOutcome } from './execution-outcome.mjs';
@@ -231,6 +232,8 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
     const seen = new Map();
     for (const row of rows) {
       assert(text(row.title) && text(row.fingerprint) && row.related_cases.length > 0 && new Set(row.related_cases).size === row.related_cases.length, `${row.defect_id}: title, fingerprint and unique related_cases required`);
+      const severity = severityProblems(row);
+      assert(!severity.length, `${row.defect_id}: ${severity.join('; ')}`);
       assert(row.related_cases.every(id => failedIds.has(id)), `${row.defect_id}: unknown or nonfailed related case`);
       row.evidence_refs.forEach(capture);
       if (row.duplicate_of != null) assert(seen.has(row.duplicate_of) && seen.get(row.duplicate_of).fingerprint === row.fingerprint, `${row.defect_id}: invalid duplicate_of`);
@@ -330,7 +333,7 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
         if (result.status === 'blocked') reasons.push('latest_execution_not_reportable', 'no_executed_cases');
         if (result.status === 'blocked' || result.summary.blocked > 0) reasons.push('blocked_execution');
         if (assessment.summary.insufficient > 0) reasons.push('insufficient_failed_evidence');
-        reasons.push(...defectGateReasons(rows, lifecycle.history));
+        reasons.push(...defectGateReasons(rows, lifecycle.history, governance));
         if ([...rows, ...lifecycle.history].some(row => !['closed', 'rejected'].includes(row.lifecycle_status) && governance.quality_gate.risk_on_severity.includes(row.severity))) reasons.push('high_severity_defect');
         const gate = qualityGateStatus(governance.quality_gate, reasons);
         assert(metrics.quality_gate.status === gate && sameSet(metrics.quality_gate.reasons, reasons), 'Report quality gate differs from current evidence/defects');

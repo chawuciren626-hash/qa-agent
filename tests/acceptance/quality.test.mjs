@@ -42,7 +42,8 @@ test('duplicate or missing evidence cannot inflate confidence; duplicate IDs are
   f.run('assess-execution-evidence');
   assert.equal(f.read('quality/evidence-assessment.json').summary.insufficient,1);
   assert.equal(f.read('quality/evidence-assessment.json').assessments[0].existing_evidence_refs.length,1);
-  const bug={bug_id:'BUG-EXISTING',case_id:'TC-ONE',title:'Synthetic issue',classification:'product_defect',evidence_paths:evidence};
+  const severity={severity:'Major',severity_standard_version:1,severity_reason:'Synthetic engineering fixture: partial function failure with a workaround',severity_dimensions:{user_business_impact:'minor',reach_frequency:'some',recoverability:'workaround',data_security_compliance:'none'}};
+  const bug={bug_id:'BUG-EXISTING',case_id:'TC-ONE',title:'Synthetic issue',classification:'product_defect',evidence_paths:evidence,...severity};
   f.write('defects/bugs.json',{bugs:[bug,bug]});f.run('normalize-defects');
   const records=f.read('defects/defect-records.json').records;
   assert.equal(records[0].defect_id,'BUG-EXISTING');

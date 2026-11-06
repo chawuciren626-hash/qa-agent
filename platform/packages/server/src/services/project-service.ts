@@ -12,9 +12,10 @@
  */
 import fs from "node:fs/promises";
 import { provisionQaProject } from "./qa-project-defaults.js";
-import { qaEnabled } from "./qa-engine.js";
+import { qaEnabled, qaEngineModule } from "./qa-engine.js";
 import {
   DEFAULT_PROJECT_ID,
+  loadAgentState,
   projectDir,
   provisionProjectAgents,
   provisionProjectBenchmarks,
@@ -32,7 +33,7 @@ import {
   SEMANTIC_ID_RULE,
 } from "./ids.js";
 import { Component, Use, Interface } from "@prismshadow/penguin-core/kernel";
-import type { Config, Paths } from "../hmr/capabilities.js";
+import type { AuthState, Config, Paths } from "../hmr/capabilities.js";
 import type {
   Access,
   AgentIndex,
@@ -63,6 +64,7 @@ async function dirExists(path: string): Promise<boolean> {
 @Component()
 export class ProjectService implements ProjectLifecycle {
   @Use() private readonly paths!: Paths;
+  @Use() private readonly authState!: AuthState;
   private get root(): string {
     return this.paths.root;
   }
@@ -85,6 +87,16 @@ export class ProjectService implements ProjectLifecycle {
   /** The Project's Agents' API settings and keys (web.db): a destroyed Project exposes nothing. */
   @Use() private readonly agentApi!: AgentApi;
   @Use() private readonly benchmarkSeeds!: BuiltinBenchmarkSeeds;
+
+  private async sharedRolesReady(userId: string): Promise<boolean> {
+    // The QA runtime must first supply its safety hooks from a shared, versioned location.
+    if (!qaEnabled || !this.authState.accountClient || process.env.AITEST_SHARED_AGENT_RUNTIME !== "1") return false;
+    const required = ["default_agent", ...(qaEngineModule("qa-project-bootstrap").qaRoles() as { id: string }[]).map(role => role.id)];
+    const available = new Set(await this.authState.accountClient.listSharedRoleIds(userId));
+    const missing = required.filter(id => !available.has(id));
+    if (missing.length) throw new HttpError(503, "shared_roles_incomplete", `共享智能体或本机适配器尚未就绪：${missing.join(", ")}`);
+    return true;
+  }
 
   // Access control lives in ProjectAccess (services/project-access.ts); these delegate so
   // in-package callers keep one entry point.
@@ -146,6 +158,7 @@ export class ProjectService implements ProjectLifecycle {
     ) {
       throw new HttpError(409, "project_exists", `Project id is already taken: ${projectId}.`);
     }
+    const shared = await this.sharedRolesReady(owner.userId);
     const displayName = name ?? projectId;
     const createdAt = new Date().toISOString();
     // Insert the DB row first: the primary key is the final arbiter for concurrent
@@ -174,8 +187,12 @@ export class ProjectService implements ProjectLifecycle {
       // In the testing product, personal Projects start with testing roles only.
       // The General Agent and its sample Benchmarks remain available in admin
       // Projects and in the unmodified upstream PenguinHarness mode.
-      if (!qaEnabled || owner.isAdmin) await this.provisionProjectDefaults(projectId);
-      const testingRoles = await provisionQaProject(this.root, projectId);
+      if (shared && owner.isAdmin) {
+        await loadAgentState({ root: this.root, projectId, agentId: "default_agent", init: { shared: true } });
+        this.agents.insertOrIgnore({ projectId, agentId: "default_agent", createdAt });
+        await provisionProjectBenchmarks(this.root, projectId, this.benchmarkSeeds.benchmarks);
+      } else if (!qaEnabled || owner.isAdmin) await this.provisionProjectDefaults(projectId);
+      const testingRoles = await provisionQaProject(this.root, projectId, shared);
       testingRoles.forEach((agentId, index) => this.agents.insertOrIgnore({
         projectId, agentId, createdAt: new Date(Date.now() + index).toISOString(),
       }));
@@ -222,13 +239,20 @@ export class ProjectService implements ProjectLifecycle {
       await this.createProject(user, `${user.userId}-${DEFAULT_PROJECT_ID}`, user.userId);
       return;
     }
+    const shared = await this.sharedRolesReady(user.userId);
     const projectId = DEFAULT_PROJECT_ID;
     const fresh = !(await dirExists(projectDir(this.root, projectId)));
     // Initialize the built-in Agent (loaded without overwriting if it already exists) and write
     // the Benchmarks the directory lacks; this also ensures the directory exists.
-    await this.provisionProjectDefaults(projectId);
+    if (fresh && shared) {
+      await loadAgentState({ root: this.root, projectId, agentId: "default_agent", init: { shared: true } });
+      this.agents.insertOrIgnore({ projectId, agentId: "default_agent", createdAt: new Date().toISOString() });
+      await provisionProjectBenchmarks(this.root, projectId, this.benchmarkSeeds.benchmarks);
+    } else {
+      await this.provisionProjectDefaults(projectId);
+    }
     if (fresh) {
-      const roles = await provisionQaProject(this.root, projectId);
+      const roles = await provisionQaProject(this.root, projectId, shared);
       roles.forEach((agentId, index) => this.agents.insertOrIgnore({
         projectId, agentId, createdAt: new Date(Date.now() + index).toISOString(),
       }));

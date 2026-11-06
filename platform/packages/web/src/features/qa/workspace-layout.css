@@ -78,8 +78,9 @@
 .qp-scroll { display:flex; flex-direction:column; }
 .qp-results { flex:1; }.qp-pagination { flex:none; padding:12px 2px 2px; border-top:1px solid var(--qa-border); }
 .qp-task-group { margin-bottom:10px; }
-.qp-task-summary { margin-bottom:0; padding:11px 16px; cursor:pointer; background:var(--qa-bg,Canvas); }
-.qp-task-summary:focus-visible { outline:2px solid #3b82f6; outline-offset:2px; }
+.qp-task-summary { margin-bottom:0; padding:11px 16px; background:var(--qa-bg,Canvas); cursor:pointer; }
+.qp-task-toggle { cursor:pointer; border:0; padding:0; background:none; color:inherit; }
+.qp-task-toggle:focus-visible { outline:2px solid #3b82f6; outline-offset:2px; }
 .qp-task-summary.qp-expanded { border-left:3px solid #3b82f6; background:light-dark(#eff6ff,#17283f); }
 .qp-task-top { min-height:24px; gap:10px; }
 .qp-status-dot { width:8px; height:8px; flex:none; border-radius:50%; background:#9ca3af; }

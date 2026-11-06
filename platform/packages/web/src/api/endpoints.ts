@@ -424,19 +424,27 @@ export interface SharedModelsInfo {
   projectIds: string[];
 }
 
+export const CENTRAL_MODEL_CATALOG_ID = "central-model-catalog";
+const modelConfigPath = (projectId: string) => projectId === CENTRAL_MODEL_CATALOG_ID
+  ? `/api/control/admin/model-config/${CENTRAL_MODEL_CATALOG_ID}`
+  : `/api/projects/${encodeURIComponent(projectId)}/models`;
+const modelAuthPath = (projectId: string, route: string) => projectId === CENTRAL_MODEL_CATALOG_ID
+  ? `${modelConfigPath(projectId)}/authorization/${route}`
+  : `/api/projects/${encodeURIComponent(projectId)}/${route}`;
+
 export const getSharedModels = (projectId: string) =>
-  apiFetch<SharedModelsInfo>(`/api/projects/${encodeURIComponent(projectId)}/models/shared`);
+  apiFetch<SharedModelsInfo>(`${modelConfigPath(projectId)}/shared`);
 
 export const activateSharedModels = (projectId: string) =>
-  apiFetch<SharedModelsInfo>(`/api/projects/${encodeURIComponent(projectId)}/models/shared/activate`, { method: "POST" });
+  apiFetch<SharedModelsInfo>(`${modelConfigPath(projectId)}/shared/activate`, { method: "POST" });
 
 export const getModels = (projectId: string, machineId: string | null) =>
-  apiFetch<ModelsResponse>(`/api/projects/${encodeURIComponent(projectId)}/models`, {
+  apiFetch<ModelsResponse>(`${modelConfigPath(projectId)}`, {
     server: machineId,
   });
 
 export const putModels = (projectId: string, body: ModelsUpdateRequest) =>
-  apiFetch<ModelsResponse>(`/api/projects/${encodeURIComponent(projectId)}/models`, {
+  apiFetch<ModelsResponse>(`${modelConfigPath(projectId)}`, {
     method: "PUT",
     body,
   });
@@ -451,7 +459,7 @@ export const putProviderConnection = (
   body: ProviderConnectionUpdate,
 ) =>
   apiFetch<ModelsResponse>(
-    `/api/projects/${encodeURIComponent(projectId)}/models/providers/${encodeURIComponent(provider)}`,
+    `${modelConfigPath(projectId)}/providers/${encodeURIComponent(provider)}`,
     { method: "PUT", body },
   );
 
@@ -462,13 +470,13 @@ export const putProviderConnection = (
  */
 export const syncPresets = (projectId: string, body: PresetSyncRequest) =>
   apiFetch<PresetSyncResponse>(
-    `/api/projects/${encodeURIComponent(projectId)}/models/sync-presets`,
+    `${modelConfigPath(projectId)}/sync-presets`,
     { method: "POST", body },
   );
 
 /** Narrow default-model switch (owner): flips the same default_model the models page maintains, without resending the table. */
 export const putDefaultModel = (projectId: string, body: DefaultModelUpdateRequest) =>
-  apiFetch<DefaultModelResponse>(`/api/projects/${encodeURIComponent(projectId)}/models/default`, {
+  apiFetch<DefaultModelResponse>(`${modelConfigPath(projectId)}/default`, {
     method: "PUT",
     body,
   });
@@ -479,12 +487,12 @@ export const putDefaultModel = (projectId: string, body: DefaultModelUpdateReque
  */
 export const getModelBalance = (projectId: string, provider: string, force = false) =>
   apiFetch<ModelBalanceResponse>(
-    `/api/projects/${encodeURIComponent(projectId)}/models/balance?provider=${encodeURIComponent(provider)}${force ? "&force=1" : ""}`,
+    `${modelConfigPath(projectId)}/balance?provider=${encodeURIComponent(provider)}${force ? "&force=1" : ""}`,
   );
 
 /** Connectivity test: model reference (provider, modelId) is passed in the request body (may include an unsaved apiKey / baseUrl). */
 export const testModel = (projectId: string, body: ModelTestRequest) =>
-  apiFetch<ModelTestResponse>(`/api/projects/${encodeURIComponent(projectId)}/models/test`, {
+  apiFetch<ModelTestResponse>(`${modelConfigPath(projectId)}/test`, {
     method: "POST",
     body,
   });
@@ -492,21 +500,21 @@ export const testModel = (projectId: string, body: ModelTestRequest) =>
 /** Protocol auto-detection for a custom base URL: probes openai-responses → ant-messages → openai-chat and returns the first protocol the endpoint serves. */
 export const detectProtocol = (projectId: string, body: ModelProtocolDetectRequest) =>
   apiFetch<ModelProtocolDetectResponse>(
-    `/api/projects/${encodeURIComponent(projectId)}/models/detect`,
+    `${modelConfigPath(projectId)}/detect`,
     { method: "POST", body },
   );
 
 /** Endpoint model listing: given a base URL plus the protocol /detect reported, returns every model id the endpoint serves (the add-group import). */
 export const listEndpointModels = (projectId: string, body: EndpointModelListRequest) =>
   apiFetch<EndpointModelListResponse>(
-    `/api/projects/${encodeURIComponent(projectId)}/models/list`,
+    `${modelConfigPath(projectId)}/list`,
     { method: "POST", body },
   );
 
 /** Vision probe: sends one 1x1 image on this model's credential and reports whether it was accepted (a real, billed completion — unlike the protocol probes). */
 export const detectVision = (projectId: string, body: ModelVisionDetectRequest) =>
   apiFetch<ModelVisionDetectResponse>(
-    `/api/projects/${encodeURIComponent(projectId)}/models/detect-vision`,
+    `${modelConfigPath(projectId)}/detect-vision`,
     { method: "POST", body },
   );
 
@@ -519,20 +527,20 @@ export const detectVision = (projectId: string, body: ModelVisionDetectRequest) 
  */
 export const startModelOAuth = (projectId: string, body: ModelOAuthStartRequest) =>
   apiFetch<ModelOAuthStartResponse>(
-    `/api/projects/${encodeURIComponent(projectId)}/model-oauth/start`,
+    `${modelAuthPath(projectId, "model-oauth")}/start`,
     { method: "POST", body },
   );
 
 /** Where a flow stands; 404 once it has expired. */
 export const getModelOAuthStatus = (projectId: string, flowId: string) =>
   apiFetch<ModelOAuthStatusResponse>(
-    `/api/projects/${encodeURIComponent(projectId)}/model-oauth/${encodeURIComponent(flowId)}`,
+    `${modelAuthPath(projectId, "model-oauth")}/${encodeURIComponent(flowId)}`,
   );
 
 /** Redeems a code the user pasted, for when the provider's redirect cannot reach the harness. */
 export const submitModelOAuthCode = (projectId: string, flowId: string, code: string) =>
   apiFetch<ModelOAuthCodeResponse>(
-    `/api/projects/${encodeURIComponent(projectId)}/model-oauth/${encodeURIComponent(flowId)}/code`,
+    `${modelAuthPath(projectId, "model-oauth")}/${encodeURIComponent(flowId)}/code`,
     { method: "POST", body: { code } },
   );
 
@@ -558,7 +566,7 @@ export interface KeyAuthEndpoints {
 
 function keyAuth(route: string, flowNotFoundCode: string): KeyAuthEndpoints {
   const prefix = (projectId: string): string =>
-    `/api/projects/${encodeURIComponent(projectId)}/${route}`;
+    modelAuthPath(projectId, route);
   const flow = (projectId: string, flowId: string): string =>
     `${prefix(projectId)}/${encodeURIComponent(flowId)}`;
   return {
@@ -588,7 +596,7 @@ export const modelScopeAuthEndpoints = keyAuth("modelscope-auth", "modelscope_au
 
 export const syncPlatformModels = (projectId: string) =>
   apiFetch<PlatformModelSyncResponse>(
-    `/api/projects/${encodeURIComponent(projectId)}/platform-auth/sync`,
+    `${modelAuthPath(projectId, "platform-auth")}/sync`,
     { method: "POST", body: {} },
   );
 
@@ -1549,7 +1557,7 @@ export const clearUsageErrors = (
  * not the page.
  */
 export const getUsageModelTotals = (projectId: string) =>
-  apiFetch<UsageModelTotals>(`/api/projects/${encodeURIComponent(projectId)}/usage/model-totals`);
+  projectId === CENTRAL_MODEL_CATALOG_ID ? Promise.resolve({totals: []} as UsageModelTotals) : apiFetch<UsageModelTotals>(`/api/projects/${encodeURIComponent(projectId)}/usage/model-totals`);
 
 export const getUsage = (
   projectId: string,
@@ -1850,12 +1858,12 @@ export const getPluginLibrary = (machineId: string | null) =>
   apiFetch<PluginLibraryResponse>("/api/plugins", { server: machineId });
 
 /** Everything one library plugin ships as text keyed by path (skills' files, hook scripts), for the plugin detail view's file browser. */
-export const getPluginFiles = (plugin: string) =>
-  apiFetch<PluginFilesResponse>(`/api/plugins/${encodeURIComponent(plugin)}/files`);
+export const getPluginFiles = (plugin: string, libraryPath = "/api/plugins") =>
+  apiFetch<PluginFilesResponse>(`${libraryPath}/${encodeURIComponent(plugin)}/files`);
 
 /** A library plugin's README.md, from its package root, for the detail dialog; 404 when the package ships none. */
-export const getLibraryPluginReadme = (plugin: string) =>
-  apiFetch<PluginReadmeResponse>(`/api/plugins/${encodeURIComponent(plugin)}/readme`);
+export const getLibraryPluginReadme = (plugin: string, libraryPath = "/api/plugins") =>
+  apiFetch<PluginReadmeResponse>(`${libraryPath}/${encodeURIComponent(plugin)}/readme`);
 
 /**
  * Installs whole library plugins — each one's skills and hook package; an already-installed

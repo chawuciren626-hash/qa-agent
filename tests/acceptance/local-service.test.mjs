@@ -4,11 +4,24 @@ import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,copyFileSync,rmSync,exi
 import {tmpdir} from 'node:os';
 import {resolve,dirname} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {connect} from 'node:net';
-import {ensureLocalService,attachLocalService,pauseLocalService,resumeLocalService,serviceStatus,servicePaths,readFrames} from '../../scripts/local-service.mjs';
+import {connect,createServer} from 'node:net';
+import {ensureLocalService,attachLocalService,pauseLocalService,resumeLocalService,serviceStatus,servicePaths,readFrames,serverLockAlive} from '../../scripts/local-service.mjs';
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const write=(file,value)=>{mkdirSync(dirname(file),{recursive:true});writeFileSync(file,value);};
+test('server lock rejects a recycled PID with a closed port and respects a live listener',async()=>{
+  const root=mkdtempSync(resolve(tmpdir(),'aith-lock-')),file=resolve(root,'server.lock');
+  const server=createServer(socket=>socket.end());
+  try {
+    assert.equal(await serverLockAlive(file),false);
+    await new Promise(ok=>server.listen(0,'127.0.0.1',ok));
+    write(file,JSON.stringify({pid:process.pid,port:server.address().port}));
+    assert.equal(await serverLockAlive(file),true);
+    await new Promise(ok=>server.close(ok));
+    assert.equal(await serverLockAlive(file),false);
+    write(file,'invalid json');assert.equal(await serverLockAlive(file),false);
+  } finally { if(server.listening)await new Promise(ok=>server.close(ok));rmSync(root,{recursive:true,force:true}); }
+});
 test('independent runtime: one server, private relay, UI detach survival, busy protection, restart and pause', {timeout:120000}, async t=>{
   const root=mkdtempSync(resolve(tmpdir(),'aith-service-'));
   const config=resolve(root,'installation.json');

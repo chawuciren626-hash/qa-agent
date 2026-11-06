@@ -33,7 +33,7 @@ npm run artifacts:validate -- <run_id> report
 | test_cases | Schema、唯一ID、关联测试点及规则一致、测试点覆盖；design_contract台账/假设/数据检查；Excel表头及全部导出行与JSON一致 |
 | execution prepare | 计划Schema、设计哈希及用例投影、执行策略、真实脚本文件；不启动测试 |
 | execution | 计划与结果ID集合严格一致（禁止漏项、重复、混入）；统计重算、时间顺序、最新invocation_id及状态、证据文件归属 |
-| defects | 标准记录Schema、唯一缺陷ID、真实失败关联、每个失败有分类、分类计数、有效duplicate_of、置信度不高于实际证据评估 |
+| defects | 标准记录Schema、唯一缺陷ID、真实失败关联、每个失败有分类、分类计数、有效duplicate_of、置信度不高于实际证据评估；新记录校验严重度枚举、理由和四维依据，unknown 进入待复核 |
 | report | 当前reportable-results与实际结果一致；设计数、执行数、计划数、通过率、分类及质量门对账；当前证据评估/执行状态一致；Word包及PDF基本格式检查 |
 
 所有被读取并用作本次校验依据的run内文件进入回执。指向其他run、工作区根inputs、越界路径或越界符号链接会被拒绝；真实存在于当前run内的绝对路径可作为来源/证据读取。completed的产物参数继续要求run相对路径。
@@ -71,6 +71,10 @@ node scripts/generate-test-cases-xlsx.mjs <test_cases.json> <test_cases.xlsx>
 旧Markdown脑图导出仍兼容，但阶段完成必须同时交付匹配的JSON。脑图不显示测试点编号；JSON/Excel保留编号追溯。Excel按既有“测试用例”工作表、表头和列顺序导出，手动另改展示内容须先同步JSON并重新导出。
 
 失败结果可以完成“执行工作交付”，并不等于测试通过。零失败时defect-records.records允许为空；存在失败时至少给出needs_review分类，不能直接写无缺陷。报告正文必须包含真实run_id和质量门英文原始值。
+
+### 缺陷严重程度
+
+标准见[缺陷严重程度分级标准](defect-severity-standard.md)。新记录必须包含 `severity`、`severity_standard_version: 1`、`severity_reason` 和四个 `severity_dimensions` 键；`severity_evidence` 可选，填写时必须是 `evidence_refs` 的子集。`unknown` 必须说明缺失证据，并由质量门 `unknown_severity` 进入 `review_required`，不能当作低风险。缺少 `severity_standard_version` 的历史记录按旧记录读取，不追溯改写；新交付缺少严重度校验字段会被拒绝。报告和导出应分别列出已知等级与未评估数量，不得把未评估合并为零或低风险（导出层由集成方按此字段约定接入）。
 
 最新执行状态为blocked/running时，允许校验真实阻塞报告：当前reportable-results必须是零统计空用例，invocation_id匹配当前状态，缺陷/评估也不得沿用旧失败。该报告不使执行阶段completed，也不绕过编排依赖。其他无法对账的中断状态先修复当前执行状态，不靠修改旧成功结果蒙混通过。
 

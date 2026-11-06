@@ -17,3 +17,12 @@ test('partial task report names untested scope without treating assertions as fu
   assert.match(body,/本次结果不完整/);
   assert.match(body,/不作质量门通过判断/);
 });
+
+test('report facts keep known severity, unknown and absent legacy severity separate', () => {
+  const body = reportFactBody({ runId: 'severity-fixture', results: { status: 'failed', summary: {} }, issues: [
+    { severity: 'Critical' }, { severity: 'unknown' }, {}
+  ], metrics: { quality_gate: { status: 'review_required', reasons: ['unknown_severity'] } } });
+  assert.match(body, /Critical 1/);
+  assert.match(body, /未评估 1；未记录 1/);
+  assert.match(body, /unknown_severity/);
+});

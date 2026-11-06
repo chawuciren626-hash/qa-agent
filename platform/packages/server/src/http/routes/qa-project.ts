@@ -88,7 +88,23 @@ export function registerQaProjectRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps
         cwd:marker.engine_root,env:{...process.env,QA_DIRECTORY_CONTEXT:JSON.stringify(marker),QA_CASE_REVIEW:JSON.stringify({...body,sessionId,runId,actorId:c.var.user.userId})},windowsHide:true,timeout:150000,maxBuffer:64*1024,
       });
       c.header("Cache-Control","no-store");return c.json(JSON.parse(stdout));
-    } catch { throw new HttpError(409,"case_review_conflict","用例保存未通过校验或审核版本已变化，原版本已保留。请刷新重试；涉及需求、测试数据或覆盖范围的变更可提交阶段修改意见重新分析。"); }
+    } catch (error) {
+      const stderr = typeof (error as { stderr?: unknown }).stderr === "string"
+        ? (error as { stderr: string }).stderr : "";
+      const known = [
+        ["审核版本已变化", "case_review_version_conflict", "审核版本已变化，请刷新后重试。"],
+        ["用例已被修改", "case_review_source_changed", "用例内容已变化，请刷新后重试。"],
+        ["用例不存在", "case_review_case_missing", "用例已不存在，请刷新后重试。"],
+        ["至少保留一条用例", "case_review_last_case", "至少保留一条用例；如需重新设计，请提交阶段修改意见。"],
+        ["存在不可编辑的字段", "case_review_invalid_field", "包含不可编辑的字段，请刷新后重试。"],
+        ["测试数据须为 JSON 对象", "case_review_invalid_data", "测试数据须为 JSON 对象。"],
+        ["步骤和前置条件须逐行填写", "case_review_invalid_steps", "步骤和前置条件须逐行填写，步骤不能为空。"],
+        ["优先级必须为 P0 至 P3", "case_review_invalid_priority", "优先级必须为 P0 至 P3。"],
+      ] as const;
+      const match = known.find(([fragment]) => stderr.includes(fragment));
+      if (match) throw new HttpError(409, match[1], match[2]);
+      throw new HttpError(409,"case_review_conflict","用例保存未通过校验，原版本已保留。请刷新后重试；若问题持续，请查看服务端诊断。");
+    }
   });
   app.get("/qa/overview", async (c) => {
     const id = requireValidId(c, "projectId");

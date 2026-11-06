@@ -21,6 +21,16 @@ test('paths resolve relative to configuration and preserve Chinese and spaces wi
   assert.equal(p.paths.engine,resolve(f.root,'中文 产品/app/engine'));assert.match(p.fingerprint,/^[a-f0-9]{64}$/);
   assert.equal(existsSync(p.root),false);assert.equal(p.agent_root,resolve(p.paths.host_data,'default_project/agents'));
 });
+test('shared Agent runtime switch is read only from the installation data root',t=>{
+  const f=fixture(t);
+  assert.equal(productEnvironment(f.layout,{AITEST_SHARED_AGENT_RUNTIME:'1'}).AITEST_SHARED_AGENT_RUNTIME,undefined);
+  mkdirSync(f.layout.paths.host_data,{recursive:true});
+  const file=resolve(f.layout.paths.host_data,'shared-agent-runtime.json');
+  writeFileSync(file,JSON.stringify({version:1,enabled:true}));
+  assert.equal(productEnvironment(f.layout,{}).AITEST_SHARED_AGENT_RUNTIME,'1');
+  writeFileSync(file,JSON.stringify({version:1,enabled:false}));
+  assert.throws(()=>productEnvironment(f.layout,{}),/Invalid shared Agent runtime configuration/);
+});
 test('invalid schema, escaped unified roots, data overlap and program overlap are rejected',t=>{
   const f=fixture(t);
   for(const mutate of [v=>v.extra='secret',v=>v.project_id='../escape',v=>v.paths.host_data=v.paths.engine,v=>v.paths.qa_data='data/penguin/sub',v=>v.paths.workspaces='../escape',v=>v.paths.node='workspaces/node.exe',v=>v.paths.engine=' x ',v=>v.paths.host_executable='arbitrary.exe']) {

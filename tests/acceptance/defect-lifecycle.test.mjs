@@ -43,7 +43,7 @@ function observations(f, a, records) {
 }
 function origin(f) {
   const a = attempt(f);
-  const record = { defect_id: 'DEF-SYNTHETIC', fingerprint: 'synthetic-fingerprint', category: 'needs_review', lifecycle_status: 'needs_review', confidence: 'medium', severity: 'Major', priority: 'P1', title: 'Synthetic issue', related_cases: ['TC-SYNTHETIC'], evidence_refs: a.result.cases[0].evidence_paths, duplicate_of: null };
+  const record = { defect_id: 'DEF-SYNTHETIC', fingerprint: 'synthetic-fingerprint', category: 'needs_review', lifecycle_status: 'needs_review', confidence: 'medium', severity: 'Major', severity_standard_version: 1, severity_reason: 'Synthetic fixture: partial function failure with a workaround', severity_dimensions: { user_business_impact: 'minor', reach_frequency: 'some', recoverability: 'workaround', data_security_compliance: 'none' }, priority: 'P1', title: 'Synthetic issue', related_cases: ['TC-SYNTHETIC'], evidence_refs: a.result.cases[0].evidence_paths, duplicate_of: null };
   return { ...a, data: observations(f, a, [record]) };
 }
 const transition = (f, a, action, revision, extra = {}) => transitionDefect(root, f.id, { invocation_id: a.id, defect_id: 'DEF-SYNTHETIC', action, revision, actor: 'synthetic-reviewer', reason: 'synthetic review only', evidence: [action === 'fixed' ? 'inputs/fix.md' : 'inputs/review.md'], category: 'product_defect', ...extra });
@@ -67,6 +67,8 @@ test('confirm, fix, independent retest and close retain observations and full de
   assert.equal(final.governance.history[0].lifecycle_status, 'closed');
   const subject = readLifecycle(root, f.id).subjects[0];
   assert.equal(subject.events.length, 3);
+  assert.equal(subject.events[0].actor_kind, 'unverified_operator');
+  assert.equal(subject.events[0].reason_code, 'evidence_review');
   assert.deepEqual(subject.base, JSON.parse(before).records[0]);
 });
 
@@ -124,7 +126,7 @@ test('decision evidence tampering blocks reports; normalizing cannot forge statu
 
 test('normalizer ignores claimed closed status and preserves registered review decisions on repeat', () => {
   const f = fixture(); const a = attempt(f);
-  writeJsonFile(resolve(f.dir, 'defects/bugs.json'), { run_id: f.id, invocation_id: a.id, bugs: [{ bug_id: 'DEF-SYNTHETIC', title: 'Synthetic issue', classification: 'product_defect', lifecycle_status: 'closed', case_id: 'TC-SYNTHETIC', evidence_paths: a.result.cases[0].evidence_paths }] });
+  writeJsonFile(resolve(f.dir, 'defects/bugs.json'), { run_id: f.id, invocation_id: a.id, bugs: [{ bug_id: 'DEF-SYNTHETIC', title: 'Synthetic issue', classification: 'product_defect', lifecycle_status: 'closed', case_id: 'TC-SYNTHETIC', evidence_paths: a.result.cases[0].evidence_paths, severity: 'Major', severity_standard_version: 1, severity_reason: 'Synthetic fixture: partial function failure with a workaround', severity_dimensions: { user_business_impact: 'minor', reach_frequency: 'some', recoverability: 'workaround', data_security_compliance: 'none' } }] });
   assert.equal(invoke('normalize-defects', f.id).status, 0);
   assert.equal(read(resolve(f.dir, 'defects/defect-records.json')).records[0].lifecycle_status, 'draft');
   transition(f, a, 'confirm', 0);

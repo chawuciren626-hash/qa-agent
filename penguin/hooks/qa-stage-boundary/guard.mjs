@@ -4,7 +4,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 try {
   const input=JSON.parse(readFileSync(0,'utf8'));
-  const config=JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)),'project.json'),'utf8'));
+  const config=process.env.AITEST_ENGINE_ROOT && process.env.AITEST_QA_AGENT_ROOT && process.env.AITEST_QA_AGENT_ID
+    ? {root:process.env.AITEST_ENGINE_ROOT,agent_root:process.env.AITEST_QA_AGENT_ROOT,agent_id:process.env.AITEST_QA_AGENT_ID}
+    : JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)),'project.json'),'utf8'));
   const {bindChildHookContext}=await import(pathToFileURL(resolve(config.root,'scripts/penguin-workspace-adapter.mjs')).href);
   bindChildHookContext(input.session_id,config.agent_id,config.agent_root);
   const {guardChildTool}=await import(pathToFileURL(resolve(config.root,'scripts/child-tool-guard.mjs')).href);

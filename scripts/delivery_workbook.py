@@ -9,6 +9,27 @@ NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 TEMPLATE = json.loads((Path(__file__).resolve().parents[1] / 'config/test-delivery-template.json').read_text(encoding='utf-8'))
 STATUS = {'passed': '通过', 'failed': '失败', 'skipped': '未执行', 'blocked': '受阻', 'pending': '待确认', 'not_run': '未执行'}
+SEVERITY_LABELS = {'Blocker': '阻断', 'Critical': '严重', 'Major': '较严重', 'Minor': '轻微', 'Trivial': '提示', 'unknown': '未评估'}
+
+
+def severity_label(issue):
+    value = issue.get('severity')
+    return SEVERITY_LABELS.get(value, '未记录' if value is None else '未评估')
+
+
+def severity_summary(issues):
+    counts = {level: 0 for level in SEVERITY_LABELS}
+    missing = 0
+    for issue in issues:
+        value = issue.get('severity')
+        if value in counts:
+            counts[value] += 1
+        elif value is None:
+            missing += 1
+        else:
+            counts['unknown'] += 1
+    known = '、'.join(f'{SEVERITY_LABELS[level]} {counts[level]}' for level in ('Blocker', 'Critical', 'Major', 'Minor', 'Trivial'))
+    return f'已知严重程度分布：{known}；未评估 {counts["unknown"]}；未记录 {missing}。未评估/未记录不代表低风险。'
 
 
 def plain(value):
@@ -61,7 +82,7 @@ def case_rows(cases, results=None, issues=None):
 
 
 def issue_rows(issues):
-    return [[i.get('defect_id', i.get('bug_id', '')), i.get('priority', 'unknown'), i.get('lifecycle_status', 'needs_review'),
+    return [[i.get('defect_id', i.get('bug_id', '')), i.get('priority', 'unknown'), severity_label(i), i.get('lifecycle_status', 'needs_review'),
              i.get('title', i.get('summary', '')), i.get('category', 'needs_review'), plain(i.get('steps_to_reproduce', i.get('steps', []))),
              plain(i.get('expected_result', i.get('expected', ''))), plain(i.get('actual_result', i.get('actual', ''))),
              plain(i.get('impact', '')), plain(i.get('suggestion', i.get('recommendation', i.get('analysis', '')))), plain(i.get('evidence_refs', []))]
@@ -119,7 +140,9 @@ def write_workbook(path, title, subtitle, cases, issues=None, results=None):
         cols = ET.SubElement(root, q('cols'))
         for n, width in enumerate(widths, 1): ET.SubElement(cols, q('col'), min=str(n), max=str(n), width=str(width), customWidth='1')
         data = ET.SubElement(root, q('sheetData'))
-        rows = [[], [f'{title} · {name}'], [subtitle], [f'用例 {len(cases)} 条；问题记录 {len(issues or [])} 条。'], headers, *records]
+        summary = f'用例 {len(cases)} 条；问题记录 {len(issues or [])} 条。'
+        if name == '问题清单': summary += ' ' + severity_summary(issues or [])
+        rows = [[], [f'{title} · {name}'], [subtitle], [summary], headers, *records]
         for r, values in enumerate(rows, 1):
             height = 28 if r == 2 else 32 if r == 5 else 24
             if r > 5:

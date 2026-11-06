@@ -22,7 +22,7 @@ test('report uses the latest sealed case design after a reviewed edit',()=>{
 
 test('URL sources accept archived extensionless text but reject binary, traversal and absent URLs',()=>{
   const url='http://127.0.0.1:4317/healthy?scope=acceptance';
-  for(const name of ['user-request','exploration-url','request.txt','request.md','request.json']) {
+  for(const name of ['user-request','exploration-url','request.txt','request.md','request.json','登录目标URL.txt']) {
     assert.equal(validateExplorationTarget(url,`inputs/${name}`,`Visit ${url}`).href,url);
   }
   for(const name of ['../request.txt','sub/request.txt','request.docx','request.pdf','request.exe']) {
@@ -474,6 +474,9 @@ test('URL-only independent exploration uses an actual browser, blocks POST and c
     assert.equal(result.exit_code,0,JSON.stringify(result));
     const observation=JSON.parse(readFileSync(resolve(f.dir,'execution/exploration.json')));
     assert.equal(observation.http_status,200,JSON.stringify(observation));
+    assert.equal(observation.browser_runtime.platform,process.platform);
+    assert.equal(observation.browser_runtime.launch_status,'ready');
+    assert.equal(observation.browser_runtime.headless,true);
     assert.equal(observation.title,'Exploration fixture');
     assert.equal(observation.structure.fields[0].name,'phone');
     assert.equal(observation.structure.privacy.status,'observed');
@@ -527,7 +530,7 @@ test('exploration rejects guessed URLs, credentials and non-web targets',()=>{
   const target='https://provided.test/users/index';
   assert.equal(validateExplorationTarget(target,'inputs/url.txt',`${target}帮我测一下这个页面的添加用户功能`).href,target);
   assert.equal(validateExplorationTarget(target,'inputs/url.txt',`url:${target}，账号另行提供`).href,target);
-  for(const suffix of ['这个页面的所有内容为本次新增内容，请进行测试','该页面需要测试','当前链接是测试入口']) {
+  for(const suffix of ['测试一下这个测试环境的登录功能，账号另行提供','这个页面的所有内容为本次新增内容，请进行测试','该页面需要测试','当前链接是测试入口']) {
     assert.equal(validateExplorationTarget(target,'inputs/url.txt',target+suffix).href,target);
     assert.throws(()=>validateExplorationTarget(target,'inputs/url.txt',target+'/other'+suffix),/not present/);
   }
@@ -550,7 +553,8 @@ test('failed read-only navigation retains only a sanitized diagnostic and truthf
   const result=await f.send({action:'explore_url',url,source_path:archived.result.path});
   assert.equal(result.exit_code,0,JSON.stringify(result));
   const observation=JSON.parse(readFileSync(resolve(f.dir,'execution/exploration.json')));
-  assert.equal(observation.error.phase,'exploration');assert.equal(observation.error.network_code,'net::ERR_CONNECTION_REFUSED');
+  assert.equal(observation.error.phase,'navigation');assert.equal(observation.failure_stage,'navigation');assert.equal(observation.error.network_code,'net::ERR_CONNECTION_REFUSED');
+  assert.equal(observation.browser_runtime.launch_status,'ready');
   assert.ok(!JSON.stringify(observation).includes('synthetic-failure-secret'));
   assert.ok(!observation.evidence.some(e=>e.path.endsWith('.png')));
   const results=JSON.parse(readFileSync(resolve(f.dir,'execution/test_results.json')));

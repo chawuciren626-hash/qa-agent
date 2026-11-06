@@ -93,6 +93,9 @@ export interface ModelPickerModalProps {
 }
 
 export function ModelPickerModal({ open, onClose, title, ...body }: ModelPickerModalProps) {
+  // Administrator assistant only offers configured credentials, including inherited group keys.
+  // Filtering before grouping also prevents search/show-all/default selection from exposing keyless rows.
+  const configuredOnly = window.location.pathname.startsWith("/admin/");
   return (
     <Modal
       open={open}
@@ -106,7 +109,7 @@ export function ModelPickerModal({ open, onClose, title, ...body }: ModelPickerM
       fullScreenOnPhone
       widthClass="sm:h-[min(32rem,80vh)] sm:max-w-xl max-sm:border-0"
     >
-      <ModelPickerBody {...body} onClose={onClose} />
+      <ModelPickerBody {...body} models={configuredOnly ? body.models.filter(hasConfiguredKey) : body.models} onClose={onClose} />
     </Modal>
   );
 }

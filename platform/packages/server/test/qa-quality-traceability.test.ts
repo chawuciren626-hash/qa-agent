@@ -140,6 +140,12 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("Q3 quality traceability", () =
         };
       }) as never
     );
+    for (const runId of ["run-main", "run-member", "run-second", "run-retest-1", "run-retest-2", "run-retest-3", "run-next", "run-pass", "run-other", "run-shared", "run-foreign", "run-badpoint"]) {
+      await writeRunManifest(workspace, "session-task", runId);
+    }
+    await writeRunManifest(workspace, "session-next", "run-member");
+    await writeRunManifest(otherWorkspace, "session-other", "run-other");
+    await writeRunManifest(otherWorkspace, "session-other", "run-shared");
   });
 
   afterEach(async () => {
@@ -151,6 +157,18 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("Q3 quality traceability", () =
     const document = await createDocument();
     const rule = await createRule(document.document.documentId);
     const payload = designPayload(document.document.documentId, rule.ruleId);
+    const missingRun = await owner.post(`${base}/tasks/session-task/runs/run-unknown/design`, payload);
+    expect(missingRun.status).toBe(400);
+    expect(await errorCode(missingRun)).toBe("run_not_found");
+    await writeRunManifest(workspace, "session-task", "run-forged", "run-other");
+    const forgedRun = await owner.post(`${base}/tasks/session-task/runs/run-forged/design`, payload);
+    expect(forgedRun.status).toBe(400);
+    expect(await errorCode(forgedRun)).toBe("run_not_found");
+    const wrongSessionManifest = path.join(workspace, "session-task", "output", "runs", "run-forged", "manifest.json");
+    await fs.writeFile(wrongSessionManifest, JSON.stringify({ manifest_version: 3, run_id: "run-forged", directory_context: { mode: "isolated", session_id: "session-next" } }));
+    const wrongSession = await owner.post(`${base}/tasks/session-task/runs/run-forged/design`, payload);
+    expect(wrongSession.status).toBe(400);
+    expect(await errorCode(wrongSession)).toBe("run_not_found");
     const created = await owner.post(`${base}/tasks/session-task/runs/run-main/design`, payload);
     expect(created.status, await created.clone().text()).toBe(201);
     const first = (await created.json()) as Json;
@@ -160,6 +178,11 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("Q3 quality traceability", () =
       status: "open", testPointCount: 3, testCaseCount: 3, createdBy: "trace_owner"
     });
     expect(first.batch.contentHash).toMatch(/^sha256:/);
+
+    await writeRunManifest(workspace, "session-next", "run-main");
+    const duplicateRun = await member.post(`${base}/tasks/session-next/runs/run-main/design`, payload);
+    expect(duplicateRun.status).toBe(409);
+    expect(await errorCode(duplicateRun)).toBe("run_id_conflict");
 
     // Members read the design and evidence references; outsiders and other projects do not.
     const read = await member.get(`${base}/tasks/session-task/runs/run-main/design`);
@@ -509,6 +532,7 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("Q3 quality traceability", () =
       expectedDesignRevision: 1, htmlPath: "report/report-task.html", htmlSha256: html,
       conclusion: "failed", evidence, untested, limitations: ["仅验证登录锁定场景"]
     };
+    await fs.rm(path.join(workspace, "session-task", "output", "runs", "run-main", "manifest.json"));
     const noManifest = await owner.post(`${base}/tasks/session-task/runs/run-main/report-index`, request);
     expect(noManifest.status).toBe(400);
     expect(await errorCode(noManifest)).toBe("report_run_invalid");

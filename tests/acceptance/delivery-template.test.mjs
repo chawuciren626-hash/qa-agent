@@ -28,8 +28,9 @@ test('delivery exports preserve unexecuted cases, evidence, issues and Markdown 
   const sheet=book.Sheets['测试用例'];
   assert.equal(sheet.I6.v,'通过'); assert.equal(sheet.I7.v,'失败'); assert.equal(sheet.I8.v,'未执行');
   assert.equal(sheet.K6.v,'evidence/one.png'); assert.equal(sheet.J7.v,'D-1');
-  assert.equal(book.Sheets['问题清单'].F6.v,'Open page');
-  assert.equal(book.Sheets['问题清单'].I6.v,'Task incomplete');
+  assert.equal(book.Sheets['问题清单'].C6.v,'未记录');
+  assert.equal(book.Sheets['问题清单'].G6.v,'Open page');
+  assert.equal(book.Sheets['问题清单'].J6.v,'Task incomplete');
   assert.equal(sheet.F6.f,undefined);
   const html=readFileSync(resolve(dir,'report/test_report.html'),'utf8');
   assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));

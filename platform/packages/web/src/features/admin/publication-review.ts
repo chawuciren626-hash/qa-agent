@@ -28,6 +28,8 @@ export interface ResourceSummary {
   contentHash?: string;
   pluginName?: string;
   pluginVersion?: string;
+  adapterVersion?: string;
+  adapterHash?: string;
   source?: string;
   skillResources?: string[];
   instructionsLength?: number;
@@ -84,6 +86,7 @@ function sizeOrNull(bytes: number | null | undefined): string {
 
 const SOURCE_TITLES: Record<string, string> = {
   "upstream-library": "上游插件库引用",
+  "trusted-local-adapter": "受信本机适配器",
   managed: "公共说明与技能组合",
   custom: "公共说明与技能组合",
 };
@@ -111,6 +114,10 @@ export function summaryLines(kind: ManagedKind, summary: ResourceSummary): strin
     lines.push(`插件标识：${summary.pluginName || "未提供"}`);
     lines.push(`来源：${SOURCE_TITLES[String(summary.source ?? "")] ?? "未记录"}`);
     if (summary.source === "upstream-library") lines.push(`上游版本：${summary.pluginVersion || "未提供"}`);
+    else if (summary.source === "trusted-local-adapter") {
+      lines.push(`适配器版本：${summary.adapterVersion || "未提供"}`);
+      lines.push(`本机文件哈希：${shortHash(summary.adapterHash)}`);
+    }
     else {
       lines.push(`关联技能：${(summary.skillResources ?? []).length} 个`);
       lines.push(`使用说明：${summary.instructionsLength ?? 0} 字`);
@@ -216,6 +223,8 @@ const DIFF_FIELDS: Record<ManagedKind, { key: keyof ResourceSummary; label: stri
   plugins: [
     { key: "source", label: "来源" },
     { key: "pluginVersion", label: "上游版本" },
+    { key: "adapterVersion", label: "适配器版本" },
+    { key: "adapterHash", label: "本机文件哈希" },
     { key: "skillResources", label: "关联技能" },
     { key: "instructionsLength", label: "使用说明长度" },
   ],

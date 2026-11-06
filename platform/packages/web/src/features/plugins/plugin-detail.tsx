@@ -516,7 +516,7 @@ function PackageDetailsLine({ details }: { details: PluginDetails }) {
  * package on this server, so one not here says so without asking), a library plugin's from the
  * library route, where a 404 means it ships none.
  */
-function usePluginReadme(row: PluginRow): ReadmeState {
+function usePluginReadme(row: PluginRow, libraryPath?: string): ReadmeState {
   const part = row.module;
   const here = part === undefined || moduleOnThisServer(part);
   const [state, setState] = useState<ReadmeState>(
@@ -537,7 +537,7 @@ function usePluginReadme(row: PluginRow): ReadmeState {
       specifier !== undefined
         ? getPluginReadme(specifier).then((res) => res.readme)
         : name !== undefined
-          ? getLibraryPluginReadme(name).then(
+          ? getLibraryPluginReadme(name, libraryPath).then(
               (res) => res.readme,
               (e: unknown) => {
                 if (e instanceof ApiError && e.status === 404) return null;
@@ -557,16 +557,18 @@ function usePluginReadme(row: PluginRow): ReadmeState {
     return () => {
       cancelled = true;
     };
-  }, [here, specifier, name]);
+  }, [here, specifier, name, libraryPath]);
   return state;
 }
 
 export function PluginDetailModal({
+  libraryPath,
   row,
   head,
   footer,
   onClose,
 }: {
+  libraryPath?: string;
   row: PluginRow;
   head: PluginDetailHead;
   /** The card's own actions, as footer buttons; null leaves the dialog without a footer. */
@@ -574,7 +576,7 @@ export function PluginDetailModal({
   onClose: () => void;
 }) {
   const { locale } = useLocale();
-  const readme = usePluginReadme(row);
+  const readme = usePluginReadme(row, libraryPath);
   return (
     <Modal
       open
@@ -589,7 +591,7 @@ export function PluginDetailModal({
         readme={readme}
         files={
           row.library !== undefined && rowHasFiles(row) ? (
-            <PluginFiles plugin={row.library} />
+            <PluginFiles plugin={row.library} libraryPath={libraryPath} />
           ) : null
         }
         locale={locale}
@@ -603,7 +605,7 @@ export function PluginDetailModal({
  * screens) — the same one the Benchmark case dialog draws. SKILL.md shows its body, with the
  * frontmatter the header already states dropped.
  */
-function PluginFiles({ plugin }: { plugin: PluginItem }) {
+function PluginFiles({ plugin, libraryPath }: { plugin: PluginItem; libraryPath?: string }) {
   const [files, setFiles] = useState<Record<string, string> | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** Collapsed directories: every one starts open, so the whole plugin is in view at once. */
@@ -614,7 +616,7 @@ function PluginFiles({ plugin }: { plugin: PluginItem }) {
 
   useEffect(() => {
     let cancelled = false;
-    getPluginFiles(plugin.name)
+    getPluginFiles(plugin.name, libraryPath)
       .then((res) => {
         if (cancelled) return;
         setFiles(res.files);
@@ -625,7 +627,7 @@ function PluginFiles({ plugin }: { plugin: PluginItem }) {
     return () => {
       cancelled = true;
     };
-  }, [plugin.name]);
+  }, [plugin.name, libraryPath]);
 
   const groups =
     files === null

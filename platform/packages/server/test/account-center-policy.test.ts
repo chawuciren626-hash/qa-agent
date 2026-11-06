@@ -11,8 +11,13 @@ describe("central Web boundary", () => {
       expect((await app.request(path!, { method })).status).toBe(200);
     }
   });
-  it("still blocks task data and execution in the central service", async () => {
-    for (const [method, path] of [["GET", "/api/projects"], ["POST", "/api/projects"], ["POST", "/api/sessions"], ["GET", "/api/files"], ["PUT", "/api/admin/settings"], ["DELETE", "/api/me/profile"]]) {
+  it("admits the central administrator assistant's scoped runtime routes", async () => {
+    for (const [method, path] of [["GET", "/api/projects"], ["POST", "/api/projects"], ["GET", "/api/projects/admin_agent_catalog/agents"], ["POST", "/api/projects/admin_agent_catalog/agents/default_agent/sessions"], ["GET", "/api/sessions/s1/messages"], ["POST", "/api/sessions/s1/tasks"], ["GET", "/api/events"]]) {
+      expect((await app.request(path!, { method })).status).toBe(200);
+    }
+  });
+  it("still blocks unrelated project, task and file routes in the central service", async () => {
+    for (const [method, path] of [["GET", "/api/projects/other_project/agents"], ["POST", "/api/projects/other_project/agents/default_agent/sessions"], ["POST", "/api/sessions"], ["GET", "/api/files"], ["PUT", "/api/admin/settings"], ["DELETE", "/api/me/profile"]]) {
       expect((await app.request(path!, { method })).status).toBe(404);
     }
   });

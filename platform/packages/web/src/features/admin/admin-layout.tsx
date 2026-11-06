@@ -1,5 +1,6 @@
+import { ModelsPage } from "../models/models-page";
 import { AppLayout } from "../../components/layout/app-layout";
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, Navigate, useLocation } from "react-router";
 import { Button, PageFrame, PageHeader } from "@prismshadow/penguin-ui";
@@ -13,6 +14,10 @@ import * as api from "../../api/endpoints";
 import { AccountCenter } from "../../pages/account-center";
 import { PublicationsPage, RESOURCE_NAMES } from "./publications-page";
 import { CentralResourcesPage } from "./central-resources-page";
+import { CentralAgentsPage } from "./central-agents-page";
+import { CentralAgentSettingsPage } from "./central-agent-settings-page";
+import { CentralPluginsPage } from "./central-plugins-page";
+import { AdminSkillsPage } from "./admin-skills-page";
 import { AdminOverviewPage } from "./admin-overview-page";
 import type { ManagedKind } from "../../lib/managed-resources";
 import { useUpdateBadges } from "../../lib/use-update-badges";
@@ -25,6 +30,8 @@ import { discoverLocalWorkspace, rememberedWorkspace, rememberWorkspace } from "
 import brandLogo from "../../../../../../penguin/ui/aith-logo.svg?url";
 import brandLogoLight from "../../../../../../penguin/ui/aith-logo-light.svg?url";
 import "./admin-layout.css";
+
+const CentralAssistantContext = createContext(false);
 
 const modules: Record<string, string> = { chat: "测试任务", projects: "项目视图", library: "项目资料", schedules: "定时任务", agents: "多智能体", models: "模型库", plugins: "插件市场", skills: "技能", machines: "机器管理" };
 const navIcons: Record<string, ReactNode> = {
@@ -71,7 +78,7 @@ function AdminNavigation({ central, userView }: { central: boolean; userView: st
   const systemItems = menuItems.filter(item => item.group === "sys");
   return <aside className="admin-side" aria-label="管理员导航">
     <div className="admin-brand"><span className="admin-brand-mark" aria-hidden="true"><img className="admin-logo-default" src={brandLogo} alt="" draggable={false}/><img className="admin-logo-light" src={brandLogoLight} alt="" draggable={false}/></span><strong>AITestHarness</strong></div>
-    <div className="admin-side-scroll"><nav>{mainItems.map(row)}<div className="admin-nav-system"><button type="button" className="admin-nav-system-toggle" aria-expanded={systemOpen} onClick={() => setSystemOpen(!systemOpen)}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 5h16v14H4zM8 9h8M8 13h8"/></svg>系统管理<span aria-hidden="true">{systemOpen ? "⌄" : "›"}</span></button>{systemOpen && <div className="admin-nav-system-children">{systemItems.map(row)}</div>}</div></nav>{!central && active === "chat" && <AdminAssistantHistory />}</div>
+    <div className="admin-side-scroll"><nav>{mainItems.map(row)}<div className="admin-nav-system"><button type="button" className="admin-nav-system-toggle" aria-expanded={systemOpen} onClick={() => setSystemOpen(!systemOpen)}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 5h16v14H4zM8 9h8M8 13h8"/></svg>系统管理<span aria-hidden="true">{systemOpen ? "⌄" : "›"}</span></button>{systemOpen && <div className="admin-nav-system-children">{systemItems.map(row)}</div>}</div></nav>{active === "chat" && <AdminAssistantHistory />}</div>
     <details className="admin-account"><summary><span className="admin-avatar">{(user?.displayName ?? user?.userId ?? "A").slice(0, 1).toUpperCase()}</span><span className="admin-account-name">{user?.displayName ?? user?.userId}</span><span className="admin-account-role">管理员</span></summary><div className="admin-account-menu"><p>当前：管理员视图</p><a href={central ? "/user/" : userView ?? "/user/"}>切换到用户视图</a><button type="button" onClick={event => { event.currentTarget.closest("details")?.removeAttribute("open"); setSettingsOpen(true); }}>设置</button><button type="button" onClick={() => void logout().then(() => window.location.assign("/admin/login"))}>退出登录</button></div></details>
     <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} accountCenter={central} />
   </aside>;
@@ -106,7 +113,7 @@ function LocalAdminWorkspaceEntry({ path, title }: { path: string; title: string
   </PageFrame>;
 }
 
-/** The identity server stays a publication store, never a remote user workspace. */
+/** Central management keeps the administrator assistant on the central host. */
 export function AdminHostGate({ children }: { children: ReactNode }) {
   const { sessionVia } = useAuth();
   const [central, setCentral] = useState<boolean | null>(null);
@@ -127,11 +134,13 @@ export function AdminHostGate({ children }: { children: ReactNode }) {
   if (!central && sessionVia === "desktop") return <div className="admin-web-only"><h1>管理后台仅在 Web 端开放</h1><p>请在浏览器访问管理后台。</p>{adminOrigin && <a href={new URL("/admin/overview", adminOrigin).href} target="_blank" rel="noopener noreferrer">打开 Web 管理后台 ↗</a>}</div>;
   if (!central) return <>{children}</>;
   const section = location.pathname.split("/")[1] || "agents";
+  if (section === "chat") return <CentralAssistantContext.Provider value>{children}</CentralAssistantContext.Provider>;
   const kind = (section === "publications" ? location.pathname.split("/")[2] : section) as ManagedKind;
-  return <AdminChrome>{section === "overview" ? <AdminOverviewPage /> : section === "users" ? <AdminAccountsPage /> : section === "roles" ? <AdminRolesPage /> : section === "menus" ? <AdminMenusPage /> : section === "permissions" ? <AdminPermissionsPage /> : section === "audit" ? <AdminAuditPage /> : kind === "agents" ? <LocalAdminWorkspaceEntry path="/admin/agents" title="智能体管理" /> : section === "chat" ? <LocalAdminWorkspaceEntry path={`/admin${location.pathname}`} title="管理员助手" /> : kind in RESOURCE_NAMES ? <CentralResourcesPage key={kind} kind={kind} /> : <PageFrame>未知管理模块。</PageFrame>}</AdminChrome>;
+  return <AdminChrome>{section === "overview" ? <AdminOverviewPage /> : section === "users" ? <AdminAccountsPage /> : section === "roles" ? <AdminRolesPage /> : section === "menus" ? <AdminMenusPage /> : section === "permissions" ? <AdminPermissionsPage /> : section === "audit" ? <AdminAuditPage /> : kind === "agents" ? (location.pathname.startsWith("/agents/") ? <CentralAgentSettingsPage /> : <CentralAgentsPage />) : kind === "plugins" ? <CentralPluginsPage /> : kind === "skills" ? <AdminSkillsPage central /> : kind === "models" ? <ModelsPage central /> : kind in RESOURCE_NAMES ? <CentralResourcesPage key={kind} kind={kind} /> : <PageFrame>未知管理模块。</PageFrame>}</AdminChrome>;
 }
 
 export function AdminLayout() {
+  const centralAssistant = useContext(CentralAssistantContext);
   const { currentProject, projects, projectsLoading, reloadProjects, setCurrentProjectId } = useProject();
   const location = useLocation();
   const section = location.pathname.split("/")[2] ?? "";
@@ -150,7 +159,7 @@ export function AdminLayout() {
       .catch(cause => setProjectError(cause instanceof Error ? cause.message : "创建管理员配置项目失败"))
       .finally(() => setCreating(false));
   }, [needsConfigProject, projectsLoading, creating, projectError, catalogExists, currentProject?.projectId, reloadProjects, setCurrentProjectId]);
-  const navigation = <AdminNavigation central={false} userView={userViewUrl() ?? "/user/"}/>;
+  const navigation = <AdminNavigation central={centralAssistant} userView={userViewUrl() ?? "/user/"}/>;
   if (needsConfigProject && (projectsLoading || creating || currentProject?.projectId !== configProjectId)) return <div className="admin-shell">{navigation}<main className="admin-main"><PageFrame><PageHeader title={section === "skills" ? "技能管理" : section === "chat" ? "管理员助手" : "智能体管理"} />{projectError ? <p role="alert">{projectError}</p> : <p role="status">正在准备管理员配置项目…</p>}</PageFrame></main></div>;
   return <AppLayout navigation={navigation} />;
 }

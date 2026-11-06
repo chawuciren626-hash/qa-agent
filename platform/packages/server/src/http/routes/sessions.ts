@@ -133,6 +133,7 @@ import type { AttachmentLimits } from "../../services/attachment-limits.js";
 import { Bind, Component, Use } from "@prismshadow/penguin-core/kernel";
 import type { ClassCtx } from "@prismshadow/penguin-core/kernel";
 import { Channels, Config, Db, Desktop } from "../../hmr/capabilities.js";
+import type { AuthState } from "../../hmr/capabilities.js";
 import { Sessions as ManagerIface, SessionServiceIface } from "../../runtime/session-manager.js";
 import { Messaging } from "../../runtime/messaging/bridge.js";
 
@@ -714,7 +715,8 @@ export function agentSessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
   app.post("/", async (c) => {
     const projectId = requireValidId(c, "projectId");
     const agentId = requireValidId(c, "agentId");
-    deps.access.requireProjectAccess(c.var.user.userId, projectId);
+    if (qaEnabled && c.var.user.isAdmin) deps.access.requireProjectOwner(c.var.user.userId, projectId);
+    else deps.access.requireProjectAccess(c.var.user.userId, projectId);
     await deps.agentConfigService.requireExists(projectId, agentId);
     const body = await readJson(c);
     const modelId = optionalString(body, "modelId", { minLen: 1, label: "modelId" });
@@ -750,6 +752,7 @@ export function agentSessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
     const session = await deps.sessionService.createSession({
       projectId,
       agentId,
+      userId: c.var.user.userId,
       ...(modelId !== undefined ? { modelId } : {}),
       ...(provider !== undefined ? { provider } : {}),
       ...(workspace !== undefined ? { workspace } : {}),
@@ -787,6 +790,9 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
         "session_not_found",
         "Session does not exist or you do not have access.",
       );
+    }
+    if (qaEnabled && c.var.user.isAdmin && !["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
+      deps.access.requireProjectOwner(c.var.user.userId, row.projectId);
     }
     return row;
   };
@@ -1841,6 +1847,7 @@ export class SessionApiRoutes {
   @Use() private readonly usage!: UsageQueries;
   @Use() private readonly liveStreams!: LiveStreams;
   @Use() private readonly auth!: Auth;
+  @Use() private readonly authState!: AuthState;
   @Use() private readonly drivers!: SessionDrivers;
   @Use() private readonly agentApi!: AgentApi;
   @Use() private readonly orgService!: OrgService;
@@ -1954,6 +1961,7 @@ export class SessionApiRoutes {
       manager,
       access,
       config: this.config,
+      authState: this.authState,
     });
     this.vaultRoutes = vaultRoutes({ agentConfigService, manager, access });
     this.agentSessionsRoutes = agentSessionsRoutes(sessionsDeps);

@@ -18,6 +18,8 @@ internal static class Launcher {
       info.CreateNoWindow = true;
       info.RedirectStandardError = true;
       info.RedirectStandardOutput = true;
+      info.StandardErrorEncoding = System.Text.Encoding.UTF8;
+      info.StandardOutputEncoding = System.Text.Encoding.UTF8;
       using (var process = new Process()) {
         process.StartInfo = info;
         string error = "";

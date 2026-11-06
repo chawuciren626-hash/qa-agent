@@ -5,6 +5,7 @@ import path from "node:path";
 import { apiClient, createTestApp, provisionUser, loginAdmin } from "./helpers.js";
 import type { TestApp } from "./helpers.js";
 import type { SessionCreateResponse } from "../src/api/types.js";
+import type { Http } from "../src/http/app.js";
 
 describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () => {
   let app: TestApp;
@@ -128,5 +129,24 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () =>
     expect((await member.post(prefix + "/human-actions", { decision: "invented" })).status).toBe(
       400,
     );
+    const admin = apiClient(app.app, (await loginAdmin(app.app)).cookie);
+    expect((await admin.get(prefix)).status).toBe(200);
+    expect((await admin.patch(prefix, { title: "代改任务" })).status).toBe(403);
+    expect((await admin.post("/api/me/archived-sessions/delete", { sessionIds: [session.sessionId] })).status).toBe(403);
+    expect((await admin.post("/api/me/archived-sessions/unarchive", { sessionIds: [session.sessionId] })).status).toBe(403);
+    expect((await admin.post("/api/me/archived-sessions/delete", { filter: { projectId: project } })).status).toBe(403);
+    const files = `/api/projects/${project}/workspace-files/content?workspace=${encodeURIComponent(session.workspace)}&path=admin-probe.txt`;
+    expect((await admin.put(files, { dataBase64: Buffer.from("probe").toString("base64") })).status).toBe(403);
+    expect((await admin.post(`/api/projects/${project}/benchmarks/archive`, {})).status).toBe(403);
+    expect((await owner.get(prefix)).status).toBe(200);
+    const socket = app.boot.tree.api<Http>("HttpModule", "http");
+    expect((await socket.fetchAs("admin", new Request(`http://localhost${prefix}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "代改任务" }) }))).status).toBe(403);
+  });
+  it("lets an administrator inspect agents but not create another user's task", async () => {
+    const admin = apiClient(app.app, (await loginAdmin(app.app)).cookie);
+    expect((await admin.get(`/api/projects/${project}/agents`)).status).toBe(200);
+    expect((await admin.post(`/api/projects/${project}/agents/test_agent/sessions`, {})).status).toBe(403);
+    const socket = app.boot.tree.api<Http>("HttpModule", "http");
+    expect((await socket.fetchAs("admin", new Request(`http://localhost/api/projects/${project}/agents/test_agent/sessions`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }))).status).toBe(403);
   });
 });

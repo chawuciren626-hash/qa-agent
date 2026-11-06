@@ -170,7 +170,7 @@ export async function loadAgentState(opts?: {
   projectId?: string;
   root?: string;
   /** Initialize a not-yet-initialized Agent instead of throwing (`preset` applies on that path only; an existing Agent is never overwritten). */
-  init?: { preset?: AgentPreset };
+  init?: { preset?: AgentPreset; shared?: boolean };
 }): Promise<AgentState> {
   const root = opts?.root ?? resolveRoot();
   const projectId = opts?.projectId ?? DEFAULT_PROJECT_ID;
@@ -208,8 +208,26 @@ export async function loadAgentState(opts?: {
     };
   }
 
+  const sharedPath = path.join(stateDir, "shared-agent.json");
+  if (await fileExists(sharedPath)) {
+    const reference = JSON.parse(await fs.readFile(sharedPath, "utf8")) as { agentId?: unknown; version?: unknown };
+    if (reference.version !== 1 || reference.agentId !== agentId) throw new Error(`Invalid shared Agent reference: ${sharedPath}`);
+    return { root, projectId, agentId, stateDir, systemConfig: defaultSystemConfig(), agentsMd: "" };
+  }
+
   if (!opts?.init) {
     throw new Error(`Agent State is not initialized: ${configPath} does not exist.`);
+  }
+
+  if (opts.init.shared) {
+    await Promise.all([
+      fs.mkdir(stateDir, { recursive: true }),
+      fs.mkdir(toolsDir(root, projectId, agentId), { recursive: true }),
+      ensureUserMemoryDir(root, projectId, agentId),
+      fs.mkdir(scratchpadDir(root, projectId, agentId), { recursive: true }),
+    ]);
+    await atomicWriteFile(sharedPath, JSON.stringify({ version: 1, agentId }, null, 2), { followSymlinks: false });
+    return { root, projectId, agentId, stateDir, systemConfig: defaultSystemConfig(), agentsMd: "" };
   }
 
   // Init path: create the directory structure and write default config (preset only takes effect here).
@@ -930,7 +948,7 @@ function readHookCommands(dir: string, value: unknown): HookCommand[] {
  * not strings read as absent, and unknown keys are left behind — every reader downstream
  * finds the three lists as arrays.
  */
-async function readHookManifest(dir: string): Promise<HookManifest | null> {
+export async function readHookManifest(dir: string): Promise<HookManifest | null> {
   let raw: unknown;
   try {
     raw = JSON.parse(await fs.readFile(path.join(dir, "hooks.json"), "utf8"));

@@ -29,6 +29,9 @@ import { badRequest, optionalString, readJson, requireValidId } from "../validat
 import type { SessionManager } from "../../runtime/session-manager.js";
 import type { AgentConfig } from "../../mechanisms/agents.js";
 import type { Access } from "../../mechanisms/projects.js";
+import { existsSync } from "node:fs";
+import type { AuthRuntimeState } from "../../auth/runtime-state.js";
+import { validateResolvedBundle } from "../../auth/published-bundle.js";
 
 /** What this route group reaches — bound by its module (src/modules). */
 export interface AgentConfigRouteDeps {
@@ -37,6 +40,7 @@ export interface AgentConfigRouteDeps {
   access: Access;
   /** The data root, for the Agent's vault the mcp-test probe fills an entry's references from. */
   config: Pick<ServerConfig, "root">;
+  authState: AuthRuntimeState;
 }
 
 /** Ceiling on a single mcp-test probe's connect budget (an entry may configure minutes). */
@@ -67,7 +71,10 @@ export function agentConfigRoutes(deps: AgentConfigRouteDeps): Hono<AppEnv> {
     const projectId = requireValidId(c, "projectId");
     const agentId = requireValidId(c, "agentId");
     deps.access.requireProjectAccess(c.var.user.userId, projectId);
-    const view = await deps.agentConfigService.getConfig(projectId, agentId);
+    const shared = existsSync(join(deps.config.root, projectId, "agents", agentId, "agent_state", "shared-agent.json"));
+    const raw = shared ? await deps.authState.accountClient?.resolveRoleBundle(c.var.user.userId, agentId) : undefined;
+    const published = raw ? validateResolvedBundle(raw) : undefined;
+    const view = await deps.agentConfigService.getConfig(projectId, agentId, published ?? undefined);
     return c.json({
       ...view,
       activeSessionCount: deps.manager.activeCountForAgent(projectId, agentId),

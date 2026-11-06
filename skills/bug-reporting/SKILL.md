@@ -10,9 +10,13 @@ description: 基于测试失败结果、日志和截图分类问题，生成可�
 
 task和lifecycle遇到多种可能原因时，均可按需读取已安装的qa-investigation及其失败分类参考。只利用本次材料分析，不因此补建执行批次、启动复测或把反复失败直接定为产品缺陷。
 
+## 严重程度分级
+
+task和lifecycle都按 `docs/defect-severity-standard.md` 判定 `severity`，不得用自由文本、失败断言数量或测试点数量代替。等级为 `Blocker`、`Critical`、`Major`、`Minor`、`Trivial`、`unknown`；每条新记录同时写 `severity_standard_version: 1`、`severity_reason` 和四个 `severity_dimensions`（`user_business_impact`、`reach_frequency`、`recoverability`、`data_security_compliance`），无法确认的维度写 `unknown` 并说明缺什么证据。没有真实使用数据时不得猜测频率。`unknown` 是正式结论：不得当作低风险，也不得为了绕过复核改成 `Minor`。`priority` 单独记录，按标准中的建议映射人工决定，不由严重度自动生成。
+
 ## 独立任务（task）
 
-直接分析提供的日志、结果和证据，写defects/defect-records.json（records数组）及bugs.md。条目包含defect_id、title、category、evidence_refs，补充复现、预期、实际、影响及建议；证据不足用needs_review，不为交付强求用户确认。无需执行批次、assess_evidence或normalize_defects，不伪造本次实测。
+直接分析提供的日志、结果和证据，写defects/defect-records.json（records数组）及bugs.md。条目包含defect_id、title、category、severity、severity_standard_version、severity_reason、severity_dimensions、evidence_refs，补充复现、预期、实际、影响及建议；证据不足用needs_review，不为交付强求用户确认。无需执行批次、assess_evidence或normalize_defects，不伪造本次实测。
 
 按派发的独立契约填写当前阶段*-task.json。草稿用diagnose_task，交付用validate_artifacts，由父总控handoff。source_paths保留实际依据，不生成虚假前序产物；questions不放技术检查、解锁或重复批准要求。任务与确认策略由公共运行指令统一规定，本Skill不新增节点。
 
@@ -51,7 +55,7 @@ task和lifecycle遇到多种可能原因时，均可按需读取已安装的qa-i
 1. 先通过project-action调用assess_evidence（只需run_id），读取 `quality/evidence-assessment.json`；证据不足的失败只能标记为 `needs_review`。
 2. 读取失败用例、错误信息和关联证据。
 3. 判断失败类型：产品缺陷、脚本问题、环境问题、数据问题、待确认。
-4. 对产品缺陷生成 Bug 草稿，对非产品问题说明原因和处理建议。
+4. 对产品缺陷生成 Bug 草稿，按 `docs/defect-severity-standard.md` 写等级、理由和四维依据；对非产品问题说明原因和处理建议。
 5. 写入 `bugs.json`、`bugs.md` 后通过project-action调用normalize_defects（只需run_id），生成标准记录，再validate_artifacts（stage=defects）。仅按recovery.retry_allowed修正未确认草稿；若提示已登记观察不一致，保留原观察，交总控按生命周期治理处理，不改ID或删台账绕过。详见docs/draft-artifact-recovery.md。
 6. 跨运行比较是单独请求的补充工作，需使用工程规定的受控入口生成缺陷索引；本次派发未提供该入口时只交付当前运行结果，不自行执行 `build-defect-index.mjs`。不得把历史相似项重复作为新问题描述。
 
@@ -61,7 +65,8 @@ task和lifecycle遇到多种可能原因时，均可按需读取已安装的qa-i
 - 复现步骤清晰。
 - 实际结果和预期结果明确。
 - 证据路径真实存在，且结论置信度与证据数量一致。
-- 每个标准缺陷记录均包含 `fingerprint`、`lifecycle_status`、`confidence`、`related_cases` 和 `evidence_refs`。
+- 每个标准缺陷记录均包含 `fingerprint`、`lifecycle_status`、`confidence`、`severity`、`severity_reason`、`severity_dimensions`、`related_cases` 和 `evidence_refs`。
+- `Blocker`/`Critical` 必须有能说明业务影响、范围或不可恢复性的证据；只有单条断言失败时不得直接判为高严重度。
 
 ### 禁止事项
 
@@ -80,4 +85,5 @@ task和lifecycle遇到多种可能原因时，均可按需读取已安装的qa-i
 - 脚本、环境、测试数据问题只记录分析结论，不写成产品 Bug。
 - `script_issue` 必须有可复现的脚本、数据或定位器根因；不能证明时保留 `needs_review`。存在 `needs_review` 不能得出“无产品缺陷”的结论。
 - `needs_review` 和证据不足的失败应被报告为“未确认问题”，不生成已确认产品缺陷结论。
+- 严重度只能按已证实影响判定。证据不足时用 `unknown` 并写明缺失维度；`unknown` 会进入待复核，不得描述为低风险或“无高严重度缺陷”。确认阶段改级必须记录理由，不得改写已登记观察。
 - 同一运行中指纹相同的问题使用 `duplicate_of` 关联；跨运行重复情况只由 `output/quality/defect-index.json` 统计，不覆盖历史记录。

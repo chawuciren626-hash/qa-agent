@@ -25,7 +25,7 @@ import { ManagedResourceSection } from "../../components/managed-resource-sectio
  * skills.prompt section, mirroring the Memory tab.
  */
 import { useCallback, useEffect, useState } from "react";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, ReactNode } from "react";
 import type { SkillMetadataItem } from "@prismshadow/penguin-server/api";
 import {
   Button,
@@ -87,7 +87,6 @@ export function SkillsTab({
   /** Config writes (toggle / prompt / placeholder insert) happen here directly, so the settings page must refetch its own copy — otherwise a later Prompt-tab save from stale data would silently revert them. */
   onConfigChanged?: () => void;
 }) {
-  const { locale } = useLocale();
   const { currentProject, reloadAgents } = useProject();
   const projectId = currentProject?.projectId ?? null;
   /** The machine the Agent lives on (null: this server), and the Agents that server runs. */
@@ -176,15 +175,32 @@ export function SkillsTab({
   };
 
   /** Metadata: the installed copy's version (`YYYY.MM.DD.N`, or the legacy `YYYY-MM-DD.N` on a copy installed before that spelling; empty when the frontmatter carries none), shown bare like the library card. */
-  const metaLine = (skill: SkillMetadataItem): string => skill.version;
 
   if (!projectId) return null;
 
+  return <SkillsTabView skills={skills} busy={busy} error={error} agentName={agentName}
+    managedSection={machineId === null && <ManagedResourceSection kind="skills" agentId={agentId} onApplied={load} />}
+    toggleCard={toggleCard} alertStrip={alertStrip} promptSection={promptSection}
+    exportSkill={exportSkill} confirmRemove={confirmRemove} removing={removing} setRemoving={setRemoving}
+    importOpen={importOpen} setImportOpen={setImportOpen} viewing={viewing} setViewing={setViewing}
+    importDialog={<SkillImportDialog projectId={projectId} agentId={agentId} onClose={()=>setImportOpen(false)} onImported={()=>void imported()} />}
+    renderFiles={name=><InstalledSkillFiles projectId={projectId} agentId={agentId} machineId={machineId} name={name} />} />;
+}
+
+export function SkillsTabView({skills, busy, error, agentName, editable = true, managedSection, toggleCard, alertStrip, promptSection, exportSkill, confirmRemove, removing, setRemoving, importOpen, setImportOpen, viewing, setViewing, importDialog, renderFiles}: {
+ skills: SkillMetadataItem[] | null; busy: boolean; error: string | null; agentName: string; editable?: boolean;
+ managedSection?: ReactNode; toggleCard: ReactNode; alertStrip: ReactNode; promptSection: ReactNode;
+ exportSkill: (name:string)=>Promise<void>; confirmRemove:()=>Promise<void>; removing:string|null; setRemoving:(name:string|null)=>void;
+ importOpen:boolean; setImportOpen:(value:boolean)=>void; viewing:SkillMetadataItem|null; setViewing:(value:SkillMetadataItem|null)=>void;
+ importDialog:ReactNode; renderFiles:(name:string)=>ReactNode;
+}) {
+ const {locale}=useLocale();
+ const metaLine=(skill:SkillMetadataItem)=>skill.version;
   return (
     <div className="space-y-4">
       {/* Tab-level description: no title in the panel to anchor a "?" to (see help-fold.tsx). */}
       <HelpFold label={S.agent.tabSkills}>{S.skills.agentTabDesc}</HelpFold>
-      {machineId === null && <ManagedResourceSection kind="skills" agentId={agentId} onApplied={load} />}
+      {managedSection}
 
       {toggleCard}
       {alertStrip}
@@ -197,7 +213,7 @@ export function SkillsTab({
         <Button
           size="sm"
           variant="primary"
-          disabled={skills === null}
+          disabled={skills === null || !editable}
           onClick={() => setImportOpen(true)}
         >
           {S.skills.importSkill}
@@ -252,7 +268,7 @@ export function SkillsTab({
                     variant="danger"
                     label={`${S.skills.uninstall} ${skill.name}`}
                     title={S.skills.uninstall}
-                    disabled={busy}
+                    disabled={busy || !editable}
                     onClick={() => setRemoving(skill.name)}
                   >
                     <GlyphIcon d={ICONS.trash} size={ICON_SIZE.iconButton} />
@@ -266,18 +282,12 @@ export function SkillsTab({
 
       {promptSection}
 
-      {importOpen && (
-        <SkillImportDialog
-          projectId={projectId}
-          agentId={agentId}
-          onClose={() => setImportOpen(false)}
-          onImported={() => void imported()}
-        />
-      )}
+      {importOpen && importDialog}
+
 
       {viewing !== null && (
         <Modal open title={viewing.name} onClose={() => setViewing(null)} widthClass="sm:max-w-4xl">
-          <InstalledSkillFiles projectId={projectId} agentId={agentId} machineId={machineId} name={viewing.name} />
+          {renderFiles(viewing.name)}
         </Modal>
       )}
 
@@ -307,22 +317,21 @@ export function SkillsTab({
  * source is the dialog's draft (compared without the spaces around it): closing with one typed
  * asks first, and an upload in flight holds every way of closing until it answers.
  */
-export function SkillImportDialog({
-  projectId,
-  agentId,
-  agentOptions,
-  onClose,
-  onImported,
-}: {
-  projectId: string;
-  agentId: string;
-  agentOptions?: { agentId: string; label: string }[];
-  onClose: () => void;
-  /** A zip landed: the tab closes the dialog and reads the list again. */
-  onImported: () => void;
-}) {
-  const { openAiChat } = useAiBridge();
-  const machineId = useAgentLocation();
+type ImportDialogProps = {projectId:string;agentId:string;agentOptions?:{agentId:string;label:string}[];onClose:()=>void;onImported:()=>void};
+export interface ImportDialogTransport {
+ install:(agentId:string,data:{dataBase64:string;overwrite?:boolean})=>Promise<unknown>;
+ openChat:(agentId:string,text:string)=>void;
+ prompt?:(source:string)=>string;
+}
+export function SkillImportDialog(props:ImportDialogProps) {
+ const {openAiChat}=useAiBridge();const machineId=useAgentLocation();
+ return <SkillImportDialogContent {...props} transport={{
+  install:(agentId,data)=>api.installAgentSkillArchive(props.projectId,agentId,data,machineId),
+  openChat:(agentId,text)=>openAiChat({agentId,text,machineId}),
+ }} />;
+}
+
+export function SkillImportDialogContent({projectId,agentId,agentOptions,onClose,onImported,transport}:ImportDialogProps & {transport:ImportDialogTransport}) {
   const form = useFormDraft<string>("", { normalize: (text) => text.trim() });
   const source = form.draft;
   const [uploading, setUploading] = useState(false);
@@ -336,7 +345,8 @@ export function SkillImportDialog({
   // reference — see skill-import-source.ts); the preview substitutes a placeholder token
   // until something is entered.
   const trimmedSource = source.trim();
-  const chatPrompt = buildImportPrompt(trimmedSource || S.skills.importSourceToken);
+  const makePrompt = transport.prompt ?? buildImportPrompt;
+  const chatPrompt = makePrompt(trimmedSource || S.skills.importSourceToken);
 
   // Copy feedback lives at the button (the shared copy convention): its glyph flips to
   // the check while copied — no toast, and the button label never changes.
@@ -353,7 +363,7 @@ export function SkillImportDialog({
   const openChat = () => {
     if (trimmedSource === "") return;
     discardUnsaved(form.scope);
-    openAiChat({ agentId: targetAgentId, text: buildImportPrompt(trimmedSource), machineId });
+    transport.openChat(targetAgentId,makePrompt(trimmedSource));
     onClose();
   };
 
@@ -367,12 +377,7 @@ export function SkillImportDialog({
     setUploading(true);
     setUploadError(null);
     try {
-      await api.installAgentSkillArchive(
-        projectId,
-        targetAgentId,
-        { dataBase64, ...(overwrite ? { overwrite: true } : {}) },
-        machineId,
-      );
+      await transport.install(targetAgentId, { dataBase64, ...(overwrite ? { overwrite: true } : {}) });
       setOverwriting(null);
       onImported();
     } catch (e) {
@@ -435,7 +440,7 @@ export function SkillImportDialog({
                 <Button
                   size="sm"
                   disabled={trimmedSource === ""}
-                  onClick={() => promptCopy.flash(buildImportPrompt(trimmedSource))}
+                  onClick={() => promptCopy.flash(makePrompt(trimmedSource))}
                 >
                   <CopyCheckGlyph copied={promptCopy.copied} size={12} />
                   {S.skills.importCopyPrompt}

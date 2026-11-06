@@ -4,8 +4,24 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadLatestExecution } from './execution-attempts.mjs';
 import { registerObservations } from './defect-lifecycle.mjs';
+import { SEVERITY_LEVELS, severityProblems } from './defect-severity.mjs';
 
 const root = resolve(import.meta.dirname, "..");
+const priorities = ['P0', 'P1', 'P2', 'P3', 'unknown'];
+function severityRecordOf(item, title, evidence) {
+  if (!Object.hasOwn(item, 'severity')) throw new Error(`${title}: 缺少 severity。按 docs/defect-severity-standard.md 给出等级；无法确定时写 unknown 并在 severity_reason 说明缺失证据`);
+  if (!SEVERITY_LEVELS.includes(item.severity)) throw new Error(`${title}: severity 必须是 ${SEVERITY_LEVELS.join('/')}，收到 ${JSON.stringify(item.severity)}`);
+  const record = {
+    severity: item.severity,
+    severity_standard_version: item.severity_standard_version ?? 1,
+    severity_reason: item.severity_reason ?? '',
+    severity_dimensions: item.severity_dimensions,
+    ...(item.severity_evidence === undefined ? {} : { severity_evidence: item.severity_evidence })
+  };
+  const problems = severityProblems({ ...record, evidence_refs: evidence }, { requireStandard: true });
+  if (problems.length) throw new Error(`${title}: ${problems.join('; ')}`);
+  return record;
+}
 const runId = process.argv.find((arg) => arg.startsWith("--run-id="))?.slice(9);
 if (!runId) throw new Error("用法: node scripts/normalize-defects.mjs --run-id=<run_id>");
 const runDir = dataPath(root, "output/runs", runId);
@@ -32,6 +48,9 @@ const records = items.map((item, index) => {
   const levels = ['low', 'medium', 'strong'];
   const confidence = cases.length ? levels[Math.min(...cases.map(id => Math.max(0, levels.indexOf(assessments.find(entry => entry.case_id === id)?.evidence_confidence))))] : 'low';
   const title = item.title ?? item.summary ?? "未命名问题";
+  const severityRecord = severityRecordOf(item, title, evidence);
+  const priority = item.priority ?? 'unknown';
+  if (!priorities.includes(priority)) throw new Error(`${title}: priority 必须是 ${priorities.join('/')}，收到 ${JSON.stringify(priority)}`);
   const scopeId = typeof source.scope_id === 'string' && source.scope_id.trim() ? source.scope_id.trim() : runId;
   const fingerprint = createHash("sha256").update(JSON.stringify({ scope_id: scopeId, category, cases: [...new Set(cases)].sort(), title: title.trim().toLowerCase(), expected: item.expected_result ?? "", actual: item.actual_result ?? item.failure_summary ?? "" })).digest("hex").slice(0, 16);
   const baseId = item.bug_id ?? `DEF-${fingerprint.toUpperCase()}`;
@@ -48,8 +67,8 @@ const records = items.map((item, index) => {
     category,
     lifecycle_status: confidence === 'low' || item.needs_review || category === 'needs_review' ? 'needs_review' : 'draft',
     confidence,
-    severity: item.severity ?? "unknown",
-    priority: item.priority ?? "unknown",
+    ...severityRecord,
+    priority,
     title,
     related_cases: cases,
     evidence_refs: evidence,

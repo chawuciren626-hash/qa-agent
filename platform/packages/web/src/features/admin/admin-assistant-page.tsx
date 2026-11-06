@@ -6,7 +6,7 @@ import { useProject } from "../../state/project";
 
 const ADMIN_ASSISTANT_AGENT = "default_agent";
 
-/** The administrator's local authoring project uses the existing conversation page. */
+/** The administrator's assistant uses the host serving this admin view. */
 export function AdminAssistantPage() {
   const { currentProject, agents, agentsLoading, currentAgent, setCurrentAgentId } = useProject();
   const ready = currentProject?.projectId === "admin_agent_catalog" && !agentsLoading;

@@ -53,6 +53,8 @@ snapshot的controls列出实际观察到的可点击元素，包括非标准按�
 
 当派发 `mode=prepare` 时只准备，不打开浏览器、不运行产品测试。隔离 run 先根据已归档来源中明确的目标 URL 和测试账号写本次 run 的 `environment/test-env.json`，`execution.browser` 填本工程支持的 `chrome`，不得沿用其他项目的公共环境；来源不足时只报告真正缺失的目标信息。再用结构化 `prepare_execution_plan`（默认 full profile）选择确定范围并生成计划；它会排除依据或假设 pending/conflicted 的用例并绑定运行内脚本目录。按计划用文件工具直接写最终 `execution/scripts/` 测试脚本，调用结构化 `validate_execution_prepare`（artifacts 为运行内脚本路径）预检。不得运行临时生成器、`node -e`、`node --check`、直接调用 select-test-cases/create-execution-plan、安装依赖或产品测试。计划/脚本交给总控按保存的确认策略及有效执行批准处理，准备完成不等于测试已执行。
 
+`prepare_execution_plan` 的 `script_reuse` 回执列出已复制的项目级已验证脚本对应的 `reused` 用例及仍需编写的 `remaining` 用例。先核对本次设计与环境，保留已复制的脚本，仅为 `remaining` 编写或修订；预检时提交本次 run 内全部 spec 路径。旧 run 的通过记录不能算作本次通过，本次仍需审批、执行和归档实际结果。
+
 若准备入口报告全部用例为manual、确认依据缺失或设计合同错误，这属于上游测试用例技术质量问题，不是新的用户审批事项。原样返回错误和受影响case_id，由总控按既有自动返修机制交回test_case_agent；不要手写execution-plan、design_gate或确认文件，也不要询问用户采用哪个Schema。只有目标URL、必要账号、验证码/MFA或会改变业务预期的真实信息缺失时才需要用户。
 
 读取运行目录和旧证据使用已提供的路径及 `read_file`，不要调用未暴露的目录工具。`exec_command` 的 shell 可能是 POSIX `/bin/sh`，不要在其中试 PowerShell 命令；也不要探测或调用 `unzip`、`jar xf` 等临时解包工具。能从已归档的 JSON、日志、错误上下文直接判断时，不解包 trace。只读检查若失败，保留原错误并向总控说明，不通过换工具连续试错来消耗交接预算。

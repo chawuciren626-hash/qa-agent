@@ -12,14 +12,14 @@ export function validateExplorationTarget(url,sourcePath,sourceText) {
   let target;
   try {target=new URL(url);} catch {throw new Error('Invalid exploration URL');}
   if(!['http:','https:'].includes(target.protocol) || target.username || target.password) throw new Error('Use an HTTP(S) URL without embedded credentials');
-  const name=/^inputs\/([A-Za-z0-9][A-Za-z0-9._-]*)$/.exec(sourcePath)?.[1];
+  const name=/^inputs\/([\p{L}\p{N}][\p{L}\p{N}._-]*)$/u.exec(sourcePath)?.[1];
   if(!name || (name.includes('.') && !/\.(txt|md|json)$/i.test(name))) throw new Error('URL source must be archived text/Markdown/JSON input (extensionless text is supported)');
   if(typeof sourceText!=='string' || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/u.test(sourceText)) throw new Error('URL source must contain readable UTF-8 text, not a binary attachment');
   const urls=sourceText.match(/https?:\/\/[^\s<>"'`]+/g) ?? [];
   const candidates=urls.flatMap(value=>value.split(/\]\(/)).flatMap(value=>[value,value.replace(/[\]),，。；;]+$/,'')]);
   // Recognize adjacent prose without altering archived text or truncating Chinese URL paths.
   for(const value of [...candidates]) {
-    const boundary=value.search(/[，。；、]|(?:帮我|请你|请)(?:测|测试|检查|查看|打开|访问|验证|分析)|(?:这个|该|当前)(?:页面|网址|地址|链接)(?=的|是|为|中|上|里|需要|所有)/u);
+    const boundary=value.search(/[，。；、]|(?:测试|检查|验证|打开|访问)一下(?:这个|该|当前)|(?:帮我|请你|请)(?:测|测试|检查|查看|打开|访问|验证|分析)|(?:这个|该|当前)(?:页面|网址|地址|链接)(?=的|是|为|中|上|里|需要|所有)/u);
     if(boundary>0) candidates.push(value.slice(0,boundary));
   }
   if(!candidates.some(value=>{try{return new URL(value).href===target.href;}catch{return false;}})) throw new Error('Target URL is not present in the supplied source; do not guess an environment');
@@ -44,9 +44,14 @@ export async function exploreTaskUrl(root,runId,url,sourcePath) {
   const started=new Date().toISOString(),secrets=new Set(),metrics=operationPerformance();let browser;
   const observation={version:1,run_id:runId,command_id:commandId,dispatch_id:dispatch.dispatch_id,invocation_id:invocation,mode:'read_only_navigation',source_path:sourcePath,source_sha256:source.sha256,target_url:privateBrowserUrl(target.href),started_at:started,http_status:null,final_url:null,title:null,structure:null,blocked_requests:0,page_errors:0,error:null,
     limitations:['Single-page GET navigation only; no clicks, submissions, login, business mutations or business-flow assertions.', 'Non-GET requests and cross-origin document navigation are blocked; applications needing these may render incompletely.']};
-  let screenshot;
+  let screenshot,phase='browser_launch';
   try {
-    browser=await chromium.launch({headless:true,...(!existsSync(chromium.executablePath())?{channel:'chrome'}:{})});
+    const bundled=existsSync(chromium.executablePath());
+    observation.browser_runtime={worker_pid:process.pid,platform:process.platform,source:bundled?'playwright_chromium':'chrome_channel',headless:true,launch_status:'launching'};
+    browser=await chromium.launch({headless:true,...(!bundled?{channel:'chrome'}:{})});
+    observation.browser_runtime.launch_status='ready';
+    observation.browser_runtime.version=browser.version();
+    phase='browser_setup';
     const context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block',acceptDownloads:false});
     await context.routeWebSocket('**/*',socket=>{observation.blocked_requests++;socket.close();});
     await context.route('**/*',async route=>{
@@ -55,8 +60,10 @@ export async function exploreTaskUrl(root,runId,url,sourcePath) {
       return route.continue();
     });
     const page=await context.newPage();page.on('pageerror',()=>observation.page_errors++);
+    phase='navigation';
     const response=await metrics.measure('navigation',()=>page.goto(target.href,{waitUntil:'domcontentloaded',timeout:30000}));
     observation.http_status=response?.status() ?? null;
+    phase='page_evidence';
     const privacy=await metrics.measure('privacy_scan',()=>refreshBrowserPrivacy(page,secrets));
     observation.target_url=privateBrowserUrl(target.href,secrets);observation.final_url=privateBrowserUrl(page.url(),secrets);
     const structure=privacy.status==='observed'?await metrics.measure('snapshot_dom',()=>page.evaluate(()=>({
@@ -71,7 +78,7 @@ export async function exploreTaskUrl(root,runId,url,sourcePath) {
     const capture=await metrics.measure('screenshot_with_privacy',()=>capturePrivateScreenshot(page,resolve(dir,candidate),secrets));
     if(capture.captured) screenshot=candidate;
     else observation.capture_warning=capture.warning;
-  } catch(error) {observation.error=privateBrowserError(error,'exploration');}
+  } catch(error) {observation.error=privateBrowserError(error,phase);observation.failure_stage=phase;if(phase==='browser_launch' && observation.browser_runtime) observation.browser_runtime.launch_status='failed';}
   finally {if(browser) try {await browser.close();} catch(error) {observation.close_warning=privateBrowserError(error,'close');}}
   observation.performance=metrics.snapshot();
   if(observation.capture_warning || observation.structure?.privacy?.content_withheld) observation.limitations.push('Some page evidence was withheld or unavailable; do not retry navigation or disable privacy protection to obtain it. Reachability does not prove page content or business behavior.');

@@ -10,7 +10,7 @@ export function releaseResources(root,policy) {
     if(typeof file!=='string' || isAbsolute(file) || file.includes('\\') || file.split('/').some(p=>['.','..',''].includes(p)) || seen.has(file)) throw new Error('Invalid or duplicate release path');
     const skill = file.match(/^skills\/([a-z0-9]+(?:-[a-z0-9]+)*)\/(.+)$/);
     const skillResource = skill && isSkillResource(skill[2]);
-    if(!skillResource && !/^(scripts\/[^/]+\.(mjs|py)|acceptance\/(server\.mjs|site\.html)|schemas\/[^/]+\.json|docs\/[^/]+\.md|penguin\/.*\.(json|md|mjs)|penguin\/ui\/[^/]+\.(css|svg|png|ico)|config\/[^/]+\.json|package(-lock)?\.json|playwright\.config\.ts|tsconfig\.playwright\.json)$/.test(file)) throw new Error(`Runtime data is not a release resource: ${file}`);
+    if(!skillResource && !/^platform\/plugins\/goal\/hooks\/(hooks\.json|lib\.mjs|start\.mjs|stop\.mjs)$/.test(file) && !/^(scripts\/[^/]+\.(mjs|py)|acceptance\/(server\.mjs|site\.html)|schemas\/[^/]+\.json|docs\/[^/]+\.md|penguin\/.*\.(json|md|mjs)|penguin\/ui\/[^/]+\.(css|svg|png|ico)|config\/[^/]+\.json|package(-lock)?\.json|playwright\.config\.ts|tsconfig\.playwright\.json)$/.test(file)) throw new Error(`Runtime data is not a release resource: ${file}`);
     if(/^(config\/(test-env|test-environments|test-assets|session-workspaces|product-installation\.local)\.json|penguin\/.*\/project\.json)$/.test(file) || /\/(tmp-|check-path|run-retest|run-tms-tests|update-test-results)/.test(file)) throw new Error('Local configuration or historical helper cannot be released');
     const path=resolve(root,file);
     if(!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() || realpathSync(path)!==path) throw new Error('Release source missing or linked');

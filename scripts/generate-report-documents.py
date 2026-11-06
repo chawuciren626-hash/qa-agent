@@ -22,6 +22,7 @@ from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from report_delivery import markdown_body, markdown_blocks, export_browser_delivery
+from delivery_workbook import severity_label, severity_summary
 
 html_only = '--html-only' in sys.argv
 title_args = [a for a in sys.argv if a.startswith('--title=')]
@@ -186,12 +187,13 @@ for kind, text in markdown_blocks(markdown):
     else: doc.add_paragraph(clean_text(text))
 doc.add_heading("缺陷汇总", level=1)
 doc.add_paragraph(f"缺陷草稿条目: {len(bug_items)}（工程问题另见正文）")
+doc.add_paragraph(severity_summary(bug_items))
 if bug_items:
-    bug_table = doc.add_table(rows=1, cols=4); bug_table.style = "Table Grid"
-    for cell, value in zip(bug_table.rows[0].cells, ["编号", "分类", "关联用例", "结论"]): cell.text = value
+    bug_table = doc.add_table(rows=1, cols=5); bug_table.style = "Table Grid"
+    for cell, value in zip(bug_table.rows[0].cells, ["编号", "严重程度", "分类", "关联用例", "结论"]): cell.text = value
     for index, item in enumerate(bug_items, 1):
         cells = bug_table.add_row().cells
-        values = [item.get("defect_id", item.get("bug_id", f"BUG-{index:03d}")), item.get("category", item.get("classification", "needs_review")), ", ".join(item.get('related_cases', [])) or item.get("related_case", item.get("case_id", "")), item.get("summary", item.get("title", "待确认问题"))]
+        values = [item.get("defect_id", item.get("bug_id", f"BUG-{index:03d}")), severity_label(item), item.get("category", item.get("classification", "needs_review")), ", ".join(item.get('related_cases', [])) or item.get("related_case", item.get("case_id", "")), item.get("summary", item.get("title", "待确认问题"))]
         for cell, value in zip(cells, values): cell.text = str(value)
 doc.add_paragraph("报告依据本次运行中的测试结果和缺陷分析产物。")
 if governance:
@@ -239,7 +241,16 @@ for kind, text in markdown_blocks(markdown):
         continue
     if text in (report_title, "测试报告", "执行概览"): continue
     story.append(Paragraph(escape(clean_text(text)), heading_style if kind == "heading" else body_style))
-story.extend([Paragraph("缺陷汇总", heading_style), Paragraph(f"缺陷草稿条目: {len(bug_items)}（工程问题另见正文）", body_style)])
+story.extend([Paragraph("缺陷汇总", heading_style), Paragraph(f"缺陷草稿条目: {len(bug_items)}（工程问题另见正文）", body_style), Paragraph(escape(severity_summary(bug_items)), body_style)])
+if bug_items:
+    severity_cells = [["编号", "严重程度", "分类", "关联用例", "结论"]]
+    for index, item in enumerate(bug_items, 1):
+        severity_cells.append([item.get("defect_id", item.get("bug_id", f"BUG-{index:03d}")), severity_label(item), item.get("category", item.get("classification", "needs_review")), ", ".join(item.get('related_cases', [])) or item.get("related_case", item.get("case_id", "")), item.get("summary", item.get("title", "待确认问题"))])
+    severity_head_style = ParagraphStyle('severity-head', parent=body_style, textColor=colors.white)
+    cells = [[Paragraph(escape(clean_text(value)), severity_head_style if row_index == 0 else body_style) for value in row] for row_index, row in enumerate(severity_cells)]
+    severity_table = Table(cells, colWidths=[28 * mm, 25 * mm, 28 * mm, 35 * mm, 58 * mm], repeatRows=1)
+    severity_table.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor('#16324F')), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('VALIGN',(0,0),(-1,-1),'TOP'), ('GRID',(0,0),(-1,-1),0.3,colors.HexColor('#DCE5EF'))]))
+    story.append(severity_table)
 if governance:
     story.extend([Paragraph('问题生命周期', heading_style), Paragraph(history_text, body_style)])
 for item in lifecycle_items:

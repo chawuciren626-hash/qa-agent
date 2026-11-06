@@ -551,6 +551,7 @@ export interface ModelPricingDto {
  * own then gets the client's default.
  */
 export interface ProviderConnectionDto {
+  displayName?: string;
   baseUrl?: string;
   clientType?: string;
   apiKeyMasked?: string;
@@ -676,6 +677,7 @@ export interface ModelsResponse {
  * `ModelsUpdateRequest.providers`). Omitted fields are kept.
  */
 export interface ProviderConnectionUpdate {
+  displayName?: string;
   /** `null` clears it; omitted keeps it. */
   baseUrl?: string | null;
   /**
@@ -1452,6 +1454,8 @@ export interface AgentConfigResponse {
   /** Agent State absolute path. */
   stateDir: string;
   activeSessionCount: number;
+  /** Published definition currently visible to the requesting user; fields above remain read-only. */
+  managed?: { bundleHash: string; version: number; skills: string[]; plugins: string[]; localSkillOverrides: string[] };
 }
 
 /**

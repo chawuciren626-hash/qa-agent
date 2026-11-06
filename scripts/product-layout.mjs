@@ -55,6 +55,12 @@ export function productEnvironment(layout,env=process.env) {
     result.AITEST_ACCOUNT_CENTER_ORIGIN=account.origin;
     result.AITEST_ACCOUNT_CENTER_OWNER=account.ownerUserId;
   }
+  const sharedRuntimeFile=resolve(layout.paths.host_data,'shared-agent-runtime.json');
+  if(existsSync(sharedRuntimeFile)) {
+    const shared=JSON.parse(readFileSync(sharedRuntimeFile,'utf8'));
+    if(shared.version!==1||shared.enabled!==true)throw Error('Invalid shared Agent runtime configuration');
+    result.AITEST_SHARED_AGENT_RUNTIME='1';
+  } else delete result.AITEST_SHARED_AGENT_RUNTIME;
   const pathKey=Object.keys(result).find(k=>k.toLowerCase()==='path') ?? 'PATH';
   result[pathKey]=[dirname(layout.paths.node),...(layout.paths.python?[dirname(layout.paths.python)]:[]),result[pathKey]??''].filter(Boolean).join(delimiter);
   return {...result,PENGUIN_HOME:layout.paths.host_data,PENGUIN_AGENT_ROOT:layout.agent_root,QA_APP_DATA_ROOT:layout.paths.qa_data,

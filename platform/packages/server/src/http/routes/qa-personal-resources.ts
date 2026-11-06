@@ -73,7 +73,7 @@ export function registerQaPersonalResources(app: Hono<AppEnv>, deps: AgentsRoute
     const { dir, owner } = scope(c);
     const names = await fs.readdir(dir).catch((e: NodeJS.ErrnoException) => { if (e.code === 'ENOENT') return []; throw e; });
     const resources = await Promise.all(names.filter(n => /^[a-f0-9-]+\.json$/.test(n)).map(n => read(path.join(dir, n)).then(summary)));
-    return c.json({ resources, canApply: owner });
+    return c.json({ resources, canApply: owner && c.var.user.isAdmin });
   });
   app.post(base, async c => {
     const { dir } = scope(c);

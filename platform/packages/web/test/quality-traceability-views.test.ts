@@ -268,7 +268,7 @@ it("labels a stale report and keeps its evidence sources and untested items", as
   expect(text()).toContain("执行 session-1/run-1 · execution/lockout.png");
   expect(text()).toContain("测试点 P-2：未设计用例");
   expect(text()).toContain("仅验证登录锁定场景");
-  expect(text()).toContain("defect-1 · 已确认 · Critical");
+  expect(text()).toContain("defect-1 · 已确认 · 严重");
   expect(hasButton("发布报告")).toBe(false);
   expect(hasButton("确认")).toBe(false);
 });

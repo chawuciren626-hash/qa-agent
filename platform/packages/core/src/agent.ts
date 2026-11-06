@@ -193,6 +193,26 @@ export interface AgentAssembly {
    * text. Empty = the prompt is exactly the Agent's own.
    */
   promptSections?(): readonly PromptSection[];
+  /** Resolve an immutable, locally cached public definition for this Session. Null keeps legacy Agent State. */
+  publishedDefinition?(context: { projectId: string; agentId: string; sessionId: string; parentSessionId?: string }): Promise<{
+    bundleHash: string;
+    prompt: string;
+    agentsMd: string;
+    maxTurns?: number;
+     model?: SystemConfig["model"];
+     compaction?: SystemConfig["compaction"];
+    skillsConfig?: SystemConfig["skills"];
+    hooksConfig?: SystemConfig["hooks"];
+    skills: readonly { name: string; directory: string; description?: string }[];
+    pluginInstructions: readonly string[];
+    memoryInstructions?: string;
+    builtinTools?: NonNullable<NonNullable<SystemConfig["tools"]>["builtin"]>;
+    /** Host-managed services; credentials stay in transport configuration, outside prompts. */
+    mcpServers?: NonNullable<NonNullable<SystemConfig["tools"]>["mcpServers"]>;
+    /** A host-owned management assistant must not resume obsolete local management instructions. */
+    refreshPromptOnResume?: boolean;
+    hookPackages?: readonly InstalledHook[];
+  } | null>;
   /**
    * Resolves a model credential immediately before an upstream request. Hosting processes can
    * rotate short-lived credentials here; core neither knows nor interprets the provider.
@@ -222,6 +242,8 @@ export interface ControlEnvContext {
 }
 
 export interface CreateSessionOptions {
+  /** Internal lineage used to keep a spawned child on the parent's published definition. */
+  parentSessionId?: string;
   /** Workspace for this run; if unspecified, a temporary Workspace is created under the Agent directory. */
   workspaceDir?: string;
   /**
@@ -293,6 +315,7 @@ export interface ResumeSessionOptions {
  */
 interface SessionSpec {
   sessionId: string;
+  parentSessionId?: string;
   workspaceDir: string;
   /** The model the Session was created on (or resumed on). The model a context runs on is the context's own fact (see AssembledContext.modelEntry); this one only says which entry the credentials below were given for. */
   creationRef: ModelRef;
@@ -571,7 +594,64 @@ export class Agent {
     opts: { systemPrompt?: string } = {},
   ): Promise<AssembledContext> {
     const { root, projectId, agentId } = this.state;
-    const state = await loadAgentState({ root, projectId, agentId });
+    const loadedState = await loadAgentState({ root, projectId, agentId });
+    const published = await this.assembly?.publishedDefinition?.({
+      projectId, agentId, sessionId: spec.sessionId,
+      ...(spec.parentSessionId ? { parentSessionId: spec.parentSessionId } : {}),
+    }) ?? null;
+    const sharedReference = path.join(loadedState.stateDir, "shared-agent.json");
+    const marker = await fs.stat(sharedReference).then(stat => stat.isFile(), () => false)
+      ? JSON.parse(await fs.readFile(sharedReference, "utf8")) as { version?: unknown; agentId?: unknown; legacySessionIds?: unknown; localSkillOverrides?: unknown }
+      : null;
+    if (marker && (marker.version !== 1 || marker.agentId !== agentId))
+      throw new Error(`Invalid shared Agent reference: ${sharedReference}`);
+    if (published === null && marker) {
+      const historical = marker.version === 1 && marker.agentId === agentId &&
+        Array.isArray(marker.legacySessionIds) && marker.legacySessionIds.includes(spec.sessionId) &&
+        await fs.stat(path.join(loadedState.stateDir, "system_config.yaml")).then(stat => stat.isFile(), () => false);
+      if (!historical)
+        throw new Error(`Shared Agent definition is unavailable for ${agentId}; this Session cannot fall back to a local default.`);
+    }
+    const localSkillOverrides: { name: string; description: string; file: string }[] = [];
+    if (published !== null && marker?.localSkillOverrides !== undefined) {
+      if (!Array.isArray(marker.localSkillOverrides) || marker.localSkillOverrides.some(name =>
+        typeof name !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name)))
+        throw new Error(`Invalid local Skill overrides: ${sharedReference}`);
+      const names = new Set<string>(marker.localSkillOverrides);
+      if (names.size !== marker.localSkillOverrides.length || published.skills.some(skill => names.has(skill.name)))
+        throw new Error(`Duplicate or conflicting local Skill overrides: ${sharedReference}`);
+      const installed = await listInstalledSkills(root, projectId, agentId);
+      for (const name of names) {
+        const skill = installed.find(item => item.name === name);
+        const directory = path.join(loadedState.stateDir, "skills", name);
+        const file = path.join(directory, "SKILL.md");
+        if (!skill || !(await fs.lstat(directory).then(stat => stat.isDirectory() && !stat.isSymbolicLink(), () => false)) ||
+          !(await fs.lstat(file).then(stat => stat.isFile() && !stat.isSymbolicLink(), () => false)))
+          throw new Error(`Local Skill override missing or linked: ${file}`);
+        localSkillOverrides.push({ name, description: skill.description ?? "", file });
+      }
+    }
+    const state: AgentState = published === null ? loadedState : {
+      ...loadedState,
+      agentsMd: published.agentsMd,
+      systemConfig: {
+        ...loadedState.systemConfig,
+        system_prompt: published.prompt || loadedState.systemConfig.system_prompt,
+        ...(published.maxTurns === undefined ? {} : { max_turns: published.maxTurns }),
+        ...(published.model === undefined ? {} : { model: { ...loadedState.systemConfig.model, ...published.model } }),
+        ...(published.compaction === undefined ? {} : { compaction: { ...loadedState.systemConfig.compaction, ...published.compaction } }),
+        skills: {
+          enabled: true,
+          prompt: "# Shared Skills\nRead the matching SKILL.md from the absolute paths in the Published Agent Resources section before using it.\n{{SKILL_METADATA}}",
+          ...published.skillsConfig,
+        },
+        hooks: { enabled: false },
+        tools: {
+          builtin: published.builtinTools ?? loadedState.systemConfig.tools?.builtin,
+          mcpServers: published.mcpServers ?? [],
+        },
+      },
+    };
     const vault = await loadAgentVault(root, projectId, agentId);
     // Strict-tier alongside the Agent State even though it is Project-owned: the command
     // policy this context runs under (and the Project half of the thinking-level chain) is
@@ -581,13 +661,16 @@ export class Agent {
     // Hook packages are not part of the request prefix, and are read on the same schedule
     // all the same: a package the model wrote during one context is consulted from the next.
     const child = spec.subagentDepth > 0 || spec.source === "subagent";
-    const hookPackages =
-      (!qaEnabled && child) || (!child && state.systemConfig.hooks?.enabled === false)
-        ? []
-        : await listInstalledHooks(root, projectId, agentId);
-    let systemPrompt = opts.systemPrompt;
+    const hookPackages = published !== null
+      ? published.hooksConfig?.enabled === false ? [] : [...(published.hookPackages ?? [])]
+      : (!qaEnabled && child) || (!child && state.systemConfig.hooks?.enabled === false)
+        ? [] : await listInstalledHooks(root, projectId, agentId);
+    let systemPrompt = published?.refreshPromptOnResume ? undefined : opts.systemPrompt;
     if (systemPrompt === undefined) {
-      const installedSkills = await listInstalledSkills(root, projectId, agentId);
+      const installedSkills = published === null
+        ? await listInstalledSkills(root, projectId, agentId)
+        : [...published.skills.map(skill => ({ name: skill.name, description: skill.description ?? "", version: "" })),
+          ...localSkillOverrides.map(skill => ({ name: skill.name, description: skill.description, version: "" }))];
       // Schedule task names for the {{SCHEDULES}} roster (names only; the files' contents are
       // the server-side scheduler's concern).
       const scheduleNames = await listScheduleNames(root, projectId, agentId);
@@ -614,7 +697,20 @@ export class Agent {
           memory,
           scheduleNames,
         ),
-        this.assembly?.promptSections?.() ?? [],
+        [
+          ...(this.assembly?.promptSections?.() ?? []),
+          ...(published === null ? [] : [...(published.memoryInstructions && published.memoryInstructions !== "{}" ? [{title:"Central Agent Memory",text:published.memoryInstructions}] : []),{
+            title: "Published Agent Resources",
+            text: [
+              `Definition: ${published.bundleHash}`,
+              ...published.skills.map(skill => `- ${skill.name}: ${path.join(skill.directory, "SKILL.md")}`),
+              ...published.pluginInstructions,
+            ].join("\n"),
+          }, ...(localSkillOverrides.length ? [{
+            title: "Local Project Skill Overrides",
+            text: localSkillOverrides.map(skill => `- ${skill.name}: ${skill.file}`).join("\n"),
+          }] : [])]),
+        ],
       );
     }
 
@@ -779,6 +875,7 @@ export class Agent {
     workspaceDir = qaBindWorkspace(this.state, opts, sessionId, workspaceDir);
     const spec: SessionSpec = {
       sessionId,
+      ...(opts.parentSessionId ? { parentSessionId: opts.parentSessionId } : {}),
       workspaceDir,
       creationRef: ref,
       credentialOverride: { apiKey: opts.apiKey, baseUrl: opts.baseUrl },
@@ -1158,7 +1255,9 @@ export class Agent {
         if (agentId !== undefined && agentId !== parentAgentId) {
           try {
             assertValidId("agent_id", agentId);
-            await fs.access(systemConfigPath(root, projectId, agentId));
+            const localConfig = await fs.stat(systemConfigPath(root, projectId, agentId)).then(stat => stat.isFile(), () => false);
+            const sharedReference = await fs.stat(path.join(root, projectId, "agents", agentId, "agent_state", "shared-agent.json")).then(stat => stat.isFile(), () => false);
+            if (!localConfig && !sharedReference) throw new Error("missing Agent definition");
           } catch {
             throw new Error(
               `subagent error: agent "${agentId}" does not exist or is not accessible`,
@@ -1205,6 +1304,7 @@ export class Agent {
         const parentLevel =
           spec.thinkingLevel === undefined ? current.thinkingLevel : spec.thinkingLevel;
         const childSession = await childAgent.createSession({
+          parentSessionId: spec.sessionId,
           workspaceDir,
           ...childModel,
           thinkingLevel: spawnThinkingLevel ?? parentLevel ?? null,
@@ -1625,6 +1725,10 @@ export class Agent {
     // (CreateAgentOptions.confineSpawn, bound to this Session's coordinates and re-read
     // at every run), with the Session's Workspace and scratchpad as its scope.
     const options: ScriptHookOptions = {
+      env: {
+        AITEST_QA_AGENT_ROOT: path.join(root, projectId, "agents"),
+        AITEST_QA_AGENT_ID: agentId,
+      },
       ...(this.pathPrepend ? { pathPrepend: this.pathPrepend } : {}),
       ...(this.confineSpawn ? { confineSpawn: () => this.confineSpawn!(ctx) } : {}),
       scope: {

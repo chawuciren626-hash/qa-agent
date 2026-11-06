@@ -46,6 +46,7 @@ import type { TraceIndexStore } from "../mechanisms/traces.js";
 import { compareActivityDesc } from "./session-service.js";
 import type { ActivityCursor, ArchivedRow } from "./session-service.js";
 import { TEMP_WORKSPACE_GROUP, isTempWorkspace, matchesWorkspaceGroup } from "./workspace-group.js";
+import { qaEnabled } from "./qa-engine.js";
 
 /** What the archive page reaches. */
 export interface ArchivedSessionsDeps {
@@ -425,6 +426,16 @@ export class ArchivedSessionsService {
     action: "unarchive" | "delete",
   ): Promise<ArchivedSessionsBatchResponse> {
     const projectId = "filter" in target ? target.filter.projectId : undefined;
+    if (qaEnabled && caller.isAdmin) {
+      const owned = new Set(
+        (await this.deps.listProjects(caller.userId))
+          .filter((project) => project.ownerUserId === caller.userId)
+          .map((project) => project.projectId),
+      );
+      if (!projectId || !owned.has(projectId)) {
+        throw new HttpError(403, "project_owner_required", "只有项目创建者可以管理归档任务。");
+      }
+    }
     if ("filter" in target && projectId === undefined) {
       throw badRequest("A batch on a machine names its Project.");
     }
@@ -447,6 +458,24 @@ export class ArchivedSessionsService {
     caller: ArchiveCaller,
     target: ArchivedSessionsBatch,
   ): Promise<{ rows: SessionRow[]; missing: string[] }> {
+    // QA administrators may inspect every personal Project, but that visibility
+    // does not grant authority to change another owner's archived tasks.
+    const owned =
+      qaEnabled && caller.isAdmin
+        ? new Set(
+            (await this.deps.listProjects(caller.userId))
+              .filter((project) => project.ownerUserId === caller.userId)
+              .map((project) => project.projectId),
+          )
+        : null;
+    if (
+      owned &&
+      "filter" in target &&
+      target.filter.projectId &&
+      !owned.has(target.filter.projectId)
+    ) {
+      throw new HttpError(403, "project_owner_required", "只有项目创建者可以管理归档任务。");
+    }
     const rows: SessionRow[] = [];
     const missing: string[] = [];
     if ("sessionIds" in target) {
@@ -454,7 +483,11 @@ export class ArchivedSessionsService {
         const row = this.deps.sessions.findById(sessionId);
         if (row === null || !this.deps.canAccess(caller.userId, row.projectId)) {
           missing.push(sessionId);
-        } else rows.push(row);
+        } else if (owned && !owned.has(row.projectId)) {
+          throw new HttpError(403, "project_owner_required", "只有项目创建者可以管理归档任务。");
+        } else {
+          rows.push(row);
+        }
       }
       return { rows, missing };
     }
@@ -464,7 +497,13 @@ export class ArchivedSessionsService {
     for (const { row: listed } of await this.matching(caller, target.filter)) {
       if (excluded.has(listed.sessionId)) continue;
       const row = this.deps.sessions.findById(listed.sessionId);
-      if (row !== null && (until === undefined || countedBy(row, until))) rows.push(row);
+      if (
+        row !== null &&
+        (!owned || owned.has(row.projectId)) &&
+        (until === undefined || countedBy(row, until))
+      ) {
+        rows.push(row);
+      }
     }
     return { rows, missing };
   }

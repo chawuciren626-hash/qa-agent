@@ -458,6 +458,10 @@ function patchProviderTable(
 ): { table: RawTable; keyChanged: boolean } {
   const clientType = patch.clientType?.trim();
   const member: RawTable = { ...asTable(providers[provider]) };
+  if (patch.displayName !== undefined) {
+    if (!patch.displayName.trim() || patch.displayName.trim().length > 100) throw badRequest("分组名称无效。");
+    member.display_name = patch.displayName.trim();
+  }
   if (patch.baseUrl !== undefined) {
     const baseUrl = patch.baseUrl?.trim();
     if (baseUrl) member.base_url = baseUrl;
@@ -797,7 +801,7 @@ export class ProjectConfigService implements ProjectConfigStore {
 
   @Use() private readonly paths!: Paths;
   /** Optional for narrow service tests; the production Projects module always provides it. */
-  @Use() private readonly promotions?: ModelPromotions;
+  @Use() protected promotions?: ModelPromotions;
   @Use() private readonly projects?: Projects;
   /** Optional for narrow service tests; OAuth refresh metadata lives in web.db, not TOML. */
   @Use() private readonly providerAuthTokens?: ModelProviderAuthTokens;
@@ -928,7 +932,7 @@ export class ProjectConfigService implements ProjectConfigStore {
    * ISO — an honest persistent source that survives server restarts (every models update
    * rewrites the file). undefined when the file doesn't exist yet.
    */
-  private async configUpdatedAt(projectId: string): Promise<string | undefined> {
+  protected async configUpdatedAt(projectId: string): Promise<string | undefined> {
     try {
       const st = await fs.stat(this.filePath(projectId));
       return st.mtime.toISOString();
@@ -1753,7 +1757,10 @@ export class ProjectConfigService implements ProjectConfigStore {
       ...(visionRef !== undefined ? { visionModel: toDto(visionRef) } : {}),
       ...(updatedAt !== undefined ? { updatedAt } : {}),
       providers: Object.fromEntries(
-        Object.entries(providers).map(([id, connection]) => [id, providerDto(connection)]),
+        [...new Set([...Object.keys(providers),...Object.keys(asTable(raw.providers)).filter(id=>typeof asTable(asTable(raw.providers)[id]).display_name==="string")])].map(id => [id, {
+          ...providerDto(providers[id]??{}),
+          ...(typeof asTable(asTable(raw.providers)[id]).display_name === "string" ? {displayName:String(asTable(asTable(raw.providers)[id]).display_name)} : {}),
+        }]),
       ),
       models,
     };

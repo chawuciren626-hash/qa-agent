@@ -11,6 +11,20 @@ import {loadProductLayout,productEnvironment} from './product-layout.mjs';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const alive=pid=>{try{process.kill(pid,0);return true;}catch(e){if(e.code==='ESRCH')return false;throw e;}};
 const read=file=>JSON.parse(readFileSync(file,'utf8'));
+// Match the server's lock protocol: a recycled PID alone is not a live server.
+export async function serverLockAlive(file) {
+  let lock;
+  try { lock=read(file); } catch(e) { if(e.code==='ENOENT'||e instanceof SyntaxError)return false; throw e; }
+  if(!Number.isInteger(lock.pid)||lock.pid<=0||!Number.isInteger(lock.port)||lock.port<1||lock.port>65535)return false;
+  if(!alive(lock.pid))return false;
+  return new Promise(done=>{
+    const socket=connect({host:'127.0.0.1',port:lock.port});
+    const finish=value=>{socket.destroy();done(value);};
+    socket.once('connect',()=>finish(true));
+    socket.once('error',()=>finish(false));
+    socket.setTimeout(500,()=>finish(false));
+  });
+}
 export function servicePaths(config) {
   const layout=loadProductLayout(config);
   const id=createHash('sha256').update(layout.paths.host_data.toLowerCase()).digest('hex').slice(0,24);
@@ -167,7 +181,12 @@ async function supervise(config) {
   async function start(){
     if(stopping)return;
     const lock=join(layout.paths.host_data,'server.lock');
-    if(existsSync(lock)&&alive(read(lock).pid)){error='已有服务占用本地数据，请先正常退出旧版桌面。';return;}
+    if(await serverLockAlive(lock)){
+      error='已有服务占用本地数据，请先正常退出旧版桌面。';
+      // Recheck after the old server exits instead of remaining blocked forever.
+      setTimeout(()=>void start(),2000);
+      return;
+    }
     ready=false;
     const portFile=join(p.dir,'server-port'),preferred=join(layout.paths.desktop_profile,'preferred-port');
     if(existsSync(portFile))unlinkSync(portFile);

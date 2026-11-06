@@ -69,6 +69,7 @@ test('privacy strips URL credentials and query fragments and never echoes browse
   assert.equal(privateBrowserUrl('invalid secret'),'[WITHHELD: invalid URL]');
   const result=privateBrowserError(new Error('page.goto: net::ERR_CONNECTION_REFUSED https://user:password@example.test/?secret=secret'),'exploration');
   assert.deepEqual(result,{phase:'exploration',category:'browser_operation_error',network_code:'net::ERR_CONNECTION_REFUSED'});
+  assert.deepEqual(privateBrowserError(new Error('Executable does not exist at C:/private/browser.exe'),'browser_launch'),{phase:'browser_launch',category:'browser_binary_missing'});
 });
 
 test('privacy unavailable or oversized observations withhold content and never take unmasked screenshots',async()=>{

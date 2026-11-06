@@ -88,6 +88,15 @@ export interface DefectView {
   status: DefectStatus;
   confidence: "low" | "medium" | "strong";
   severity: DefectSeverity;
+  /** Present only for records written with the severity standard; older records omit it. */
+  severityReason?: string;
+  severityDimensions?: {
+    user_business_impact?: string;
+    reach_frequency?: string;
+    recoverability?: string;
+    data_security_compliance?: string;
+  };
+  severityStandardVersion?: number;
   priority: DefectPriority;
   expectedResult: string;
   actualResult: string;
@@ -207,6 +216,90 @@ export const DEFECT_STATUS_LABELS: Readonly<Record<DefectStatus, string>> = {
   fixed: "已修复（未验证）",
   closed: "已关闭",
 };
+
+export const DEFECT_SEVERITY_LABELS: Readonly<Record<DefectSeverity, string>> = {
+  Blocker: "阻断",
+  Critical: "严重",
+  Major: "较严重",
+  Minor: "轻微",
+  Trivial: "提示",
+  unknown: "未评估",
+};
+
+/** High to low; unknown is last because it is unclassified, not low risk. */
+export const DEFECT_SEVERITY_ORDER: readonly DefectSeverity[] = [
+  "Blocker",
+  "Critical",
+  "Major",
+  "Minor",
+  "Trivial",
+  "unknown",
+];
+
+export function severityLabel(severity: string | null | undefined): string {
+  if (!severity) return "未记录";
+  return DEFECT_SEVERITY_LABELS[severity as DefectSeverity] ?? severity;
+}
+
+export function severityRank(severity: string | null | undefined): number {
+  const index = DEFECT_SEVERITY_ORDER.indexOf((severity ?? "unknown") as DefectSeverity);
+  return index < 0 ? DEFECT_SEVERITY_ORDER.length : index;
+}
+
+export function isSeverityUnknown(severity: string | null | undefined): boolean {
+  return !severity || severity === "unknown";
+}
+
+export const SEVERITY_DIMENSION_LABELS: Readonly<Record<string, string>> = {
+  user_business_impact: "业务影响",
+  reach_frequency: "影响范围",
+  recoverability: "恢复方式",
+  data_security_compliance: "数据/安全/合规",
+};
+
+export const SEVERITY_DIMENSION_VALUE_LABELS: Readonly<Record<string, string>> = {
+  critical: "严重",
+  major: "较大",
+  minor: "较小",
+  none: "无",
+  unknown: "未知",
+  all: "全部",
+  many: "多数",
+  some: "部分",
+  few: "少数",
+  expensive: "代价高",
+  workaround: "有绕过",
+  easy: "容易",
+  confirmed: "已确认",
+  suspected: "疑似",
+};
+
+export function severityDimensionLabel(key: string): string {
+  return SEVERITY_DIMENSION_LABELS[key] ?? key;
+}
+
+export function severityDimensionValueLabel(value: string): string {
+  return SEVERITY_DIMENSION_VALUE_LABELS[value] ?? value;
+}
+
+/** Known levels and unassessed are counted apart; unknown is never folded into a low level. */
+export function severitySummary(defects: { severity?: string }[]): {
+  levels: Record<DefectSeverity, number>;
+  unknown: number;
+  unrecorded: number;
+  total: number;
+} {
+  const levels = Object.fromEntries(DEFECT_SEVERITY_ORDER.map((level) => [level, 0])) as Record<DefectSeverity, number>;
+  let unknown = 0;
+  let unrecorded = 0;
+  for (const defect of defects) {
+    if (!defect.severity) unrecorded += 1;
+    else if (defect.severity === "unknown") unknown += 1;
+    else if (defect.severity in levels) levels[defect.severity as DefectSeverity] += 1;
+    else unrecorded += 1;
+  }
+  return { levels, unknown, unrecorded, total: defects.length };
+}
 
 export const DEFECT_CATEGORY_LABELS: Readonly<Record<DefectCategory, string>> = {
   product_defect: "产品缺陷",

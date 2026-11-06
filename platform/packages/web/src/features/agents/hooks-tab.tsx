@@ -26,7 +26,7 @@
  * switches; members see the state. Hooks have no prompt half, so the card comes alone.
  */
 import { useCallback, useEffect, useState } from "react";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, ReactNode } from "react";
 import type { HookItem } from "@prismshadow/penguin-server/api";
 import {
   Badge,
@@ -81,7 +81,6 @@ export function HooksTab({
   /** The switch writes the Agent config directly, so the settings page must refetch its own copy — otherwise a later Prompt-tab save from stale data would silently revert it. */
   onConfigChanged?: () => void;
 }) {
-  const { locale } = useLocale();
   const { currentProject, reloadAgents } = useProject();
   const projectId = currentProject?.projectId ?? null;
   const isOwner = currentProject?.role === "owner";
@@ -170,6 +169,18 @@ export function HooksTab({
 
   if (!projectId) return null;
 
+  return <HooksTabView hooks={hooks} busy={busy} error={error} agentName={agentName} isOwner={isOwner} toggleCard={toggleCard}
+    exportHook={exportHook} confirmRemove={confirmRemove} removing={removing} setRemoving={setRemoving}
+    importOpen={importOpen} setImportOpen={setImportOpen}
+    importDialog={<HookImportDialog projectId={projectId} agentId={agentId} onClose={()=>setImportOpen(false)} onImported={()=>void imported()} />} />;
+}
+
+export function HooksTabView({hooks, busy, error, agentName, editable = true, isOwner, toggleCard, exportHook, confirmRemove, removing, setRemoving, importOpen, setImportOpen, importDialog}: {
+ hooks:HookItem[]|null; busy:boolean; error:string|null; agentName:string; editable?:boolean; isOwner:boolean; toggleCard:ReactNode;
+ exportHook:(name:string)=>Promise<void>; confirmRemove:()=>Promise<void>; removing:string|null; setRemoving:(name:string|null)=>void;
+ importOpen:boolean; setImportOpen:(value:boolean)=>void; importDialog:ReactNode;
+}) {
+ const {locale}=useLocale();
   return (
     <div className="space-y-4">
       {/* Tab-level description: no title in the panel to anchor a "?" to (see help-fold.tsx). */}
@@ -186,7 +197,7 @@ export function HooksTab({
         <Button
           size="sm"
           variant="primary"
-          disabled={hooks === null}
+          disabled={hooks === null || !editable}
           onClick={() => setImportOpen(true)}
         >
           {S.hooks.importHook}
@@ -258,7 +269,7 @@ export function HooksTab({
                   variant="danger"
                   title={S.skills.uninstall}
                   aria-label={`${S.skills.uninstall} ${hook.name}`}
-                  disabled={busy}
+                  disabled={busy || !editable}
                   onClick={() => setRemoving(hook.name)}
                 >
                   <GlyphIcon d={ICONS.trash} size={14} />
@@ -269,14 +280,7 @@ export function HooksTab({
         </Card>
       )}
 
-      {importOpen && (
-        <HookImportDialog
-          projectId={projectId}
-          agentId={agentId}
-          onClose={() => setImportOpen(false)}
-          onImported={() => void imported()}
-        />
-      )}
+      {importOpen && importDialog}
 
       {/* Uninstall confirmation (shared ConfirmModal, the Skills tab's pattern). */}
       <ConfirmModal
@@ -303,20 +307,21 @@ export function HooksTab({
  * tab's shape). The source is the dialog's draft (compared without the spaces around it): closing
  * with one typed asks first, and an upload in flight holds every way of closing until it answers.
  */
-function HookImportDialog({
-  projectId,
-  agentId,
-  onClose,
-  onImported,
-}: {
-  projectId: string;
-  agentId: string;
-  onClose: () => void;
-  /** A zip landed: the tab closes the dialog and reads the list again. */
-  onImported: () => void;
-}) {
-  const { openAiChat } = useAiBridge();
-  const machineId = useAgentLocation();
+type ImportDialogProps = {projectId:string;agentId:string;agentOptions?:{agentId:string;label:string}[];onClose:()=>void;onImported:()=>void};
+export interface ImportDialogTransport {
+ install:(agentId:string,data:{dataBase64:string;overwrite?:boolean})=>Promise<unknown>;
+ openChat:(agentId:string,text:string)=>void;
+ prompt?:(source:string)=>string;
+}
+function HookImportDialog(props:ImportDialogProps) {
+ const {openAiChat}=useAiBridge();const machineId=useAgentLocation();
+ return <HookImportDialogContent {...props} transport={{
+  install:(agentId,data)=>api.installAgentHookArchive(props.projectId,agentId,data,machineId),
+  openChat:(agentId,text)=>openAiChat({agentId,text,machineId}),
+ }} />;
+}
+
+export function HookImportDialogContent({projectId,agentId,agentOptions,onClose,onImported,transport}:ImportDialogProps & {transport:ImportDialogTransport}) {
   const form = useFormDraft<string>("", { normalize: (text) => text.trim() });
   const source = form.draft;
   const [uploading, setUploading] = useState(false);
@@ -335,12 +340,7 @@ function HookImportDialog({
     setUploading(true);
     setUploadError(null);
     try {
-      await api.installAgentHookArchive(
-        projectId,
-        agentId,
-        { dataBase64, ...(overwrite ? { overwrite: true } : {}) },
-        machineId,
-      );
+      await transport.install(agentId, { dataBase64, ...(overwrite ? { overwrite: true } : {}) });
       setOverwriting(null);
       onImported();
     } catch (e) {
@@ -374,10 +374,9 @@ function HookImportDialog({
   // A URL / repo / path source gets an import lead sentence, free text is the lead itself (see
   // hook-import.ts); the preview substitutes a placeholder token until something is entered.
   const trimmedSource = source.trim();
-  const chatPrompt = buildHookImportPrompt(
+  const makePrompt = transport.prompt ?? ((source:string)=>buildHookImportPrompt(source,projectId,agentId));
+  const chatPrompt = makePrompt(
     trimmedSource || S.hooks.importSourceToken,
-    projectId,
-    agentId,
   );
   // Copy feedback lives at the button (the shared copy convention): its glyph flips to the
   // check while copied — no toast, and the button label never changes.
@@ -393,11 +392,7 @@ function HookImportDialog({
   const openChat = () => {
     if (trimmedSource === "") return;
     discardUnsaved(form.scope);
-    openAiChat({
-      agentId,
-      text: buildHookImportPrompt(trimmedSource, projectId, agentId),
-      machineId,
-    });
+    transport.openChat(agentId,makePrompt(trimmedSource));
     onClose();
   };
 
@@ -434,7 +429,7 @@ function HookImportDialog({
                   size="sm"
                   disabled={trimmedSource === ""}
                   onClick={() =>
-                    promptCopy.flash(buildHookImportPrompt(trimmedSource, projectId, agentId))
+                    promptCopy.flash(makePrompt(trimmedSource))
                   }
                 >
                   <CopyCheckGlyph copied={promptCopy.copied} size={12} />

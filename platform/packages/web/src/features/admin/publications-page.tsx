@@ -51,7 +51,7 @@ export function PublicationsPage({ central = false, resourceKind }: { central?: 
   }
   if (!(kind in RESOURCE_NAMES)) return <PageFrame>未知发布类型。</PageFrame>;
   return <PageFrame><PageHeader title={`${RESOURCE_NAMES[kind]}授权与发布`} description="配置使用原有页面编辑；这里仅管理公共版本和使用范围。" actions={!central && <Button onClick={() => setChoosing("new")}>从本机已有配置生成草稿</Button>} />
-    {central ? <p className="mb-4 text-sm opacity-70">此处为中央发布库。配置编辑请使用本机 AITestHarness 的 Web 管理入口；本机配置与密钥不会自动上传。</p> : <Link className="mb-4 inline-block underline" to={`/${kind}`}>返回{RESOURCE_NAMES[kind]}配置</Link>}
+    {central ? <p className="mb-4 text-sm opacity-70">此处为内置发布库。配置编辑请使用本机 AITestHarness 的 Web 管理入口；本机配置与密钥不会自动上传。</p> : <Link className="mb-4 inline-block underline" to={`/${kind}`}>返回{RESOURCE_NAMES[kind]}配置</Link>}
     {error && <p className="mb-4 text-red-600" role="alert">{error}</p>}
     <div className="space-y-3">{resources.filter(resource => resource.kind === kind).map(resource => <section key={resource.id} className="rounded-lg border border-[var(--border)] p-4">
       <strong>{resource.name}</strong><p className="my-2 text-sm opacity-70">{resource.description}</p>
@@ -184,13 +184,13 @@ function LocalPublicationDialog({ kind, existing, onClose, onSaved }: { kind: Ma
     finally { setBusy(false); }
   }
   return <Modal open title={`选择要公开的${RESOURCE_NAMES[kind]}`} onClose={() => { if (!busy && (!prepared || confirm("放弃本次尚未保存的发布草稿？"))) onClose(); }} footer={<Button size="sm" disabled={!prepared || busy} onClick={async () => {
-    if (!prepared || !confirm("确认将预览中的公共内容同步到中央草稿库？不会上传项目、会话、模型密钥或智能体完整状态快照。")) return;
+    if (!prepared || !confirm("确认将预览中的公共内容同步到内置草稿库？不会上传项目、会话、模型密钥或智能体完整状态快照。")) return;
     setBusy(true);
     try {
       await controlRequest("/api/control/admin/resources" + (existing ? "/" + existing.id : ""), existing ? "PUT" : "POST", { kind, ...prepared, audience: existing?.audience || [], ...(existing ? { revision: existing.revision } : {}) }); await onSaved();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); }
     finally { setBusy(false); }
-  }}>保存为中央草稿</Button>}>
+  }}>保存为内置草稿</Button>}>
     <p className="mb-4 text-sm opacity-70">本机项目：{currentProject?.name || projectId}。先在原有功能页面保存，再读取预览。草稿默认仅管理员可见。</p>
     {kind === "skills" && <select className="mb-3 w-full rounded border bg-transparent p-2" aria-label="发布技能的来源智能体" value={agentId} onChange={event => setAgentId(event.target.value)}>{agents.map(agent => <option key={agent.agentId} value={agent.agentId}>{agent.name || agent.agentId}</option>)}</select>}
     <select className="mb-3 w-full rounded border bg-transparent p-2" aria-label="选择已有配置" value={selected} onChange={event => { setSelected(event.target.value); setPrepared(null); }}><option value="">请选择</option>{options.map(option => <option key={option.key} value={option.key}>{option.label}</option>)}</select>

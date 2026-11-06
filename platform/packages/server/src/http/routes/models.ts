@@ -48,6 +48,14 @@ export interface ModelsRouteDeps {
   sessionsRepo: SessionIndex;
 }
 
+/** Database catalogue uses the same validation and model operations without project runtimes. */
+export interface ModelCatalogRouteDeps {
+  catalog: true;
+  penguinGoOrigin?: string;
+  projectConfigService: ProjectConfigStore;
+  access: { requireProjectAccess(userId: string, catalogId: string): void; requireProjectOwner(userId: string, catalogId: string): void };
+}
+
 /**
  * Live unlock for auth-dead composers: after a models/credential update, publish
  * `credentials_updated` to every EXISTING channel of this Project's Sessions (`peek` —
@@ -76,7 +84,8 @@ export function publishCredentialsUpdated(deps: ModelsRouteDeps, projectId: stri
  *   reach them or their Sessions keep failing on the old one — or start on the wrong default.
  *   Not awaited: the person editing is not the one who should wait for a set of ssh tunnels.
  */
-export async function modelConfigChanged(deps: ModelsRouteDeps, projectId: string): Promise<void> {
+export async function modelConfigChanged(deps: ModelsRouteDeps | ModelCatalogRouteDeps, projectId: string): Promise<void> {
+  if ("catalog" in deps) return;
   const projects=await deps.projectConfigService.publishSharedModels(projectId, true);
   for(const id of projects) {
     deps.manager.invalidateProjectRuntimes(id);
@@ -132,6 +141,11 @@ function parseProviderUpdate(value: unknown, label: string): ProviderConnectionU
   }
   const p = value as Record<string, unknown>;
   const update: ProviderConnectionUpdate = {};
+  if (p.displayName !== undefined) {
+    if (typeof p.displayName !== "string" || !p.displayName.trim() || p.displayName.trim().length > 100)
+      throw badRequest("分组名称不能为空且不能超过 100 个字符。");
+    update.displayName = p.displayName.trim();
+  }
   if (p.baseUrl !== undefined) {
     if (p.baseUrl !== null && (typeof p.baseUrl !== "string" || p.baseUrl.length > 2000)) {
       throw badRequest(`${label}.baseUrl must be null or a string of at most 2000 characters.`);
@@ -294,7 +308,7 @@ function parseModelsUpdate(body: Record<string, unknown>): ModelsUpdateRequest {
   return req;
 }
 
-export function modelsRoutes(deps: ModelsRouteDeps): Hono<AppEnv> {
+export function modelsRoutes(deps: ModelsRouteDeps | ModelCatalogRouteDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   /** The balance reader and its 60 s cache, one per route group. */
   const balances = new ModelBalances({
@@ -311,12 +325,14 @@ export function modelsRoutes(deps: ModelsRouteDeps): Hono<AppEnv> {
   });
 
   app.get("/shared", async (c) => {
+    if ("catalog" in deps) throw new HttpError(400,"catalog_scope","服务端模型配置已共享，无需本地项目激活。");
     const projectId=requireValidId(c,"projectId");
     deps.access.requireProjectAccess(c.var.user.userId,projectId);
     return c.json(await deps.projectConfigService.sharedModelInfo(projectId));
   });
 
   app.post("/shared/activate", async (c) => {
+    if ("catalog" in deps) throw new HttpError(400,"catalog_scope","服务端模型配置已共享，无需本地项目激活。");
     const projectId=requireValidId(c,"projectId");
     deps.access.requireProjectOwner(c.var.user.userId,projectId);
     const info=await deps.projectConfigService.sharedModelInfo(projectId);

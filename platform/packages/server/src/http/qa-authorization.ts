@@ -20,13 +20,10 @@ export function qaAuthorization(access: Access, central?:AccountClientGate): Mid
       }
       return next();
     }
-    const deny = () => { throw new HttpError(403, "qa_admin_required", "此操作仅限管理员；个人资源请在自己的项目中维护。"); };
-    if(central){
-      await central.authorizeUserPath(c.var.user.userId,path,c.req.method);
-      const project=/^\/api\/projects\/([^/]+)/.exec(path);
-      if(project){const membership=access.requireProjectAccess(c.var.user.userId,project[1]!);if(write&&membership.ownerUserId!==c.var.user.userId)deny();}
-      return next();
-    }
+    const deny = () => { throw new HttpError(403, "qa_admin_required", "能力由管理员统一配置，用户可读取和使用。"); };
+    // Central identity adds module and resource checks; local route ownership rules
+    // remain the authority for each project operation.
+    if (central) await central.authorizeUserPath(c.var.user.userId, path, c.req.method);
     if (/^\/(?:api\/machines|server)(?:\/|$)/.test(path)) deny();
     const match = /^\/api\/projects\/([^/]+)(?:\/(.*))?$/.exec(path);
     if (!match) return next();
@@ -41,8 +38,12 @@ export function qaAuthorization(access: Access, central?:AccountClientGate): Mid
       return next();
     }
     if (write && /^models(?:\/|$)/.test(tail) && !own()) deny();
-    // Personal resource writes have their own account-scoped store and ownership checks.
-    if (/^agents\/qa\/personal-resources(?:\/|$)/.test(tail)) return next();
+    // Personal uploads and round selections are not open to users. Keep historical
+    // resources readable; capability changes go through administrator configuration.
+    if (/^agents\/qa\/personal-resources(?:\/|$)/.test(tail)) {
+      if (write) deny();
+      return next();
+    }
     const agent = /^agents\/([^/]+)\/(.*)$/.exec(tail);
     if (agent && write) {
       const action = agent[2]!;

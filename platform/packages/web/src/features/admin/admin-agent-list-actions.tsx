@@ -19,7 +19,6 @@ export function AdminAgentListActions({ projectId, agent, row, stageId, onChange
   const [audience, setAudience] = useState<string[]>([]);
   const [users, setUsers] = useState<{ userId: string; isAdmin: boolean }[]>([]);
   const [preview, setPreview] = useState<ReturnType<typeof publicAgentDraft> | null>(null);
-  const [resource, setResource] = useState<Publication | null>(null);
   const [validated, setValidated] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -37,23 +36,35 @@ export function AdminAgentListActions({ projectId, agent, row, stageId, onChange
       controlRequest("/api/account-client/api/admin/users"),
     ]);
     const existing = (catalog.resources as Publication[]).find(item => item.id === row?.resourceId);
-    setResource(existing ?? null);
     setAudience(existing?.audience ?? []);
     setUsers(accounts.users ?? []);
-    setPreview(publicAgentDraft(agent.agentId, config, existing));
+    setPreview(publicAgentDraft(row?.rootAgentId ?? agent.agentId, config, existing));
     setValidated(false);
     setOpen(true);
   });
   const publish = () => void run(async () => {
     if (!preview || !validated) return;
+    const catalog = await controlRequest("/api/control/admin/resources");
+    const current = (catalog.resources as Publication[]).find(item => item.id === row?.resourceId);
+    if (row && (!current || current.kind !== "agents" || current.version !== row.publishedVersion)) {
+      throw new Error("本机版本记录与内置发布版本不一致，请先核对版本来源；未发布旧工作副本。");
+    }
     // Read again at publication time so edits made while the dialog was open are included.
     const config = await api.getAgentConfig(projectId, agent.agentId, null);
-    const body = { ...publicAgentDraft(agent.agentId, config, resource ?? undefined), audience,
-      ...(resource ? { revision: resource.revision } : {}) };
-    const saved = await controlRequest(`/api/control/admin/resources${resource ? `/${resource.id}` : ""}`, resource ? "PUT" : "POST", body) as Publication;
+    const body = { ...publicAgentDraft(row?.rootAgentId ?? agent.agentId, config, current), audience,
+      ...(current ? { revision: current.revision } : {}) };
+    const checked = await controlRequest("/api/control/admin/resources/validate", "POST", body);
+    if (checked.valid !== true || (Array.isArray(checked.warnings) && checked.warnings.length)) {
+      throw new Error(checked.error?.message ?? checked.warnings?.join("；") ?? "内置配置校验未通过。");
+    }
+    const saved = await controlRequest(`/api/control/admin/resources${current ? `/${current.id}` : ""}`, current ? "PUT" : "POST", body) as Publication;
     if (!row) await controlRequest("/api/control/admin/agent-versions", "PUT", {
       resourceId: saved.id, rootAgentId: agent.agentId, publishedAgentId: "", draftAgentId: agent.agentId, publishedVersion: 0,
     });
+    const storedCheck = await controlRequest(`/api/control/admin/resources/${saved.id}/validate`, "POST");
+    if (storedCheck.valid !== true || (Array.isArray(storedCheck.warnings) && storedCheck.warnings.length)) {
+      throw new Error(storedCheck.error?.message ?? storedCheck.warnings?.join("；") ?? "内置草稿校验未通过。");
+    }
     const published = await controlRequest(`/api/control/admin/resources/${saved.id}/publish`, "POST", { revision: saved.revision }) as Publication;
     await controlRequest("/api/control/admin/agent-versions", "PUT", {
       resourceId: saved.id, rootAgentId: row?.rootAgentId ?? agent.agentId,
@@ -64,6 +75,15 @@ export function AdminAgentListActions({ projectId, agent, row, stageId, onChange
   });
   const copy = () => void run(async () => {
     if (!row || !row.publishedAgentId || row.draftAgentId) throw new Error("请先发布当前工作副本。");
+    const catalog = await controlRequest("/api/control/catalog");
+    const current = (catalog.resources as Publication[]).find(item => item.id === row.resourceId);
+    if (!current || current.kind !== "agents" || !current.published || current.version !== row.publishedVersion) {
+      throw new Error("本机已发布副本与内置当前版本不一致，请先完成版本来源核对；不会复制旧 Agent State。");
+    }
+    const local = await api.getAgentConfig(projectId, row.publishedAgentId, null);
+    if (local.config.systemPrompt !== current.payload.prompt || local.agentsMd !== current.payload.agentsMd) {
+      throw new Error("本机已发布副本的提示词与内置当前版本不同；不会将旧内容复制为新版本。");
+    }
     const nextId = adminVersionAgentId(row.resourceId, row.publishedVersion + 1);
     const existing = await api.listAgents(projectId, null);
     if (existing.agents.some(item => item.agentId === nextId)) throw new Error("下一版本工作副本已存在，未覆盖原有内容。");

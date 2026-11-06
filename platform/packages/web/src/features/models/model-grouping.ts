@@ -113,9 +113,10 @@ export function groupModelRows<T extends ModelRowLike>(
   rows: T[],
   query: string,
   groupOrder: readonly string[] = [],
+  names: Readonly<Record<string,{displayName?:string}>> = {},
 ): ProviderGroup<T>[] {
   const searching = query.trim() !== "";
-  const filtered = rows.filter((r) => matchesQuery(r, query));
+  const filtered = rows.filter((r) => matchesQuery(r, query)||(names[r.provider]?.displayName?.toLowerCase().includes(query.trim().toLowerCase())??false));
   const builtin = MODEL_PROVIDERS.map((provider) => ({
     provider,
     rows: filtered.filter((r) => r.provider === provider.id),
@@ -125,7 +126,7 @@ export function groupModelRows<T extends ModelRowLike>(
     rows: filtered.filter((r) => r.provider === id),
   }));
   const ordered = orderModelGroups([...builtin, ...extras], (g) => g.provider.id, groupOrder);
-  return ordered.filter((g) => g.rows.length > 0 || (!searching && g.provider.id === "custom"));
+  return ordered.filter((g) => g.rows.length > 0 || (!searching && g.provider.id === "custom")).map(g=>({...g,provider:{...g.provider,label:names[g.provider.id]?.displayName??g.provider.label}}));
 }
 
 /**

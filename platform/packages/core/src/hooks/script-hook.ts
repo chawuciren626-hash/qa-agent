@@ -55,6 +55,8 @@ export interface RunHookScriptOptions {
    * `node <script>`, with no shell to re-order PATH afterwards.
    */
   pathPrepend?: readonly string[];
+  /** Session-scoped host coordinates for a shared hook package. */
+  env?: Readonly<Record<string, string>>;
   /**
    * The Session's sandbox: rewrites the argv about to be spawned (`[node, script]`) into
    * the one to spawn instead, the way a command's is rewritten (see
@@ -92,7 +94,7 @@ export async function runHookScript(
     // script, and dies on machines where that fails. A plain Node execPath ignores it.
     // A runner's own entries (ConfinedSpawn.env) lie over that environment.
     const env = prependPathEnv(
-      { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      { ...process.env, ELECTRON_RUN_AS_NODE: "1", ...opts.env },
       opts.pathPrepend ?? [],
     );
     const child = spawn(program, args, {
@@ -224,6 +226,7 @@ export interface ScriptHookOptions {
   timeoutS?: number;
   /** See {@link RunHookScriptOptions.pathPrepend}; a getter, re-read per call. */
   pathPrepend?: () => string[];
+  env?: Readonly<Record<string, string>>;
   /**
    * The Session's confiner (see {@link SpawnConfiner}), re-read per call like
    * `pathPrepend`; null = unconfined. Called with the package directory as `cwd` and the
@@ -255,6 +258,7 @@ function scriptRunner(
       ...(opts.timeoutS !== undefined ? { timeoutS: opts.timeoutS } : {}),
       ...(signal ? { signal } : {}),
       ...(opts.pathPrepend ? { pathPrepend: opts.pathPrepend() } : {}),
+      ...(opts.env ? { env: opts.env } : {}),
       ...(confiner !== null
         ? {
             confine: (argv: readonly string[]) =>

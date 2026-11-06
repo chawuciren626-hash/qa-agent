@@ -341,7 +341,8 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("Q2 project knowledge", () => {
     expect((await member.get(`${otherBase}/tasks/session-task/context-snapshot`)).status).toBe(404);
   });
 
-  it("pins the current personal Skill selection without copying it into the Agent", async () => {
+  it("pins an administrator selection without copying it into the Agent", async () => {
+    app.deps.db.prepare("UPDATE users SET is_admin=1 WHERE user_id=?").run("knowledge_owner");
     const personal = `/api/projects/${project}/agents/qa/personal-resources`;
     const imported = await owner.post(personal, {
       kind: "skill",

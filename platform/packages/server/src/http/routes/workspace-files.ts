@@ -26,6 +26,7 @@ import type { Access } from "../../mechanisms/projects.js";
 import type { FileReveal, WorkspaceFiles } from "../../mechanisms/workspace.js";
 import { MAX_UPLOAD_BYTES } from "../../services/workspace-files-service.js";
 import { assertWorkspaceAllowed } from "../../services/workspace-guard.js";
+import { qaEnabled } from "../../services/qa-engine.js";
 import { HttpError } from "../errors.js";
 import {
   badRequest,
@@ -254,6 +255,9 @@ export function workspaceFilesRoutes(deps: WorkspaceFilesRouteDeps): Hono<AppEnv
   registerWorkspaceFileRoutes(app, "", deps, async (c) => {
     const projectId = requireValidId(c, "projectId");
     deps.access.requireProjectAccess(c.var.user.userId, projectId);
+    if (qaEnabled && c.var.user.isAdmin && !["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
+      deps.access.requireProjectOwner(c.var.user.userId, projectId);
+    }
     const workspace = c.req.query("workspace")?.trim() ?? "";
     if (!path.isAbsolute(workspace)) {
       throw new HttpError(400, "workspace_not_found", "workspace must be an absolute path.");

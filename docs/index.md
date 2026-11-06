@@ -20,6 +20,7 @@
 - [输入与交付约定](input-and-delivery.md)
 - [阶段注册](stage-registry.md)
 - [产物契约](artifact-contracts.md)
+- [缺陷严重程度分级标准](defect-severity-standard.md)
 - [设计质量门禁](design-quality-gate.md)
 - [报告证据索引](report-evidence-index.md)
 - [报告结果保真](report-result-fidelity.md)

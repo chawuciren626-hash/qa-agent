@@ -6,9 +6,16 @@
     "medium": { "minimum_evidence_refs": 2 },
     "low": { "minimum_evidence_refs": 1 }
   },
+  "defect_severity": {
+    "standard_version": 1,
+    "levels": ["Blocker", "Critical", "Major", "Minor", "Trivial", "unknown"],
+    "high_risk": ["Blocker", "Critical"],
+    "review_on_unknown": true,
+    "unknown_gate_reason": "unknown_severity"
+  },
   "quality_gate": {
     "block_on": ["blocked_execution", "insufficient_failed_evidence"],
-    "review_on": ["needs_review", "draft_product_defect", "unverified_fix", "unresolved_historical_defects"],
+    "review_on": ["needs_review", "draft_product_defect", "unverified_fix", "unresolved_historical_defects", "unknown_severity"],
     "risk_on_severity": ["Blocker", "Critical"]
   }
 }

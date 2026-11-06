@@ -72,6 +72,10 @@ function replay(root, runId, subject) {
     const { sha256, ...payload } = event;
     requireValue(event.seq === index + 1 && event.previous === previous && sha256 === hash(payload), 'Lifecycle event chain mismatch');
     requireValue(event.from === record.lifecycle_status && nonempty(event.actor) && nonempty(event.reason) && Number.isFinite(Date.parse(event.at)) && Date.parse(event.at) >= Date.parse(after), 'Invalid lifecycle event context');
+    if (event.actor_kind !== undefined || event.reason_code !== undefined) {
+      const reasonCodes = { confirm: 'evidence_review', reject: 'not_product_defect', fixed: 'fix_reported', retest: 'retest_result' };
+      requireValue(event.actor_kind === 'unverified_operator' && /^[A-Za-z0-9_-]{2,64}$/.test(event.actor) && event.reason_code === reasonCodes[event.action], 'Invalid structured lifecycle attribution');
+    }
     const evidence = references(root, runId, event.evidence.map(file => file.path));
     requireValue(isDeepStrictEqual(evidence, event.evidence), 'Lifecycle decision evidence changed');
     let to;
@@ -160,8 +164,10 @@ export function transitionDefect(root, runId, options) {
     requireValue(subject, 'Registered defect not found for origin invocation');
     requireValue(Number.isSafeInteger(options.revision) && subject.revision === options.revision, 'Stale lifecycle revision; inspect the latest state');
     const current = replay(root, runId, subject);
-    requireValue(nonempty(options.actor) && nonempty(options.reason), 'Actor and reason required');
-    const event = { seq: subject.revision + 1, at: new Date().toISOString(), action: options.action, actor: options.actor, reason: options.reason, from: current.lifecycle_status, evidence: references(root, runId, options.evidence), previous: subject.events.at(-1)?.sha256 ?? hash({ invocation_id: subject.invocation_id, origin_sha256: subject.origin_sha256, base: subject.base }) };
+    requireValue(typeof options.actor === 'string' && /^[A-Za-z0-9_-]{2,64}$/.test(options.actor) && nonempty(options.reason), 'Actor id and reason required');
+    const reasonCodes = { confirm: 'evidence_review', reject: 'not_product_defect', fixed: 'fix_reported', retest: 'retest_result' };
+    requireValue(reasonCodes[options.action], 'Unknown lifecycle action');
+    const event = { seq: subject.revision + 1, at: new Date().toISOString(), action: options.action, actor: options.actor, actor_kind: 'unverified_operator', reason_code: reasonCodes[options.action], reason: options.reason, from: current.lifecycle_status, evidence: references(root, runId, options.evidence), previous: subject.events.at(-1)?.sha256 ?? hash({ invocation_id: subject.invocation_id, origin_sha256: subject.origin_sha256, base: subject.base }) };
     if (options.action === 'confirm') { event.category = options.category; event.to = 'confirmed'; }
     else if (options.action === 'reject') event.to = 'rejected';
     else if (options.action === 'fixed') event.to = 'fixed';

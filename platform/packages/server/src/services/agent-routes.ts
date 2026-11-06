@@ -1,7 +1,7 @@
 import { Bind, Component, Use } from "@prismshadow/penguin-core/kernel";
 import type { AppEnv } from "../auth/middleware.js";
 import type { Hono } from "hono";
-import type { Clock, Config } from "../hmr/capabilities.js";
+import type { AuthState, Clock, Config } from "../hmr/capabilities.js";
 import { memoryRoutes } from "../http/routes/memory.js";
 import { benchmarksRoutes } from "../http/routes/benchmarks.js";
 import { agentSkillsRoutes } from "../http/routes/skills.js";
@@ -63,6 +63,7 @@ import type { Traces } from "../mechanisms/traces.js";
 })
 export class AgentRoutes {
   @Use() private readonly config!: Config;
+  @Use() private readonly authState!: AuthState;
   @Use() private readonly access!: Access;
   @Use() private readonly agentConfig!: AgentConfig;
   @Use() private readonly memory!: Memory;
@@ -85,7 +86,7 @@ export class AgentRoutes {
     const agentConfigService = this.agentConfig;
     this.memoryRoutes = memoryRoutes({ memoryService: this.memory, access, config: this.config });
     this.benchmarksRoutes = benchmarksRoutes({ benchmarks: this.benchmarks, access });
-    this.skillsRoutes = agentSkillsRoutes({ agentConfigService, config: this.config, access });
+    this.skillsRoutes = agentSkillsRoutes({ agentConfigService, config: this.config, access, authState: this.authState });
     const clock = this.clock;
     this.apiRoutes = agentApiRoutes({
       agentApi: this.agentApi,

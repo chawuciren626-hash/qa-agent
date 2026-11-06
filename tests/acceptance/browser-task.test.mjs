@@ -49,6 +49,11 @@ test('worker HTTP rejection is distinct from an uncertain action outcome',async(
   await assert.rejects(()=>browserWorkerResponse(new Response('broken',{status:400}),'same-id'));
 });
 
+test('browser launch failures have a specific sanitized diagnostic',()=>{
+  const diagnostic=browserErrorDiagnostic(new Error('Executable does not exist at C:/private/browser.exe'),'browser_launch');
+  assert.deepEqual(diagnostic,{phase:'browser_launch',category:'browser_binary_missing'});
+});
+
 test('private connection publication remains complete JSON during concurrent polling',async t=>{
   const dir=resolve(root,'output/acceptance',randomUUID());mkdirSync(dir,{recursive:true});
   const path=resolve(dir,'browser-private.json');
@@ -192,6 +197,9 @@ test('observed sequence executes once, preserves step receipts and supports unch
   const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
   t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
   const started=await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic local input checks',headless:true});
+  const runtime=JSON.parse(readFileSync(resolve(f.dir,'execution/browser-state.json'))).browser_runtime;
+  assert.equal(runtime.platform,process.platform);assert.equal(runtime.launch_status,'ready');assert.equal(runtime.headless,true);
+  assert.deepEqual(started.browser_runtime,runtime);
   const same=await f.browser({type:'snapshot',request_id:'same',if_sha256:started.snapshot.sha256});
   assert.equal(same.snapshot.unchanged,true);assert.equal(same.screenshot_omitted,'unchanged_snapshot_requested');
   const operation={type:'sequence',request_id:'batch',observed_request_id:'start',steps:[
@@ -248,13 +256,13 @@ for(const recover of [false,true]) test(`lifecycle browser execution ${recover?'
   const extended=await f.send({action:'extend_plan',stages:['defects','report'],reason:'Complete originally requested lifecycle'});assert.equal(extended.exit_code,0,JSON.stringify(extended));
   const defects=await f.send(extended.dispatch_templates.find(r=>r.stage==='defects'));assert.equal(defects.exit_code,0,JSON.stringify(defects));
   const actual=JSON.parse(readFileSync(resolve(f.dir,'execution/test_results.json'))),failure=actual.cases.find(r=>r.status==='failed');
-  const records=[{defect_id:'BUG-1',title:'Synthetic assertion failure',category:'needs_review',related_cases:[failure.case_id],evidence_refs:failure.evidence_paths}];
+  const records=[{defect_id:'BUG-1',title:'Synthetic assertion failure',category:'needs_review',severity:'unknown',severity_standard_version:1,severity_reason:'Synthetic assertion alone does not establish product impact',severity_dimensions:{user_business_impact:'unknown',reach_frequency:'unknown',recoverability:'unknown',data_security_compliance:'unknown'},related_cases:[failure.case_id],evidence_refs:failure.evidence_paths}];
   writeJson(resolve(f.dir,'defects/defect-records.json'),records);
   writeFileSync(resolve(f.dir,'defects/bugs.md'),'# Synthetic failure classification\nNeeds review; not a confirmed product bug.');
   const defectTaskPath=JSON.parse(readFileSync(resolve(root,'config/orchestration-workflow.json'))).stages.find(s=>s.id==='defects').task_result;
   writeJson(resolve(f.dir,defectTaskPath),task('defects',['execution/test_results.json']));
   await f.returnChild(defects.delegation);
-  assert.equal((await f.send(defects.handoff_template)).exit_code,0);
+  const defectsHandoff=await f.send(defects.handoff_template);assert.equal(defectsHandoff.exit_code,0,JSON.stringify(defectsHandoff));
   const report=await f.send(extended.dispatch_templates.find(r=>r.stage==='report'));assert.equal(report.exit_code,0,JSON.stringify(report));
   const rows=actual.cases;
   writeJson(resolve(f.dir,'report/reportable-results.json'),{run_id:f.id,cases:rows,summary:{total:rows.length,...Object.fromEntries(['passed','failed','blocked','skipped'].map(s=>[s,rows.filter(r=>r.status===s).length]))}});

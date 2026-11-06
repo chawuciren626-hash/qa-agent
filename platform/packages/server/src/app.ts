@@ -175,7 +175,8 @@ import type { Errors } from "./mechanisms/observability.js";
 import type { Access } from "./mechanisms/projects.js";
 import type { Auth, Admin, Users, AuthSessions } from "./mechanisms/identity.js";
 import { AccountClient } from "./auth/account-client.js";
-import { accountCenterGate } from "./http/account-center.js";
+import { accountCenterGate, centralAssistantPath, CENTRAL_ASSISTANT_PROJECT } from "./http/account-center.js";
+import { CentralAssistant, centralAssistantRoutes } from "./http/central-assistant.js";
 import { ControlStore, controlRoutes } from "./http/control-plane.js";
 import type { AuthState } from "./hmr/capabilities.js";
 import type { LiveStreams } from "./auth/live-streams.js";
@@ -535,10 +536,49 @@ export function createApp(boot: ServerBoot): Hono<AppEnv> {
   } else app.get("/api/account-client/config", c => c.json({enabled:false,central:accountCenter}));
 
   if (accountCenter) {
-    const store = new ControlStore(boot.db);
+    const store = new ControlStore(boot.db, deps.config.root);
+    const authState = boot.tree.api<AuthState>("RuntimeModule", "AuthState");
+    const host = deps.config.host === "0.0.0.0" || deps.config.host === "::" ? "127.0.0.1" : (loopbackHostRoles(deps.config.host)?.app ?? deps.config.host);
+    authState.centralAssistant = new CentralAssistant(`http://${host.includes(":") ? `[${host}]` : host}:${deps.config.port}`, () => authState.apiToken);
     app.use("/api/control/*", authMiddleware(authService(), deps.config.trustProxy));
+    // The assistant selects and executes the same models configured in central administration.
+    app.use("/api/*", async (c, next) => {
+      const modelsPath = `/api/projects/${CENTRAL_ASSISTANT_PROJECT}/models`;
+      const isModels = c.req.path === modelsPath || c.req.path.startsWith(modelsPath + "/");
+      const startsTask = c.req.method === "POST" && (c.req.path.startsWith("/api/sessions/") || c.req.path.startsWith(`/api/projects/${CENTRAL_ASSISTANT_PROJECT}/`));
+      if (!isModels && !startsTask) return next();
+      return authMiddleware(authService(), deps.config.trustProxy)(c, async () => {
+        if (!c.var.user.isAdmin) throw new HttpError(403, "admin_required", "仅管理员可使用中央助手。");
+        await store.modelConfig.syncAssistantRuntime(deps.config.root);
+        if (isModels) {
+          c.res = c.redirect(`/api/control/admin/model-config/central-model-catalog${c.req.path.slice(modelsPath.length)}${new URL(c.req.url).search}`, 307);
+          return;
+        }
+        await next();
+      });
+    });
+    app.route("/api/control/admin/assistant", centralAssistantRoutes(request => Promise.resolve(app.request(request))));
     app.route("/api/control", controlRoutes(store));
   }
+
+  if (accountCenter) app.use("/api/*", async (c, next) => {
+    if (!centralAssistantPath(c.req.method, c.req.path)) return next();
+    return authMiddleware(authService(), deps.config.trustProxy)(c, async () => {
+      if (!c.var.user.isAdmin) throw new HttpError(403, "admin_required", "仅管理员可使用中央助手。");
+      if (c.req.path === "/api/projects" && c.req.method === "POST") {
+        const body = await c.req.raw.clone().json().catch(() => null) as { projectId?: unknown } | null;
+        if (body?.projectId !== CENTRAL_ASSISTANT_PROJECT)
+          throw new HttpError(403, "assistant_project_only", "中央服务只允许创建管理员助手项目。");
+      }
+      if (c.req.path.startsWith("/api/sessions/")) {
+        const sessionId = c.req.path.split("/")[3] ?? "";
+        const row = boot.db.prepare("SELECT project_id FROM sessions WHERE session_id=?").get(sessionId) as { project_id: string } | undefined;
+        if (!row || row.project_id !== CENTRAL_ASSISTANT_PROJECT)
+          throw new HttpError(404, "session_not_found", "会话不存在。");
+      }
+      await next();
+    });
+  });
 
   // THE seam: every route is one the platform may take over by push — the upgrade channel
   // included, which the platform declares and contributes like any other group

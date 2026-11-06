@@ -37,9 +37,11 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { qaProtectInput } from "../services/qa-engine.js";
+import { qaEnabled, qaEngineModule, qaProtectInput } from "../services/qa-engine.js";
+import { loadTrustedLocalAdapters } from "../auth/trusted-local-adapters.js";
 import {
   createAgent,
+  loadAgentState,
   findLatestTraceFile,
   isHookContinue,
   isHookInput,
@@ -2869,6 +2871,23 @@ export class SessionsModule {
     const modelScopeAuth = this.modelScopeAuth;
 
     const assembly: AgentAssembly = {
+      publishedDefinition: async ({ projectId, agentId, sessionId, parentSessionId }) => {
+        const assistant = authState.centralAssistant?.definition({ projectId, agentId, sessionId });
+        if (assistant) return assistant;
+        const definition = await authState.accountClient?.resolvePinnedDefinition(projectId, agentId, sessionId, parentSessionId) ?? null;
+        if (!definition || !qaEnabled) return definition;
+        const role = (qaEngineModule("qa-project-bootstrap").qaRoles() as {id:string}[]).some(item => item.id === agentId);
+        if (!role && agentId !== "default_agent") return definition;
+        const requiredHooks = agentId === "default_agent" ? ["qa-default-entry", "goal"] :
+          agentId === "test_agent" ? ["qa-delegation-guard"] : ["qa-stage-boundary"];
+        for (const requiredHook of requiredHooks) if (!definition.localAdapters.some(adapter => adapter.name === requiredHook))
+          throw new Error(`Published QA role lacks required safety adapter: ${requiredHook}`);
+        const hookPackages = await loadTrustedLocalAdapters(process.env.AITEST_ENGINE_ROOT!, definition.localAdapters);
+        if (!role) return { ...definition, hookPackages };
+        const state = await loadAgentState({ root: config.root, projectId, agentId });
+        const builtinTools = await qaEngineModule("qa-project-bootstrap").qaRoleTools(agentId, state.systemConfig.tools?.builtin);
+        return { ...definition, builtinTools, hookPackages };
+      },
       // ModelScope's group key is an access token the bridge refreshes, so each request reads
       // it fresh. A model with a key of its own keeps that key (undefined = the credential
       // the client was built with stands); the rest use the group key, refreshed first, and a
@@ -2998,6 +3017,8 @@ export class SessionsModule {
       pathPrepend: env.pathPrepend,
       confineSpawn: env.confineSpawn,
       assembly,
+      pinPublishedSession: (userId, projectId, agentId, sessionId) =>
+        authState.accountClient?.pinPublishedSession(userId, projectId, agentId, sessionId) ?? Promise.resolve(false),
       sandboxDefaults: () => sandbox.currentSettings(),
       sandboxDimensions: () => [...new Set(sandbox.backends().flatMap((b) => b.dimensions))],
       sandboxUnavailable: () => sandbox.failures(),

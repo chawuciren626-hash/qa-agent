@@ -8,13 +8,15 @@
  * plaintext values only ever hit disk, and are always masked in responses.
  */
 import fs from "node:fs/promises";
-import { parseDocument, parse as parseYaml } from "yaml";
+import path from "node:path";
+import { parseDocument, parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   DEFAULT_MEMORY_PROMPT,
   DEFAULT_MEMORY_WORKSPACE_PROMPT,
   DEFAULT_SCHEDULES_PROMPT,
   DEFAULT_SKILLS_PROMPT,
   DEFAULT_VAULT_PROMPT,
+  defaultSystemConfig,
   KERNEL_VERSION,
   LEGACY_SKILLS_SECTION,
   LEGACY_VAULT_SECTION,
@@ -71,6 +73,7 @@ import { maskApiKey } from "./project-config-service.js";
 import { Component, Use } from "@prismshadow/penguin-core/kernel";
 import type { Config, Paths } from "../hmr/capabilities.js";
 import type { AgentConfig } from "../mechanisms/agents.js";
+import type { ResolvedPublishedBundle } from "../auth/published-bundle.js";
 
 const COMPACTION_MODES = ["summarize", "discard"] as const;
 
@@ -85,6 +88,7 @@ export interface AgentConfigView {
   systemConfigYaml: string;
   config: AgentConfigDto;
   stateDir: string;
+  managed?: { bundleHash: string; version: number; skills: string[]; plugins: string[]; localSkillOverrides: string[] };
 }
 
 @Component()
@@ -100,7 +104,7 @@ export class AgentConfigService implements AgentConfig {
       await fs.access(systemConfigPath(this.root, projectId, agentId));
       return true;
     } catch {
-      return false;
+      return fs.stat(path.join(agentStateDir(this.root, projectId, agentId), "shared-agent.json")).then(stat => stat.isFile(), () => false);
     }
   }
 
@@ -108,6 +112,11 @@ export class AgentConfigService implements AgentConfig {
     if (!(await this.exists(projectId, agentId))) {
       throw new HttpError(404, "agent_not_found", "Agent does not exist.");
     }
+  }
+
+  private async requireEditableDefinition(projectId: string, agentId: string): Promise<void> {
+    if (await fs.stat(path.join(agentStateDir(this.root, projectId, agentId), "shared-agent.json")).then(stat => stat.isFile(), () => false))
+      throw new HttpError(409, "shared_agent_managed", "此智能体由共享服务统一管理，请在管理员后台修改并发布。");
   }
 
   /**
@@ -146,10 +155,42 @@ export class AgentConfigService implements AgentConfig {
   }
 
   /** Structured config view (matching the edit form's shape) + raw text + AGENTS.md + State path. */
-  async getConfig(projectId: string, agentId: string): Promise<AgentConfigView> {
+  async getConfig(projectId: string, agentId: string, published?: ResolvedPublishedBundle): Promise<AgentConfigView> {
     await this.requireExists(projectId, agentId);
+    const shared = await fs.stat(path.join(agentStateDir(this.root, projectId, agentId), "shared-agent.json")).then(stat => stat.isFile(), () => false);
+    if (shared && (!published || published.resources[0]?.payload.agentId !== agentId))
+      throw new HttpError(503, "shared_agent_unavailable", "共享智能体定义暂不可用。");
     const yamlPath = systemConfigPath(this.root, projectId, agentId);
-    const systemConfigYaml = await fs.readFile(yamlPath, "utf8");
+    const localYaml = await fs.readFile(yamlPath, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (shared && error.code === "ENOENT") return stringifyYaml(defaultSystemConfig());
+      throw error;
+    });
+    const localConfig = asRecord(parseYaml(localYaml));
+    const rootResource = published?.resources[0];
+    const marker = shared ? JSON.parse(await fs.readFile(path.join(agentStateDir(this.root, projectId, agentId), "shared-agent.json"), "utf8")) as { localSkillOverrides?: unknown } : null;
+    const localSkillOverrides = Array.isArray(marker?.localSkillOverrides) && marker.localSkillOverrides.every(name => typeof name === "string")
+      ? marker.localSkillOverrides as string[] : [];
+    const publishedPrompt = shared ? String(rootResource?.payload.prompt ?? "") : null;
+    const systemConfigYaml = publishedPrompt === null ? localYaml : stringifyYaml({
+      ...localConfig, system_prompt: publishedPrompt,
+      ...(typeof rootResource?.payload.maxTurns === "number" ? { max_turns: rootResource.payload.maxTurns } : {}),
+      ...(rootResource?.payload.model && typeof rootResource.payload.model === "object" ? { model: {
+        ...asRecord(localConfig.model),
+        ...(typeof asRecord(rootResource.payload.model).maxTokens === "number" ? { max_tokens: asRecord(rootResource.payload.model).maxTokens } : {}),
+        ...(typeof asRecord(rootResource.payload.model).timeoutMs === "number" ? { timeoutMs: asRecord(rootResource.payload.model).timeoutMs } : {}),
+        ...(typeof asRecord(rootResource.payload.model).thinkingLevel === "string" ? { thinking_level: asRecord(rootResource.payload.model).thinkingLevel } : {}),
+      } } : {}),
+      ...(rootResource?.payload.compaction && typeof rootResource.payload.compaction === "object" ? { compaction: {
+        ...asRecord(localConfig.compaction),
+        ...(typeof asRecord(rootResource.payload.compaction).maxContextLength === "number" ? { max_context_length: asRecord(rootResource.payload.compaction).maxContextLength } : {}),
+        ...(typeof asRecord(rootResource.payload.compaction).maxSessionTurns === "number" ? { max_session_turns: asRecord(rootResource.payload.compaction).maxSessionTurns } : {}),
+        ...(typeof asRecord(rootResource.payload.compaction).mode === "string" ? { mode: asRecord(rootResource.payload.compaction).mode } : {}),
+        ...(typeof asRecord(rootResource.payload.compaction).prompt === "string" ? { prompt: asRecord(rootResource.payload.compaction).prompt } : {}),
+      } } : {}),
+      ...(Array.isArray(rootResource?.payload.toolsBuiltin) ? { tools: {
+        ...asRecord(localConfig.tools), builtin: rootResource.payload.toolsBuiltin,
+      } } : {}),
+    });
     const parsed = asRecord(parseYaml(systemConfigYaml));
     const model = asRecord(parsed.model);
     const compaction = asRecord(parsed.compaction);
@@ -161,7 +202,8 @@ export class AgentConfigService implements AgentConfig {
     const tools = asRecord(parsed.tools);
 
     let agentsMd = "";
-    try {
+    if (shared) agentsMd = String(rootResource?.payload.agentsMd ?? "");
+    else try {
       agentsMd = await fs.readFile(agentsMdPath(this.root, projectId, agentId), "utf8");
     } catch {
       // Treat a missing AGENTS.md as an empty file (it normally exists after initialization).
@@ -252,6 +294,13 @@ export class AgentConfigService implements AgentConfig {
       systemConfigYaml,
       config,
       stateDir: agentStateDir(this.root, projectId, agentId),
+      ...(shared && published ? { managed: {
+        bundleHash: published.bundleHash,
+        version: rootResource!.version,
+        skills: published.resources.filter(item => item.kind === "skills").map(item => String(item.payload.skillName ?? item.name)),
+        plugins: published.resources.filter(item => item.kind === "plugins").map(item => item.name),
+        localSkillOverrides,
+      } } : {}),
     };
   }
 
@@ -266,6 +315,7 @@ export class AgentConfigService implements AgentConfig {
     req: AgentConfigUpdateRequest,
   ): Promise<void> {
     await this.requireExists(projectId, agentId);
+    await this.requireEditableDefinition(projectId, agentId);
     // Finish all config validation and document changes before writing to disk
     // (if validation fails, AGENTS.md is not written either, avoiding a partial update).
     if (req.config !== undefined) {
@@ -288,6 +338,7 @@ export class AgentConfigService implements AgentConfig {
    */
   async resetConfig(projectId: string, agentId: string): Promise<void> {
     await this.requireExists(projectId, agentId);
+    await this.requireEditableDefinition(projectId, agentId);
     await resetSystemConfigToDefaults(this.root, projectId, agentId);
   }
 
@@ -300,6 +351,7 @@ export class AgentConfigService implements AgentConfig {
    */
   async kernelUpdate(projectId: string, agentId: string): Promise<AgentKernelUpdateResponse> {
     await this.requireExists(projectId, agentId);
+    await this.requireEditableDefinition(projectId, agentId);
     return applyKernelUpdate(this.root, projectId, agentId);
   }
 

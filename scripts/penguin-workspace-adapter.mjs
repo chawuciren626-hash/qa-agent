@@ -22,7 +22,7 @@ export function bindWorkspace(state,opts,sessionId,previous) {
   if(within(engine,canonical)) throw new Error('The engine directory is for program files. Choose an external workspace or leave Workspace empty to use the default.');
   const name=sessionId.replace(/^session-/,'');
   const session=resolve(workspace,name);
-  const context=directoryContext(engine,{QA_DIRECTORY_CONTEXT:JSON.stringify({version:1,engine_root:engine,workspace_root:workspace,session_root:session,session_id:sessionId})});
+  const context=directoryContext(engine,{QA_DIRECTORY_CONTEXT:JSON.stringify({version:1,engine_root:engine,workspace_root:workspace,session_root:session,session_id:sessionId,project_id:state.projectId})});
   const index=workspaceIndexRoot(engine);
   if(existsSync(session)) throw new Error('New session directory already exists; refusing to reuse it');
   mkdirSync(session,{recursive:true});

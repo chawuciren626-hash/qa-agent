@@ -2,7 +2,7 @@ import json
 import re
 from html import escape
 from pathlib import Path
-from delivery_workbook import TEMPLATE, case_rows, issue_rows, plain, extract_cases, write_workbook
+from delivery_workbook import TEMPLATE, case_rows, issue_rows, severity_summary, plain, extract_cases, write_workbook
 
 
 def markdown_body(markdown):
@@ -72,5 +72,5 @@ def export_browser_delivery(report_dir, title, markdown, results, issues, metric
     script = '''const search=document.getElementById('search'),status=document.getElementById('status');function filter(){let n=0;document.querySelectorAll('#cases tbody tr').forEach(r=>{r.hidden=!r.textContent.toLowerCase().includes(search.value.toLowerCase())||(status.value&&!r.cells[8].textContent.startsWith(status.value));if(!r.hidden)n++});document.getElementById('count').textContent=n+' 条'}search.addEventListener('input',filter);status.addEventListener('change',filter);filter();'''
     gate = metrics.get('quality_gate', {}).get('status')
     gate_html = '<p class="note">质量门：' + escape(gate) + '</p>' if gate else ''
-    result = '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + escape(title) + '</title><style>' + style + '</style></head><body><main><h1>' + escape(title) + '</h1><p class="muted">' + escape(results.get('run_id', '')) + '</p>' + gate_html + '<div class="metrics">' + ''.join(f'<div class="metric"><strong>{v}</strong>{k}</div>' for k,v in counts) + '</div>' + ''.join(body) + '<h2>问题清单</h2>' + html_table(TEMPLATE['issue_headers'], issue_rows(issues)) + '<h2>逐条测试用例</h2>' + ('<p><a href="test_cases.xlsx">下载执行版用例 Excel</a> · <a href="test_report.docx">Word 报告</a> · <a href="test_report.pdf">PDF 报告</a></p>' if download_links else '') + '' + toolbar + html_table(TEMPLATE['case_headers'], rows, 'cases') + '</main><script>' + script + '</script></body></html>'
+    result = '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + escape(title) + '</title><style>' + style + '</style></head><body><main><h1>' + escape(title) + '</h1><p class="muted">' + escape(results.get('run_id', '')) + '</p>' + gate_html + '<div class="metrics">' + ''.join(f'<div class="metric"><strong>{v}</strong>{k}</div>' for k,v in counts) + '</div>' + ''.join(body) + '<h2>问题清单</h2><p>' + escape(severity_summary(issues)) + '</p>' + html_table(TEMPLATE['issue_headers'], issue_rows(issues)) + '<h2>逐条测试用例</h2>' + ('<p><a href="test_cases.xlsx">下载执行版用例 Excel</a> · <a href="test_report.docx">Word 报告</a> · <a href="test_report.pdf">PDF 报告</a></p>' if download_links else '') + '' + toolbar + html_table(TEMPLATE['case_headers'], rows, 'cases') + '</main><script>' + script + '</script></body></html>'
     (directory / 'test_report.html').write_text(result, encoding='utf-8')

@@ -7,11 +7,11 @@
 执行阶段先产出 `execution/test_results.json`。每条失败至少应包含错误信息和可访问的证据引用（例如日志、截图、视频或 trace）。缺陷分析 Agent 的顺序为：
 
 1. 执行 `quality:evidence`，生成 `quality/evidence-assessment.json`。证据不足的失败只能进入 `needs_review`，不能作为确认缺陷。
-2. 生成面向人工审阅的 `defects/bugs.json` 与 `defects/bugs.md`。
-3. 执行 `quality:defects`，标准化为 `defects/defect-records.json`。每条记录均包含指纹、生命周期、置信度、关联用例和证据。
+2. 生成面向人工审阅的 `defects/bugs.json` 与 `defects/bugs.md`。每条记录按[缺陷严重程度分级标准](defect-severity-standard.md)给出 `severity`、`severity_reason` 和四个影响维度；没有足够证据时用 `unknown` 并说明缺失维度，不猜测频率，也不把 `unknown` 当作低风险。
+3. 执行 `quality:defects`，标准化为 `defects/defect-records.json`。每条记录均包含指纹、生命周期、置信度、严重程度及理由/四维依据、关联用例和证据。
 4. 执行 `quality:defect-index`，把不同运行中相同指纹的问题聚合为历史出现记录。它不会覆盖历史缺陷。
 
-分类包括 `product_defect`、`script_issue`、`environment_issue`、`test_data_issue` 和 `needs_review`。只有有充分证据且已完成分析的问题才能被描述为产品缺陷草稿；`needs_review` 始终表示产品结论尚未确认。
+分类包括 `product_defect`、`script_issue`、`environment_issue`、`test_data_issue` 和 `needs_review`。只有有充分证据且已完成分析的问题才能被描述为产品缺陷草稿；`needs_review` 始终表示产品结论尚未确认。`Blocker`/`Critical` 必须有业务影响或范围证据，单条断言失败不足以支撑高严重度。
 
 ## 报告与质量度量
 
@@ -20,8 +20,8 @@
 质量门的含义如下：
 
 - `blocked`：执行被阻塞，或失败证据不足；不能得出测试通过结论。
-- `review_required`：存在待确认问题或未确认的产品缺陷草稿；需要人工判断。
-- `risk_present`：存在高严重度风险；需在发布决策中显式接受或处置。
+- `review_required`：存在待确认问题、未确认的产品缺陷草稿，或新标准中严重度为 `unknown` 的开放缺陷；需要人工判断。
+- `risk_present`：存在高严重度风险（`Blocker`/`Critical`）；需在发布决策中显式接受或处置。
 - `informational`：未触发上述门禁，但仍只代表当前范围内的观察结果。
 
 Markdown、Word 和 PDF 均应使用同一份 `quality-metrics.json` 中的运行编号、执行统计和质量门状态。未执行内容必须作为未覆盖范围列出，不能计入通过。

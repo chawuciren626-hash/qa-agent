@@ -1,5 +1,5 @@
 /** Closed-application local source synchronization, with verified backup and rollback. */
-import {cpSync,copyFileSync,existsSync,mkdirSync,readFileSync,writeFileSync,renameSync,readdirSync,lstatSync,openSync,closeSync,unlinkSync} from 'node:fs';
+import {cpSync,copyFileSync,existsSync,mkdirSync,readFileSync,writeFileSync,renameSync,readdirSync,lstatSync,openSync,closeSync,unlinkSync,readSync} from 'node:fs';
 import {resolve,dirname,relative} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createHash,randomUUID} from 'node:crypto';
@@ -12,7 +12,12 @@ import {qaRoles,qaRoleTools} from './qa-project-bootstrap.mjs';
 import {withLocalServicePaused} from './local-service.mjs';
 
 const json=file=>JSON.parse(readFileSync(file,'utf8'));
-const digest=file=>createHash('sha256').update(readFileSync(file)).digest('hex');
+function digest(file) {
+  const hash=createHash('sha256'),buffer=Buffer.allocUnsafe(4*1024*1024),fd=openSync(file,'r');
+  try {let size;while((size=readSync(fd,buffer,0,buffer.length,null))>0)hash.update(buffer.subarray(0,size));}
+  finally {closeSync(fd);}
+  return hash.digest('hex');
+}
 export function sourceTreeHashes(root) {
   if(!existsSync(root)) return {};
   const files={};

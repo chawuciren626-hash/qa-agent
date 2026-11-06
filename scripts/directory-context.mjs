@@ -14,12 +14,13 @@ export function directoryContext(engineRoot,env=process.env) {
   if (!env.QA_DIRECTORY_CONTEXT) return {version:1,mode:'legacy',engine_root:engine,workspace_root:engine,session_root:engine,session_id:null,output_root:resolve(engine,'output'),run_root:resolve(engine,'output/runs')};
   const value=JSON.parse(env.QA_DIRECTORY_CONTEXT);
   if(value.version!==1 || !['engine_root','workspace_root','session_root'].every(k=>typeof value[k]==='string' && isAbsolute(value[k]))) throw new Error('Invalid directory context paths/version');
+  if(value.project_id!==undefined && !/^[A-Za-z0-9_-]+$/.test(value.project_id)) throw new Error('Invalid directory context project ID');
   if(resolve(value.engine_root)!==engine) throw new Error('Directory context engine mismatch');
   if(!/^session-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-[a-f0-9]+$/.test(value.session_id ?? '')) throw new Error('Directory context requires a parent session ID');
   const workspace=plainPath(resolve(value.workspace_root));const session=plainPath(resolve(value.session_root));
   if(session===workspace || !within(workspace,session)) throw new Error('Session directory must be a dedicated child of the workspace');
   if(session===engine || ['output','scripts','config','node_modules','skills','penguin'].some(name=>within(resolve(engine,name),session))) throw new Error('Session data must not overlap engine runtime directories');
-  return {version:1,mode:'isolated',engine_root:engine,workspace_root:workspace,session_root:session,session_id:value.session_id,output_root:resolve(session,'output'),run_root:resolve(session,'output/runs')};
+  return {version:1,mode:'isolated',engine_root:engine,workspace_root:workspace,session_root:session,session_id:value.session_id,...(value.project_id?{project_id:value.project_id}:{}),output_root:resolve(session,'output'),run_root:resolve(session,'output/runs')};
 }
 
 export function dataPath(root,...parts) {
@@ -53,5 +54,5 @@ export function assertRunContext(root,manifest) {
   const current=directoryContext(root);
   if(current.mode==='legacy') return;
   const recorded=manifest.directory_context;
-  if(recorded?.session_id!==current.session_id || recorded.session_root!==current.session_root || recorded.engine_root!==current.engine_root) throw new Error('Run belongs to another directory context; no legacy fallback');
+  if(recorded?.session_id!==current.session_id || recorded.session_root!==current.session_root || recorded.engine_root!==current.engine_root || (recorded.project_id && recorded.project_id!==current.project_id)) throw new Error('Run belongs to another directory context; no legacy fallback');
 }

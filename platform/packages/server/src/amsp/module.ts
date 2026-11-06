@@ -18,7 +18,7 @@ import { AgentApiRepo } from "../db/repos/agent-api.js";
 import type { Channels, Clock, Log } from "../hmr/capabilities.js";
 import { AgentApi } from "../mechanisms/agent-api.js";
 import type { AgentConfig } from "../mechanisms/agents.js";
-import type { Access } from "../mechanisms/projects.js";
+import type { Access, Projects } from "../mechanisms/projects.js";
 import type { Errors } from "../mechanisms/observability.js";
 import type { SessionIndex } from "../mechanisms/sessions.js";
 import type { Settings } from "../mechanisms/settings.js";
@@ -58,6 +58,7 @@ export class AmspRoutes {
   @Use() private readonly errors!: Errors;
   @Use() private readonly clock!: Clock;
   @Use() private readonly access!: Access;
+  @Use() private readonly projects!: Projects;
   @Use() private readonly traces!: Traces;
   @Bind("AmspRoutes.routes") routes!: Hono<AppEnv>;
   @Bind("AmspRoutes.try") tryRoutes!: Hono<AppEnv>;
@@ -76,6 +77,7 @@ export class AmspRoutes {
       errors: this.errors,
       traceService: this.traces,
       now: () => clock.now(),
+      ownerOfProject: (projectId: string) => this.projects.findById(projectId)?.ownerUserId ?? null,
     };
     this.routes = amspRoutes(deps);
     this.tryRoutes = agentApiTryRoutes({ ...deps, access: this.access });

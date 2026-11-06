@@ -29,6 +29,7 @@ import { isHttpUrl } from "../../services/protocol-detect.js";
 import { MAX_ARCHIVE_BYTES } from "../../services/skill-import-limits.js";
 import type { Benchmarks } from "../../mechanisms/agents.js";
 import type { Access } from "../../mechanisms/projects.js";
+import { qaEnabled } from "../../services/qa-engine.js";
 import {
   badRequest,
   optionalNumber,
@@ -226,6 +227,11 @@ export function benchmarksRoutes(deps: BenchmarksRouteDeps): Hono<AppEnv> {
   app.post("/archive", async (c) => {
     const projectId = requireValidId(c, "projectId");
     deps.access.requireProjectAccess(c.var.user.userId, projectId);
+    // QA administrators can inspect another user's project, but importing an archive
+    // replaces project data. Keep that action with the actual project owner.
+    if (qaEnabled && c.var.user.isAdmin) {
+      deps.access.requireProjectOwner(c.var.user.userId, projectId);
+    }
     const body = await readJson(c);
     const dataBase64 = requireString(body, "dataBase64");
     // The same 413 the decoded size would get, answered before a byte is decoded.

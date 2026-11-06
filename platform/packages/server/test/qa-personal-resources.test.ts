@@ -9,7 +9,7 @@ const skill=(name:string)=>`---\nname: ${name}\ndescription: personal acceptance
 describe.skipIf(!process.env.AITEST_ENGINE_ROOT)('QA personal resources and role boundaries',()=>{
  let app:TestApp, owner:ReturnType<typeof apiClient>, member:ReturnType<typeof apiClient>, admin:ReturnType<typeof apiClient>;
  const p='resource_owner-sandbox', base=`/api/projects/${p}/agents/qa/personal-resources`;
- beforeEach(async()=>{app=await createTestApp(); owner=apiClient(app.app,(await provisionUser(app.app,'resource_owner')).cookie);member=apiClient(app.app,(await provisionUser(app.app,'resource_member')).cookie);admin=apiClient(app.app,(await loginAdmin(app.app)).cookie);expect((await owner.post('/api/projects',{projectId:p})).status).toBe(201);await owner.post(`/api/projects/${p}/members`,{userId:'resource_member'});});
+ beforeEach(async()=>{app=await createTestApp(); owner=apiClient(app.app,(await provisionUser(app.app,'resource_owner')).cookie);member=apiClient(app.app,(await provisionUser(app.app,'resource_member')).cookie);admin=apiClient(app.app,(await loginAdmin(app.app)).cookie);expect((await owner.post('/api/projects',{projectId:p})).status).toBe(201);await owner.post(`/api/projects/${p}/members`,{userId:'resource_member'});app.deps.db.prepare('UPDATE users SET is_admin=1 WHERE user_id=?').run('resource_owner');});
  afterEach(async()=>{vi.restoreAllMocks();await app?.cleanup();});
  it('keeps imports private and forbids permanent personal Skill installation',async()=>{
   const res=await owner.post(base,{kind:'skill',dataBase64:zip({'SKILL.md':skill('personal-design'),'references/example.md':'local-only guidance'})});expect(res.status).toBe(201);const item=await res.json() as {id:string};
@@ -20,9 +20,9 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)('QA personal resources and role
   expect((await denied.json() as {error:{code:string}}).error.code).toBe('round_selection_required');
   const dest=path.join(app.root,p,'agents/test_agent/agent_state');
   await expect(fs.access(path.join(dest,'skills/personal-design/SKILL.md'))).rejects.toThrow();
-  expect((await owner.delete(`/api/projects/${p}/agents/test_agent/skills/personal-design`)).status).toBe(403);
-  expect((await owner.post(`/api/projects/${p}/agents/test_agent/hooks/archive`,{})).status).toBe(403);
-  expect((await owner.get(`/api/projects/${p}/usage`)).status).toBe(403);
+  expect((await member.delete(`/api/projects/${p}/agents/test_agent/skills/personal-design`)).status).toBe(403);
+  expect((await member.post(`/api/projects/${p}/agents/test_agent/hooks/archive`,{})).status).toBe(403);
+  expect((await member.get(`/api/projects/${p}/usage`)).status).toBe(403);
   expect((await admin.get(`/api/projects/${p}/agents/test_agent/skills`)).status).toBe(200);
   expect((await owner.delete(base+'/'+item.id)).status).toBe(204);
  });
@@ -63,7 +63,7 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)('QA personal resources and role
   const p2='resource_owner-other';await owner.post('/api/projects',{projectId:p2});
   expect((await owner.post(`/api/projects/${p2}/agents/qa/personal-resources/${item.id}/apply`,{agentId:'test_agent'})).status).toBe(404);
   expect((await owner.post(base,{kind:'skill',dataBase64:zip({'../bad/SKILL.md':skill('bad')})})).status).toBe(400);
-  const ownMember=await member.post(base,{kind:'skill',dataBase64:zip({'SKILL.md':skill('member-note')})});expect(ownMember.status).toBe(201);
+  const ownMember=await member.post(base,{kind:'skill',dataBase64:zip({'SKILL.md':skill('member-note')})});expect(ownMember.status).toBe(403);
   expect((await owner.get(`/api/projects/${p}/agents/qa/personal-resources`)).status).toBe(200);
  });
 });

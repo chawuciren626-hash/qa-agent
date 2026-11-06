@@ -42,8 +42,11 @@ export function adminAgentVersionStatus(row: AdminAgentVersionRow | undefined, a
 export function publicAgentDraft(agentId: string, data: AgentConfigResponse, existing?: Publication) {
   return {
     kind: "agents", name: data.config.name || agentId, description: data.config.description || "",
-    payload: { prompt: data.config.systemPrompt || "", agentsMd: data.agentsMd || "",
+    payload: { agentId: existing?.payload.agentId || agentId, prompt: data.config.systemPrompt || "", agentsMd: data.agentsMd || "",
       ...(data.config.maxTurns === undefined ? {} : { maxTurns: data.config.maxTurns }),
+      ...(data.config.model === undefined ? {} : { model: data.config.model }),
+      ...(data.config.compaction === undefined ? {} : { compaction: data.config.compaction }),
+      toolsBuiltin: data.config.toolsBuiltin,
       modelResource: existing?.payload.modelResource || "",
       skillResources: existing?.payload.skillResources || [], pluginResources: existing?.payload.pluginResources || [] },
   };
@@ -83,7 +86,7 @@ export function AdminAgentVersions({ projectId, agentId, data, onEditable }: {
   useEffect(() => { void load().catch(cause => setError(cause instanceof Error ? cause.message : "读取版本失败")); }, [load]);
   const row = rows.find(item => item.rootAgentId === agentId || item.publishedAgentId === agentId || item.draftAgentId === agentId || agentId.startsWith(`admin_${item.resourceId.replaceAll("-", "").slice(0, 12)}_v`));
   const resource = resources.find(item => item.id === row?.resourceId);
-  const draft = useMemo(() => publicAgentDraft(agentId, data, resource), [agentId, data, resource]);
+  const draft = useMemo(() => publicAgentDraft(row?.rootAgentId ?? agentId, data, resource), [agentId, data, resource, row?.rootAgentId]);
   const published = history[0]?.body;
   const hasDraftChanges = !!resource && (JSON.stringify({ name: resource.name, description: resource.description, payload: resource.payload }) !== JSON.stringify({ name: draft.name, description: draft.description, payload: draft.payload }) || JSON.stringify(resource.audience) !== JSON.stringify(audience));
   const sameAsPublished = !!published && JSON.stringify({ kind: published.kind, name: published.name, description: published.description, payload: published.payload, audience: published.audience }) === JSON.stringify({ ...draft, audience });
@@ -125,7 +128,7 @@ export function AdminAgentVersions({ projectId, agentId, data, onEditable }: {
     const updated = await controlRequest(`/api/control/admin/resources/${resource.id}/publish`, "POST", { revision: resource.revision }) as Publication;
     await controlRequest("/api/control/admin/agent-versions", "PUT", { resourceId: resource.id, rootAgentId: row.rootAgentId,
       publishedAgentId: agentId, draftAgentId: "", publishedVersion: updated.version });
-    onEditable(false); setValidated(false); setNotice(`v${updated.version} 已发布。用户端会看到更新提示。`);
+    onEditable(false); setValidated(false); setNotice(`v${updated.version} 已发布。新启动的任务将使用该版本。`);
     await load();
   };
   return <section className="mb-5 rounded-lg border border-[var(--border)] p-4" aria-label="智能体版本管理">

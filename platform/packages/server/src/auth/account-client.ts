@@ -1,6 +1,10 @@
 /** Central identity only. Project contents, preferences and model credentials never cross this bridge. */
 import { requestModule } from "./module-access.js";
 import { applyPublicResource, previewPublicAgentUpdate } from "./public-resource-apply.js";
+import { PublishedBundleCache } from "./published-bundle-cache.js";
+import { SharedAgentSessionPins } from "./shared-agent-session-pins.js";
+import { localAdapterHash } from "./trusted-local-adapters.js";
+import type { ResolvedPublishedBundle } from "./published-bundle.js";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -40,17 +44,21 @@ export class AccountClient {
   private readonly sessions = new Map<string, Binding>();
   private readonly checks = new Map<Binding, Promise<void>>();
   private readonly creating = new Map<string, Promise<string>>();
+  private readonly provisionalCookies = new Map<string, string>();
   private readonly shellClaims = new Set<string>();
   private readonly cfg: AccountClientConfig;
   private readonly cookieSeal: AccountCookieSeal;
+  private readonly publishedPins: SharedAgentSessionPins;
   constructor(private readonly deps: Deps) {
     this.cfg = deps.config.accountClient!;
+    this.publishedPins = new SharedAgentSessionPins(deps.db, deps.config.root);
     // Explicit binding, including the center origin: changing servers cannot adopt another person's files.
     deps.db.exec("CREATE TABLE IF NOT EXISTS account_center_bindings (origin TEXT NOT NULL, remote_id TEXT NOT NULL, local_id TEXT NOT NULL UNIQUE, PRIMARY KEY(origin, remote_id))");
     // The local session cookie survives an app restart. Keep its central proof alongside the
     // already durable local auth_sessions row, then revalidate it with the center on first use.
     // This table lives only in the private local data root, never in project exports.
     deps.db.exec("CREATE TABLE IF NOT EXISTS account_center_sessions (token_hash TEXT PRIMARY KEY, origin TEXT NOT NULL, local_id TEXT NOT NULL, remote_json TEXT NOT NULL, central_cookie TEXT NOT NULL, expires_at TEXT NOT NULL)");
+    deps.db.exec("CREATE TABLE IF NOT EXISTS central_private_project_scopes (local_user_id TEXT NOT NULL, project_id TEXT NOT NULL, scope_id TEXT NOT NULL UNIQUE, PRIMARY KEY(local_user_id,project_id))");
     const encryptedRowsExist = Boolean(deps.db.prepare("SELECT 1 AS found FROM account_center_sessions WHERE central_cookie LIKE 'enc:v1:%' LIMIT 1").get());
     this.cookieSeal = new AccountCookieSeal(deps.config.root, encryptedRowsExist);
     const previous = deps.db.prepare("SELECT origin FROM account_center_bindings LIMIT 1").get();
@@ -136,6 +144,101 @@ export class AccountClient {
     }
     throw new HttpError(401,"unauthorized","登录已失效。");
   }
+  /** Resolve the current central role once for a new local task; no project data is sent. */
+  async listSharedRoleIds(localId: string): Promise<string[]> {
+    const provisional=this.provisionalCookies.get(localId);
+    if(!provisional)await this.validateUser(localId);
+    const binding=[...this.sessions.values()].find(item=>item.localId===localId&&item.expires>Date.now()) ??
+      (provisional ? {cookie:provisional} as Binding : undefined);
+    if(!binding)throw new HttpError(401,"unauthorized","请重新登录。");
+    const response=await this.remote("/api/control/catalog/roles/resolved","GET",undefined,binding);
+    if(!response.ok)throw new HttpError(503,"resource_catalog_unavailable","无法读取共享智能体目录。");
+    const parsed=await response.json() as {bundles?: ({agentId:string}&ResolvedPublishedBundle)[]};
+    if(!Array.isArray(parsed.bundles))throw new HttpError(503,"resource_catalog_invalid","共享智能体目录无效。");
+    const cache=new PublishedBundleCache(this.deps.config.root);
+    const ready:string[]=[];
+    for(const item of parsed.bundles){
+      const bundle=await cache.store(localId,item);
+      const definition=await cache.definition(localId,bundle.bundleHash);
+      if(definition.agentId!==item.agentId)throw new HttpError(503,"resource_catalog_invalid","共享智能体目录与定义不一致。");
+      const required=item.agentId==="default_agent"?["qa-default-entry","goal"]:item.agentId==="test_agent"?["qa-delegation-guard"]:["qa-stage-boundary"];
+      if (!process.env.AITEST_ENGINE_ROOT) continue;
+      if (!(await Promise.all(required.map(async name => {
+        const adapter=definition.localAdapters.find(entry=>entry.name===name);
+        return adapter && adapter.hash===await localAdapterHash(process.env.AITEST_ENGINE_ROOT!,name);
+      }))).every(Boolean)) continue;
+      ready.push(item.agentId);
+    }
+    return ready;
+  }
+  async resolveRoleBundle(localId: string, agentId: string): Promise<ResolvedPublishedBundle | null> {
+    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(agentId)) throw new HttpError(400,"invalid_agent_id","智能体标识无效。");
+    await this.validateUser(localId);
+    const binding=[...this.sessions.values()].find(b=>b.localId===localId&&b.expires>Date.now());
+    if(!binding)throw new HttpError(401,"unauthorized","请重新登录。");
+    const listing=await this.remote("/api/control/catalog/roles","GET",undefined,binding);
+    if(!listing.ok)throw new HttpError(503,"resource_catalog_unavailable","无法读取共享智能体目录。");
+    const parsed=await listing.json() as {roles?:{agentId:string;resourceId:string}[]};
+    const matches=(parsed.roles??[]).filter(role=>role.agentId===agentId);
+    if(matches.length===0)return null;
+    if(matches.length!==1)throw new HttpError(409,"duplicate_shared_role","共享智能体标识重复。");
+    const result=await this.remote(`/api/control/catalog/${encodeURIComponent(matches[0]!.resourceId)}/resolved`,"GET",undefined,binding);
+    if(!result.ok)throw new HttpError(503,"resource_bundle_unavailable","无法读取共享智能体定义。");
+    const cache=new PublishedBundleCache(this.deps.config.root);
+    const bundle=await cache.store(localId,await result.json());
+    await cache.materializeSkills(localId,bundle.bundleHash);
+    return bundle;
+  }
+  async pinPublishedSession(userId: string, projectId: string, agentId: string, sessionId: string): Promise<boolean> {
+    await this.validateUser(userId);
+    const binding=[...this.sessions.values()].find(item=>item.localId===userId&&item.expires>Date.now());
+    if(!binding)throw new HttpError(401,"unauthorized","请重新登录。");
+    const response=await this.remote("/api/control/catalog/roles/resolved","GET",undefined,binding);
+    if(!response.ok)throw new HttpError(503,"resource_catalog_unavailable","无法读取共享智能体目录。");
+    const parsed=await response.json() as {bundles?: ({agentId:string}&ResolvedPublishedBundle)[]};
+    if(!Array.isArray(parsed.bundles)||parsed.bundles.length>100)throw new HttpError(503,"resource_catalog_invalid","共享智能体目录无效。");
+    const cache=new PublishedBundleCache(this.deps.config.root);
+    const entries: {agentId:string;bundleHash:string}[]=[];
+    const seen=new Set<string>();
+    for(const item of parsed.bundles){
+      if(typeof item.agentId!=="string"||seen.has(item.agentId))throw new HttpError(503,"resource_catalog_invalid","共享智能体目录重复或无效。");
+      seen.add(item.agentId);
+      const bundle=await cache.store(userId,item);
+      const definition=await cache.definition(userId,bundle.bundleHash);
+      if(definition.agentId!==item.agentId)throw new HttpError(503,"resource_catalog_invalid","共享智能体目录与定义不一致。");
+      entries.push({agentId:item.agentId,bundleHash:bundle.bundleHash});
+    }
+    const selected=entries.find(entry=>entry.agentId===agentId);
+    if(!selected)return false;
+    await this.publishedPins.catalog(sessionId,userId,entries);
+    await this.publishedPins.pin({ userId, projectId, agentId, sessionId, bundleHash: selected.bundleHash });
+    return true;
+  }
+  async resolvePinnedDefinition(projectId: string, agentId: string, sessionId: string, parentSessionId?: string) {
+    const existing = await this.publishedPins.resolve(sessionId, projectId, agentId);
+    const definition=existing??(parentSessionId&&this.publishedPins.get(parentSessionId)
+      ?await this.publishedPins.inherit(parentSessionId,sessionId,projectId,agentId):null);
+    if(!definition)return null;
+    const pin=this.publishedPins.get(sessionId);
+    if(!pin)throw Error("Shared Agent session pin is missing");
+    await this.validateUser(pin.userId);
+    const binding=[...this.sessions.values()].find(item=>item.localId===pin.userId&&item.expires>Date.now());
+    if(!binding)throw new HttpError(401,"unauthorized","请重新登录中央账号。");
+    const base=`/api/control/private/agents/${encodeURIComponent(definition.resourceId)}/memory`;
+    const [user,project]=await Promise.all([
+      this.remote(base,"GET",undefined,binding),
+      this.remote(`${base}?scope=project&projectId=${encodeURIComponent(this.privateProjectScope(pin.userId,projectId))}`,"GET",undefined,binding),
+    ]);
+    if(!user.ok||!project.ok)throw new HttpError(503,"central_memory_unavailable","无法读取中央 Agent 记忆。");
+    const parse=async(response:Response):Promise<[string,string][]>=>{
+      const data=await response.json() as {entries?:{name:unknown;value:unknown}[]};
+      if(!Array.isArray(data.entries)||data.entries.length>100||data.entries.some(entry=>typeof entry.name!=="string"||typeof entry.value!=="string"))throw Error("Invalid central Agent memory response");
+      return data.entries.map(entry=>[entry.name as string,entry.value as string]);
+    };
+    const memory=new Map([...(await parse(user)),...(await parse(project))]);
+    if(JSON.stringify(Object.fromEntries(memory)).length>256_000)throw Error("Central Agent memory exceeds the runtime limit");
+    return {...definition,memoryInstructions:JSON.stringify(Object.fromEntries(memory))};
+  }
   private async checkBinding(binding: Binding) {
     const response = await this.remote("/api/me", "GET", undefined, binding);
     if (response.status === 401 || response.status === 403) {
@@ -175,53 +278,19 @@ export class AccountClient {
     const key=requestModule(path,method);
     if(key&&key!=="models"&&!binding.remote.isAdmin&&!modules.includes(key))throw new HttpError(403,"module_forbidden","你没有此功能模块的权限。");
   }
+  private privateProjectScope(userId:string,projectId:string):string {
+    if(!/^[a-zA-Z][a-zA-Z0-9_-]{0,99}$/.test(projectId))throw new HttpError(400,"invalid_project_scope","项目范围无效。");
+    const previous=this.deps.db.prepare("SELECT scope_id AS scopeId FROM central_private_project_scopes WHERE local_user_id=? AND project_id=?").get(userId,projectId) as {scopeId:string}|undefined;
+    if(previous)return previous.scopeId;
+    const candidate=`project_${randomBytes(16).toString("hex")}`;
+    this.deps.db.prepare("INSERT OR IGNORE INTO central_private_project_scopes VALUES (?,?,?)").run(userId,projectId,candidate);
+    return (this.deps.db.prepare("SELECT scope_id AS scopeId FROM central_private_project_scopes WHERE local_user_id=? AND project_id=?").get(userId,projectId) as {scopeId:string}).scopeId;
+  }
   private async control(c:Context<AppEnv>):Promise<Response>{
     const held=this.held(c);if(!held)throw new HttpError(401,"unauthorized","请先登录。");
     await this.validate(held.token);
     const endpoint=c.req.path;
     if(endpoint.startsWith("/api/control/admin/")&&!held.binding.remote.isAdmin)throw new HttpError(403,"admin_required","仅管理员可以访问管理后台。");
-    if(endpoint==="/api/control/admin/skill-categories"||endpoint==="/api/control/admin/skill-categories/assign"||/^\/api\/control\/admin\/skill-categories\/[a-z0-9_]+$/.test(endpoint)||/^\/api\/control\/admin\/skill-categories\/assignment\/[a-zA-Z0-9_%.-]+$/.test(endpoint)){
-      const defaults=[["common","通用"],["req","需求分析"],["design","测试设计"],["case","用例生成"],["web","Web 自动化"],["api","接口自动化"],["app","App 自动化"],["mini","小程序自动化"],["report","测试报告"],["defect","缺陷管理"]];
-      this.deps.db.exec("CREATE TABLE IF NOT EXISTS admin_skill_categories(id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,builtin INTEGER NOT NULL DEFAULT 0,deleted INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL)");
-      this.deps.db.exec("CREATE TABLE IF NOT EXISTS admin_skill_category_assignments(skill_name TEXT PRIMARY KEY,category_id TEXT NOT NULL)");
-      const seed=this.deps.db.prepare("INSERT OR IGNORE INTO admin_skill_categories VALUES (?,?,?,?,?)");
-      for(const [id,name] of defaults)seed.run(id!,name!,1,0,"builtin");
-      if(endpoint==="/api/control/admin/skill-categories"&&c.req.method==="GET")return c.json({categories:this.deps.db.prepare("SELECT id,name,builtin FROM admin_skill_categories WHERE deleted=0 ORDER BY builtin DESC,created_at,id").all(),assignments:this.deps.db.prepare("SELECT skill_name AS skillName,category_id AS categoryId FROM admin_skill_category_assignments").all()});
-      if(endpoint==="/api/control/admin/skill-categories"&&c.req.method==="POST"){
-        const body=await c.req.json() as Record<string,unknown>;
-        if(!body||Object.keys(body).some(key=>key!=="name")||typeof body.name!=="string"||!body.name.trim()||body.name.trim().length>40)throw new HttpError(400,"invalid_skill_category","分类名称无效。");
-        const id="cat_"+randomBytes(6).toString("hex");
-        try{this.deps.db.prepare("INSERT INTO admin_skill_categories VALUES (?,?,?,?,?)").run(id,body.name.trim(),0,0,new Date().toISOString());}
-        catch{throw new HttpError(409,"skill_category_exists","分类名称已存在。");}
-        return c.json({id,name:body.name.trim()},201);
-      }
-      if(endpoint==="/api/control/admin/skill-categories/assign"&&c.req.method==="PUT"){
-        const body=await c.req.json() as Record<string,unknown>;
-        if(!body||Object.keys(body).some(key=>!["skillName","categoryId"].includes(key))||typeof body.skillName!=="string"||! /^[A-Za-z0-9_-]{1,64}$/.test(body.skillName)||typeof body.categoryId!=="string"||!this.deps.db.prepare("SELECT 1 FROM admin_skill_categories WHERE id=? AND deleted=0").get(body.categoryId))throw new HttpError(400,"invalid_skill_category_assignment","技能或分类无效。");
-        this.deps.db.prepare("INSERT INTO admin_skill_category_assignments VALUES (?,?) ON CONFLICT(skill_name) DO UPDATE SET category_id=excluded.category_id").run(body.skillName,body.categoryId);
-        return c.json({ok:true});
-      }
-      const assignmentName=/^\/api\/control\/admin\/skill-categories\/assignment\/([a-zA-Z0-9_%.-]+)$/.exec(endpoint)?.[1];
-      if(assignmentName&&c.req.method==="DELETE"){
-        this.deps.db.prepare("DELETE FROM admin_skill_category_assignments WHERE skill_name=?").run(decodeURIComponent(assignmentName));
-        return c.json({ok:true});
-      }
-      const categoryId=/^\/api\/control\/admin\/skill-categories\/([a-z0-9_]+)$/.exec(endpoint)?.[1];
-      if(categoryId&&c.req.method==="PUT"){
-        const body=await c.req.json() as Record<string,unknown>;
-        if(!body||Object.keys(body).some(key=>key!=="name")||typeof body.name!=="string"||!body.name.trim()||body.name.trim().length>40)throw new HttpError(400,"invalid_skill_category","分类名称无效。");
-        try{const result=this.deps.db.prepare("UPDATE admin_skill_categories SET name=? WHERE id=? AND deleted=0").run(body.name.trim(),categoryId);if(!result.changes)throw new HttpError(404,"skill_category_missing","分类不存在。");}
-        catch(error){if(error instanceof HttpError)throw error;throw new HttpError(409,"skill_category_exists","分类名称已存在。");}
-        return c.json({ok:true});
-      }
-      if(categoryId&&c.req.method==="DELETE"){
-        if(!this.deps.db.prepare("SELECT 1 FROM admin_skill_categories WHERE id=? AND deleted=0").get(categoryId))throw new HttpError(404,"skill_category_missing","分类不存在。");
-        if(this.deps.db.prepare("SELECT 1 FROM admin_skill_category_assignments WHERE category_id=? LIMIT 1").get(categoryId))throw new HttpError(409,"skill_category_not_empty","请先移走此分类下的全部技能。");
-        this.deps.db.prepare("UPDATE admin_skill_categories SET deleted=1 WHERE id=?").run(categoryId);
-        return c.json({ok:true});
-      }
-      throw new HttpError(405,"method_not_allowed","不支持此操作。");
-    }
     if(endpoint==="/api/control/admin/plugin-categories"||endpoint==="/api/control/admin/plugin-categories/assign"||/^\/api\/control\/admin\/plugin-categories\/[a-z0-9_]+$/.test(endpoint)||/^\/api\/control\/admin\/plugin-categories\/assignment\/[a-zA-Z0-9_%.-]+$/.test(endpoint)){
       this.deps.db.exec("CREATE TABLE IF NOT EXISTS admin_plugin_categories(id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL)");
       this.deps.db.exec("CREATE TABLE IF NOT EXISTS admin_plugin_category_assignments(plugin_key TEXT PRIMARY KEY,category_id TEXT NOT NULL)");
@@ -383,14 +452,64 @@ export class AccountClient {
       if(endpoint.endsWith("/preview"))return c.json(await previewPublicAgentUpdate(this.deps.db,body,bundle.resources,dispatch));
       return c.json(await applyPublicResource(this.deps.db,body,bundle.resources,dispatch));
     }
-    const valid=(c.req.method==="GET"&&/^\/api\/control\/(access|catalog(?:\/[a-z0-9-]+)?|admin\/(resources(?:\/[a-z0-9-]+\/history)?|permissions\/[a-z][a-z0-9_]*|roles|menus|audit))$/.test(endpoint)) ||
-      (["POST","PUT"].includes(c.req.method)&&/^\/api\/control\/admin\/(resources(?:\/validate|\/[a-z0-9-]+(?:\/(publish|withdraw|rollback|validate))?)?|permissions\/[a-z][a-z0-9_]*|roles(?:\/[a-f0-9-]{36})?|role-members\/[a-z][a-z0-9_]*|menus)$/.test(endpoint)) ||
-      (c.req.method==="DELETE"&&/^\/api\/control\/admin\/(resources\/[a-z0-9-]+|roles\/[a-f0-9-]{36})$/.test(endpoint));
+    if(endpoint==="/api/control/agent-template/apply"&&c.req.method==="POST"){
+      const body=await c.req.json().catch(()=>null) as Record<string,unknown>|null;
+      if(!body||Object.keys(body).some(key=>!["resourceId","projectId","kind","name","startAt","enabled"].includes(key))||
+        typeof body.resourceId!=="string"||!/^[a-f0-9-]{36}$/.test(body.resourceId)||
+        typeof body.projectId!=="string"||!/^[a-zA-Z0-9_-]{1,100}$/.test(body.projectId)||
+        !["schedule","api"].includes(String(body.kind)))throw new HttpError(400,"invalid_template_request","模板应用请求无效。");
+      if(!this.deps.localRequest)throw new HttpError(503,"unavailable","本机应用服务未就绪。");
+      const response=await this.remote(`/api/control/catalog/${body.resourceId}/resolved`,"GET",undefined,held.binding);
+      if(!response.ok)throw new HttpError(response.status as 400,"template_unavailable","中央 Agent 模板不可用。");
+      const bundle=await new PublishedBundleCache(this.deps.config.root).store(held.binding.localId,await response.json());
+      const agent=bundle.resources[0];
+      const agentId=agent?.payload.agentId;
+      if(agent?.id!==body.resourceId||agent.kind!=="agents"||typeof agentId!=="string"||!/^[a-z][a-z0-9_-]*$/.test(agentId))throw new HttpError(409,"invalid_template","中央 Agent 没有可用的本地标识。");
+      const appliedTable=this.deps.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='applied_public_resources'").get();
+      const applied=appliedTable?this.deps.db.prepare("SELECT agent_id AS agentId FROM applied_public_resources WHERE project_id=? AND resource_id=? ORDER BY version DESC LIMIT 1").get(body.projectId,body.resourceId) as {agentId:string}|undefined:undefined;
+      const localAgentId=applied?.agentId||agentId;
+      let pathToLocal:string, payload:Record<string,unknown>;
+      if(body.kind==="schedule"){
+        if(typeof body.name!=="string"||typeof body.startAt!=="string"||body.enabled!==true||!Number.isFinite(Date.parse(body.startAt))||Date.parse(body.startAt)<=Date.now())throw new HttpError(400,"invalid_template_request","请选择模板并提供未来的启动时间。");
+        const templates=Array.isArray(agent.payload.scheduleTemplates)?agent.payload.scheduleTemplates as Record<string,unknown>[]:[];
+        const selected=templates.find(item=>item.name===body.name);
+        if(!selected)throw new HttpError(404,"template_missing","定时任务模板不存在。");
+        pathToLocal=`/api/projects/${encodeURIComponent(body.projectId)}/agents/${encodeURIComponent(localAgentId)}/schedules`;
+        payload={name:selected.name,prompt:selected.prompt,enabled:true,startAt:body.startAt,...(selected.period===undefined?{}:{period:selected.period})};
+      }else{
+        if(body.name!==undefined||body.startAt!==undefined||body.enabled!==undefined)throw new HttpError(400,"invalid_template_request","Agent API 模板请求包含无关字段。");
+        if(!agent.payload.apiTemplate)throw new HttpError(404,"template_missing","Agent API 模板不存在。");
+        pathToLocal=`/api/projects/${encodeURIComponent(body.projectId)}/agents/${encodeURIComponent(localAgentId)}/api`;
+        payload=agent.payload.apiTemplate as Record<string,unknown>;
+      }
+      this.requireModule(held.binding,pathToLocal,body.kind==="schedule"?"POST":"PUT");
+      const local=await this.deps.localRequest(held.binding.localId,new Request("http://localhost"+pathToLocal,{method:body.kind==="schedule"?"POST":"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(payload)}));
+      return new Response(await local.text(),{status:local.status,headers:{"content-type":"application/json"}});
+    }
+    const centralAgentAdmin=/^\/api\/control\/admin\/(agent-cards|agent-defaults|resources\/[a-f0-9-]{36}\/(storage|snapshot|kernel-update|versions\/[1-9]\d*\/resolved))$/.test(endpoint);
+    const centralPrivate=/^\/api\/control\/private\/agents\/[a-f0-9-]{36}\/(memory|vault)$/.test(endpoint);
+    const centralSkills=/^\/api\/control\/skills\/(catalog|admin(?:\/[a-f0-9-]{36}(?:\/export)?)?|categories(?:\/assign|\/assignment\/[a-z0-9_-]+|\/[a-z0-9_]+)?)$/.test(endpoint);
+    const valid=(centralSkills && ["GET","POST","PUT","DELETE"].includes(c.req.method)) ||
+      (c.req.method==="GET"&&/^\/api\/control\/(access|catalog(?:\/roles(?:\/resolved)?|\/[a-z0-9-]+(?:\/resolved)?)?|admin\/(resources(?:\/[a-z0-9-]+\/history)?|agent-groups|permissions\/[a-z][a-z0-9_]*|roles|menus|audit))$/.test(endpoint)) ||
+      (["POST","PUT"].includes(c.req.method)&&/^\/api\/control\/admin\/(resources(?:\/validate|\/[a-z0-9-]+(?:\/(publish|withdraw|rollback|validate|copy))?)?|agent-groups(?:\/assign|\/[a-z0-9_]+)?|permissions\/[a-z][a-z0-9_]*|roles(?:\/[a-f0-9-]{36})?|role-members\/[a-z][a-z0-9_]*|menus)$/.test(endpoint)) ||
+      (c.req.method==="DELETE"&&/^\/api\/control\/admin\/(resources\/[a-z0-9-]+(?:\/copy)?|agent-groups\/[a-z0-9_]+|roles\/[a-f0-9-]{36})$/.test(endpoint)) ||
+      (centralAgentAdmin && (c.req.method==="GET" || (c.req.method==="POST" && /\/(snapshot|kernel-update)$/.test(endpoint)))) ||
+      (centralPrivate && ["GET","PUT","DELETE"].includes(c.req.method));
     if(!valid)throw new HttpError(404,"not_found","未知管理接口。");
-    const response=await this.remote(endpoint,c.req.method,c.req.method==="GET"?undefined:await c.req.json(),held.binding);
-    return new Response(await response.text(),{status:response.status,headers:{"content-type":"application/json"}});
+    const url=new URL(c.req.url);
+    let requestBody=c.req.method==="GET"?undefined:await c.req.json();
+    if(centralPrivate){
+      if(c.req.method==="GET"&&url.searchParams.get("scope")==="project")url.searchParams.set("projectId",this.privateProjectScope(held.binding.localId,url.searchParams.get("projectId")??""));
+      if(c.req.method!=="GET"&&requestBody?.scope==="project")requestBody={...requestBody,projectId:this.privateProjectScope(held.binding.localId,String(requestBody.projectId??""))};
+    }
+    const response=await this.remote(endpoint+url.search,c.req.method,requestBody,held.binding);
+    if(response.ok && c.req.method==="GET" && /^\/api\/control\/catalog\/[a-f0-9-]{36}\/resolved$/.test(endpoint)) {
+      const bundle=await new PublishedBundleCache(this.deps.config.root).store(held.binding.localId,await response.json());
+      return c.json(bundle);
+    }
+    return new Response(response.status===204?null:await response.text(),{status:response.status,headers:{"content-type":response.headers.get("content-type")??"application/json",...(response.headers.has("content-disposition")?{"content-disposition":response.headers.get("content-disposition")!}:{})}});
   }
-  private async localUser(remote: UserInfo): Promise<string> {
+  private async localUser(remote: UserInfo, centralCookie: string): Promise<string> {
     const pending = this.creating.get(remote.userId);
     if (pending) return pending;
     const create = (async () => {
@@ -405,7 +524,9 @@ export class AccountClient {
       const id = owner ? "admin" : "acct_" + createHash("sha256").update(this.cfg.origin + "\n" + remote.userId).digest("hex").slice(0,24);
       if (!owner) {
         if (this.deps.users().findById(id)) throw new HttpError(409,"local_identity_collision","本地身份冲突，不能自动认领已有数据。");
-        await this.deps.admin().createUser(id, randomBytes(32).toString("base64url"));
+        this.provisionalCookies.set(id,centralCookie);
+        try { await this.deps.admin().createUser(id, randomBytes(32).toString("base64url")); }
+        finally { this.provisionalCookies.delete(id); }
         // A local unusable random password is never a second sign-in credential.
         const row = this.deps.users().findById(id)!;
         this.deps.users().updatePassword(id,row.passwordHash,false);
@@ -432,7 +553,7 @@ export class AccountClient {
     const cookie = response.headers.getSetCookie().find(v=>v.startsWith("penguin_session="))?.split(";")[0];
     if (!cookie || !/^[a-z][a-z0-9_]{1,31}$/.test(user.userId)) throw new HttpError(502,"invalid_account_center","账号中心响应无效。");
     if(c.req.path==="/api/auth/admin-login"&&!user.isAdmin)throw new HttpError(403,"admin_required","仅管理员可以登录管理后台。");
-    const localId=await this.localUser(user);
+    const localId=await this.localUser(user,cookie);
     const shell = getCookie(c,"aitest_shell");
     const via = shell && this.shellClaims.has(shell) ? "desktop" : "password";
     const {token}=this.deps.sessions().issue({userId:localId,via,now:new Date(),ttlMs:this.deps.config.authSessionTtlMs});

@@ -219,6 +219,8 @@ test('role scoped policy keeps common safeguards and only relevant browser instr
   const source=readFileSync(resolve(root,'penguin/command-runtime.md'),'utf8');
   const controller=sharedInstructionsForRole(source,'test_agent');
   const analyst=sharedInstructionsForRole(source,'requirement_analysis_agent');
+  assert.equal(sharedInstructionsForRole(source,'default_agent'),'');
+  assert.equal(sharedInstructionsForRole(source,'general_agent'),'');
   assert.match(controller,/浏览器填写凭据/);
   assert.doesNotMatch(analyst,/浏览器填写凭据/);
   assert.match(analyst,/未知副作用/);

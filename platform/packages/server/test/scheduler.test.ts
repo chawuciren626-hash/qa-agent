@@ -610,6 +610,7 @@ describe("scheduler", () => {
     expect(created[0]).toMatchObject({
       projectId: P,
       agentId: A,
+      userId: "owner_a",
       workspace: "/tmp/ws",
       provider: "custom",
       modelId: "m-bench",

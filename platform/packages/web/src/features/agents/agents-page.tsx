@@ -869,7 +869,7 @@ export function AgentsPage() {
             {query.trim() === "" && (!adminView || selectedStage === "all") && agents.every((a) => BUILTIN_AGENT_IDS.has(a.agentId)) && (
               <EmptyState
                 title={S.agent.firstAgentTitle}
-                description={adminView ? "可使用上游手动创建窗口配置本机智能体，完成后再发布到中央。" : S.agent.firstAgentDesc}
+                description={adminView ? "可使用上游手动创建窗口配置本机智能体，完成后再发布到内置。" : S.agent.firstAgentDesc}
                 action={
                   adminView ? <Button size="sm" onClick={openCreate}>{S.aiCreate.manual}</Button> : <AiCreateButtons size="sm" onAi={() => setAiOpen(true)} onManual={openCreate} />
                 }

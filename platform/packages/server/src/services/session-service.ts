@@ -14,9 +14,11 @@
  * added to session-manager's active table (state idle).
  */
 import fs from "node:fs/promises";
+import path from "node:path";
 import {
   agentsDir,
   createAgent,
+  formatSessionId,
   isSessionMeta,
   normalizeSessionSource,
 } from "@prismshadow/penguin-core";
@@ -274,6 +276,8 @@ export interface SessionServiceDeps {
   sandboxDefaults?: () => SandboxSettings;
   /** Host-owned model-request hooks, forwarded to core for every Session LLM. */
   assembly?: AgentAssembly;
+  /** Pins the current published role before a person's new Session is created. */
+  pinPublishedSession?: (userId: string, projectId: string, agentId: string, sessionId: string) => Promise<boolean>;
   /** The dimensions the mounted sandbox backends implement between them (none when absent). */
   sandboxDimensions?: () => readonly SandboxDimension[];
   /** The enabled sandbox backends that failed to load or failed their check, with why. */
@@ -766,6 +770,7 @@ export class SessionService {
   async createSession(args: {
     projectId: string;
     agentId: string;
+    userId?: string;
     /** Upstream id of the session's model; always paired with provider. Omit both for the Project's default reference. */
     modelId?: string;
     /** The provider group for `modelId`; always paired with modelId, never inferred. */
@@ -818,6 +823,16 @@ export class SessionService {
       modelId = def.model_id;
       provider = def.provider;
     }
+    const sharedReference = path.join(this.deps.root, args.projectId, "agents", args.agentId, "agent_state", "shared-agent.json");
+    const isShared = await fs.stat(sharedReference).then(stat => stat.isFile(), () => false);
+    if (isShared && (!args.userId || !this.deps.pinPublishedSession)) {
+      throw new HttpError(503, "shared_agent_identity_unavailable", "A shared Agent requires an authenticated local user before a Session can start.");
+    }
+    const publishedSessionId = isShared ? formatSessionId() : undefined;
+    if (publishedSessionId) {
+      const pinned = await this.deps.pinPublishedSession!(args.userId!, args.projectId, args.agentId, publishedSessionId);
+      if (!pinned) throw new HttpError(503, "shared_agent_unavailable", "The shared Agent has no published definition available to this user.");
+    }
     const agent = await createAgent({
       root: this.deps.root,
       projectId: args.projectId,
@@ -831,6 +846,7 @@ export class SessionService {
     let session;
     try {
       session = await agent.createSession({
+        ...(publishedSessionId ? { sessionId: publishedSessionId } : {}),
         modelId,
         provider,
         ...(args.workspace !== undefined ? { workspaceDir: args.workspace } : {}),

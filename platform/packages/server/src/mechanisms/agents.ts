@@ -47,7 +47,7 @@ export abstract class AgentConfig {
     version: number;
     kernelOutdated: boolean;
   }>;
-  abstract getConfig(projectId: string, agentId: string): Promise<AgentConfigView>;
+  abstract getConfig(projectId: string, agentId: string, published?: import("../auth/published-bundle.js").ResolvedPublishedBundle): Promise<AgentConfigView>;
   abstract updateConfig(
     projectId: string,
     agentId: string,

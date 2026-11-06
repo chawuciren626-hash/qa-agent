@@ -27,6 +27,8 @@ npm run quality:lifecycle -- show <run_id>
 npm run quality:lifecycle -- confirm <run_id> --invocation=<origin_uuid> --defect=<defect_id> --revision=0 --actor=<reviewer> --reason=<review_reason> --evidence=inputs/review.md --category=product_defect
 npm run quality:lifecycle -- fixed <run_id> --invocation=<origin_uuid> --defect=<defect_id> --revision=1 --actor=<reviewer> --reason=<fix_reason> --evidence=inputs/fix.md
 npm run quality:lifecycle -- retest <run_id> --invocation=<origin_uuid> --defect=<defect_id> --revision=2 --actor=<reviewer> --reason=<retest_reason> --evidence=inputs/retest-review.md --retest=<retest_uuid>
+
+引擎 CLI 事件现在保存 `actor_kind: unverified_operator` 和按动作固定的 `reason_code`，并限制 `actor` 为 2–64 位标识；旧事件仍可读取。CLI 的 `--actor` 是操作员自报标识，没有账号登录凭证，不能作为已核验用户身份。需要责任人签名时使用带服务端认证与事件审计的 Q3 项目缺陷流程。
 ```
 
 跨运行复测额外使用 `--retest-run=<run_id>`。不是只要用例 ID 一样就能关闭：复测必须为独立、封存、已结束的批次，启动时间晚于修复/上次事件，包含全部关联用例，批准设计文件哈希和计划中的用例投影一致，归档的环境配置引用路径及哈希一致。跳过、遗漏、旧复测和证据改写不能关闭。新环境配置即使内容相近也可能不满足上述严格条件，应重新评估，不得放宽检查伪造等价性。
@@ -37,6 +39,7 @@ npm run quality:lifecycle -- retest <run_id> --invocation=<origin_uuid> --defect
 
 - 当前观察与历史未解决问题同时进入治理视图。后一次测试通过不自动关闭历史问题。
 - fixed 是待验证修复；未解决产品问题、历史风险仍影响质量门。closed/rejected 保留历史但不继续作为未解决风险。
+- 新标准记录（`severity_standard_version: 1`）中开放状态的 `unknown` 严重度产生 `unknown_severity`，质量门至少 `review_required`；`unknown` 不是低风险，旧记录缺少版本标记时不追溯改写、不触发该门禁。详见 `docs/defect-severity-standard.md`。
 - 已完成报告对应的台账发生变化时，报告阶段变为 revision_requested，旧文件保留为历史。报告生成中禁止台账变更，避免并行生成不一致结论。
 - 重新生成度量、Markdown、Word/PDF，再走报告产物契约和阶段登记；不要直接改 manifest。发布脚本不会把待重制报告列为当前有效报告。
 - Word/PDF 导出器检查度量与台账哈希；完整证据重放由度量及阶段契约负责。导出成功本身不等于证据完整或版式验收通过。

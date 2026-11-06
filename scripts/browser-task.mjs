@@ -75,7 +75,8 @@ export async function browserWorkerResponse(response, requestId) {
 
 export function browserErrorDiagnostic(error, phase) {
   const message=String(error?.message ?? error);
-  const category=/Browser already started/.test(message)?'browser_already_started':/Expected result already present before action/.test(message)?'stale_result':/closed|disconnected|crash/i.test(message)?'browser_unavailable':/timeout/i.test(message)?'timeout':/execution context|navigation/i.test(message)?'navigation_changed':/strict mode|uniquely visible/i.test(message)?'locator_mismatch':'browser_operation_error';
+  const launch=phase==='browser_launch';
+  const category=/Browser already started/.test(message)?'browser_already_started':/Expected result already present before action/.test(message)?'stale_result':launch && /executable (?:doesn't|does not) exist|executable not found|no such file|ENOENT/i.test(message)?'browser_binary_missing':launch && /EACCES|EPERM|access is denied/i.test(message)?'browser_start_denied':/closed|disconnected|crash/i.test(message)?'browser_unavailable':/timeout/i.test(message)?'timeout':/execution context|navigation/i.test(message)?'navigation_changed':/strict mode|uniquely visible/i.test(message)?'locator_mismatch':'browser_operation_error';
   // Never persist raw Playwright call logs: they can contain selectors and form secrets.
   return {phase,category,...(/net::ERR_[A-Z_]+/.test(message)?{network_code:message.match(/net::ERR_[A-Z_]+/)[0]}:{})};
 }
@@ -550,8 +551,13 @@ async function worker(root,runId) {
       if(op.type==='start') {
         assert(!browser && state.status==='starting','Browser already started');
         const source=readRunFile(dir,op.source_path), target=validateExplorationTarget(op.url,op.source_path,source.data.toString('utf8'));
-        Object.assign(state,{dispatch_id:dispatchId,scope:op.scope,source_path:op.source_path,source_sha256:source.sha256,origin:target.origin,status:'ready'});save();
-        browser=await chromium.launch({headless:op.headless ?? false,...(!existsSync(chromium.executablePath())?{channel:'chrome'}:{})});
+        const bundled=existsSync(chromium.executablePath());
+        Object.assign(state,{dispatch_id:dispatchId,scope:op.scope,source_path:op.source_path,source_sha256:source.sha256,origin:target.origin,
+          browser_runtime:{worker_pid:process.pid,platform:process.platform,source:bundled?'playwright_chromium':'chrome_channel',headless:op.headless ?? false,launch_status:'launching'}});save();
+        phase='browser_launch';
+        browser=await chromium.launch({headless:op.headless ?? false,...(!bundled?{channel:'chrome'}:{})});
+        state.browser_runtime.launch_status='ready';state.browser_runtime.version=browser.version();save();
+        phase='browser_setup';
         context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block',acceptDownloads:false});
         await context.routeWebSocket('**/*',socket=>socket.close());
         await context.route('**/*',async route=>{
@@ -571,8 +577,11 @@ async function worker(root,runId) {
         page.on('response',response=>{if(response.request().isNavigationRequest() && response.frame()===page.mainFrame()) state.document_http_status=response.status();});
         page.on('dialog',dialogs.handle);
         context.on('page',popup=>{if(popup!==page) popup.close().catch(()=>{});});
+        phase='navigation';
         await measured('navigation',()=>page.goto(target.href,{waitUntil:'domcontentloaded',timeout:25000}));
-        result={status:'ready',navigation_observation:await waitForBrowserContent(page),snapshot:await snapshot()};
+        state.status='ready';save();
+        phase='page_evidence';
+        result={status:'ready',browser_runtime:state.browser_runtime,navigation_observation:await waitForBrowserContent(page),snapshot:await snapshot()};
       } else if(op.type==='api_check') {
         const check=op.check,detail=await runReadOnlyApiCheck(page,check),path=`execution/browser-evidence/${op.request_id}.api.json`;
         writeJson(resolve(dir,path),{...detail,mode:'real_api',method:check.method,endpoint_sha256:hash(new URL(check.url).pathname),source_path:check.source_path,source_sha256:readRunFile(dir,check.source_path).sha256,observed_at:new Date().toISOString()});evidence.push(path);
@@ -687,10 +696,11 @@ async function worker(root,runId) {
         }
       }
     } catch(error) {
+      if(op.type==='start' && state.browser_runtime?.launch_status==='launching') {state.browser_runtime.launch_status='failed';save();}
       if(actionStarted && !actionCompleted) state.status='needs_inspection';
       const diagnostic={...browserErrorDiagnostic(error,phase),page_closed:page?.isClosed() ?? null,browser_connected:browser?.isConnected() ?? null};
       if(diagnostic.category==='browser_unavailable') state.status='needs_inspection';
-      result={status:state.status==='needs_inspection'?'needs_inspection':actionCompleted?'observation_unavailable':'correctable_error',action_completed:actionCompleted,diagnostic,...browserRecoveryHint(diagnostic.category),...(state.status==='needs_inspection'?{next_action:'inspect_result_no_automatic_mutation_retry'}:{})};
+      result={status:state.status==='needs_inspection'?'needs_inspection':actionCompleted?'observation_unavailable':'correctable_error',action_completed:actionCompleted,diagnostic,...(op.type==='start' && state.browser_runtime?{browser_runtime:state.browser_runtime}:{}),...browserRecoveryHint(diagnostic.category),...(state.status==='needs_inspection'?{next_action:'inspect_result_no_automatic_mutation_retry'}:{})};
       if(String(error.message).startsWith('Precondition not satisfied:')) result={...result,status:'precondition_not_met',operation_started:false,next_action:'inspect_and_prepare_required_state_no_product_failure',precondition_index:Number(error.message.split(':')[1])};
     } finally {
       if(faultSession) {try {faultProof=await faultSession.finish(actionCompleted);} finally {activeFault=null;}}

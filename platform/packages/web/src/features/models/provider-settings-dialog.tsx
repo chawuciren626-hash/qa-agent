@@ -56,6 +56,8 @@ import {
   fixedClientType,
   providerCalledKeyless,
   providerEnvFallbackKey,
+  modelEnvironment,
+  routedClientType,
 } from "@prismshadow/penguin-server/model-catalog";
 import type { ModelProviderInfo } from "@prismshadow/penguin-server/model-catalog";
 import * as api from "../../api/endpoints";
@@ -76,10 +78,19 @@ import type { ProtocolClientType } from "./protocol-types";
 import type { RowState } from "./models-page";
 
 /** A group's row as this dialog reads it: what it stores of its own. */
-type GroupRow = Pick<RowState, "clientType" | "originalBaseUrl">;
+type GroupRow = Pick<RowState, "clientType" | "originalBaseUrl"> & Partial<Pick<RowState,"modelId"|"provider">>;
+
+/** Fill common inherited values for display without changing the stored configuration. */
+export function providerEditingView(group:ProviderConnectionDto|undefined, rows:readonly GroupRow[], label:string):ProviderConnectionDto {
+  const protocols=rows.map(row=>row.clientType||group?.clientType||routedClientType(row.modelId??"",null)||"");
+  const urls=rows.map(row=>row.originalBaseUrl||group?.baseUrl||modelEnvironment({modelId:row.modelId??"",provider:row.provider??"",clientType:row.clientType||group?.clientType},undefined).defaultBaseUrl||"");
+  const common=(values:string[])=>values.length>0&&values[0]&&values.every(value=>value===values[0])?values[0]:undefined;
+  return {...group,displayName:group?.displayName??label,baseUrl:group?.baseUrl??common(urls),clientType:group?.clientType??common(protocols)};
+}
 
 /** The dialog's fields as typed. */
 export interface ProviderSettingsDraft {
+  displayName?: string;
   /** A new group key; empty keeps the stored one. */
   apiKey: string;
   /** The "clear the group key" box (only offered while one is stored). */
@@ -109,6 +120,7 @@ export function protocolChoice(
 /** The draft a group's stored connection opens as. */
 export function initialDraft(group: ProviderConnectionDto | undefined): ProviderSettingsDraft {
   return {
+    ...(group?.displayName===undefined?{}:{displayName:group.displayName}),
     apiKey: "",
     clearApiKey: false,
     baseUrl: group?.baseUrl ?? "",
@@ -126,6 +138,7 @@ export function providerSettingsUpdate(
   draft: ProviderSettingsDraft,
 ): ProviderConnectionUpdate | null {
   const update: ProviderConnectionUpdate = {};
+  if(draft.displayName!==undefined&&draft.displayName.trim()!==(group?.displayName??""))update.displayName=draft.displayName.trim();
   const baseUrl = draft.baseUrl.trim();
   if (baseUrl !== (group?.baseUrl ?? "").trim()) update.baseUrl = baseUrl === "" ? null : baseUrl;
   const clientType = draft.clientType?.trim() || null;
@@ -301,7 +314,7 @@ export function groupEnvKey(
 export function ProviderSettingsDialog({
   projectId,
   provider,
-  group,
+  group: storedGroup,
   rows,
   detectedEnvKeys,
   onClose,
@@ -320,6 +333,7 @@ export function ProviderSettingsDialog({
   /** The table the server answered with, once the group's connection is written. */
   onSaved: (res: ModelsResponse) => void;
 }) {
+  const group=providerEditingView(storedGroup,rows,provider.label);
   // Dirty means a Save would send something: the draft is compared as the update it makes.
   const form = useFormDraft(initialDraft(group), {
     normalize: (value) => providerSettingsUpdate(group, value),
@@ -471,7 +485,7 @@ export function ProviderSettingsDialog({
           <Button
             size="sm"
             variant="primary"
-            disabled={!form.dirty || urlProblem !== null || busy}
+            disabled={!form.dirty || !draft.displayName?.trim() || urlProblem !== null || busy}
             onClick={() => void save()}
           >
             {detecting ? S.models.detecting : S.common.save}
@@ -480,6 +494,8 @@ export function ProviderSettingsDialog({
       }
     >
       <div className="space-y-3">
+        <Input size="sm" label="分组名称" value={draft.displayName??""} maxLength={100} disabled={busy} onChange={event=>set({displayName:event.target.value})} />
+        {(!group.baseUrl||!group.clientType)&&rows.length>0&&<FieldHint>组内模型的地址或协议不同，未统一的字段由各模型分别配置。</FieldHint>}
         {/* The group key. A <div>, not a <label>: PasswordInput brings its own, and the console
             link beside the title is a second interactive element. */}
         <div className="block">

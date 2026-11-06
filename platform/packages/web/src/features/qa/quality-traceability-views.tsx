@@ -9,6 +9,7 @@ import {
   conclusionLabel,
   defectCategoryLabel,
   defectStatusLabel,
+  isSeverityUnknown,
   percent,
   pointConcern,
   pointStatusLabel,
@@ -16,6 +17,10 @@ import {
   reportStateLabel,
   resultStatusLabel,
   riskLabel,
+  severityDimensionLabel,
+  severityDimensionValueLabel,
+  severityLabel,
+  severitySummary,
   type CaseResultView,
   type CoverageView,
   type DefectDetailView,
@@ -210,6 +215,8 @@ export function DefectStatusView({
   detail?: DefectDetailView | null;
   onSelect?: (defectId: string) => void;
 }) {
+  const severity = severitySummary(defects);
+  const unassessed = severity.unknown + severity.unrecorded;
   return (
     <section className="qt-defects space-y-3 text-sm" aria-label="缺陷状态">
       <header>
@@ -217,6 +224,24 @@ export function DefectStatusView({
         <p className="mt-1 text-xs opacity-70">
           只读视图：确认、修复声明和关闭都不在这里发生。修复声明不等于已验证；关闭需要独立复测运行。
         </p>
+        {defects.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" aria-label="缺陷严重度分布">
+            {Object.entries(severity.levels)
+              .filter(([, count]) => count > 0)
+              .map(([level, count]) => (
+                <Badge key={level}>
+                  严重度 {severityLabel(level)} {count}
+                </Badge>
+              ))}
+            {severity.unknown > 0 && <Badge>未评估 {severity.unknown}</Badge>}
+            {severity.unrecorded > 0 && <Badge>未记录 {severity.unrecorded}</Badge>}
+            {unassessed > 0 && (
+              <span className="opacity-70">
+                未评估/未记录不代表低风险，应补充影响证据或人工复核。
+              </span>
+            )}
+          </div>
+        )}
       </header>
       {defects.length === 0 ? (
         <p className="text-xs opacity-70">本项目还没有登记缺陷。</p>
@@ -231,7 +256,7 @@ export function DefectStatusView({
                 <span className="flex flex-wrap items-center gap-2">
                   <strong>{defect.title}</strong>
                   <Badge>{defectStatusLabel(defect.status)}</Badge>
-                  <Badge>严重度 {defect.severity}</Badge>
+                  <Badge>严重度 {severityLabel(defect.severity)}</Badge>
                   <Badge>{defectCategoryLabel(defect.category)}</Badge>
                   <Badge>{defect.priority}</Badge>
                 </span>
@@ -266,6 +291,21 @@ export function DefectStatusView({
               <dt className="inline opacity-70">分析：</dt>
               <dd className="inline">{detail.defect.analysis || "—"}</dd>
             </div>
+            <div>
+              <dt className="inline opacity-70">严重度：</dt>
+              <dd className="inline">{severityLabel(detail.defect.severity)}</dd>
+              {detail.defect.severityReason ? ` · ${detail.defect.severityReason}` : ""}
+            </div>
+            {detail.defect.severityDimensions && (
+              <div>
+                <dt className="inline opacity-70">严重度依据：</dt>
+                <dd className="inline">
+                  {Object.entries(detail.defect.severityDimensions)
+                    .map(([key, value]) => `${severityDimensionLabel(key)} ${severityDimensionValueLabel(value ?? "unknown")}`)
+                    .join(" · ")}
+                </dd>
+              </div>
+            )}
             <div>
               <dt className="inline opacity-70">指纹：</dt>
               <dd className="inline font-mono">{shortHash(detail.defect.fingerprint)}</dd>
@@ -434,7 +474,7 @@ export function ReportIndexViewPanel({ response }: { response: ReportIndexRespon
           <ul className="mt-1 list-disc pl-5 text-xs">
             {report.openDefects.map((defect) => (
               <li key={defect.defectId}>
-                {defect.defectId} · {defectStatusLabel(defect.status)} · {defect.severity}
+                {defect.defectId} · {defectStatusLabel(defect.status)} · {severityLabel(defect.severity)}
               </li>
             ))}
           </ul>

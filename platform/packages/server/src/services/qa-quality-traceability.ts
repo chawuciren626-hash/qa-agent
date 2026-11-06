@@ -8,6 +8,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
 import { HttpError } from "../http/errors.js";
 import { parseEvidenceRefs, type EvidenceRef, type KnowledgeDb } from "./qa-project-knowledge.js";
@@ -502,6 +503,28 @@ export class QaQualityTraceabilityStore {
     return session;
   }
 
+  private assertNewRun(session: TraceSession, sessionId: string, runId: string): void {
+    try {
+      if (!session.workspace) throw Error("missing workspace");
+      const workspace = fsSync.realpathSync(path.resolve(session.workspace));
+      const runDir = path.join(workspace, "output", "runs", runId);
+      if (fsSync.realpathSync(runDir) !== runDir) throw Error("linked run");
+      const manifestPath = path.join(runDir, "manifest.json");
+      if (fsSync.realpathSync(manifestPath) !== manifestPath) throw Error("linked manifest");
+      const stat = fsSync.lstatSync(manifestPath);
+      if (!stat.isFile() || stat.size > 1024 * 1024) throw Error("invalid manifest");
+      const manifest = JSON.parse(fsSync.readFileSync(manifestPath, "utf8")) as {
+        run_id?: unknown; manifest_version?: unknown; directory_context?: { mode?: unknown; session_id?: unknown };
+      };
+      if (manifest.run_id !== runId || !Number.isInteger(manifest.manifest_version) ||
+          (manifest.directory_context?.mode === "isolated" && manifest.directory_context.session_id !== sessionId)) {
+        throw Error("run identity mismatch");
+      }
+    } catch {
+      throw new HttpError(400, "run_not_found", "运行清单不存在或不属于当前任务，不能登记新的设计批次。");
+    }
+  }
+
   private evidence(projectId: string, refs: EvidenceRef[], code: string, bind: { sessionId?: string; runId?: string } = {}): EvidenceRef[] {
     for (const ref of refs) {
       if (ref.type === "document") {
@@ -641,7 +664,12 @@ export class QaQualityTraceabilityStore {
     points: unknown;
     cases: unknown;
   }): { created: boolean; batch: DesignBatch } {
-    this.task(input.projectId, input.sessionId, input.runId);
+    const session = this.task(input.projectId, input.sessionId, input.runId);
+    // Existing Q3 batches predate manifest checks; keep them readable and editable.
+    // A new run must have a real manifest in this session's workspace.
+    if (!this.latestBatchRow(input.projectId, input.sessionId, input.runId)) {
+      this.assertNewRun(session, input.sessionId, input.runId);
+    }
     if (!Array.isArray(input.points) || !input.points.length || input.points.length > DESIGN_MAX_POINTS) {
       throw new HttpError(400, "invalid_design", `测试点必须是 1 至 ${DESIGN_MAX_POINTS} 项。`);
     }
@@ -684,6 +712,9 @@ export class QaQualityTraceabilityStore {
     const batchId = `batch-${this.id()}`;
     const revision = latest ? latest.revision + 1 : 1;
     this.tx(() => {
+      const conflicting = this.db.prepare("SELECT 1 AS found FROM qa_design_batches WHERE project_id=? AND run_id=? AND session_id<>? LIMIT 1")
+        .get(input.projectId, input.runId, input.sessionId);
+      if (conflicting) throw new HttpError(409, "run_id_conflict", "此运行标识已由项目内的另一任务使用。");
       this.db.prepare(`INSERT INTO qa_design_batches
         (batch_id,project_id,session_id,run_id,revision,status,source_json,test_point_count,test_case_count,content_hash,created_at,created_by)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(

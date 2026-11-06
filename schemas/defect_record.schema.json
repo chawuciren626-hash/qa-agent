@@ -11,6 +11,20 @@
     "lifecycle_status": { "enum": ["draft", "needs_review", "confirmed", "rejected", "fixed", "closed"] },
     "confidence": { "enum": ["low", "medium", "strong"] },
     "severity": { "enum": ["Blocker", "Critical", "Major", "Minor", "Trivial", "unknown"] },
+    "severity_standard_version": { "const": 1 },
+    "severity_reason": { "type": "string", "minLength": 1 },
+    "severity_dimensions": {
+      "type": "object",
+      "properties": {
+        "user_business_impact": { "enum": ["critical", "major", "minor", "none", "unknown"] },
+        "reach_frequency": { "enum": ["all", "many", "some", "few", "unknown"] },
+        "recoverability": { "enum": ["none", "expensive", "workaround", "easy", "unknown"] },
+        "data_security_compliance": { "enum": ["confirmed", "suspected", "none", "unknown"] }
+      },
+      "required": ["user_business_impact", "reach_frequency", "recoverability", "data_security_compliance"],
+      "additionalProperties": false
+    },
+    "severity_evidence": { "type": "array", "items": { "type": "string", "minLength": 1 } },
     "priority": { "enum": ["P0", "P1", "P2", "P3", "unknown"] },
     "related_cases": { "type": "array", "items": { "type": "string" } },
     "evidence_refs": { "type": "array", "items": { "type": "string" } },

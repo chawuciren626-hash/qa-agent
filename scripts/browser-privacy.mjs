@@ -111,7 +111,8 @@ export function privateBrowserUrl(value,secrets=[]) {
 
 export function privateBrowserError(error,phase) {
   const message=String(error?.message ?? '');
-  return {phase,category:/closed|disconnected|crash/i.test(message)?'browser_unavailable':/timeout/i.test(message)?'timeout':'browser_operation_error',
+  const launch=phase==='browser_launch';
+  return {phase,category:launch && /executable (?:doesn't|does not) exist|executable not found|no such file|ENOENT/i.test(message)?'browser_binary_missing':launch && /EACCES|EPERM|access is denied/i.test(message)?'browser_start_denied':/closed|disconnected|crash/i.test(message)?'browser_unavailable':/timeout/i.test(message)?'timeout':'browser_operation_error',
     ...(/net::ERR_[A-Z_]+/.test(message)?{network_code:message.match(/net::ERR_[A-Z_]+/)[0]}:{})};
 }
 

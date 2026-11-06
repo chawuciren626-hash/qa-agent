@@ -55,6 +55,8 @@ export interface RunStreamDeps {
   errors: Errors;
   log: Log;
   now: () => Date;
+  /** The local owner who authorized this Project's Agent API. */
+  ownerOfProject?: (projectId: string) => string | null;
 }
 
 /** A FIFO the channel listener fills and the stream loop drains; `next` answers null once closed. */
@@ -153,9 +155,11 @@ export async function runStream(c: Context<AmspEnv>, deps: RunStreamDeps): Promi
         settings?.workspace == null
           ? undefined
           : await assertWorkspaceAllowed({ workspace: settings.workspace });
+      const ownerUserId = deps.ownerOfProject?.(projectId);
       const created = await deps.sessionService.createSession({
         projectId,
         agentId,
+        ...(ownerUserId ? { userId: ownerUserId } : {}),
         source: "api",
         client: "api",
         approvalMode: settings?.approvalMode ?? "allow-all",

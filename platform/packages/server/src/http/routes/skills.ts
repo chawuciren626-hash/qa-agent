@@ -34,6 +34,7 @@ export interface SkillsRouteDeps {
   agentConfigService: AgentConfig;
   config: ServerConfig;
   access: Access;
+  authState: import("../../auth/runtime-state.js").AuthRuntimeState;
 }
 import { HttpError } from "../errors.js";
 import { badRequest, readJson, requireString, requireValidId } from "../validate.js";
@@ -51,6 +52,7 @@ import { Bind, Component } from "@prismshadow/penguin-core/kernel";
 import type { ClassCtx } from "@prismshadow/penguin-core/kernel";
 import type { AgentConfig } from "../../mechanisms/agents.js";
 import type { Access } from "../../mechanisms/projects.js";
+import { PublishedBundleCache } from "../../auth/published-bundle-cache.js";
 
 /** A skill decoded from an uploaded zip: name + file bytes keyed by path relative to the skill directory. */
 interface ArchiveSkill {
@@ -211,6 +213,21 @@ function explicitSkillVersion(skillMd: string): string | null {
 /** /api/projects/:p/agents/:a/skills: read, import/export and uninstall are all Project-member operations. */
 export function agentSkillsRoutes(deps: SkillsRouteDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+  const markerFor = async (projectId: string, agentId: string): Promise<{ localSkillOverrides?: string[] } | null> => {
+    const file = path.join(deps.config.root, projectId, "agents", agentId, "agent_state", "shared-agent.json");
+    return fs.readFile(file, "utf8").then(raw => JSON.parse(raw), (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+  };
+  app.use("*", async (c, next) => {
+    const projectId = requireValidId(c, "projectId"), agentId = requireValidId(c, "agentId");
+    deps.access.requireProjectAccess(c.var.user.userId, projectId);
+    if (await markerFor(projectId, agentId)) {
+      if (c.req.method !== "GET") throw new HttpError(409, "shared_agent_managed", "共享 Skill 由服务端统一管理。");
+    }
+    await next();
+  });
 
   const listResponse = async (
     projectId: string,
@@ -218,6 +235,19 @@ export function agentSkillsRoutes(deps: SkillsRouteDeps): Hono<AppEnv> {
   ): Promise<AgentSkillsResponse> => ({
     skills: (await listInstalledSkills(deps.config.root, projectId, agentId)).map(toSkillItem),
   });
+  const sharedSkillDirectory = async (userId: string, projectId: string, agentId: string, name: string): Promise<string | null> => {
+    const marker = await markerFor(projectId, agentId);
+    if (!marker) return null;
+    if (marker.localSkillOverrides?.includes(name)) return path.join(skillsDir(deps.config.root, projectId, agentId), name);
+    const raw = await deps.authState.accountClient?.resolveRoleBundle(userId, agentId);
+    if (!raw || typeof raw !== "object" || typeof (raw as { bundleHash?: unknown }).bundleHash !== "string")
+      throw new HttpError(503, "shared_agent_unavailable", "共享 Skill 暂不可用。");
+    const bundleHash = (raw as { bundleHash: string }).bundleHash;
+    const definition = await new PublishedBundleCache(deps.config.root).definition(userId, bundleHash);
+    const skill = definition.skills.find(item => item.name === name);
+    if (!skill) throw new HttpError(404, "not_found", `Skill is not published: ${name}`);
+    return skill.directory;
+  };
 
   app.get("/", async (c) => {
     // Defensive id validation happens before any path construction: prevents path traversal for cross-Project privilege escalation.
@@ -225,6 +255,19 @@ export function agentSkillsRoutes(deps: SkillsRouteDeps): Hono<AppEnv> {
     const agentId = requireValidId(c, "agentId");
     deps.access.requireProjectAccess(c.var.user.userId, projectId);
     await deps.agentConfigService.requireExists(projectId, agentId);
+    const marker = await markerFor(projectId, agentId);
+    if (marker) {
+      const raw = await deps.authState.accountClient?.resolveRoleBundle(c.var.user.userId, agentId);
+      if (!raw || typeof raw !== "object" || !Array.isArray((raw as { resources?: unknown }).resources))
+        throw new HttpError(503, "shared_agent_unavailable", "共享 Skill 目录暂不可用。");
+      const bundle = raw as import("../../auth/published-bundle.js").ResolvedPublishedBundle;
+      const names = new Set(Array.isArray(marker.localSkillOverrides) ? marker.localSkillOverrides : []);
+      const local = (await listInstalledSkills(deps.config.root, projectId, agentId)).filter(skill => names.has(skill.name)).map(toSkillItem);
+      const central = bundle.resources.filter(item => item.kind === "skills").map(item => ({
+        name: String(item.payload.skillName ?? item.name), description: item.description ?? "", version: String(item.version),
+      }));
+      return c.json({ skills: [...central, ...local] } satisfies AgentSkillsResponse);
+    }
     return c.json(await listResponse(projectId, agentId));
   });
 
@@ -342,10 +385,9 @@ export function agentSkillsRoutes(deps: SkillsRouteDeps): Hono<AppEnv> {
     deps.access.requireProjectAccess(c.var.user.userId, projectId);
     const name = requireValidId(c, "name");
     await deps.agentConfigService.requireExists(projectId, agentId);
-    const dir = path.join(skillsDir(deps.config.root, projectId, agentId), name);
+    const dir = await sharedSkillDirectory(c.var.user.userId, projectId, agentId, name) ?? path.join(skillsDir(deps.config.root, projectId, agentId), name);
     try {
-      const root = skillsDir(deps.config.root, projectId, agentId);
-      if (!(await fs.lstat(root)).isDirectory() || !(await fs.lstat(dir)).isDirectory() || !(await fs.lstat(path.join(dir, "SKILL.md"))).isFile()) throw new Error("Not a regular installed Skill");
+      if (!(await fs.lstat(dir)).isDirectory() || !(await fs.lstat(path.join(dir, "SKILL.md"))).isFile()) throw new Error("Not a regular installed Skill");
     } catch {
       throw new HttpError(404, "not_found", `Skill is not installed: ${name}`);
     }
@@ -360,7 +402,7 @@ export function agentSkillsRoutes(deps: SkillsRouteDeps): Hono<AppEnv> {
     const agentId = requireValidId(c, "agentId");
     deps.access.requireProjectAccess(c.var.user.userId, projectId);
     const name = requireValidId(c, "name");
-    const dir = path.join(skillsDir(deps.config.root, projectId, agentId), name);
+    const dir = await sharedSkillDirectory(c.var.user.userId, projectId, agentId, name) ?? path.join(skillsDir(deps.config.root, projectId, agentId), name);
     // Installed-check uses the same criterion as listInstalledSkills: skills/<name>/SKILL.md exists.
     try {
       await fs.access(path.join(dir, "SKILL.md"));

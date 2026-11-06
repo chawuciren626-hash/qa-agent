@@ -51,6 +51,8 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA task dispatch round selecti
     const owner = apiClient(app.app, (await provisionUser(app.app, userId)).cookie);
     const projectId = `${userId}-sandbox`;
     expect((await owner.post("/api/projects", { projectId })).status).toBe(201);
+    // Exercise administrator-created selections; ordinary users cannot create these.
+    app.deps.db.prepare("UPDATE users SET is_admin=1 WHERE user_id=?").run(userId);
     const personal = `/api/projects/${projectId}/agents/qa/personal-resources`;
     const imported = await owner.post(personal, {
       kind: "skill",

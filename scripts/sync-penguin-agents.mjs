@@ -20,6 +20,8 @@ const snapshot=files=>JSON.stringify(files.map(file=>[file.relative,createHash('
  * and <!-- /qa-roles -->. Malformed comment markers fail before any sync writes.
  */
 export function sharedInstructionsForRole(source, roleId) {
+  // General entry roles do not participate in QA orchestration or stage contracts.
+  if (roleId === 'default_agent' || roleId === 'general_agent') return '';
   const output=[];
   let roles=null;
   for(const line of source.split(/\r?\n/)) {

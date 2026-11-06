@@ -35,6 +35,8 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA task dispatch context", () 
     const rule = await owner.post(`${base}/knowledge/rules`, { title: "锁定时长", statement: "原规则：十五分钟。" });
     expect(rule.status).toBe(201);
     const ruleId = ((await rule.json()) as { ruleId: string }).ruleId;
+    // Legacy/admin-only selections remain readable after the user entry is closed.
+    app.deps.db.prepare("UPDATE users SET is_admin=1 WHERE user_id=?").run(userId);
     const personal = `${base}/personal-resources`;
     const imported = await owner.post(personal, { kind: "skill", dataBase64: zip({
       "SKILL.md": "---\nname: round-guide\ndescription: round guidance\n---\nRead references/guide.md first.",

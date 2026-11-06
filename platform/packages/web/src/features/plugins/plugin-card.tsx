@@ -135,6 +135,8 @@ export function pluginArchiveUrl(row: PluginRow): string | null {
 }
 
 export interface PluginCardProps {
+  libraryPath?: string;
+  actionsOverride?: (where: "card" | "footer") => ReactNode[];
   /** The surrounding group owns the card surface when false. */
   framed?: boolean;
   row: PluginRow;
@@ -247,6 +249,7 @@ export function PluginCard(props: PluginCardProps) {
 
   /** The card's actions: icon buttons on the card, labelled buttons in the dialog's footer. */
   const actions = (where: "card" | "footer"): ReactNode[] => {
+    if (props.actionsOverride) return props.actionsOverride(where);
     const out: ReactNode[] = [];
     const look = where === "card" ? "h-8 shrink-0" : "shrink-0";
     const words = (text: string) =>
@@ -514,6 +517,7 @@ export function PluginCard(props: PluginCardProps) {
 
       {detailOpen && (
         <PluginDetailModal
+          libraryPath={props.libraryPath}
           row={row}
           head={{
             status,

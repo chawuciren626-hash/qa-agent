@@ -19,8 +19,13 @@ export interface AccountClientGate {
   accepts(token: string): boolean;
   validate(token: string): Promise<void>;
   validateUser(userId: string): Promise<void>;
+  resolveRoleBundle(userId: string, agentId: string): Promise<unknown | null>;
+  listSharedRoleIds(userId: string): Promise<string[]>;
+  pinPublishedSession(userId: string, projectId: string, agentId: string, sessionId: string): Promise<boolean>;
+  resolvePinnedDefinition(projectId: string, agentId: string, sessionId: string, parentSessionId?: string): Promise<import("./published-bundle-cache.js").CachedSharedAgentDefinition | null>;
 }
 export interface AuthRuntimeState {
+  centralAssistant?: Pick<import("../http/central-assistant.js").CentralAssistant, "definition">;
   accountClient?: AccountClientGate;
   /** The first-login link this boot printed, or null before one was minted. */
   firstLoginToken: string | null;

@@ -131,6 +131,26 @@ export function usePromptInjection({
   /** The machine the Agent lives on, where its config is written; null for this server. */
   const machineId = useAgentLocation();
 
+  return usePromptInjectionControls({ feature, strings, canEdit, onConfigChanged,
+    write: async update => {
+      if (!projectId) throw Error("No project selected");
+      return api.putAgentConfig(projectId, agentId, update, machineId);
+    },
+    insert: async () => {
+      if (!projectId) throw Error("No project selected");
+      const fn=feature === "skills" ? api.insertSkillsPlaceholder : feature === "vault" ? api.insertVaultPlaceholder : feature === "schedules" ? api.insertSchedulesPlaceholder : null;
+      if (!fn) throw Error("No prompt placeholder");
+      return fn(projectId, agentId, machineId);
+    },
+  });
+}
+
+/** Original controls shared by local and service-backed Agent configuration. */
+export function usePromptInjectionControls({feature, strings, canEdit, onConfigChanged, write, insert}: {
+ feature:PromptInjectionFeature; strings:ToggleStrings | PromptInjectionStrings; canEdit:boolean; onConfigChanged?:()=>void;
+ write:(update: import("@prismshadow/penguin-server/api").AgentConfigUpdateRequest)=>Promise<import("@prismshadow/penguin-server/api").AgentConfigResponse>;
+ insert:()=>Promise<SectionConfigState>;
+}) {
   // null until the host tab's load delivers the config (the slots render nothing until then).
   const [state, setState] = useState<SectionConfigState | null>(null);
   // The prompt as typed, against the stored one (exactly: whitespace is part of a prompt). A
@@ -168,15 +188,9 @@ export function usePromptInjection({
           : { config: { hooks: { enabled: patch.enabled } } };
 
   const toggleEnabled = async (next: boolean) => {
-    if (!projectId) return;
     setSwitchBusy(true);
     try {
-      const res = await api.putAgentConfig(
-        projectId,
-        agentId,
-        featurePatch({ enabled: next }),
-        machineId,
-      );
+      const res = await write(featurePatch({ enabled: next }));
       applyConfig(res.config);
       toastSuccess(strings.savedToast ?? S.agent.savedTakesEffect);
       onConfigChanged?.();
@@ -189,19 +203,8 @@ export function usePromptInjection({
 
   /** One idempotent config write: migrates the legacy section when present, else inserts the placeholder. */
   const insertPlaceholder = async () => {
-    if (!projectId) return;
-    const insert =
-      feature === "skills"
-        ? api.insertSkillsPlaceholder
-        : feature === "vault"
-          ? api.insertVaultPlaceholder
-          : feature === "schedules"
-            ? api.insertSchedulesPlaceholder
-            : null;
-    // Only the alert strip calls this, and a switch-only feature has no alert strip.
-    if (insert === null) return;
     try {
-      const dto = await insert(projectId, agentId, machineId);
+      const dto = await insert();
       setState(dto);
       toastSuccess(S.agent.savedTakesEffect);
       onConfigChanged?.();
@@ -212,15 +215,10 @@ export function usePromptInjection({
 
   /** Saves the prompt through the ordinary config write; a refusal keeps it as typed. */
   const savePrompt = async () => {
-    if (!projectId || !prompt.dirty || saving) return;
+    if (!prompt.dirty || saving) return;
     setSaving(true);
     try {
-      const res = await api.putAgentConfig(
-        projectId,
-        agentId,
-        featurePatch({ prompt: prompt.draft }),
-        machineId,
-      );
+      const res = await write(featurePatch({ prompt: prompt.draft }));
       applyConfig(res.config);
       const dto = res.config[feature];
       prompt.adopt("prompt" in dto ? dto.prompt : "");
