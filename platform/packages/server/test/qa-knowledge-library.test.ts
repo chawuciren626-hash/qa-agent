@@ -7,6 +7,7 @@ import { QaProjectKnowledgeStore, type KnowledgeDb } from "../src/services/qa-pr
 import { QaKnowledgeLibrary } from "../src/services/qa-knowledge-library.js";
 import { LocalSimulatedKnowledgeReceiver } from "../src/services/qa-knowledge-receiver.js";
 import { renderUntrustedMaterial } from "../src/services/qa-knowledge-untrusted.js";
+import { qaKnowledgeLibrary } from "../src/db/migrations/steps/2026-11-06-qa-knowledge-library.js";
 
 type Json = Record<string, any>;
 
@@ -312,5 +313,20 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("Batch 6 knowledge library", ()
       "qa_upload_previews",
       "qa_server_copies"
     ]));
+  });
+
+  it("backfills the index from current revisions when an install upgrades", async () => {
+    const created = await createDocument();
+    app.deps.db.prepare("DELETE FROM qa_document_index WHERE document_id=?").run(
+      created.document.documentId
+    );
+    qaKnowledgeLibrary.up(app.deps.db);
+    const row = app.deps.db.prepare(
+      "SELECT revision_id, content_hash FROM qa_document_index WHERE document_id=?"
+    ).get(created.document.documentId) as { revision_id: string; content_hash: string } | undefined;
+    expect(row).toEqual({
+      revision_id: created.revision.revisionId,
+      content_hash: created.document.contentHash
+    });
   });
 });

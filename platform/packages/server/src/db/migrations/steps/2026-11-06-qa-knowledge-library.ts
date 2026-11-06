@@ -3,8 +3,9 @@ import type { Migration } from "../migration.js";
 /**
  * Batch 6 knowledge library: a hash-verified local retrieval index, upload previews that bind
  * a confirmation to one content version, and the service-copy ledger (upload/delete status,
- * attempts, receipts). Additive only; `down` keeps rows so a rollback cannot lose sources or
- * an operator's record of a remote copy.
+ * attempts, receipts). The index is backfilled from each active document's current revision so
+ * an upgraded install can search what it already has. Additive only; `down` keeps rows so a
+ * rollback cannot lose sources or an operator's record of a remote copy.
  */
 export const qaKnowledgeLibrary: Migration = {
   name: "2026-11-06-qa-knowledge-library",
@@ -22,6 +23,11 @@ CREATE TABLE IF NOT EXISTS qa_document_index (
   indexed_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_qa_document_index_project ON qa_document_index(project_id, indexed_at DESC, document_id DESC);
+INSERT OR IGNORE INTO qa_document_index (document_id, project_id, revision_id, revision, content_hash, title, content, indexed_at)
+SELECT d.document_id, d.project_id, d.current_revision_id, r.revision, r.content_hash, d.title, r.content, d.updated_at
+FROM qa_documents d
+JOIN qa_document_revisions r ON r.revision_id = d.current_revision_id
+WHERE d.status = 'active' AND r.content_hash = d.content_hash;
 CREATE TABLE IF NOT EXISTS qa_upload_previews (
   preview_id         TEXT PRIMARY KEY,
   project_id         TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
