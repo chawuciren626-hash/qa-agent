@@ -22,6 +22,9 @@ import type { LiveStreams } from "./live-streams.js";
 import { HttpError } from "../http/errors.js";
 import { toUserInfo } from "./service.js";
 import { AccountCookieSeal } from "./account-cookie-seal.js";
+import { InvocationGuard, type AuthorizationDecision, type InvocationConstraints, type InvocationIdentity, type InvocationLease, type InvocationOperation, type InvocationResource } from "./invocation-authorization.js";
+import { PublishedResourceSync, type CatalogBundleItem } from "./resource-sync.js";
+import { TaskContentSnapshotStore } from "./task-content-snapshot.js";
 
 export interface AccountClientConfig { origin: string; ownerUserId: string }
 export function readAccountClientConfig(root: string, env: NodeJS.ProcessEnv): AccountClientConfig | undefined {
@@ -49,9 +52,18 @@ export class AccountClient {
   private readonly cfg: AccountClientConfig;
   private readonly cookieSeal: AccountCookieSeal;
   private readonly publishedPins: SharedAgentSessionPins;
+  private readonly guard: InvocationGuard;
+  private readonly resourceSync: PublishedResourceSync;
+  private readonly snapshots: TaskContentSnapshotStore;
   constructor(private readonly deps: Deps) {
     this.cfg = deps.config.accountClient!;
     this.publishedPins = new SharedAgentSessionPins(deps.db, deps.config.root);
+    this.guard = new InvocationGuard({ db: deps.db, fetchPolicy: (userId, signal) => this.fetchAccessPolicy(userId, signal) });
+    this.resourceSync = new PublishedResourceSync({
+      db: deps.db, dataRoot: deps.config.root, engineRoot: process.env.AITEST_ENGINE_ROOT,
+      fetchBundles: (userId, signal) => this.fetchResolvedBundles(userId, signal),
+    });
+    this.snapshots = new TaskContentSnapshotStore(deps.db, deps.config.root);
     // Explicit binding, including the center origin: changing servers cannot adopt another person's files.
     deps.db.exec("CREATE TABLE IF NOT EXISTS account_center_bindings (origin TEXT NOT NULL, remote_id TEXT NOT NULL, local_id TEXT NOT NULL UNIQUE, PRIMARY KEY(origin, remote_id))");
     // The local session cookie survives an app restart. Keep its central proof alongside the
@@ -81,6 +93,7 @@ export class AccountClient {
         if (!AccountCookieSeal.isSealed(storedCookie)) deps.db.prepare("UPDATE account_center_sessions SET central_cookie=? WHERE token_hash=?")
           .run(this.cookieSeal.seal(cookie), hash);
         this.sessions.set(hash, { remote, localId, cookie, expires: Math.min(expires, authExpires) });
+        this.resourceSync.start(localId);
       } catch { deps.db.prepare("DELETE FROM account_center_sessions WHERE token_hash=?").run(hash); }
     }
   }
@@ -89,16 +102,17 @@ export class AccountClient {
     return !!binding && binding.expires > Date.now();
   }
   private drop(hash: string, binding: Binding) {
+    this.guard.cancelUser(binding.localId);
     this.sessions.delete(hash);
     this.deps.db.prepare("DELETE FROM account_center_sessions WHERE token_hash=?").run(hash);
     this.deps.sessions().delete(hash);
     this.deps.streams().endForUser(binding.localId);
   }
-  private async remote(endpoint: string, method = "GET", body?: unknown, binding?: Binding): Promise<Response> {
+  private async remote(endpoint: string, method = "GET", body?: unknown, binding?: Binding, signal?: AbortSignal): Promise<Response> {
     let response: Response;
     try {
       response = await (this.deps.fetch ?? fetch)(this.cfg.origin + endpoint, {
-        method, redirect: "error", signal: AbortSignal.timeout(5000),
+        method, redirect: "error", signal: signal ?? AbortSignal.timeout(5000),
         headers: { "content-type": "application/json", ...(binding ? { cookie: binding.cookie } : {}) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
@@ -237,7 +251,49 @@ export class AccountClient {
     };
     const memory=new Map([...(await parse(user)),...(await parse(project))]);
     if(JSON.stringify(Object.fromEntries(memory)).length>256_000)throw Error("Central Agent memory exceeds the runtime limit");
-    return {...definition,memoryInstructions:JSON.stringify(Object.fromEntries(memory))};
+    const decision=await this.guard.authorizeInvocation({userId:pin.userId,projectId,agentId,sessionId},{kind:"session",id:sessionId,bundleHash:definition.bundleHash},"resume",{requireFresh:true});
+    if(!decision.allowed)throw new HttpError(403,decision.reasonCode,decision.message);
+    const contentSnapshot=await this.snapshots.capture(definition,{userId:pin.userId,projectId,sessionId,engineRoot:process.env.AITEST_ENGINE_ROOT});
+    return {...definition,memoryInstructions:JSON.stringify(Object.fromEntries(memory)),contentSnapshotId:contentSnapshot.snapshotId};
+  }
+  /** Per-invocation authorization used by sessions, connectors and plugin tools. */
+  async authorizeInvocation(identity: InvocationIdentity, resource: InvocationResource, operation: InvocationOperation, constraints: InvocationConstraints = {}): Promise<AuthorizationDecision> {
+    return this.guard.authorizeInvocation(identity, resource, operation, constraints);
+  }
+  async beginInvocation(identity: InvocationIdentity, resource: InvocationResource, operation: InvocationOperation, constraints: InvocationConstraints = {}): Promise<InvocationLease> {
+    return this.guard.beginInvocation(identity, resource, operation, constraints);
+  }
+  resourceSyncStatus(userId: string) {
+    return this.resourceSync.status(userId);
+  }
+  resourceSyncStart(userId: string) {
+    return this.resourceSync.start(userId);
+  }
+  taskContentSnapshot(sessionId: string) {
+    return this.snapshots.getBySession(sessionId);
+  }
+  close(): void {
+    this.guard.close();
+    this.resourceSync.close();
+  }
+  private async fetchAccessPolicy(userId: string, signal: AbortSignal) {
+    await this.validateUser(userId);
+    const binding = [...this.sessions.values()].find(item => item.localId === userId && item.expires > Date.now());
+    if (!binding) throw new HttpError(401, "unauthorized", "请重新登录。");
+    const response = await this.remote("/api/control/access", "GET", undefined, binding, signal);
+    if (!response.ok) throw new HttpError(503, "permissions_unavailable", "无法读取中央权限。");
+    const policy = await response.json() as { modules?: string[]; menuKeys?: string[]; resourceIds?: string[] };
+    return { modules: policy.modules ?? [], menuKeys: policy.menuKeys ?? [], resourceIds: policy.resourceIds ?? [], isAdmin: binding.remote.isAdmin };
+  }
+  private async fetchResolvedBundles(userId: string, signal: AbortSignal): Promise<CatalogBundleItem[]> {
+    await this.validateUser(userId);
+    const binding = [...this.sessions.values()].find(item => item.localId === userId && item.expires > Date.now());
+    if (!binding) throw new HttpError(401, "unauthorized", "请重新登录。");
+    const response = await this.remote("/api/control/catalog/roles/resolved", "GET", undefined, binding, signal);
+    if (!response.ok) throw new HttpError(503, "resource_catalog_unavailable", "无法读取共享智能体目录。");
+    const parsed = await response.json() as { bundles?: ({ agentId: string } & ResolvedPublishedBundle)[] };
+    if (!Array.isArray(parsed.bundles)) throw new HttpError(503, "resource_catalog_invalid", "共享智能体目录无效。");
+    return parsed.bundles.map(item => ({ agentId: item.agentId, bundle: item }));
   }
   private async checkBinding(binding: Binding) {
     const response = await this.remote("/api/me", "GET", undefined, binding);
@@ -561,6 +617,7 @@ export class AccountClient {
     this.deps.db.prepare("INSERT INTO account_center_sessions(token_hash,origin,local_id,remote_json,central_cookie,expires_at) VALUES (?,?,?,?,?,?)")
       .run(sessionTokenHash(token),this.cfg.origin,localId,JSON.stringify(user),this.cookieSeal.seal(cookie),new Date(Date.now()+this.deps.config.authSessionTtlMs).toISOString());
     setCookie(c,sessionCookieName(c.req.url,c.req.header("origin")!==undefined),token,cookieOptions(c,this.deps.config.authSessionTtlMs,this.deps.config.trustProxy));
+    this.resourceSync.start(localId);
     const info=toUserInfo(this.deps.users().findById(localId)!);
     return c.json({user:{...info,passwordIsInitial:false}});
   }
@@ -589,6 +646,7 @@ export class AccountClient {
       const held=this.held(c);
       if (!held) throw new HttpError(401,"unauthorized","请登录中央账号。");
       await this.validate(held.token);
+      if (pathname==="/api/account-client/status") return c.json({enabled:true,origin:this.cfg.origin,sync:this.resourceSync.status(held.binding.localId)});
       this.requireModule(held.binding,pathname,c.req.method);
       this.requireManagedResources(pathname,c.req.method,held.binding.resourceIds??[],["POST","PUT","PATCH"].includes(c.req.method)?await c.req.raw.clone().text():undefined);
       if (pathname==="/api/me/password" || pathname.startsWith("/api/admin/users")) return this.identityRoute(c,pathname,next);

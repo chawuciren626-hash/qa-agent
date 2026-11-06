@@ -247,7 +247,7 @@ describe('central identity with full local application',()=>{
     expect((await api.get('/api/projects')).status).toBe(200);
     const me=await (await api.get('/api/me')).json() as {accountClient:boolean;user:{userId:string;passwordIsInitial:boolean}};
     expect(me).toMatchObject({accountClient:true,user:{userId:'admin',passwordIsInitial:false}});
-    expect(captured.every(r=>['/api/auth/login','/api/me','/api/control/access'].includes(r.path))).toBe(true);
+    expect(captured.every(r=>['/api/auth/login','/api/me','/api/control/access','/api/control/catalog/roles/resolved'].includes(r.path))).toBe(true);
     expect((await app!.app.request('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({userId:'admin',password:app!.adminPassword})})).status).toBe(401);
   });
   it('isolates an ordinary account and rejects taking over existing admin data',async()=>{
