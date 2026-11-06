@@ -62,6 +62,33 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+/** The same digest the server records for a UTF-8 body. */
+async function hashText(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return `sha256:${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+interface UploadPreviewView {
+  previewId: string;
+  filename: string;
+  title: string;
+  byteSize: number;
+  contentHash: string;
+  recipient: "local_project" | "remote_knowledge_service";
+  purpose: string;
+  dataScope: string;
+  sensitiveHints: string[];
+  sensitiveNotice: string;
+  status: string;
+  expiresAt: string;
+}
+
+interface UploadConfirmView {
+  idempotent: boolean;
+  document: DocumentDetailView;
+  upload: { uploadId: string | null; serverCopy: { status: string } | null };
+}
+
 function Field({
   label,
   children,
@@ -112,6 +139,7 @@ function ProjectKnowledgePageContent() {
   const [draftContent, setDraftContent] = useState("");
   const [draftFormat, setDraftFormat] = useState<DocumentFormat>("markdown");
   const [draftNote, setDraftNote] = useState("");
+  const [pendingUpload, setPendingUpload] = useState<{ preview: UploadPreviewView; file: File } | null>(null);
 
   // Candidates
   const [candidates, setCandidates] = useState<CandidateView[] | null>(null);
@@ -283,19 +311,66 @@ function ProjectKnowledgePageContent() {
     }
   }
 
+  async function previewFile(file: File): Promise<UploadPreviewView> {
+    const text = await file.text();
+    return apiFetch<UploadPreviewView>(`${base}/uploads/preview`, {
+      method: "POST",
+      body: {
+        filename: file.name,
+        dataBase64: bytesToBase64(new TextEncoder().encode(text)),
+        recipient: "local_project",
+        purpose: "项目资料库",
+        dataScope: "project_only",
+      },
+    });
+  }
+
   async function importFile(file: File) {
     if (busy) return;
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const dataBase64 = bytesToBase64(new Uint8Array(await file.arrayBuffer()));
-      const created = await apiFetch<DocumentDetailView>(`${base}/documents/import`, {
-        method: "POST",
-        body: { filename: file.name, dataBase64 },
-      });
-      setSelectedDocId(created.document.documentId);
-      setNotice(`已导入「${created.document.title}」（UTF-8 文本），当前修订 ${created.document.revision}。`);
+      const preview = await previewFile(file);
+      setPendingUpload({ preview, file });
+    } catch (failure) {
+      fail(failure);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmUpload() {
+    if (!pendingUpload || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // The preview binds one content version: if the file changed on disk, re-preview and make
+      // the user confirm the new hash instead of uploading silently.
+      const current = await pendingUpload.file.text();
+      const currentHash = await hashText(current);
+      if (currentHash !== pendingUpload.preview.contentHash) {
+        const preview = await previewFile(pendingUpload.file);
+        setPendingUpload({ preview, file: pendingUpload.file });
+        setNotice("文件内容已变化，已重新生成预览，请核对后再次确认。");
+        return;
+      }
+      const result = await apiFetch<UploadConfirmView>(
+        `${base}/uploads/${encodeURIComponent(pendingUpload.preview.previewId)}/confirm`,
+        {
+          method: "POST",
+          body: {
+            contentHash: pendingUpload.preview.contentHash,
+            confirmed: true,
+            idempotencyKey: crypto.randomUUID(),
+          },
+        },
+      );
+      setPendingUpload(null);
+      setSelectedDocId(result.document.document.documentId);
+      setNotice(
+        `已确认导入「${result.document.document.title}」（UTF-8 文本），当前修订 ${result.document.document.revision}。`,
+      );
       refresh();
     } catch (failure) {
       fail(failure);
@@ -942,6 +1017,62 @@ function ProjectKnowledgePageContent() {
             按版本 {ruleEditor?.expectedVersion ?? "—"} 校验；旧版本会保留在版本历史中，确认人仍记录在原版本。
           </p>
         </div>
+      </Modal>
+
+      <Modal
+        open={pendingUpload !== null}
+        title="确认上传资料"
+        onClose={() => {
+          if (!busy) setPendingUpload(null);
+        }}
+        footer={
+          <>
+            <Button size="sm" disabled={busy} onClick={() => setPendingUpload(null)}>
+              取消
+            </Button>
+            <Button size="sm" variant="primary" disabled={busy} onClick={() => void confirmUpload()}>
+              {busy ? "正在导入…" : "确认导入"}
+            </Button>
+          </>
+        }
+      >
+        {pendingUpload && (
+          <div className="space-y-3 text-xs">
+            <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1">
+              <dt className="opacity-70">文件</dt>
+              <dd>{pendingUpload.preview.filename}</dd>
+              <dt className="opacity-70">大小</dt>
+              <dd>{pendingUpload.preview.byteSize} 字节</dd>
+              <dt className="opacity-70">内容哈希</dt>
+              <dd className="break-all font-mono">{pendingUpload.preview.contentHash}</dd>
+              <dt className="opacity-70">接收方</dt>
+              <dd>
+                {pendingUpload.preview.recipient === "local_project"
+                  ? "本项目本地资料库（不离开服务器）"
+                  : "远端知识服务（需单独授权）"}
+              </dd>
+              <dt className="opacity-70">用途</dt>
+              <dd>{pendingUpload.preview.purpose}</dd>
+              <dt className="opacity-70">数据范围</dt>
+              <dd>
+                {pendingUpload.preview.dataScope === "project_only"
+                  ? "仅当前项目"
+                  : pendingUpload.preview.dataScope}
+              </dd>
+              <dt className="opacity-70">预览有效期至</dt>
+              <dd>{timeLabel(pendingUpload.preview.expiresAt)}</dd>
+            </dl>
+            {pendingUpload.preview.sensitiveHints.length > 0 && (
+              <p className="rounded border border-[var(--border)] p-2">
+                可能含敏感内容：{pendingUpload.preview.sensitiveHints.join("、")}
+              </p>
+            )}
+            <p className="opacity-70">{pendingUpload.preview.sensitiveNotice}</p>
+            <p className="opacity-70">
+              确认时绑定上面的内容哈希；确认前文件若被修改，会重新生成预览并要求再次确认。
+            </p>
+          </div>
+        )}
       </Modal>
     </main>
   );

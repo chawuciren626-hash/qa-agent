@@ -6,6 +6,7 @@
  */
 import { afterEach, expect, it, vi } from "vitest";
 import { createElement as h } from "react";
+import { createHash, webcrypto } from "node:crypto";
 import { button, click, hasButton, mount, settle, type, unmountAll, waitFor } from "./helpers/dom";
 import { ApiError } from "../src/api/client";
 
@@ -20,6 +21,8 @@ const state = vi.hoisted(() => ({
   rules: [] as any[],
   ruleDetail: null as any,
   detailError: null as Error | null,
+  uploadText: "来自文件的资料：失败五次锁定三十分钟。",
+  uploadHash: "",
 }));
 
 vi.mock("../src/state/auth", () => ({
@@ -86,10 +89,52 @@ vi.mock("../src/api/client", async () => {
         if (state.detailError) throw state.detailError;
         return state.detail;
       }
+      if (url.endsWith("/uploads/preview")) {
+        return {
+          previewId: "preview-1",
+          filename: init?.body?.filename,
+          title: "导入资料",
+          byteSize: 12,
+          contentHash: state.uploadHash,
+          recipient: init?.body?.recipient,
+          purpose: init?.body?.purpose,
+          dataScope: init?.body?.dataScope,
+          sensitiveHints: ["令牌或密钥"],
+          sensitiveNotice:
+            "敏感内容提示按常见关键词做启发式检查，不能保证识别所有敏感内容；上传前请自行核对文件。",
+          status: "pending",
+          expiresAt: "2026-11-03T00:30:00Z",
+        };
+      }
+      if (url.includes("/uploads/") && url.endsWith("/confirm")) {
+        const imported = {
+          document: {
+            ...doc(),
+            documentId: "doc-imported",
+            title: "导入资料",
+            revision: 1,
+            contentHash: state.uploadHash,
+          },
+          content: state.uploadText,
+          revision: {
+            revisionId: "rev-imported",
+            revision: 1,
+            contentHash: state.uploadHash,
+            authorUserId: state.userId,
+            changeNote: "通过上传预览确认导入",
+            createdAt: "2026-11-03T00:00:00Z",
+          },
+        };
+        state.documents = [...state.documents, imported.document];
+        return {
+          idempotent: false,
+          document: imported,
+          upload: { uploadId: "upl-1", serverCopy: { status: "not_required" } },
+        };
+      }
       if (url.endsWith("/knowledge/candidates")) {
         return { candidates: state.candidates, nextCursor: null };
-      }
-      if (url.includes("/knowledge/candidates/") && url.endsWith("/confirm")) {
+      }      if (url.includes("/knowledge/candidates/") && url.endsWith("/confirm")) {
         return {
           rule: {
             ruleId: "rule-1",
@@ -115,6 +160,10 @@ vi.mock("../src/api/client", async () => {
 });
 
 import { ProjectKnowledgePage } from "../src/features/qa/project-knowledge-page";
+
+// jsdom's crypto has no subtle digest; the page hashes the file body before confirmation.
+if (!globalThis.crypto?.subtle) vi.stubGlobal("crypto", webcrypto);
+state.uploadHash = `sha256:${createHash("sha256").update(state.uploadText, "utf8").digest("hex")}`;
 
 const doc = (over: Record<string, unknown> = {}) => ({
   documentId: "doc-1",
@@ -202,6 +251,38 @@ it("edits a document into a new revision and shows the revision history", async 
   await waitFor(() => (document.body.textContent ?? "").includes("修订 1"));
   expect(document.body.textContent).toContain("初稿");
   expect(document.body.textContent).toContain("abcdef12");
+});
+
+it("previews a file's hash and metadata, and imports only after explicit confirmation", async () => {
+  await mount(h(ProjectKnowledgePage));
+  await waitFor(() => document.querySelector('[aria-label="导入资料文件"]') !== null);
+  const input = document.querySelector('[aria-label="导入资料文件"]') as HTMLInputElement;
+  const file = {
+    name: "规则.md",
+    text: async () => state.uploadText,
+  } as unknown as File;
+  Object.defineProperty(input, "files", { value: [file], configurable: true });
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+
+  await waitFor(() => (document.body.textContent ?? "").includes("确认上传资料"));
+  expect(document.body.textContent).toContain("规则.md");
+  expect(document.body.textContent).toContain(state.uploadHash);
+  expect(document.body.textContent).toContain("令牌或密钥");
+  expect(document.body.textContent).toContain("不能保证识别所有敏感内容");
+  const preview = state.calls.find((call) => call.url.endsWith("/uploads/preview"));
+  expect(preview?.body).toMatchObject({
+    filename: "规则.md",
+    recipient: "local_project",
+    dataScope: "project_only",
+  });
+  // Nothing is created before the confirmation.
+  expect(state.calls.some((call) => call.url.endsWith("/confirm"))).toBe(false);
+
+  await click(button("确认导入"));
+  await settle();
+  const confirm = state.calls.find((call) => call.url.endsWith("/preview-1/confirm"));
+  expect(confirm?.body).toMatchObject({ contentHash: state.uploadHash, confirmed: true });
+  expect(document.body.textContent).toContain("已确认导入「导入资料」");
 });
 
 it("confirms a candidate explicitly and records that confirmation created the rule", async () => {
