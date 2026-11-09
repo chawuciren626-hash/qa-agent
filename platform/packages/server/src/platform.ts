@@ -134,6 +134,14 @@ import {
   UnattendedLifecycleStore,
   UnattendedRunLedger,
 } from "./mechanisms/unattended.js";
+import { TaskExchangeRepo } from "./db/repos/task-exchange.js";
+import { ExchangeService } from "./taskexchange/service.js";
+import { OutboxDispatcher } from "./taskexchange/outbox.js";
+import { TaskExchangeRoutes } from "./http/routes/task-exchange.js";
+import {
+  ExchangeOutboxScheduler,
+  TaskExchangeStore,
+} from "./mechanisms/taskexchange.js";
 import { Machines, MachinesModule } from "./machines/service.js";
 import { OrganizationModule, OrgScheduler, OrgService } from "./runtime/organization/service.js";
 import { OrgRoutes } from "./http/routes/organizations.js";
@@ -203,6 +211,7 @@ import { Http, HttpModule } from "./http/app.js";
 import { WebModule, WebShell } from "./http/routes/contributions.js";
 import { BuiltinBrowserModule } from "./builtin-browser/module.js";
 import { AgentApiModule } from "./amsp/module.js";
+import { LocalExchangeExecutor, LocalExchangePolling } from './taskexchange/local-executor.js';
 
 /**
  * The platform's module tree: the root module and its children, in one place.
@@ -223,6 +232,8 @@ import { AgentApiModule } from "./amsp/module.js";
 export class Startup {
   @Use() private readonly scheduler!: Scheduling;
   @Use() private readonly orgScheduler!: OrgScheduler;
+  @Use() private readonly exchangeOutbox!: ExchangeOutboxScheduler;
+  @Use() private readonly localExchange!: LocalExchangePolling;
   @Use() private readonly sessionService!: SessionServiceIface;
   @Use() private readonly machines!: Machines;
   @Use() private readonly errors!: Errors;
@@ -242,6 +253,10 @@ export class Startup {
     // Company mode's scheduler: same lifetime and the same startup rule (reconcile once,
     // no backfill), only active while this App is.
     await this.orgScheduler.start();
+    // The exchange outbox's heartbeat: deadline sweep + due deliveries. Fire-and-forget —
+    // a delivery pass must never hold up the boot (its errors land in the outbox rows).
+    this.exchangeOutbox.start();
+    this.localExchange.start();
     // Startup adoption sweep: fold Trace-only Sessions into the index. Fire-and-forget —
     // a broken trace shard must not block the boot.
     void this.sessionService.adoptUnmanagedTraceSessions().catch((err: unknown) => {
@@ -523,6 +538,17 @@ export class ApiModule {}
 })
 export class WorkbenchesModule {}
 
+/**
+ * The external task exchange (batch 5): the store, the state-machine service, the delivery
+ * outbox (its scheduler is started by Startup like the other schedulers), and the two
+ * route groups (token-authenticated exchange plane; user-session management plane).
+ */
+@Module({
+  children: [TaskExchangeRepo, ExchangeService, OutboxDispatcher, TaskExchangeRoutes, LocalExchangeExecutor],
+  exports: [TaskExchangeStore, ExchangeOutboxScheduler, LocalExchangePolling],
+})
+export class TaskExchangeModule {}
+
 /** The root: provides nothing and requires nothing; it exists so the groups have a scope to see each other in. */
 @Module({
   children: [
@@ -548,6 +574,7 @@ export class WorkbenchesModule {}
     WorkbenchesModule,
     BuiltinBrowserModule,
     AgentApiModule,
+    TaskExchangeModule,
     Startup,
   ],
 })

@@ -85,7 +85,7 @@ export interface ScheduleSessionCreatorShape {
      * Unattended creators pass `allow-all`: nobody is there to answer an ask the default
      * preset's approval mode would bring.
      */
-    approvalMode?: "allow-all";
+    approvalMode?: "allow-all" | "read-only";
     source?: "schedule" | "workbench";
     client?: "workbench";
   }): Promise<{ sessionId: string }>;

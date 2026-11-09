@@ -72,6 +72,7 @@ import { qaQualityTraceability } from "./steps/2026-11-02-qa-quality-traceabilit
 import { traeAuthSync } from "./steps/2026-11-06-trae-auth-sync.js";
 import { sessionsOwnerUser } from "./steps/2026-11-06-sessions-owner-user.js";
 import { unattendedScheduling } from "./steps/2026-11-06-unattended-scheduling.js";
+import { taskExchange } from "./steps/2026-11-06-task-exchange.js";
 
 export type { Migration } from "./migration.js";
 export { IrreversibleMigrationError, UnknownMigrationError, appliedMigrations } from "./runner.js";
@@ -109,6 +110,7 @@ export const MIGRATIONS: readonly Migration[] = [
   traeAuthSync,
   sessionsOwnerUser,
   unattendedScheduling,
+  taskExchange,
 ];
 
 /**
