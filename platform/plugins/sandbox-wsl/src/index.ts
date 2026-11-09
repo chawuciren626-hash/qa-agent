@@ -38,6 +38,7 @@ import type {
   SandboxProviderSource,
 } from "@prismshadow/penguin-core/plugin";
 import { readHost, readState } from "./host.js";
+import { supportsLinuxCommand } from "./profile.js";
 import {
   BASE_TITLES,
   Tasks,
@@ -51,7 +52,7 @@ import {
 } from "./tasks.js";
 import type { TaskKind, WslSettings } from "./tasks.js";
 
-export { automationBwrapArgs, bwrapArgs, chdirRoots, linuxProgram, toLinuxPath } from "./profile.js";
+export { automationBwrapArgs, bwrapArgs, chdirRoots, linuxCommand, linuxProgram, supportsLinuxCommand, toLinuxPath } from "./profile.js";
 export { automationLaunchJob } from "./automation.js";
 export {
   launchJob,
@@ -121,7 +122,10 @@ export function createWslProvider(
   const launcher = internals.launcher ?? launcherPath();
   return {
     dimensions: ["fs-write", "network", "mask-paths", "closed-temp"],
+    supportsCommand: supportsLinuxCommand,
+    limits: [{ text: "Linux commands only; native Windows commands require a compatible backend.", textZh: "仅执行 Linux 命令；Windows 原生命令需由满足相同策略的兼容后端执行。" }],
     confine(argv, policy: SandboxPolicy): ConfinedArgv {
+      if (!supportsLinuxCommand(argv)) throw new Error("penguin-wsl cannot execute native Windows commands; use a command-compatible sandbox backend");
       const state = readState();
       if (state === null) {
         throw new Error("penguin-wsl cannot confine: the sandbox distro is not initialized");

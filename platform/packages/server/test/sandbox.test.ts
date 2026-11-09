@@ -248,7 +248,7 @@ describe("sandbox service — the built-in interface and its optional dimensions
     const svc = await service([["dsh-local", dsh.provider]]);
     svc.configure({ mode: "workspace-write", network: "none" });
     expect(() => svc.confiner()([...ARGV], OPTS)).toThrow(
-      /requires fs-write \+ network, but no mounted sandbox backend implements all of it \(dsh-local: fs-write\)/,
+      /requires fs-write \+ network, but no command-compatible mounted sandbox backend implements all of it \(dsh-local: fs-write\)/,
     );
     // Never silently dropped: the backend was not consulted at all.
     expect(dsh.calls).toHaveLength(0);
@@ -256,6 +256,18 @@ describe("sandbox service — the built-in interface and its optional dimensions
 });
 
 describe("sandbox service — capability routing across backends", () => {
+  it("routes by command compatibility before launch without dropping policy dimensions", async () => {
+    const native=fake("native"), linux=fake("linux", ["fs-write", "network"]);
+    linux.provider.supportsCommand=argv=>argv[0]==="bash";
+    const svc=await service([["native",native.provider],["linux",linux.provider]]);
+    svc.configure({mode:"workspace-write"});
+    expect(svc.confiner()(["powershell.exe","-Command","echo hi"],OPTS).argv[0]).toBe("native");
+    expect(linux.calls).toHaveLength(0);
+    expect(svc.confiner()([...ARGV],OPTS).argv[0]).toBe("linux");
+    svc.configure({mode:"workspace-write",network:"none"});
+    expect(()=>svc.confiner()(["powershell.exe","-Command","echo hi"],OPTS)).toThrow(/command-compatible/);
+    expect(native.calls).toHaveLength(1);
+  });
   const entries = () => {
     const dsh = fake("dsh");
     const bwrap = fake("bwrap", ["fs-write", "network", "mask-paths"]);

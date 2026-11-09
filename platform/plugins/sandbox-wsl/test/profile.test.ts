@@ -8,6 +8,8 @@ import {
   bwrapArgs,
   chdirRoots,
   linuxProgram,
+  linuxCommand,
+  supportsLinuxCommand,
   parseMinirootfs,
   parseUbuntuSums,
   provisionScript,
@@ -50,6 +52,29 @@ describe("linuxProgram", () => {
     expect(linuxProgram("C:\\Program Files\\Git\\bin\\bash.exe")).toBe("/bin/bash");
     expect(linuxProgram("sh.exe")).toBe("/bin/sh");
     expect(linuxProgram("git.exe")).toBe("git");
+  });
+});
+
+describe("linuxCommand", () => {
+  it("advertises Linux invocation compatibility without rewriting Windows semantics", () => {
+    for (const command of ["powershell", "pwsh", "cmd.exe", "C:/runtime/node.exe", "C:\\Git\\bin\\bash.exe"]) {
+      expect(supportsLinuxCommand([command])).toBe(false);
+    }
+    for (const command of ["bash", "/bin/sh", "/usr/local/bin/node"]) expect(supportsLinuxCommand([command])).toBe(true);
+  });
+  it("rejects Windows shell syntax rather than executing it as sh", () => {
+    for (const shell of ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "pwsh", "cmd.exe"]) {
+      expect(() => linuxCommand([shell, "-Command", "$env:PATH = 'C:\\tools'; echo $env:PATH"]))
+        .toThrow("Unsupported Windows shell invocation");
+    }
+  });
+  it("rejects a PowerShell invocation without a single command", () => {
+    expect(() => linuxCommand(["powershell.exe", "-File", "script.ps1"]))
+      .toThrow("Unsupported Windows shell invocation");
+  });
+  it("preserves a Linux shell command and its quoting", () => {
+    expect(linuxCommand(["bash.exe", "-c", "printf '%s' '$HOME'"]))
+      .toEqual(["/bin/bash", "-c", "printf '%s' '$HOME'"]);
   });
 });
 

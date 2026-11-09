@@ -5,10 +5,21 @@ import {tmpdir} from 'node:os';
 import {resolve,dirname} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {connect,createServer} from 'node:net';
-import {ensureLocalService,attachLocalService,pauseLocalService,resumeLocalService,serviceStatus,servicePaths,readFrames,serverLockAlive} from '../../scripts/local-service.mjs';
+import {ensureLocalService,attachLocalService,pauseLocalService,resumeLocalService,serviceStatus,servicePaths,readFrames,serverLockAlive,managedAgentShell} from '../../scripts/local-service.mjs';
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const write=(file,value)=>{mkdirSync(dirname(file),{recursive:true});writeFileSync(file,value);};
+test('managed service selects a Windows shell accepted by the ACL sandbox',()=>{
+  const root=mkdtempSync(resolve(tmpdir(),'aith-shell-'));
+  try {
+    const layout={paths:{host_executable:resolve(root,'runtime/penguin/PenguinHarness.exe')}};
+    const shell=resolve(root,'runtime/penguin/resources/git/usr/bin/sh.exe');
+    write(shell,'synthetic shell');
+    assert.match(managedAgentShell(layout),/powershell\.exe$/i);
+    rmSync(shell);
+    assert.match(managedAgentShell(layout),/powershell\.exe$/i);
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
 test('server lock rejects a recycled PID with a closed port and respects a live listener',async()=>{
   const root=mkdtempSync(resolve(tmpdir(),'aith-lock-')),file=resolve(root,'server.lock');
   const server=createServer(socket=>socket.end());

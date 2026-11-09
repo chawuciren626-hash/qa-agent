@@ -8,6 +8,16 @@
 
 ## Agent内部操作
 
+### 本机浏览器与 Agent 沙箱边界（2026-11-09）
+
+本机受管理服务启用 `AITEST_BROWSER_EXECUTION=local`。`explore_url` 与 `browser_task` 由本机浏览器执行器启动，暂不接入 Agent 沙箱；优先使用安装配置指向的 Playwright Chromium，未找到时使用本机 Chrome。只读探索默认无头运行，不出现浏览器窗口；交互测试的 `start` 默认显示独立窗口，不接管用户日常浏览器。
+
+普通 Agent shell 命令和文件工具仍按会话沙箱策略执行。浏览器执行器仅接受这两个结构化动作，继续使用任务归属、派发、URL 来源和操作白名单校验；浏览器证据由受控执行器写入当前任务目录。执行器不会接收任意 shell、脚本或页面 JavaScript，也不会继承 Agent vault 中的任意进程环境。
+
+宿主在启动前读取并冻结请求，通过标准输入传递，执行器不再次读取可被修改的请求文件。`browser_runtime` 标注 `execution_location=local_machine`、`execution_backend=local_browser_executor` 和 `agent_sandbox_applied=false`。没有该受管理入口的调用记录为 `inherited_process`，不推断隔离状态。启动失败不自动重跑产品请求或更改沙箱权限。
+
+`browser_cleanup` 区分无浏览器句柄、关闭已确认和关闭失败。关闭 API 返回并不证明所有操作系统子进程都已退出，故 `process_exit_verified` 保持 `false`。浏览器沙箱、完整进程树退出验证和脚本式自动化的独立执行策略仍需后续建设；本次不扩大 `run-ui-tests.mjs` 等任意生成脚本的宿主执行权限。
+
 操作入口为结构化browser_task，参数run_id和operation。operation包含type和稳定request_id，详细字段由catalog.field_rules.browser_task给出。用户不需要填写这些字段。
 
 | 操作 | 用途 |

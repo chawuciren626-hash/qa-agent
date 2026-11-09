@@ -24,7 +24,7 @@ import {
 import type { HostFacts, WslState } from "./host.js";
 import { wslArgs } from "./launch.js";
 import type { LaunchJob } from "./launch.js";
-import { bwrapArgs, chdirRoots, linuxProgram, toLinuxPath } from "./profile.js";
+import { bwrapArgs, chdirRoots, linuxCommand, toLinuxPath } from "./profile.js";
 
 /** The Linux the distro is built from. */
 export type BaseImage = "ubuntu" | "alpine";
@@ -94,7 +94,7 @@ export function launchJob(
     user: state.user,
     bwrap: bwrapArgs(policy, host),
     chdirRoots: chdirRoots(policy, host),
-    command: [linuxProgram(argv[0] ?? "bash"), ...argv.slice(1)],
+    command: linuxCommand(argv),
   };
 }
 

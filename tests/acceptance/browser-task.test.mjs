@@ -825,8 +825,8 @@ test('screenshot failure is nonfatal and diagnostics never include raw secrets o
   assert.equal(calls,1,'Never retry without privacy masks');
   let options;
   const masks=[{input:true},{secret:true}];
-  const captured=await captureBrowserEvidence({evaluate:privacy,locator:()=>masks[0],getByText:()=>masks[1],screenshot:async value=>{options=value;}},'masked.png',new Set(['secret-value']));
-  assert.equal(captured.captured,true);assert.deepEqual(options.mask.slice(0,2),masks);assert.ok(options.mask.length>2);
+  const captured=await captureBrowserEvidence({evaluate:async()=>({values:['secret-value'],mask_selectors:['#sensitive'],truncated:false}),locator:selector=>selector==='#sensitive'?masks[1]:masks[0],screenshot:async value=>{options=value;}},'masked.png',new Set(['secret-value']));
+  assert.equal(captured.captured,true);assert.deepEqual(options.mask,masks);
   assert.equal(options.animations,undefined,'Do not fast-forward page animations or trigger application events');
   assert.deepEqual(browserErrorDiagnostic(new Error('Target page, context or browser has been closed secret'),'snapshot'),{phase:'snapshot',category:'browser_unavailable'});
   assert.deepEqual(browserErrorDiagnostic(new Error('net::ERR_PROXY_CONNECTION_FAILED https://secret'),'network'),{phase:'network',category:'browser_operation_error',network_code:'net::ERR_PROXY_CONNECTION_FAILED'});

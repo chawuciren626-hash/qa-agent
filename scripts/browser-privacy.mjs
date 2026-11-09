@@ -109,10 +109,37 @@ export function privateBrowserUrl(value,secrets=[]) {
   } catch {return '[WITHHELD: invalid URL]';}
 }
 
+export function browserLaunchGuidance(category) {
+  if(category==='browser_start_denied') return {
+    next_action:'check_authorized_browser_backend',
+    message:'浏览器启动被执行环境拒绝。请检查当前沙箱后端是否支持 Chromium 的子进程与进程通信；Windows ACL 受限令牌可能阻止这些操作。此诊断尚未确认具体后端，不代表目标页面不可用。',
+    retry_policy:'Do not retry outside the sandbox or change permissions automatically.'
+  };
+  return {};
+}
+
+export function browserExecutionContext(env=process.env) {
+  return env.QA_BROWSER_EXECUTION==='local'
+    ? {execution_location:'local_machine',execution_backend:'local_browser_executor',agent_sandbox_applied:false}
+    : {execution_location:'worker_machine',execution_backend:'inherited_process',agent_sandbox_applied:null};
+}
+
+// A close acknowledgement is not proof that every OS descendant has exited.
+export async function closeBrowserWithReceipt(browser) {
+  const checked_at=new Date().toISOString();
+  if(!browser) return {status:'no_browser_handle',checked_at,process_exit_verified:false};
+  try {
+    await browser.close();
+    return {status:'close_acknowledged',checked_at:new Date().toISOString(),process_exit_verified:false};
+  } catch(error) {
+    return {status:'close_failed',checked_at:new Date().toISOString(),process_exit_verified:false,diagnostic:privateBrowserError(error,'close')};
+  }
+}
+
 export function privateBrowserError(error,phase) {
   const message=String(error?.message ?? '');
   const launch=phase==='browser_launch';
-  return {phase,category:launch && /executable (?:doesn't|does not) exist|executable not found|no such file|ENOENT/i.test(message)?'browser_binary_missing':launch && /EACCES|EPERM|access is denied/i.test(message)?'browser_start_denied':/closed|disconnected|crash/i.test(message)?'browser_unavailable':/timeout/i.test(message)?'timeout':'browser_operation_error',
+  return {phase,category:launch && /executable (?:doesn't|does not) exist|executable not found|no such file|ENOENT/i.test(message)?'browser_binary_missing':launch && /EACCES|EPERM|access (?:is )?denied/i.test(message)?'browser_start_denied':/closed|disconnected|crash/i.test(message)?'browser_unavailable':/timeout/i.test(message)?'timeout':'browser_operation_error',
     ...(/net::ERR_[A-Z_]+/.test(message)?{network_code:message.match(/net::ERR_[A-Z_]+/)[0]}:{})};
 }
 

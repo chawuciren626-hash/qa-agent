@@ -230,7 +230,7 @@ export class SandboxService {
       // needs a backend: returning here would silently drop that half of the policy. So the
       // short-circuit is "no confinement dimension beyond fs-write", not "mode is full".
       if (settings.mode === "danger-full-access" && required.length === 1) return { argv };
-      const provider = this.pick(required, settings.mode);
+      const provider = this.pick(required, settings.mode, argv);
       // Only workspace-write binds further writable roots; under read-only (or full access
       // with a network cut) every backend ignores them, so neither the field nor the
       // directory is made there.
@@ -273,17 +273,17 @@ export class SandboxService {
    * The preferred mounted backend implementing every required dimension (byPreference), or a
    * fail-closed throw.
    */
-  private pick(required: readonly SandboxDimension[], mode: string): SandboxProvider {
+  private pick(required: readonly SandboxDimension[], mode: string, argv: readonly string[]): SandboxProvider {
     const match = byPreference(this.mounted).find(({ provider }) => {
       const implemented = providerDimensions(provider);
-      return required.every((dimension) => implemented.includes(dimension));
+      return required.every((dimension) => implemented.includes(dimension)) && provider.supportsCommand?.(argv) !== false;
     });
     if (match !== undefined) return match.provider;
     throw new Error(
       this.mounted.length === 0
         ? `sandbox mode "${mode}" is configured but no sandbox backend is mounted${this.failedSuffix()}; ` +
             "refusing to run the command unconfined."
-        : `sandbox policy requires ${required.join(" + ")}, but no mounted sandbox backend ` +
+        : `sandbox policy requires ${required.join(" + ")}, but no command-compatible mounted sandbox backend ` +
             `implements all of it (${this.mounted
               .map(({ name, provider }) => `${name}: ${providerDimensions(provider).join(", ")}`)
               .join("; ")})${this.failedSuffix()}; refusing to run the command unconfined.`,

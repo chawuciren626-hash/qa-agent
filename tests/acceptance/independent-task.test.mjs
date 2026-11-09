@@ -476,6 +476,8 @@ test('URL-only independent exploration uses an actual browser, blocks POST and c
     assert.equal(observation.http_status,200,JSON.stringify(observation));
     assert.equal(observation.browser_runtime.platform,process.platform);
     assert.equal(observation.browser_runtime.launch_status,'ready');
+    assert.equal(observation.browser_cleanup.status,'close_acknowledged');
+    assert.equal(observation.browser_cleanup.process_exit_verified,false);
     assert.equal(observation.browser_runtime.headless,true);
     assert.equal(observation.title,'Exploration fixture');
     assert.equal(observation.structure.fields[0].name,'phone');

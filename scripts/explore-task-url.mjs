@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { chromium } from '@playwright/test';
 import { readRunFile, runDirectory } from './design-quality.mjs';
 import { writeJson } from './orchestration-state.mjs';
-import { refreshBrowserPrivacy, privateSnapshot, privateBrowserUrl, privateBrowserError, capturePrivateScreenshot } from './browser-privacy.mjs';
+import { refreshBrowserPrivacy, privateSnapshot, privateBrowserUrl, privateBrowserError, capturePrivateScreenshot, browserLaunchGuidance, closeBrowserWithReceipt, browserExecutionContext } from './browser-privacy.mjs';
 import { operationPerformance } from './browser-performance.mjs';
 
 export function validateExplorationTarget(url,sourcePath,sourceText) {
@@ -47,7 +47,7 @@ export async function exploreTaskUrl(root,runId,url,sourcePath) {
   let screenshot,phase='browser_launch';
   try {
     const bundled=existsSync(chromium.executablePath());
-    observation.browser_runtime={worker_pid:process.pid,platform:process.platform,source:bundled?'playwright_chromium':'chrome_channel',headless:true,launch_status:'launching'};
+    observation.browser_runtime={...browserExecutionContext(),worker_pid:process.pid,platform:process.platform,source:bundled?'playwright_chromium':'chrome_channel',headless:true,launch_status:'launching'};
     browser=await chromium.launch({headless:true,...(!bundled?{channel:'chrome'}:{})});
     observation.browser_runtime.launch_status='ready';
     observation.browser_runtime.version=browser.version();
@@ -78,8 +78,11 @@ export async function exploreTaskUrl(root,runId,url,sourcePath) {
     const capture=await metrics.measure('screenshot_with_privacy',()=>capturePrivateScreenshot(page,resolve(dir,candidate),secrets));
     if(capture.captured) screenshot=candidate;
     else observation.capture_warning=capture.warning;
-  } catch(error) {observation.error=privateBrowserError(error,phase);observation.failure_stage=phase;if(phase==='browser_launch' && observation.browser_runtime) observation.browser_runtime.launch_status='failed';}
-  finally {if(browser) try {await browser.close();} catch(error) {observation.close_warning=privateBrowserError(error,'close');}}
+  } catch(error) {observation.error=privateBrowserError(error,phase);observation.recovery=browserLaunchGuidance(observation.error.category);observation.failure_stage=phase;if(phase==='browser_launch' && observation.browser_runtime) observation.browser_runtime.launch_status='failed';}
+  finally {
+    observation.browser_cleanup=await closeBrowserWithReceipt(browser);
+    if(observation.browser_cleanup.status==='close_failed') observation.close_warning=observation.browser_cleanup.diagnostic;
+  }
   observation.performance=metrics.snapshot();
   if(observation.capture_warning || observation.structure?.privacy?.content_withheld) observation.limitations.push('Some page evidence was withheld or unavailable; do not retry navigation or disable privacy protection to obtain it. Reachability does not prove page content or business behavior.');
   observation.finished_at=new Date().toISOString();
@@ -92,7 +95,7 @@ export async function exploreTaskUrl(root,runId,url,sourcePath) {
   const refs=[path,...cases[0].evidence_paths.slice(1),'execution/test_results.json'].map(p=>{const f=readRunFile(dir,p);return {path:p,sha256:f.sha256};});
   writeJson(resolve(dir,'execution/exploration.json'),{...observation,evidence:refs});
   unlinkSync(lock);
-  return {run_id:runId,scope:'single_page_read_only',status:state,exploration_sha256:readRunFile(dir,'execution/exploration.json').sha256,artifacts:['execution/exploration.json','execution/test_results.json'],limitations:observation.limitations};
+  return {run_id:runId,scope:'single_page_read_only',status:state,browser_runtime:observation.browser_runtime,browser_cleanup:observation.browser_cleanup,...(observation.error?{diagnostic:observation.error,...observation.recovery}:{}),exploration_sha256:readRunFile(dir,'execution/exploration.json').sha256,artifacts:['execution/exploration.json','execution/test_results.json'],limitations:observation.limitations};
 }
 if(process.argv[1] && pathToFileURL(resolve(process.argv[1])).href===import.meta.url) {
   const [runId,url,sourcePath]=process.argv.slice(2);

@@ -161,6 +161,8 @@ export interface SandboxProvider {
    * administrator's words. The settings card discloses them under what this machine enforces.
    */
   readonly limits?: readonly SandboxLimit[];
+  /** Optional preflight compatibility filter. Selection still requires every policy dimension. */
+  supportsCommand?(argv: readonly string[]): boolean;
   confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv;
 }
 

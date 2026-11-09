@@ -32,6 +32,10 @@ export function servicePaths(config) {
   return {layout,dir,id,pipe:process.platform==='win32'?`\\\\.\\pipe\\aitest-${id}`:join(dir,'service.sock'),
     state:join(dir,'connection.json'),pause:resolve(layout.root,'.local-service-paused.json')};
 }
+export function managedAgentShell(layout) {
+  // The Windows ACL runner refuses MSYS shells. WSL must reject incompatible shell argv.
+  return resolve(process.env.SystemRoot??'C:/Windows','System32/WindowsPowerShell/v1.0/powershell.exe');
+}
 function protectDirectory(dir) {
   mkdirSync(dir,{recursive:true,mode:0o700});
   if(lstatSync(dir).isSymbolicLink())throw Error('Linked service directory refused');
@@ -193,7 +197,7 @@ async function supervise(config) {
     const requested=existsSync(preferred)?Number(readFileSync(preferred,'utf8')):0;
     // Reserve the established origin. If another program took it, report the conflict instead of silently changing browser storage origins.
     const log=openSync(join(p.dir,'server.log'),'a');
-    child=fork(join(layout.host_app,'dist/server.js'),[],{execPath:layout.paths.node,cwd:layout.host_app,windowsHide:true,stdio:['ignore',log,log,'ipc'],env:{...productEnvironment(layout),...systemProxyEnvironment(),AITEST_INSTALLATION_CONFIG:config,AITEST_ENGINE_ROOT:layout.paths.engine,AITEST_MANAGED_RUNTIME:'1',AITEST_LOCAL_SERVICE:'1',PENGUIN_UPDATE_CHECK:'off',PENGUIN_PROFILE:'release',PENGUIN_WEB_DIST:join(layout.host_app,'web-dist'),PENGUIN_CLI_ENTRY:join(layout.host_app,'dist/penguin.js'),PENGUIN_SHELL:resolve(process.env.SystemRoot??'C:/Windows','System32/WindowsPowerShell/v1.0/powershell.exe'),PENGUIN_DESKTOP_TOKEN:randomBytes(32).toString('base64url'),PENGUIN_PORT_FILE:portFile,HOST:'127.0.0.1',PORT:String(Number.isInteger(requested)&&requested>0?requested:0)}});
+    child=fork(join(layout.host_app,'dist/server.js'),[],{execPath:layout.paths.node,cwd:layout.host_app,windowsHide:true,stdio:['ignore',log,log,'ipc'],env:{...productEnvironment(layout),...systemProxyEnvironment(),AITEST_BROWSER_EXECUTION:"local",AITEST_INSTALLATION_CONFIG:config,AITEST_ENGINE_ROOT:layout.paths.engine,AITEST_MANAGED_RUNTIME:'1',AITEST_LOCAL_SERVICE:'1',PENGUIN_UPDATE_CHECK:'off',PENGUIN_PROFILE:'release',PENGUIN_WEB_DIST:join(layout.host_app,'web-dist'),PENGUIN_CLI_ENTRY:join(layout.host_app,'dist/penguin.js'),PENGUIN_SHELL:managedAgentShell(layout),PENGUIN_DESKTOP_TOKEN:randomBytes(32).toString('base64url'),PENGUIN_PORT_FILE:portFile,HOST:'127.0.0.1',PORT:String(Number.isInteger(requested)&&requested>0?requested:0)}});
     closeSync(log);
     const startedAt=Date.now(),owned=child;
     child.on('error',e=>{error=e.message;});

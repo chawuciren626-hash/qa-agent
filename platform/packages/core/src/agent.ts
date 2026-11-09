@@ -662,7 +662,7 @@ export class Agent {
     // all the same: a package the model wrote during one context is consulted from the next.
     const child = spec.subagentDepth > 0 || spec.source === "subagent";
     const hookPackages = published !== null
-      ? published.hooksConfig?.enabled === false ? [] : [...(published.hookPackages ?? [])]
+      ? !qaEnabled && published.hooksConfig?.enabled === false ? [] : [...(published.hookPackages ?? [])]
       : (!qaEnabled && child) || (!child && state.systemConfig.hooks?.enabled === false)
         ? [] : await listInstalledHooks(root, projectId, agentId);
     let systemPrompt = published?.refreshPromptOnResume ? undefined : opts.systemPrompt;

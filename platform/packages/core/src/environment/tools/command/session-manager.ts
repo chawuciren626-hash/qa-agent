@@ -10,6 +10,7 @@
  * Docs: /docs/tools § "Background session caps".
  */
 import { statSync } from "node:fs";
+import { qaLocalBrowserSpawn } from "../../../integrations/qa-runtime.js";
 import { ManagedSession } from "./session.js";
 import { prependPathEnv } from "./path-prepend.js";
 import { BackgroundRegistry } from "../background/index.js";
@@ -291,10 +292,13 @@ export class CommandSessionManager {
     // half that actually decides which `penguin` a command resolves (see ManagedSession).
     const prepend = this.pathPrepend?.() ?? [];
     const hostEnv = prependPathEnv(hostEnvForChild(this.proxyEnv?.() ?? null), prepend);
-    const confiner = this.confineSpawn?.() ?? null;
+    const controlEnv = this.controlEnv?.() ?? {};
+    const localBrowser = qaLocalBrowserSpawn({ ...opts, controlEnv, toolCallId: opts.qaToolCallId ?? "" });
+    const confiner = localBrowser ? null : this.confineSpawn?.() ?? null;
     return new ManagedSession({
       cmd: opts.cmd,
       cwd: opts.cwd,
+      ...(localBrowser ? { localBrowser } : {}),
       ...(prepend.length > 0 ? { pathPrepend: prepend } : {}),
       ...(confiner !== null
         ? {
@@ -326,7 +330,7 @@ export class CommandSessionManager {
       env: {
         ...hostEnv,
         ...this.vault,
-        ...(this.controlEnv?.() ?? {}),
+        ...controlEnv,
         QA_HOST_TOOL_CALL_ID: opts.qaToolCallId ?? "",
         ...HARDENED_ENV,
       },

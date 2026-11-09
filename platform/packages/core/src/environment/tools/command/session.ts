@@ -82,6 +82,8 @@ export interface SpawnOptions {
    * is spawned exactly as given.
    */
   pathPrepend?: readonly string[];
+  /** Host-validated browser action only; contains no shell and no Agent-selected executable. */
+  localBrowser?: { argv: string[]; env: Record<string, string>; input: string };
   /**
    * Sandbox-confinement seam: receives the exact argv about to be spawned and returns
    * the argv to spawn instead. A throw aborts the spawn — fail-closed — and surfaces as
@@ -138,14 +140,14 @@ export class ManagedSession {
       ...(qaStructured ? ["--noprofile", "--norc", "-c"] : shell.args),
       prefix + opts.cmd,
     ];
-    const confined = opts.confine ? opts.confine(argv, { cwd: opts.cwd }) : { argv };
+    const confined: ConfinedSpawn = opts.localBrowser ?? (opts.confine ? opts.confine(argv, { cwd: opts.cwd }) : { argv });
     const program = confined.argv[0];
     if (program === undefined) {
       throw new Error("spawn confiner returned an empty argv");
     }
     this.child = spawn(program, confined.argv.slice(1), {
       cwd: opts.cwd,
-      env: confined.env === undefined ? opts.env : { ...opts.env, ...confined.env },
+      env: opts.localBrowser ? opts.localBrowser.env : confined.env === undefined ? opts.env : { ...opts.env, ...confined.env },
       detached: SUPPORTS_PROCESS_GROUP, // Become the process-group leader, so the whole group can be signaled
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true, // No flashing console window on Windows (ignored elsewhere)
@@ -156,6 +158,7 @@ export class ManagedSession {
     // EPIPE/ERR_STREAM_DESTROYED are an expected race and must not bubble up to the host process
     // as an unhandled error.
     this.child.stdin?.on("error", () => {});
+    if (opts.localBrowser) this.child.stdin?.end(opts.localBrowser.input);
     this.child.stdout?.on("data", (c: string) => this.handleData(c));
     // The runner's own report lines (ConfinedSpawn.runnerLines) are not the command's output.
     const runner = runnerLineFilter(confined.runnerLines);

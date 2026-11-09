@@ -19,7 +19,7 @@ import { publishRecoveredBrowserResults } from './browser-recovery-delivery.mjs'
 import { uiConditions, expectUiCondition, evaluateUiCheck, observeUiCondition } from './browser-ui-assertions.mjs';
 import { createDialogTracker, validateDialogPolicy } from './browser-dialogs.mjs';
 import { validateValueReference, validateUiBasis, resolveBrowserInputs, uiComparison } from './browser-inputs.mjs';
-import { redactBrowserText, refreshBrowserPrivacy, privateSnapshot, capturePrivateScreenshot } from './browser-privacy.mjs';
+import { redactBrowserText, refreshBrowserPrivacy, privateSnapshot, capturePrivateScreenshot, browserLaunchGuidance, closeBrowserWithReceipt, browserExecutionContext } from './browser-privacy.mjs';
 import { operationPerformance, humanHandoffTiming } from './browser-performance.mjs';
 import { browserSecretReferences, validateSecretReference } from './browser-secret-references.mjs';
 import { isProtectedInput, protectedInputs } from './protected-inputs.mjs';
@@ -76,12 +76,13 @@ export async function browserWorkerResponse(response, requestId) {
 export function browserErrorDiagnostic(error, phase) {
   const message=String(error?.message ?? error);
   const launch=phase==='browser_launch';
-  const category=/Browser already started/.test(message)?'browser_already_started':/Expected result already present before action/.test(message)?'stale_result':launch && /executable (?:doesn't|does not) exist|executable not found|no such file|ENOENT/i.test(message)?'browser_binary_missing':launch && /EACCES|EPERM|access is denied/i.test(message)?'browser_start_denied':/closed|disconnected|crash/i.test(message)?'browser_unavailable':/timeout/i.test(message)?'timeout':/execution context|navigation/i.test(message)?'navigation_changed':/strict mode|uniquely visible/i.test(message)?'locator_mismatch':'browser_operation_error';
+  const category=/Browser already started/.test(message)?'browser_already_started':/Expected result already present before action/.test(message)?'stale_result':launch && /executable (?:doesn't|does not) exist|executable not found|no such file|ENOENT/i.test(message)?'browser_binary_missing':launch && /EACCES|EPERM|access (?:is )?denied/i.test(message)?'browser_start_denied':/closed|disconnected|crash/i.test(message)?'browser_unavailable':/timeout/i.test(message)?'timeout':/execution context|navigation/i.test(message)?'navigation_changed':/strict mode|uniquely visible/i.test(message)?'locator_mismatch':'browser_operation_error';
   // Never persist raw Playwright call logs: they can contain selectors and form secrets.
   return {phase,category,...(/net::ERR_[A-Z_]+/.test(message)?{network_code:message.match(/net::ERR_[A-Z_]+/)[0]}:{})};
 }
 
 export function browserRecoveryHint(category) {
+  if(category==='browser_start_denied') return browserLaunchGuidance(category);
   if(category==='browser_already_started') return {next_action:'snapshot_existing_browser_or_goto_for_new_page_state',message:'start creates one browser per run; it is not refresh. Use snapshot to observe the existing page, or goto with the authorized URL and source_path to navigate. No new browser or navigation was performed.'};
   if(category==='stale_result') return {next_action:'inspect_existing_feedback_before_any_new_submission',message:'No action performed: the expected result was already present. Do not change click to press or use a static label. For a fresh independent read-only form check use goto to the authorized page, then fill inputs and assert the dynamic result. Do not reload or resubmit an uncertain business operation.'};
   return {next_action:'inspect_snapshot_or_finish_partial',message:'Browser operation diagnostic available; raw call logs excluded for privacy'};
@@ -553,7 +554,7 @@ async function worker(root,runId) {
         const source=readRunFile(dir,op.source_path), target=validateExplorationTarget(op.url,op.source_path,source.data.toString('utf8'));
         const bundled=existsSync(chromium.executablePath());
         Object.assign(state,{dispatch_id:dispatchId,scope:op.scope,source_path:op.source_path,source_sha256:source.sha256,origin:target.origin,
-          browser_runtime:{worker_pid:process.pid,platform:process.platform,source:bundled?'playwright_chromium':'chrome_channel',headless:op.headless ?? false,launch_status:'launching'}});save();
+          browser_runtime:{...browserExecutionContext(),worker_pid:process.pid,platform:process.platform,source:bundled?'playwright_chromium':'chrome_channel',headless:op.headless ?? false,launch_status:'launching'}});save();
         phase='browser_launch';
         browser=await chromium.launch({headless:op.headless ?? false,...(!bundled?{channel:'chrome'}:{})});
         state.browser_runtime.launch_status='ready';state.browser_runtime.version=browser.version();save();
@@ -616,7 +617,9 @@ async function worker(root,runId) {
         const designCoverage=browserLifecycle(currentManifest)?browserCoverage(dir,currentManifest,{cases},op.case_reviews ?? []):null;
         if(designCoverage) incomplete ||= designCoverage.incomplete_cases.length>0;
         secretReferences.clear();humanTiming.end('finished_without_resume');state.human_handoff_timing=humanTiming.snapshot();
-        await browser?.close();closed=true;state.status='closed';state.finished_at=new Date().toISOString();
+        state.browser_cleanup=await closeBrowserWithReceipt(browser);save();
+        if(state.browser_cleanup.status==='close_failed') throw new Error('Browser close failed');
+        closed=true;state.status='closed';state.finished_at=new Date().toISOString();
         const summary={total:cases.length,...Object.fromEntries(['passed','failed','blocked','skipped'].map(s=>[s,cases.filter(c=>c.status===s).length]))};
         const statistics=summarizeExecutionCounts(cases,{interactive:true,readSource:path=>readRunFile(dir,path)});
         const coverage={status:incomplete?'partial':'not_established',untested,interpretation:'Untested scope is agent-reported, not independently verified. An empty list or completed execution does not establish full business coverage. Passed counts describe recorded assertions only.'};
@@ -696,7 +699,10 @@ async function worker(root,runId) {
         }
       }
     } catch(error) {
-      if(op.type==='start' && state.browser_runtime?.launch_status==='launching') {state.browser_runtime.launch_status='failed';save();}
+      if(op.type==='start' && state.browser_runtime?.launch_status==='launching') {
+        state.browser_runtime.launch_status='failed';
+        state.browser_cleanup=await closeBrowserWithReceipt(browser);save();
+      }
       if(actionStarted && !actionCompleted) state.status='needs_inspection';
       const diagnostic={...browserErrorDiagnostic(error,phase),page_closed:page?.isClosed() ?? null,browser_connected:browser?.isConnected() ?? null};
       if(diagnostic.category==='browser_unavailable') state.status='needs_inspection';

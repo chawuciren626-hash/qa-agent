@@ -3,7 +3,7 @@ const KEYS = [
   'PATH', 'PATHEXT', 'SystemRoot', 'WINDIR', 'ComSpec', 'TEMP', 'TMP',
   'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMFILES',
   'PROGRAMFILES(X86)', 'PROGRAMW6432', 'XDG_CACHE_HOME',
-  'QA_DIRECTORY_CONTEXT', 'QA_APP_DATA_ROOT', 'QA_PYTHON',
+  'QA_DIRECTORY_CONTEXT', 'QA_APP_DATA_ROOT', 'QA_PYTHON', 'QA_BROWSER_EXECUTION',
 ];
 
 export function executionChildEnv(parent = process.env, overrides = {}) {

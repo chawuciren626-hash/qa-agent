@@ -87,6 +87,22 @@ export function linuxProgram(command: string): string {
   return base;
 }
 
+/** Preserve shell semantics: Windows command languages cannot be reinterpreted by sh. */
+export function supportsLinuxCommand(argv: readonly string[]): boolean {
+  const command=argv[0] ?? "";
+  return command.length>0 && !/^[A-Za-z]:/.test(command) && !command.includes("\\") &&
+    !/\.exe$/i.test(command) && !/^(powershell|pwsh|cmd)$/i.test(command);
+}
+
+export function linuxCommand(argv: readonly string[]): string[] {
+  const command = argv[0] ?? "bash";
+  const base = path.win32.basename(command).replace(/\.exe$/i, "").toLowerCase();
+  if (["powershell", "pwsh", "cmd"].includes(base)) {
+    throw new Error("Unsupported Windows shell invocation for WSL sandbox; configure a Linux-compatible shell before dispatch");
+  }
+  return [linuxProgram(command), ...argv.slice(1)];
+}
+
 /** What the profile needs to know about the host besides the policy. */
 export interface ProfileHost {
   /** The distro's name, for a Workspace inside its own filesystem. */
