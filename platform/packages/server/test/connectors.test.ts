@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { createServer } from 'node:http';
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -34,6 +35,26 @@ function readyConnector(service: ConnectorService, recipient = "local-echo", pro
   service.setCredential("alice", connector.connectorId, "super-secret-token");
   return service.update("alice", connector.connectorId, { enabled: true });
 }
+
+it('uses a real local HTTP transport and redacts the stored credential from its response', async () => {
+  let authorized = false;
+  const server = createServer((req, res) => {
+    authorized = req.headers.authorization === 'Bearer synthetic-connector-token';
+    req.resume(); res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ result: 'ok', echoed: 'synthetic-connector-token' }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { service } = await setup();
+    const port = (server.address() as {port:number}).port;
+    const connector = service.create('alice', {name:'http probe', kind:'http', projectId:'p1', recipient:`http://127.0.0.1:${port}/`});
+    service.setCredential('alice', connector.connectorId, 'synthetic-connector-token');
+    service.update('alice', connector.connectorId, {enabled:true});
+    const result = await service.invoke({userId:'alice', projectId:'p1'}, connector.connectorId, {toolName:'probe'});
+    expect(authorized).toBe(true);
+    expect(result.output).toEqual({result:'ok', echoed:'[redacted]'});
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
 
 it("records location, scope and fingerprint while keeping the credential out of the audit log", async () => {
   const { service } = await setup();

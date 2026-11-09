@@ -1196,7 +1196,7 @@ export function PluginsPage() {
           </div>
         </ConfirmModal>
       )}
-      {!viewMachine && <LocalCapabilitiesPanel />}
+      {selfId !== undefined && viewingHere && <LocalCapabilitiesPanel />}
     </PageFrame>
   );
 }
