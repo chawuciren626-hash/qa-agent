@@ -58,6 +58,12 @@ export interface SessionRow {
    * records.
    */
   client?: "web" | "cli" | "org" | "api" | "workbench" | null;
+  /**
+   * The authenticated person whose local user preferences this Session injects. NULL for a
+   * scheduled / API / CLI Session with no person, and for a legacy row. Fixed at creation:
+   * resume keeps it rather than adopting the resuming caller's preferences.
+   */
+  ownerUserId?: string | null;
   /** Cache: a Trace record exists (set at task start / adoption / subagent registration; backfilled by list hydration). */
   hasTrace?: boolean;
   /**
@@ -113,6 +119,7 @@ function mapRow(r: Record<string, unknown>): SessionRow {
     archivedAt: (r.archived_at as string | null) ?? null,
     keptAt: (r.kept_at as string | null) ?? null,
     client: (r.client as "web" | "cli" | "org" | "api" | "workbench" | null) ?? null,
+    ownerUserId: (r.owner_user_id as string | null) ?? null,
     hasTrace: (r.has_trace as number) === 1,
     // The open-time backfill leaves no NULLs; the coalesce only hardens against a row
     // somehow inserted as NULL (degrades to createdAt instead of surfacing undefined).
@@ -175,8 +182,8 @@ export class SessionsRepo implements SessionIndex {
   private runInsert(verb: "INSERT" | "INSERT OR IGNORE", row: SessionRow): void {
     this.db
       .prepare(
-        `${verb} INTO sessions (session_id, project_id, agent_id, provider, model_id, workspace, approval_mode, title, client, has_trace, last_active_at, created_at, sandbox, thinking_level)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, ?), ?, ?, ?)`,
+        `${verb} INTO sessions (session_id, project_id, agent_id, provider, model_id, workspace, approval_mode, title, client, has_trace, last_active_at, created_at, sandbox, thinking_level, owner_user_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, ?), ?, ?, ?, ?)`,
       )
       .run(
         row.sessionId,
@@ -194,6 +201,7 @@ export class SessionsRepo implements SessionIndex {
         row.createdAt,
         row.sandbox ? JSON.stringify(row.sandbox) : null,
         row.thinkingLevel ?? null,
+        row.ownerUserId ?? null,
       );
   }
 

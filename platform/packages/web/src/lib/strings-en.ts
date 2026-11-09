@@ -2477,6 +2477,56 @@ export const en: Strings = {
     importDone: (added: number, overwritten: number, removed: number): string =>
       `Imported: ${added} added, ${overwritten} replaced, ${removed} deleted`,
     importNothingNew: "Nothing to import — this group already has every memory in the file",
+    /** Cross-project preferences owned by the signed-in user, stored outside any Project. */
+    preferencesSection: "My preferences (all projects)",
+    preferencesHint:
+      "Saved only when you explicitly save them here. They travel across Projects and Agents, are keyed by your authenticated user id, and enter the model context as data — never as instructions. Disabling keeps an entry but stops it from being injected into the next task.",
+    preferencesEmpty: "No personal preferences yet",
+    preferencesAdd: "Add preference",
+    preferencesAddTitle: "Add a personal preference",
+    preferencesEditTitle: "Edit personal preference",
+    preferencesTitleLabel: "Title",
+    preferencesTitlePlaceholder: "e.g. Always answer in British English",
+    preferencesContentLabel: "Preference",
+    preferencesContentPlaceholder: "What should apply to your tasks in every project?",
+    preferencesSave: "Save preference",
+    preferencesUpdated: (when: string): string => `Updated ${when}`,
+    preferencesSourceExplicit: "Saved by you",
+    preferencesSourceImport: "Imported by you",
+    preferencesSourceTask: (task: string): string => `Source task: ${task}`,
+    preferencesConflict: "Another enabled preference has the same title",
+    preferencesResolveConflict: "Disable the older same-titled entries",
+    preferencesDisable: "Disable",
+    preferencesEnable: "Enable",
+    preferencesDisabled: "Disabled — kept, not injected",
+    preferencesDeleteTitle: "Delete this preference?",
+    preferencesDeleteConfirm: (title: string): string =>
+      `"${title}" will be removed for this user. Disabling it instead keeps it without injecting it.`,
+    preferencesExport: "Export preferences",
+    preferencesImport: "Import preferences",
+    preferencesImportTitle: "Import personal preferences",
+    preferencesImportFile: (name: string, bytes: number, hash: string): string =>
+      `${name} — ${bytes} bytes — sha256 ${hash.slice(0, 12)}…`,
+    preferencesImportWhy:
+      "The preview below is read from the file you picked. Nothing is written until you confirm, and the same content version must still be on disk at that moment.",
+    preferencesImportModeLabel: "When a preference id already exists",
+    preferencesImportModeSkip: "Keep the one that is here",
+    preferencesImportModeSkipHint: "Adds only ids this user does not have.",
+    preferencesImportModeOverwrite: "Take the file's version",
+    preferencesImportModeOverwriteHint: "Replaces entries with the same id.",
+    preferencesImportModeReplace: "Replace all preferences",
+    preferencesImportModeReplaceHint: "Deletes every preference the file does not carry.",
+    preferencesImportPlan: (added: number, overwritten: number, removed: number): string =>
+      `This import will add ${added}, replace ${overwritten} and delete ${removed}.`,
+    preferencesImportConfirm: "Import",
+    preferencesImportChanged:
+      "The file changed after the preview was taken. Review the preview again before importing.",
+    preferencesImportInvalid: "This file is not a user-preference export.",
+    preferencesImportDone: (added: number, overwritten: number, removed: number): string =>
+      `Imported: ${added} added, ${overwritten} replaced, ${removed} deleted`,
+    preferencesImportNothingNew: "Nothing to import — every preference is already present",
+    preferencesSnapshotHint:
+      "Each task records which preference ids and hashes it was given, so later edits never rewrite what a running or restored task saw.",
   },
 
   vault: {

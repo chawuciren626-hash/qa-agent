@@ -35,7 +35,14 @@ export interface MemoryRouteDeps {
   config?: ServerConfig;
 }
 import type { MemoryImportMode } from "../../api/types.js";
-import { optionalBoolean, optionalEnum, pathParam, readJson, requireValidId } from "../validate.js";
+import {
+  badRequest,
+  optionalBoolean,
+  optionalEnum,
+  pathParam,
+  readJson,
+  requireValidId,
+} from "../validate.js";
 import type { Memory } from "../../mechanisms/agents.js";
 import type { Access } from "../../mechanisms/projects.js";
 
@@ -78,6 +85,24 @@ export function memoryRoutes(deps: MemoryRouteDeps): Hono<AppEnv> {
   app.post("/template-placeholder", async (c) => {
     const { projectId, agentId } = scope(c);
     return c.json(await deps.memoryService.insertTemplatePlaceholder(projectId, agentId));
+  });
+
+  /**
+   * Task-start evidence for one Session: the local user preferences each context injected,
+   * as metadata (entry ids, scope, owner, source task, content hash, model target). Bodies
+   * are deliberately absent; the assembled prompt in the Trace remains their record.
+   */
+  app.get("/snapshots", async (c) => {
+    const { projectId, agentId } = scope(c);
+    const sessionId = c.req.query("sessionId");
+    if (!sessionId || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) {
+      throw badRequest("sessionId is required.");
+    }
+    return c.json({
+      sessionId,
+      snapshots: (await deps.memoryService.listSnapshots(projectId, agentId, sessionId))
+        .filter(snapshot => snapshot.ownerUserId === c.var.user.userId),
+    });
   });
 
   app.get("/scopes/:scopeKey/files", async (c) => {

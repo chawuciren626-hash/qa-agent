@@ -17,6 +17,7 @@ export * from "./project-config.js";
 export * from "./agent-state.js";
 export * from "./agent-vault.js";
 export * from "./memory.js";
+export * from "./user-preferences.js";
 export * from "./benchmark-manifest.js";
 export * from "./example-benchmark.js";
 export * from "./builtin-benchmarks.js";

@@ -41,6 +41,8 @@ import {
   listInstalledHooks,
   projectDir,
   resolveSessionMemory,
+  recordUserPreferenceSnapshot,
+  assertUserPreferenceUserId,
   providerConnectionShape,
   resolveEntryCredential,
   resolveModelRef,
@@ -299,6 +301,13 @@ export interface CreateSessionOptions {
    * resumed with `resumeSession`, never created again.
    */
   sessionId?: string;
+  /**
+   * The authenticated person this Session belongs to. Local user preferences are keyed by
+   * this id and are the only scope that crosses Projects; it is never derived from a display
+   * name or the current Project. Absent for scheduled, API and CLI Sessions (which then get
+   * no local user preferences).
+   */
+  ownerUserId?: string;
 }
 
 export interface ResumeSessionOptions {
@@ -307,6 +316,12 @@ export interface ResumeSessionOptions {
   /** Explicit credentials; if unspecified, falls back to the Project config, then to the vendor's environment variable on the same terms as CreateSessionOptions.apiKey. */
   apiKey?: string;
   baseUrl?: string;
+  /**
+   * The caller's authenticated user id. A Session keeps the owner recorded in its first
+   * `session_meta`; this value only supplies an owner for a legacy Trace that has none. A
+   * mismatch never switches the Session to the caller's preferences.
+   */
+  ownerUserId?: string;
 }
 
 /**
@@ -338,6 +353,8 @@ interface SessionSpec {
   thinkingLevel: ThinkingLevelName | null | undefined;
   subagentDepth: number;
   source: SessionSource;
+  /** The authenticated person whose local preferences this Session injects; fixed for its lifetime. */
+  ownerUserId?: string;
 }
 
 /**
@@ -684,6 +701,7 @@ export class Agent {
         agentId,
         workspaceDir: spec.workspaceDir,
         enabled: state.systemConfig.memory?.enabled !== false,
+        ...(spec.ownerUserId !== undefined ? { userId: spec.ownerUserId } : {}),
       });
       systemPrompt = withPromptSections(
         assembleSystemPrompt(
@@ -714,6 +732,25 @@ export class Agent {
           }] : [])]),
         ],
       );
+      // Task-start evidence: which local preferences this context received and which model
+      // service received them. Metadata only — no preference body. A write failure must not
+      // take down Session creation (Memory is an enhancement), but it is visible on disk as a
+      // missing snapshot for that Session.
+      if (memory?.userPreferences !== undefined && spec.ownerUserId !== undefined) {
+        try {
+          await recordUserPreferenceSnapshot({
+            root,
+            projectId,
+            agentId,
+            sessionId: spec.sessionId,
+            ownerUserId: spec.ownerUserId,
+            target: { provider: modelEntry.provider, modelId: modelEntry.model_id },
+            preferences: memory.userPreferences,
+          });
+        } catch {
+          // Best effort: the assembled prompt remains the authoritative injection record.
+        }
+      }
     }
 
     // Tool exposure is capped by depth: a (leaf) child Agent that has reached the max spawn
@@ -768,6 +805,7 @@ export class Agent {
       agent_state: state.stateDir,
       workspace: spec.workspaceDir,
       source: spec.source,
+      ...(spec.ownerUserId !== undefined ? { memory_owner_user_id: spec.ownerUserId } : {}),
     };
 
     return {
@@ -875,6 +913,7 @@ export class Agent {
     }
     const sessionId = opts.sessionId ?? formatSessionId();
     workspaceDir = qaBindWorkspace(this.state, opts, sessionId, workspaceDir);
+    if (opts.ownerUserId !== undefined) assertUserPreferenceUserId(opts.ownerUserId);
     const spec: SessionSpec = {
       sessionId,
       ...(opts.parentSessionId ? { parentSessionId: opts.parentSessionId } : {}),
@@ -884,6 +923,7 @@ export class Agent {
       thinkingLevel: opts.thinkingLevel,
       subagentDepth: opts.subagentDepth ?? 0,
       source: opts.source ?? "user",
+      ...(opts.ownerUserId !== undefined ? { ownerUserId: opts.ownerUserId } : {}),
     };
     // The first context: assembled from the Agent State on disk now (never from this Agent
     // object's load-time snapshot — a long-lived Agent, a self-spawned subagent's for
@@ -994,6 +1034,19 @@ export class Agent {
     // resumed subagent / scheduled / CLI Session stays what it was); the on-disk value is
     // untrusted and is narrowed (a Trace from before the source was required reads as
     // `user`, the retired `benchmark` as `cli`, junk as `user`).
+    // The owner recorded in the Trace is the Session's fixed identity: a later caller never
+    // switches it to their own preferences. The caller's id only fills a legacy Trace that
+    // predates the field.
+    const traceOwner =
+      typeof meta.memory_owner_user_id === "string" ? meta.memory_owner_user_id : undefined;
+    if (traceOwner !== undefined) assertUserPreferenceUserId(traceOwner);
+    if (traceOwner !== undefined && opts.ownerUserId !== undefined && traceOwner !== opts.ownerUserId) {
+      throw new Error("Session memory owner does not match the authenticated owner.");
+    }
+    if (traceOwner === undefined && opts.ownerUserId !== undefined) {
+      assertUserPreferenceUserId(opts.ownerUserId);
+    }
+    const ownerUserId = traceOwner ?? opts.ownerUserId;
     const spec: SessionSpec = {
       sessionId,
       workspaceDir,
@@ -1002,6 +1055,7 @@ export class Agent {
       thinkingLevel: undefined,
       subagentDepth: 0,
       source: normalizeSessionSource(meta.source),
+      ...(ownerUserId !== undefined ? { ownerUserId } : {}),
     };
     // The context follows the Trace. A context a completed compaction closed is opened here
     // for the first time — nothing was produced under any configuration yet — so it is
@@ -1312,6 +1366,7 @@ export class Agent {
           thinkingLevel: spawnThinkingLevel ?? parentLevel ?? null,
           subagentDepth: subagentDepth + 1,
           source: "subagent",
+          ...(spec.ownerUserId !== undefined ? { ownerUserId: spec.ownerUserId } : {}),
         });
         return subagentHandleFor(childSession);
       },
@@ -1335,7 +1390,10 @@ export class Agent {
                 ...(parentAgent.confineSpawn ? { confineSpawn: parentAgent.confineSpawn } : {}),
                 ...(parentAgent.assembly ? { assembly: parentAgent.assembly } : {}),
               });
-        const childSession = await childAgent.resumeSession({ sessionId });
+        const childSession = await childAgent.resumeSession({
+          sessionId,
+          ...(spec.ownerUserId !== undefined ? { ownerUserId: spec.ownerUserId } : {}),
+        });
         return subagentHandleFor(childSession);
       },
     };

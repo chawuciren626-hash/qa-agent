@@ -5,6 +5,12 @@
  * code must not enter the browser bundle).
  */
 import type {
+  UserPreferenceDto,
+  UserPreferenceExportDocument,
+  UserPreferenceImportRequest,
+  UserPreferenceImportResponse,
+  UserPreferencesResponse,
+  UserPreferenceSaveResponse,
   AdminPasswordResetRequest,
   AdminUserCreateRequest,
   AdminUserCreateResponse,
@@ -741,6 +747,65 @@ export const importMemoryScope = (
     method: "POST",
     body,
     server: machineId,
+  });
+
+// Local user preferences (cross-project, owner = the authenticated user) -------------------
+// These live outside any Project: the server keys the store by the session's user and never
+// accepts an owner from the client. Every mutation affects the next task only, never one
+// already running.
+
+const userPreferencesBase = "/api/me/memory-preferences";
+
+export const listUserPreferences = () =>
+  apiFetch<UserPreferencesResponse>(userPreferencesBase);
+
+export const getUserPreference = (id: string) =>
+  apiFetch<UserPreferenceDto>(`${userPreferencesBase}/${encodeURIComponent(id)}`);
+
+export const exportUserPreferences = () =>
+  apiFetch<UserPreferenceExportDocument>(`${userPreferencesBase}/export`);
+
+export const saveUserPreference = (body: {
+  id?: string;
+  title: string;
+  content: string;
+  sourceTask?: string;
+  expectedHash?: string;
+  resolveConflict?: boolean;
+}) =>
+  apiFetch<UserPreferenceSaveResponse>(userPreferencesBase, {
+    method: "POST",
+    body,
+  });
+
+export const updateUserPreference = (
+  id: string,
+  body: {
+    title: string;
+    content: string;
+    sourceTask?: string;
+    expectedHash?: string;
+    resolveConflict?: boolean;
+  },
+) =>
+  apiFetch<UserPreferenceSaveResponse>(`${userPreferencesBase}/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body,
+  });
+
+export const setUserPreferenceDisabled = (id: string, disabled: boolean) =>
+  apiFetch<UserPreferenceDto>(`${userPreferencesBase}/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: { disabled },
+  });
+
+export const deleteUserPreference = (id: string) =>
+  apiFetch<void>(`${userPreferencesBase}/${encodeURIComponent(id)}`, { method: "DELETE" });
+
+export const importUserPreferences = (body: UserPreferenceImportRequest) =>
+  apiFetch<UserPreferenceImportResponse>(`${userPreferencesBase}/import`, {
+    method: "POST",
+    body,
   });
 
 // Agent & its configuration ----------------------------------------------------------------

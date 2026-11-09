@@ -88,6 +88,7 @@ import type {
 
 /** What this route group reaches — bound by its module (src/modules). */
 export interface SessionsRouteDeps {
+  inheritPublication?: (projectId: string, agentId: string, sessionId: string, parentSessionId: string) => Promise<void>;
   db: KnowledgeDb;
   agentConfigService: AgentConfig;
   channels: ChannelHub;
@@ -775,7 +776,7 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
   const resolveSession = (c: Context<AppEnv>): SessionRow => {
     const sessionId = c.req.param("sessionId");
     const row = sessionId ? deps.sessionsRepo.findById(sessionId) : null;
-    if (!row) {
+    if (!row || (row.ownerUserId && row.ownerUserId !== c.var.user.userId)) {
       throw new HttpError(
         404,
         "session_not_found",
@@ -973,6 +974,7 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
     );
     const forkRow: SessionRow = {
       sessionId: fork.sessionId,
+      ownerUserId: row.ownerUserId ?? null,
       projectId: row.projectId,
       agentId: row.agentId,
       // The model of the shard the fork was cut in (its session_meta) — the source row's pair
@@ -991,6 +993,7 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
       createdAt: fork.createdAt,
     };
     try {
+      await deps.inheritPublication?.(row.projectId, row.agentId, fork.sessionId, row.sessionId);
       const insertedForkRow = deps.sessionsRepo.insertFork(row.sessionId, forkRow);
       // A fork is a person's conversation, as its Trace head records.
       deps.sessionSources.set(fork.sessionId, "user");
@@ -1876,6 +1879,9 @@ export class SessionApiRoutes {
     const sessionsRepo = this.sessionsRepo;
     const channels = this.channels as ChannelHub;
     const sessionsDeps = {
+      inheritPublication: async (projectId: string, agentId: string, sessionId: string, parentSessionId: string) => {
+        await this.authState.accountClient?.resolvePinnedDefinition(projectId, agentId, sessionId, parentSessionId);
+      },
       db: this.db,
       agentConfigService,
       channels,

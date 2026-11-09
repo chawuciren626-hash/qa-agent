@@ -1600,6 +1600,12 @@ export interface MemoryScopeInfo {
   scopeKey: string;
   /** `user` — the scope every Session reads, temporary Workspaces included; `workspace` — one Workspace's scope. */
   kind: "user" | "workspace";
+  /**
+   * The contract scope this directory maps to. The historical `user` directory belongs to
+   * the Project's Agent (`project_agent`), not to the authenticated person; per-user
+   * cross-project preferences live in `.local-users/` and are not a Memory scope.
+   */
+  scopeType: "project_agent" | "workspace";
   /** Workspace path the key was derived from, read from the directory's `.workspace` marker; unset on the user scope (it stands for no path) and for a directory edited by hand. */
   workspacePath?: string;
   /** Number of Markdown topic files in the directory (the `MEMORY.md` index not counted). */
@@ -1711,6 +1717,88 @@ export interface MemoryImportResponse {
   removed: string[];
   /** Whether the scope's `MEMORY.md` was written or extended. */
   indexWritten: boolean;
+}
+
+/** One local (cross-project) user preference. The owner is the authenticated user; bodies are returned only to that owner. */
+export interface UserPreferenceDto {
+  id: string;
+  title: string;
+  content: string;
+  contentHash: string;
+  scope: "local_user_preference";
+  ownerUserId: string;
+  source: "explicit_user_save" | "explicit_user_import";
+  sourceTask: string | null;
+  createdAt: string;
+  updatedAt: string;
+  disabled: boolean;
+  conflict: "none" | "unresolved";
+}
+
+export interface UserPreferencesResponse {
+  ownerUserId: string;
+  dir: string;
+  counts: { entries: number; enabled: number; disabled: number };
+  entries: UserPreferenceDto[];
+}
+
+export interface UserPreferenceSaveResponse {
+  entry: UserPreferenceDto;
+  /** Same-titled entries left in place and marked unresolved (or disabled when resolveConflict was set). */
+  conflicts: UserPreferenceDto[];
+}
+
+export interface UserPreferenceExportDocument {
+  format: "penguin-user-preferences";
+  version: 1;
+  ownerUserId: string;
+  exportedAt: string;
+  counts: { entries: number; enabled: number; disabled: number };
+  aggregateHash: string;
+  entries: UserPreferenceDto[];
+}
+
+export interface UserPreferenceImportRequest {
+  payload: unknown;
+  mode?: "skip" | "overwrite" | "replace";
+  confirm?: boolean;
+  dryRun?: boolean;
+}
+
+export interface UserPreferenceImportResponse {
+  dryRun: boolean;
+  mode: "skip" | "overwrite" | "replace";
+  added: string[];
+  overwritten: string[];
+  skipped: string[];
+  removed: string[];
+  conflicts: string[];
+  counts: { before: number; after: number };
+  aggregateHash: string;
+}
+
+/** The task-start evidence a Session's context recorded: metadata only, never a preference body. */
+export interface MemorySnapshotInfo {
+  schemaVersion: 1;
+  snapshotId: string;
+  createdAt: string;
+  sessionId: string;
+  projectId: string;
+  agentId: string;
+  ownerUserId: string;
+  scope: "local_user_preference";
+  target: { provider: string; modelId: string };
+  entries: Array<{
+    id: string;
+    scope: "local_user_preference";
+    ownerUserId: string;
+    source: "explicit_user_save" | "explicit_user_import";
+    sourceTask: string | null;
+    contentHash: string;
+    readAt: string;
+  }>;
+  injection: { entryCount: number; blockHash: string; blockBytes: number; omitted: number };
+  note: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -371,7 +371,11 @@ export function createCoreSessionLoader(
         // config / Trace missing session_meta, etc.) are converged to 409, preserving
         // the original message rather than bubbling up as 500.
         try {
-          const session = await agent.resumeSession({ sessionId: row.sessionId });
+          const session = await agent.resumeSession({
+            sessionId: row.sessionId,
+            // Only supplies an owner for a legacy Trace; a recorded owner always wins.
+            ...(row.ownerUserId ? { ownerUserId: row.ownerUserId } : {}),
+          });
           // The row's stored level — the knob position the user last chose — restored onto
           // the runtime as a plain assignment: it rides the resumed Session's requests.
           if (row.thinkingLevel) session.thinkingLevel = row.thinkingLevel;
@@ -411,6 +415,7 @@ export function createCoreSessionLoader(
           // is core's default, `user`), and starts its first context at the row's pinned level.
           ...(knownSource !== undefined ? { source: knownSource } : {}),
           ...(row.thinkingLevel ? { thinkingLevel: row.thinkingLevel } : {}),
+          ...(row.ownerUserId ? { ownerUserId: row.ownerUserId } : {}),
         });
       } catch (err) {
         if (isMissingCredential(err)) throw modelCredentialMissing(row.modelId);
@@ -2553,6 +2558,7 @@ export class SessionManager {
     const parentClient = this.deps.sessions.findById(entry.sessionId)?.client;
     this.deps.sessions.insertOrIgnore({
       sessionId: childSid,
+      ownerUserId: this.deps.sessions.findById(root)?.ownerUserId ?? null,
       projectId: entry.projectId,
       agentId,
       provider: p.provider,

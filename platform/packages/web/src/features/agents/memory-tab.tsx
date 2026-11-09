@@ -77,6 +77,7 @@ import { useProject } from "../../state/project";
 import { agentKey, useAgentLocation } from "../../lib/agent-location";
 import { useAiBridge } from "../ai-create";
 import { buildMemoryAddPrompt, buildMemoryEditPrompt } from "./memory-chat-prompts";
+import { UserPreferencesCard } from "./user-preferences-card";
 import {
   MemoryDocumentError,
   memoryDocumentFileName,
@@ -795,6 +796,10 @@ export function MemoryTab({
           </Button>
         </div>
       </Card>
+
+      {/* Cross-project preferences: owner-keyed and separate from every Project/Agent memory
+          above, with its own explicit save, disable, delete and transfer controls. */}
+      <UserPreferencesCard />
 
       {/* The view: a right Drawer on desktop, a bottom Sheet below the breakpoint (the same split
           as the chat page's panels — Sheet brings the grab handle, snap points and swipe-down).

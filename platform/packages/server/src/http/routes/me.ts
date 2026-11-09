@@ -23,9 +23,29 @@ import type {
 import { toUserInfo } from "../../auth/service.js";
 import { cookieOptions, sessionCookieName } from "../../auth/middleware.js";
 import type { AppEnv } from "../../auth/middleware.js";
-import { badRequest, readJson, requireString } from "../validate.js";
+import {
+  badRequest,
+  optionalBoolean,
+  optionalEnum,
+  optionalString,
+  pathParam,
+  readJson,
+  requireString,
+} from "../validate.js";
 import { HttpError } from "../errors.js";
 import type { ServerConfig } from "../../config.js";
+import {
+  UserPreferenceError,
+  deleteUserPreference,
+  exportUserPreferences,
+  importUserPreferences,
+  listUserPreferences,
+  readUserPreference,
+  saveUserPreference,
+  setUserPreferenceDisabled,
+  userPreferenceDirFor,
+  type UserPreferenceImportMode,
+} from "@prismshadow/penguin-core";
 import type { DesktopService } from "../../services/desktop-service.js";
 
 /** What this route group reaches — bound by its module (src/modules). */
@@ -116,6 +136,32 @@ function parseAvatar(raw: unknown): string | null {
   if (decodedLength === 0) throw badRequest("avatar is not valid base64.");
   return raw;
 }
+
+/** Maps the preference store's errors onto HTTP once, so every route reports the same code. */
+async function preferenceRequest<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof UserPreferenceError) {
+      const status =
+        err.code === "preference_not_found"
+          ? 404
+          : err.code === "preference_conflict" ||
+              err.code === "ownership_mismatch" ||
+              err.code === "import_confirmation_required"
+            ? 409
+            : 400;
+      throw new HttpError(status, err.code, err.message);
+    }
+    throw err;
+  }
+}
+
+const PREFERENCE_IMPORT_MODES: readonly UserPreferenceImportMode[] = [
+  "skip",
+  "overwrite",
+  "replace",
+];
 
 export function meRoutes(deps: MeRouteDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -258,6 +304,133 @@ export function meRoutes(deps: MeRouteDeps): Hono<AppEnv> {
     const merged = { ...current, ...(body as UiPrefs) };
     deps.prefsRepo.set(c.var.user.userId, JSON.stringify(merged));
     return c.json({ prefs: merged } satisfies PrefsResponse);
+  });
+
+  /**
+   * Local user preferences: the one memory scope that follows the authenticated person across
+   * Projects. The owner is always `c.var.user.userId` — no request field can name another
+   * owner — and every write here is an explicit user action.
+   */
+  app.get("/memory-preferences", async (c) => {
+    const userId = c.var.user.userId;
+    return c.json(
+      await preferenceRequest(async () => {
+        const entries = await listUserPreferences(deps.config.root, userId);
+        return {
+          ownerUserId: userId,
+          dir: userPreferenceDirFor(deps.config.root, userId),
+          counts: {
+            entries: entries.length,
+            enabled: entries.filter((entry) => !entry.disabled).length,
+            disabled: entries.filter((entry) => entry.disabled).length,
+          },
+          entries,
+        };
+      }),
+    );
+  });
+
+  // Before `/:id`, so "export" is never read as an id.
+  app.get("/memory-preferences/export", async (c) => {
+    const doc = await preferenceRequest(() =>
+      exportUserPreferences(deps.config.root, c.var.user.userId),
+    );
+    return new Response(JSON.stringify(doc, null, 2), {
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Disposition": `attachment; filename="user-preferences-${doc.exportedAt.slice(0, 10)}.json"`,
+      },
+    });
+  });
+
+  app.get("/memory-preferences/:id", async (c) => {
+    const id = pathParam(c, "id");
+    const entry = await preferenceRequest(() =>
+      readUserPreference(deps.config.root, c.var.user.userId, id),
+    );
+    if (entry === null) throw new HttpError(404, "preference_not_found", "Preference not found.");
+    return c.json(entry);
+  });
+
+  app.post("/memory-preferences", async (c) => {
+    const body = await readJson(c);
+    const title = requireString(body, "title", { label: "title" });
+    const content = requireString(body, "content", { label: "content" });
+    return c.json(
+      await preferenceRequest(() =>
+        saveUserPreference(deps.config.root, c.var.user.userId, {
+          ...(optionalString(body, "id") !== undefined ? { id: optionalString(body, "id")! } : {}),
+          title,
+          content,
+          ...(body.sourceTask !== undefined
+            ? { sourceTask: optionalString(body, "sourceTask") ?? null }
+            : {}),
+          ...(optionalString(body, "expectedHash") !== undefined
+            ? { expectedHash: optionalString(body, "expectedHash")! }
+            : {}),
+          ...(optionalBoolean(body, "resolveConflict") === true ? { resolveConflict: true } : {}),
+        }),
+      ),
+    );
+  });
+
+  app.put("/memory-preferences/:id", async (c) => {
+    const id = pathParam(c, "id");
+    const body = await readJson(c);
+    const title = requireString(body, "title", { label: "title" });
+    const content = requireString(body, "content", { label: "content" });
+    return c.json(
+      await preferenceRequest(() =>
+        saveUserPreference(deps.config.root, c.var.user.userId, {
+          id,
+          title,
+          content,
+          ...(body.sourceTask !== undefined
+            ? { sourceTask: optionalString(body, "sourceTask") ?? null }
+            : {}),
+          ...(optionalString(body, "expectedHash") !== undefined
+            ? { expectedHash: optionalString(body, "expectedHash")! }
+            : {}),
+          ...(optionalBoolean(body, "resolveConflict") === true ? { resolveConflict: true } : {}),
+        }),
+      ),
+    );
+  });
+
+  /** Disable keeps the file (and the entry's history) but removes it from the next context. */
+  app.patch("/memory-preferences/:id", async (c) => {
+    const id = pathParam(c, "id");
+    const body = await readJson(c);
+    if (typeof body.disabled !== "boolean") {
+      throw badRequest("disabled must be a boolean.");
+    }
+    return c.json(
+      await preferenceRequest(() =>
+        setUserPreferenceDisabled(deps.config.root, c.var.user.userId, id, body.disabled as boolean),
+      ),
+    );
+  });
+
+  app.delete("/memory-preferences/:id", async (c) => {
+    const id = pathParam(c, "id");
+    const deleted = await preferenceRequest(() =>
+      deleteUserPreference(deps.config.root, c.var.user.userId, id),
+    );
+    if (!deleted) throw new HttpError(404, "preference_not_found", "Preference not found.");
+    return c.body(null, 204);
+  });
+
+  app.post("/memory-preferences/import", async (c) => {
+    const body = await readJson(c);
+    return c.json(
+      await preferenceRequest(() =>
+        importUserPreferences(deps.config.root, c.var.user.userId, body.payload, {
+          mode: optionalEnum(body, "mode", PREFERENCE_IMPORT_MODES) ?? "skip",
+          confirm: optionalBoolean(body, "confirm") ?? false,
+          dryRun: optionalBoolean(body, "dryRun") ?? false,
+        }),
+      ),
+    );
   });
 
   return app;
