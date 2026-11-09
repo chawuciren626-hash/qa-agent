@@ -23,6 +23,7 @@ import {
  * it.
  */
 import fs from "node:fs/promises";
+import { resolveTaskMemory } from './state/task-memory.js';
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import {
@@ -695,7 +696,8 @@ export class Agent {
       const scheduleNames = await listScheduleNames(root, projectId, agentId);
       // Memory for this Session: null when the Agent has Memory off; a temporary Workspace
       // gets the user scope only (nothing written against it could ever be read back).
-      const memory = await resolveSessionMemory({
+      const memory = await (qaEnabled ? resolveTaskMemory : resolveSessionMemory)({
+        sessionId: spec.sessionId,
         root,
         projectId,
         agentId,
