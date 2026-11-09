@@ -11,9 +11,11 @@
  */
 import { Hono } from "hono";
 import type { ServerConfig } from "../../config.js";
-import type { Db } from "../../hmr/capabilities.js";
+import type { Db, AuthState } from "../../hmr/capabilities.js";
 import { registerQaProjectRoutes } from "./qa-project.js";
 import { registerQaProjectKnowledgeRoutes } from "./qa-project-knowledge.js";
+import type { KnowledgeAuthorizer } from "../../services/qa-knowledge-authorization.js";
+import type { KnowledgeReceiver } from "../../services/qa-knowledge-receiver.js";
 import { registerQaQualityTraceabilityRoutes } from "./qa-quality-traceability.js";
 import type {
   AgentCreateResponse,
@@ -60,6 +62,11 @@ export interface AgentsRouteDeps {
   sessionService: SessionService;
   sessionsRepo: SessionIndex;
   traceIndex: TraceIndex;
+  /** Knowledge authorization seam; production uses the Project access adapter. */
+  knowledgeAuthorizer?: KnowledgeAuthorizer;
+  /** Service-copy receiver; unset falls back to the local development simulator under the data root. */
+  knowledgeReceiver?: KnowledgeReceiver;
+  authState?: AuthState;
 }
 
 /** Window size in days for the card's activity sparkline (last 30 days, including today). */

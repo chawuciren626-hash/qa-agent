@@ -1949,6 +1949,7 @@ export class SessionApiRoutes {
     });
     this.agentsRoutes = agentsRoutes({
       config: this.config,
+      authState: this.authState,
       db: this.db,
       agentApi: this.agentApi,
       agentConfigService,

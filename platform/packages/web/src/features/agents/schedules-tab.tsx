@@ -53,6 +53,7 @@ import { AiCreateButtons } from "../ai-create/ai-create-buttons";
 import { ScheduleFormModal } from "../schedules/schedule-form-modal";
 import { ScheduleSuggestions, scheduleExamples } from "../schedules/schedule-suggestions";
 import { toggleBody } from "../schedules/schedule-upsert";
+import { LocalExecutionPanel } from '../schedules/local-execution-panel';
 import { usePromptInjection } from "./prompt-injection-controls";
 
 /** Display status → badge. A finished one-off is settled: a neutral tag, solid so it still reads. */
@@ -171,6 +172,7 @@ export function SchedulesTab({
 
   return (
     <div className="space-y-4">
+      {projectId && isOwner && !machineId && <LocalExecutionPanel projectId={projectId} agentId={agentId} names={schedules.map(item => item.name)} />}
       {/* Tab-level description: no title in the panel to anchor a "?" to (see help-fold.tsx). */}
       <HelpFold label={S.agent.tabSchedules}>
         {S.schedule.desc}

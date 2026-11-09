@@ -778,4 +778,125 @@ CREATE TABLE IF NOT EXISTS task_content_snapshots ( -- actual skill/plugin/model
   created_at       TEXT NOT NULL,
   UNIQUE(session_id, bundle_hash)
 );
+CREATE TABLE IF NOT EXISTS connectors (          -- local/server connector registry
+  connector_id        TEXT PRIMARY KEY,
+  owner_user_id       TEXT NOT NULL,
+  project_id          TEXT,
+  name                TEXT NOT NULL,
+  kind                TEXT NOT NULL,
+  execution_location  TEXT NOT NULL,
+  recipient           TEXT NOT NULL,
+  transport_scope     TEXT NOT NULL,
+  authorization       TEXT NOT NULL,
+  enabled             INTEGER NOT NULL,
+  credential_fingerprint TEXT,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS connectors_owner ON connectors(owner_user_id, project_id);
+CREATE TABLE IF NOT EXISTS connector_credentials ( -- sealed token; fingerprint only elsewhere
+  connector_id  TEXT PRIMARY KEY,
+  sealed_value  TEXT NOT NULL,
+  fingerprint   TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS connector_audit (     -- redacted audit of every controlled call
+  audit_id            TEXT PRIMARY KEY,
+  connector_id        TEXT NOT NULL,
+  user_id             TEXT NOT NULL,
+  project_id          TEXT,
+  tool_name           TEXT NOT NULL,
+  execution_location  TEXT NOT NULL,
+  recipient           TEXT NOT NULL,
+  transport_scope     TEXT NOT NULL,
+  decision_id         TEXT,
+  outcome             TEXT NOT NULL,
+  reason              TEXT,
+  duration_ms         INTEGER NOT NULL,
+  credential_fingerprint TEXT,
+  fields_json         TEXT NOT NULL,
+  created_at          TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trusted_plugin_versions ( -- verified plugin packages by version
+  plugin_id              TEXT NOT NULL,
+  version                TEXT NOT NULL,
+  package_sha256         TEXT NOT NULL,
+  publisher              TEXT NOT NULL,
+  trust_state            TEXT NOT NULL,
+  status                 TEXT NOT NULL,
+  manifest_json          TEXT NOT NULL,
+  executable_hashes_json TEXT NOT NULL,
+  installed_at           TEXT NOT NULL,
+  PRIMARY KEY (plugin_id, version)
+);
+CREATE TABLE IF NOT EXISTS trusted_plugin_state ( -- active version pointer
+  plugin_id      TEXT PRIMARY KEY,
+  active_version TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS plugin_session_pins (  -- sessions keep their fixed plugin version
+  session_id TEXT NOT NULL,
+  plugin_id  TEXT NOT NULL,
+  version    TEXT NOT NULL,
+  pinned_at  TEXT NOT NULL,
+  PRIMARY KEY (session_id, plugin_id)
+);
+CREATE INDEX IF NOT EXISTS plugin_session_pins_version ON plugin_session_pins(plugin_id, version);
+CREATE TABLE IF NOT EXISTS qa_document_index (
+  document_id  TEXT PRIMARY KEY REFERENCES qa_documents(document_id) ON DELETE CASCADE,
+  project_id   TEXT NOT NULL,
+  revision_id  TEXT NOT NULL,
+  revision     INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  title        TEXT NOT NULL,
+  content      TEXT NOT NULL,
+  indexed_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_qa_document_index_project ON qa_document_index(project_id, indexed_at DESC, document_id DESC);
+CREATE TABLE IF NOT EXISTS qa_upload_previews (
+  preview_id         TEXT PRIMARY KEY,
+  project_id         TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  created_by         TEXT NOT NULL,
+  filename           TEXT NOT NULL,
+  format             TEXT NOT NULL,
+  title              TEXT NOT NULL,
+  byte_size          INTEGER NOT NULL,
+  content_hash       TEXT NOT NULL,
+  content            TEXT NOT NULL,
+  recipient          TEXT NOT NULL,
+  purpose            TEXT NOT NULL,
+  data_scope         TEXT NOT NULL,
+  sensitive_hints_json TEXT NOT NULL,
+  status             TEXT NOT NULL,
+  document_id        TEXT,
+  upload_id          TEXT,
+  idempotency_key    TEXT,
+  created_at         TEXT NOT NULL,
+  expires_at         TEXT NOT NULL,
+  confirmed_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_qa_upload_previews_project ON qa_upload_previews(project_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_qa_upload_previews_idempotency
+  ON qa_upload_previews(project_id, created_by, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS qa_server_copies (
+  copy_id             TEXT PRIMARY KEY,
+  project_id          TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  document_id         TEXT NOT NULL,
+  upload_id           TEXT NOT NULL,
+  revision            INTEGER NOT NULL,
+  content_hash        TEXT NOT NULL,
+  byte_size           INTEGER NOT NULL,
+  recipient           TEXT NOT NULL,
+  purpose             TEXT NOT NULL,
+  data_scope          TEXT NOT NULL,
+  attribution_user_id TEXT NOT NULL,
+  status              TEXT NOT NULL,
+  attempts            INTEGER NOT NULL DEFAULT 0,
+  last_error          TEXT NOT NULL DEFAULT '',
+  remote_ref          TEXT,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_qa_server_copies_project ON qa_server_copies(project_id, document_id, created_at DESC);
 `;

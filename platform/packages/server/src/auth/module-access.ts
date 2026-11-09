@@ -13,7 +13,7 @@ export function requestModule(path: string, method: string): string | undefined 
     if (tail[1] === "qa") {
       if (tail[2] === "personal-resources") return "skills";
       if (tail[2] === "overview") return "projects";
-      if (["documents", "knowledge"].includes(tail[2]!)) return "library";
+      if (["documents", "knowledge", "uploads", "server-copies"].includes(tail[2]!)) return "library";
       if (["tasks", "defects"].includes(tail[2]!)) return "projects";
       if (tail[2] === "initialize") return write ? "agents" : undefined;
     }
@@ -22,7 +22,8 @@ export function requestModule(path: string, method: string): string | undefined 
     if (tail[0] === "memory") return tail[1] === "library" ? "library" : "agents";
   }
   const modules: Record<string, string> = {
-    "qa-library": "library", library: "library", schedules: "schedules",
+    "qa-library": "library", library: "library", 'knowledge-receiver': 'library', schedules: "schedules",
+    'local-exchange': 'schedules', 'exchange-management': 'schedules', connectors: 'plugins', 'trusted-plugins': 'plugins',
     skills: "skills", "dir-skills": "skills", "qa-personal-resources": "skills",
     plugins: "plugins", mcp: "plugins", "mcp-servers": "plugins", hooks: "plugins",
     models: "models", providers: "models", machines: "machines",

@@ -18,7 +18,7 @@ function setup() {
   db.prepare("INSERT INTO shared_agent_session_pins VALUES (?,?,?,?,?)").run("s1", "p1", "qa", "alice", "sha256:" + "a".repeat(64));
   db.prepare("INSERT INTO connectors VALUES (?,?,?)").run("c1", "bob", "p1");
   let now = 1_000;
-  let policy: CentralAccessPolicy = { modules: ["agents"], resourceIds: ["agent-1"], isAdmin: false };
+  let policy: CentralAccessPolicy = { modules: ["agents", "plugins"], resourceIds: ["agent-1"], isAdmin: false };
   let failure: Error | null = null;
   const fetches: string[] = [];
   const guard = new InvocationGuard({
@@ -38,6 +38,12 @@ function setup() {
     fetches,
   };
 }
+
+it('refuses connector calls after the plugins module permission is removed', async () => {
+  const { guard, setPolicy } = setup();
+  setPolicy({ modules: ['agents'], resourceIds: ['agent-1'] });
+  expect((await guard.authorizeInvocation({userId:'bob', projectId:'p1'}, {kind:'connectors', id:'c1'}, 'tool')).reasonCode).toBe('permission_not_granted');
+});
 
 it("denies an old Agent session once the published resource is revoked", async () => {
   const { guard, setPolicy } = setup();

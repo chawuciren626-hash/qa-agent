@@ -6,6 +6,7 @@
     "acceptance/site.html",
     "scripts/api-snapshot.mjs",
     "scripts/delegation-task-brief.mjs",
+    "scripts/observe-unattended-outcome.mjs",
     "scripts/test-tracks.mjs",
     "config/host-compatibility.json",
     "config/orchestration-workflow.json",

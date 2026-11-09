@@ -62,6 +62,7 @@ import {
 import * as api from "../../api/endpoints";
 import { controlRequest } from "../../api/control";
 import { ApiError } from "../../api/client";
+import { LocalCapabilitiesPanel } from './local-capabilities-panel';
 import { S } from "../../lib/strings";
 import { apiErrorText } from "../../lib/api-error";
 import { useDocumentTitle } from "../../lib/use-document-title";
@@ -1195,6 +1196,7 @@ export function PluginsPage() {
           </div>
         </ConfirmModal>
       )}
+      {!viewMachine && <LocalCapabilitiesPanel />}
     </PageFrame>
   );
 }

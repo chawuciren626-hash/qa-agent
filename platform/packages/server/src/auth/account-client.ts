@@ -289,6 +289,27 @@ export class AccountClient {
     this.guard.close();
     this.resourceSync.close();
   }
+  async uploadKnowledgeCopy(payload: import('../services/qa-knowledge-receiver.js').KnowledgeCopyPayload): Promise<{ remoteRef: string }> {
+    const binding = await this.knowledgeBinding(payload.attributionUserId, payload.projectId);
+    const response = await this.remote('/api/knowledge-receiver/v1/copies', 'POST', { ...payload, attributionUserId: binding.remote.userId }, binding);
+    if (!response.ok) { await response.body?.cancel(); throw new HttpError(503, 'knowledge_upload_failed', '服务端资料接收失败，可稍后重试。'); }
+    return await response.json() as { remoteRef: string };
+  }
+  async removeKnowledgeCopy(userId: string, input: { projectId: string; uploadId: string }): Promise<{ remoteRef: string; deleted: true }> {
+    const binding = await this.knowledgeBinding(userId, input.projectId);
+    const response = await this.remote('/api/knowledge-receiver/v1/copies/remove', 'POST', input, binding);
+    if (!response.ok) { await response.body?.cancel(); throw new HttpError(503, 'knowledge_delete_failed', '服务端副本删除未确认，可稍后重试。'); }
+    return await response.json() as { remoteRef: string; deleted: true };
+  }
+  private async knowledgeBinding(userId: string, projectId: string) {
+    await this.validateUser(userId);
+    await this.authorizeUserPath(userId, `/api/projects/${encodeURIComponent(projectId)}/agents/qa/knowledge`, 'POST');
+    const decision = await this.authorizeInvocation({ userId, projectId }, { kind: 'project', id: projectId }, 'write', { requireFresh: true });
+    if (!decision.allowed) throw new HttpError(403, decision.reasonCode, '资料操作授权已失效。');
+    const binding = [...this.sessions.values()].find(item => item.localId === userId && item.expires > Date.now());
+    if (!binding) throw new HttpError(401, 'unauthorized', '请重新登录。');
+    return binding;
+  }
   private async fetchAccessPolicy(userId: string, signal: AbortSignal) {
     await this.validateUser(userId);
     const binding = [...this.sessions.values()].find(item => item.localId === userId && item.expires > Date.now());

@@ -313,6 +313,8 @@ export class InvocationGuard {
     if (MANAGED_KINDS.has(resource.kind) && !policy!.resourceIds.includes(resource.id)) {
       return this.denied(identity, resource, operation, constraints, "resource_revoked", "此资源已下架或授权已收回。", usedCached);
     }
+    if (['connectors', 'plugins'].includes(resource.kind) && !policy!.isAdmin && !policy!.modules.includes('plugins'))
+      return this.denied(identity, resource, operation, constraints, 'permission_not_granted', '插件或连接器模块授权已收回。', usedCached);
     return this.allowed(identity, resource, operation, constraints, policy!.revision ?? policyRevision(policy!), usedCached);
   }
 
@@ -347,8 +349,9 @@ export class InvocationGuard {
   private connectorCheck(identity: InvocationIdentity, connectorId: string): AuthorizationReason | null {
     const table = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='connectors'").get();
     if (!table) return "resource_not_found";
-    const row = this.db.prepare("SELECT owner_user_id,project_id FROM connectors WHERE connector_id=?").get(connectorId);
+    const row = this.db.prepare("SELECT * FROM connectors WHERE connector_id=?").get(connectorId);
     if (!row) return "resource_not_found";
+    if (row.authorization !== undefined && (row.authorization !== 'authorized' || !row.enabled)) return 'connector_forbidden';
     if (String(row.owner_user_id) !== identity.userId) return "connector_forbidden";
     const projectId = row.project_id === null ? null : String(row.project_id);
     if (identity.projectId && projectId && identity.projectId !== projectId) return "connector_forbidden";

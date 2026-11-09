@@ -268,6 +268,21 @@ export interface TaskContextSnapshot {
   createdBy: string;
 }
 
+export interface KnowledgeSearchHit {
+  documentId: string;
+  title: string;
+  revision: number;
+  revisionId: string;
+  contentHash: string;
+  snippet: string;
+}
+
+export interface KnowledgeSearchResult {
+  matches: KnowledgeSearchHit[];
+  /** Index rows dropped because they no longer point at the current revision/hash. */
+  staleRemoved: number;
+}
+
 export interface SnapshotChange {
   kind: "document" | "rule";
   documentId?: string;
@@ -573,6 +588,7 @@ export class QaProjectKnowledgeStore {
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         revisionId, documentId, input.projectId, 1, title, content, "utf8", hash, bytes, changeNote || "初始创建", JSON.stringify(source), input.userId, at
       );
+      this.upsertIndex(input.projectId, documentId, revisionId, 1, hash, title, content, at);
     });
     return this.getDocument(input.projectId, documentId);
   }
@@ -620,6 +636,66 @@ export class QaProjectKnowledgeStore {
     };
   }
 
+  private upsertIndex(projectId: string, documentId: string, revisionId: string, revision: number, hash: string, title: string, content: string, at: string): void {
+    this.db.prepare(`INSERT INTO qa_document_index
+      (document_id,project_id,revision_id,revision,content_hash,title,content,indexed_at)
+      VALUES (?,?,?,?,?,?,?,?)
+      ON CONFLICT(document_id) DO UPDATE SET
+        project_id=excluded.project_id,revision_id=excluded.revision_id,revision=excluded.revision,
+        content_hash=excluded.content_hash,title=excluded.title,content=excluded.content,indexed_at=excluded.indexed_at`).run(
+      documentId, projectId, revisionId, revision, hash, title, content, at
+    );
+  }
+
+  /**
+   * Project-scoped retrieval over the local index. A row is returned only while it still names
+   * the document's current revision and both hashes agree with the revision body; anything else
+   * is removed before the query, so an update or archive can never resurface old text.
+   */
+  searchDocuments(input: { projectId: string; q: string; limit?: number }): KnowledgeSearchResult {
+    const q = input.q.trim();
+    if (!q || q.length > 200) throw new HttpError(400, "invalid_search", "检索词必须是 1 至 200 字符。");
+    const limit = input.limit ?? 20;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new HttpError(400, "invalid_search", "limit 必须在 1 至 50 之间。");
+    const stale = this.db.prepare(`SELECT count(*) AS n FROM qa_document_index i
+      WHERE i.project_id=? AND (
+        NOT EXISTS (SELECT 1 FROM qa_documents d WHERE d.document_id=i.document_id AND d.project_id=i.project_id AND d.status='active' AND d.current_revision_id=i.revision_id AND d.content_hash=i.content_hash)
+        OR NOT EXISTS (SELECT 1 FROM qa_document_revisions r WHERE r.revision_id=i.revision_id AND r.content_hash=i.content_hash)
+      )`).get(input.projectId) as { n?: number } | undefined;
+    const staleRemoved = Number(stale?.n ?? 0);
+    if (staleRemoved > 0) {
+      this.db.prepare(`DELETE FROM qa_document_index WHERE project_id=? AND document_id IN (
+        SELECT i.document_id FROM qa_document_index i
+        WHERE i.project_id=? AND (
+          NOT EXISTS (SELECT 1 FROM qa_documents d WHERE d.document_id=i.document_id AND d.project_id=i.project_id AND d.status='active' AND d.current_revision_id=i.revision_id AND d.content_hash=i.content_hash)
+          OR NOT EXISTS (SELECT 1 FROM qa_document_revisions r WHERE r.revision_id=i.revision_id AND r.content_hash=i.content_hash)
+        )
+      )`).run(input.projectId, input.projectId);
+    }
+    const like = `%${escapeLike(q)}%`;
+    const rows = this.db.prepare(`SELECT i.* FROM qa_document_index i
+      JOIN qa_documents d ON d.document_id=i.document_id
+      JOIN qa_document_revisions r ON r.revision_id=i.revision_id
+      WHERE i.project_id=? AND d.project_id=i.project_id AND d.status='active'
+        AND d.current_revision_id=i.revision_id AND d.content_hash=i.content_hash AND r.content_hash=i.content_hash
+        AND (i.title LIKE ? ESCAPE '\\' OR i.content LIKE ? ESCAPE '\\')
+      ORDER BY i.indexed_at DESC, i.document_id DESC LIMIT ?`)
+      .all(input.projectId, like, like, limit) as Array<{
+        document_id: string; title: string; revision: number; revision_id: string; content_hash: string; content: string;
+      }>;
+    return {
+      staleRemoved,
+      matches: rows.map((row) => ({
+        documentId: row.document_id,
+        title: row.title,
+        revision: Number(row.revision),
+        revisionId: row.revision_id,
+        contentHash: row.content_hash,
+        snippet: snippetAround(row.content, q)
+      }))
+    };
+  }
+
   getDocument(projectId: string, documentId: string): DocumentDetail {
     const row = this.documentRow(projectId, documentId);
     const revision = this.revisionRow(row.document_id, row.current_revision);
@@ -662,6 +738,7 @@ export class QaProjectKnowledgeStore {
       );
       this.db.prepare("UPDATE qa_documents SET title=?,revision=?,current_revision=?,current_revision_id=?,content_hash=?,byte_size=?,updated_at=?,updated_by=? WHERE document_id=?")
         .run(title, expected + 1, nextRevision, revisionId, hash, bytes, at, input.userId, row.document_id);
+      this.upsertIndex(row.project_id, row.document_id, revisionId, nextRevision, hash, title, content, at);
     });
     return this.getDocument(input.projectId, input.documentId);
   }
@@ -672,8 +749,12 @@ export class QaProjectKnowledgeStore {
     if (Number(row.revision) !== expected) throw new HttpError(409, "document_revision_conflict", "资料已更新，请刷新后再归档。");
     if (row.status === "archived") return { documentId: row.document_id, status: "archived", revision: Number(row.revision) };
     const at = iso(this.now());
-    this.db.prepare("UPDATE qa_documents SET status='archived',revision=revision+1,updated_at=?,updated_by=? WHERE document_id=?")
-      .run(at, input.userId, row.document_id);
+    this.tx(() => {
+      this.db.prepare("UPDATE qa_documents SET status='archived',revision=revision+1,updated_at=?,updated_by=? WHERE document_id=?")
+        .run(at, input.userId, row.document_id);
+      // Archived documents are never retrieval hits, even if a stale index row survives.
+      this.db.prepare("DELETE FROM qa_document_index WHERE document_id=?").run(row.document_id);
+    });
     return { documentId: row.document_id, status: "archived", revision: expected + 1 };
   }
 
@@ -1163,6 +1244,15 @@ export class QaProjectKnowledgeStore {
     );
     return { snapshot: this.getTaskContextSnapshot(input.projectId, input.sessionId)!, amendment };
   }
+}
+
+function snippetAround(content: string, query: string): string {
+  const at = content.toLowerCase().indexOf(query.toLowerCase());
+  if (at < 0) return content.replace(/\s+/g, " ").trim().slice(0, 240);
+  const start = Math.max(0, at - 80);
+  const end = Math.min(content.length, at + query.length + 160);
+  const text = content.slice(start, end).replace(/\s+/g, " ").trim();
+  return `${start > 0 ? "…" : ""}${text}${end < content.length ? "…" : ""}`;
 }
 
 function stringIds(value: unknown, code: string, label: string): string[] {

@@ -212,6 +212,8 @@ import { WebModule, WebShell } from "./http/routes/contributions.js";
 import { BuiltinBrowserModule } from "./builtin-browser/module.js";
 import { AgentApiModule } from "./amsp/module.js";
 import { LocalExchangeExecutor, LocalExchangePolling } from './taskexchange/local-executor.js';
+import { KnowledgeReceiverRoutes } from './http/routes/knowledge-receiver.js';
+import { LocalCapabilitiesRoutes } from './http/routes/local-capabilities.js';
 
 /**
  * The platform's module tree: the root module and its children, in one place.
@@ -544,7 +546,7 @@ export class WorkbenchesModule {}
  * route groups (token-authenticated exchange plane; user-session management plane).
  */
 @Module({
-  children: [TaskExchangeRepo, ExchangeService, OutboxDispatcher, TaskExchangeRoutes, LocalExchangeExecutor],
+  children: [TaskExchangeRepo, ExchangeService, OutboxDispatcher, TaskExchangeRoutes, LocalExchangeExecutor, KnowledgeReceiverRoutes, LocalCapabilitiesRoutes],
   exports: [TaskExchangeStore, ExchangeOutboxScheduler, LocalExchangePolling],
 })
 export class TaskExchangeModule {}

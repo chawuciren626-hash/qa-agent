@@ -15,6 +15,9 @@
  * platform newer than its runtime can still use one an older runtime published.
  */
 export interface AccountClientGate {
+  beginInvocation(identity: import('./invocation-authorization.js').InvocationIdentity, resource: import('./invocation-authorization.js').InvocationResource, operation: import('./invocation-authorization.js').InvocationOperation, constraints?: import('./invocation-authorization.js').InvocationConstraints): Promise<import('./invocation-authorization.js').InvocationLease>;
+  uploadKnowledgeCopy(payload: import('../services/qa-knowledge-receiver.js').KnowledgeCopyPayload): Promise<{ remoteRef: string }>;
+  removeKnowledgeCopy(userId: string, input: { projectId: string; uploadId: string }): Promise<{ remoteRef: string; deleted: true }>;
   close(): void;
   authorizeSessionInvocation(projectId: string, agentId: string, sessionId: string): Promise<void>;
   authorizeInvocation(identity: import("./invocation-authorization.js").InvocationIdentity, resource: import("./invocation-authorization.js").InvocationResource, operation: import("./invocation-authorization.js").InvocationOperation, constraints?: import("./invocation-authorization.js").InvocationConstraints): Promise<import("./invocation-authorization.js").AuthorizationDecision>;
