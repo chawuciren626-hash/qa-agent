@@ -69,6 +69,7 @@ import { agentApiSessionSettings } from "./steps/2026-10-14-agent-api-session-se
 import { machinesAdoptedAt } from "./steps/2026-10-16-machines-adopted-at.js";
 import { qaProjectKnowledge } from "./steps/2026-11-02-qa-project-knowledge.js";
 import { qaQualityTraceability } from "./steps/2026-11-02-qa-quality-traceability.js";
+import { traeAuthSync } from "./steps/2026-11-06-trae-auth-sync.js";
 
 export type { Migration } from "./migration.js";
 export { IrreversibleMigrationError, UnknownMigrationError, appliedMigrations } from "./runner.js";
@@ -103,6 +104,7 @@ export const MIGRATIONS: readonly Migration[] = [
   modelTablesAdoption,
   qaProjectKnowledge,
   qaQualityTraceability,
+  traeAuthSync,
 ];
 
 /**

@@ -1732,3 +1732,20 @@ describe("Environment abort handling (interrupt -> aborted, PRN-012)", () => {
     }
   });
 });
+
+it('rechecks host authorization on every tool dispatch and preserves the denied output frame', async () => {
+  let allowed = true;
+  const authorizeTool = vi.fn(async () => { if (!allowed) throw Error('private decision details'); });
+  await writeFile(path.join(tmp, 'authorization-fixture.txt'), 'synthetic protected content');
+  const env = new Environment({ workspaceDir: tmp, toolConfig: makeToolConfig({ name: 'read_file', description: 'read fixture', permission: 'r' }), authorizeTool });
+  const call = toolCall({ name: 'read_file', arguments: JSON.stringify({file_path: 'authorization-fixture.txt'}), toolCallId: 'revoked-call' });
+  const initial = await collect(env.executeTool({ toolCall: call }));
+  expect(JSON.stringify(initial)).toContain('synthetic protected content');
+  allowed = false;
+  const denied = await collect(env.executeTool({ toolCall: call }));
+  expect(authorizeTool).toHaveBeenCalledTimes(2);
+  expect(JSON.stringify(denied)).toContain('current authorization could not be confirmed');
+  expect(JSON.stringify(denied)).not.toContain('private decision details');
+  expect(JSON.stringify(denied)).not.toContain('synthetic protected content');
+  expect(denied.at(-1)?.payload.type).toBe('tool_call_output');
+});

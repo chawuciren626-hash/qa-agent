@@ -285,6 +285,8 @@ export interface BackgroundTaskDoneEvent {
 
 /** Docs: /docs/interfaces § "ToolExecutionRequest and EnvironmentConfig". */
 export interface EnvironmentConfig {
+  /** Host authorization, checked after approval and before resolving/executing each tool. */
+  authorizeTool?: (toolName: string) => Promise<void>;
   workspaceDir: string;
   toolConfig: ToolConfig;
   /**

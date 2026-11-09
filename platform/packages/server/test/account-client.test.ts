@@ -11,12 +11,13 @@ import type { AuthState } from "../src/hmr/capabilities.js";
 import type { Http } from "../src/http/app.js";
 
 let server:Server, app:TestApp|undefined, origin:string, offline=false, wrongService=false, roleVersion=1;
-let modules:string[], disabled=false, memoryValue="";
+let modules:string[], resourceIds:string[], disabled=false, memoryValue="";
 const tokens=new Map<string,string>();
 const captured:{path:string;body:unknown}[]=[];
 beforeEach(async()=>{
   tokens.clear();captured.length=0;offline=false;wrongService=false;roleVersion=1;
   modules=["chat","projects","models","plugins","skills"];disabled=false;memoryValue="";
+  resourceIds=['a'.repeat(36)];
   server=createServer(async(req,res)=>{
     let raw="";for await(const chunk of req)raw+=chunk;
     const body=raw?JSON.parse(raw):undefined;
@@ -33,7 +34,7 @@ beforeEach(async()=>{
     if(req.url==="/api/auth/registration"){res.end('{"enabled":true,"accountCenter":true}');return;}
     const id=tokens.get((req.headers.cookie??'').replace('penguin_session=',''));
     if(!id){res.writeHead(401);res.end('{}');return;}
-    if(req.url==="/api/control/access"){res.end(JSON.stringify({modules,resourceIds:[]}));return;}
+    if(req.url==="/api/control/access"){res.end(JSON.stringify({modules,resourceIds}));return;}
     if(req.url?.startsWith('/api/control/private/agents/')&&req.url.includes('/memory')){res.end(JSON.stringify({entries:memoryValue?[{name:'notes',value:memoryValue}]:[]}));return;}
     if(req.url==="/api/control/catalog/roles"){res.end(JSON.stringify({roles:[{agentId:'test_agent',resourceId:'a'.repeat(36),version:roleVersion}]}));return;}
     if(req.url==="/api/control/catalog/roles/resolved"){
@@ -71,8 +72,8 @@ describe('central identity with full local application',()=>{
     const projectId=`${identity.user.userId}-template_project`;
     const created=await user.post('/api/projects',{projectId});
     if(created.status!==201)throw Error(await created.text());
-    const localAgent=await user.post(`/api/projects/${projectId}/agents`,{agentId:'test_agent',name:'Test Agent'});
-    if(localAgent.status!==201)throw Error(await localAgent.text());
+    // Provision the published Agent through the host; ordinary users cannot create definitions.
+    await app!.deps.agentService.createAgent(projectId,'test_agent','Test Agent');
     const resourceId='a'.repeat(36);
     const startAt=new Date(Date.now()+24*60*60*1000).toISOString();
     const schedule=await user.post('/api/control/agent-template/apply',{resourceId,projectId,kind:'schedule',name:'daily_check',startAt,enabled:true});
@@ -160,19 +161,14 @@ describe('central identity with full local application',()=>{
     expect(stored.central_cookie).toMatch(/^enc:v1:/);
     expect(stored.central_cookie).not.toContain(legacy);
   });
-  it('persists administrator categories and refuses to delete occupied categories',async()=>{
+  it('forwards skill categories and keeps local plugin category assignments scoped to administrators',async()=>{
     const admin=apiClient(app!.app,(await loginUser(app!.app,'admin','central-test-password')).cookie);
     const ordinary=apiClient(app!.app,(await loginUser(app!.app,'ordinary','central-test-password')).cookie);
-    expect((await ordinary.get('/api/control/admin/skill-categories')).status).toBe(403);
-    const skill=await admin.post('/api/control/admin/skill-categories',{name:'自定义技能分类'});
-    expect(skill.status).toBe(201);
-    const skillId=(await skill.json() as {id:string}).id;
-    expect((await admin.put(`/api/control/admin/skill-categories/${skillId}`,{name:'已编辑分类'})).status).toBe(200);
-    expect((await admin.put('/api/control/admin/skill-categories/assign',{skillName:'example_skill',categoryId:skillId})).status).toBe(200);
-    expect((await admin.delete(`/api/control/admin/skill-categories/${skillId}`)).status).toBe(409);
-    expect((await admin.delete('/api/control/admin/skill-categories/assignment/example_skill')).status).toBe(200);
-    expect((await admin.delete(`/api/control/admin/skill-categories/${skillId}`)).status).toBe(200);
-    expect((await admin.get('/api/control/admin/skill-categories')).status).toBe(200);
+    expect((await ordinary.get('/api/control/admin/plugin-categories')).status).toBe(403);
+    const skill=await admin.post('/api/control/skills/categories',{name:'自定义技能分类'});
+    expect(skill.status).toBe(200); // The fake service returns this status; the bridge preserves it.
+    expect(captured).toContainEqual({path:'/api/control/skills/categories',body:{name:'自定义技能分类'}});
+    expect((await admin.get('/api/control/skills/categories')).status).toBe(200);
 
     const plugin=await admin.post('/api/control/admin/plugin-categories',{name:'自定义插件分类'});
     expect(plugin.status).toBe(201);
@@ -247,7 +243,7 @@ describe('central identity with full local application',()=>{
     expect((await api.get('/api/projects')).status).toBe(200);
     const me=await (await api.get('/api/me')).json() as {accountClient:boolean;user:{userId:string;passwordIsInitial:boolean}};
     expect(me).toMatchObject({accountClient:true,user:{userId:'admin',passwordIsInitial:false}});
-    expect(captured.every(r=>['/api/auth/login','/api/me','/api/control/access'].includes(r.path))).toBe(true);
+    expect(captured.every(r=>['/api/auth/login','/api/me','/api/control/access','/api/control/catalog/roles/resolved'].includes(r.path))).toBe(true);
     expect((await app!.app.request('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({userId:'admin',password:app!.adminPassword})})).status).toBe(401);
   });
   it('isolates an ordinary account and rejects taking over existing admin data',async()=>{
@@ -320,4 +316,22 @@ describe('central identity with full local application',()=>{
     expect((await api.get('/api/control/applied?projectId=default_project')).status).toBe(403);
     expect(captured.some(r=>r.path.includes('/applied')||r.path.includes(own))).toBe(false);
   });
+});
+
+it('blocks pinned sessions on resource revocation, module revocation and logout', async () => {
+  const login = await loginUser(app!.app, 'ordinary', 'central-test-password');
+  const user = apiClient(app!.app, login.cookie);
+  const localId = (await (await user.get('/api/me')).json() as { user: { userId: string } }).user.userId;
+  const bridge = app!.boot.tree.api<AuthState>('RuntimeModule', 'AuthState').accountClient!;
+  await bridge.pinPublishedSession(localId, 'private_project', 'test_agent', 'session-revoke');
+  await bridge.authorizeSessionInvocation('private_project', 'test_agent', 'session-revoke');
+  resourceIds = [];
+  await expect(bridge.authorizeSessionInvocation('private_project', 'test_agent', 'session-revoke')).rejects.toMatchObject({ code: 'resource_revoked' });
+  resourceIds = ['a'.repeat(36)];
+  modules = [];
+  await expect(bridge.authorizeSessionInvocation('private_project', 'test_agent', 'session-revoke')).rejects.toMatchObject({ code: 'module_forbidden' });
+  modules = ['chat'];
+  await bridge.authorizeSessionInvocation('private_project', 'test_agent', 'session-revoke');
+  await user.post('/api/auth/logout', {});
+  await expect(bridge.authorizeSessionInvocation('private_project', 'test_agent', 'session-revoke')).rejects.toBeDefined();
 });

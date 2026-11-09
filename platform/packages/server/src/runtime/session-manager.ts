@@ -2871,6 +2871,9 @@ export class SessionsModule {
     const modelScopeAuth = this.modelScopeAuth;
 
     const assembly: AgentAssembly = {
+      authorizeTool: async ({ projectId, agentId, sessionId }) => {
+        await authState.accountClient?.authorizeSessionInvocation(projectId, agentId, sessionId);
+      },
       publishedDefinition: async ({ projectId, agentId, sessionId, parentSessionId }) => {
         const assistant = authState.centralAssistant?.definition({ projectId, agentId, sessionId });
         if (assistant) return assistant;
@@ -2892,7 +2895,8 @@ export class SessionsModule {
       // it fresh. A model with a key of its own keeps that key (undefined = the credential
       // the client was built with stands); the rest use the group key, refreshed first, and a
       // model with neither has nothing to send.
-      resolveModelApiKey: async ({ projectId, provider, modelId }) => {
+      resolveModelApiKey: async ({ projectId, agentId, sessionId, provider, modelId }) => {
+        if (agentId && sessionId) await authState.accountClient?.authorizeSessionInvocation(projectId, agentId, sessionId);
         if (provider !== MODELSCOPE_PROVIDER_ID) return undefined;
         if ((await projectConfig.getModelApiKey(projectId, provider, modelId)) !== undefined) {
           return undefined;

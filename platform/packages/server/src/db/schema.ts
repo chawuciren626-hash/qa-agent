@@ -602,4 +602,44 @@ CREATE TABLE IF NOT EXISTS qa_report_indexes (  -- immutable report evidence ind
   UNIQUE(session_id, run_id, revision)
 );
 CREATE INDEX IF NOT EXISTS idx_qa_report_indexes_run ON qa_report_indexes(project_id, session_id, run_id, revision DESC);
+CREATE TABLE IF NOT EXISTS invocation_authorization_decisions ( -- append-only per-invocation decisions
+  decision_id      TEXT PRIMARY KEY,
+  user_id          TEXT NOT NULL,
+  project_id       TEXT,
+  session_id       TEXT,
+  resource_kind    TEXT NOT NULL,
+  resource_id      TEXT NOT NULL,
+  operation        TEXT NOT NULL,
+  allowed          INTEGER NOT NULL,
+  reason_code      TEXT NOT NULL,
+  policy_revision  TEXT NOT NULL,
+  checked_at       TEXT NOT NULL,
+  expires_at       TEXT NOT NULL,
+  detail_json      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS invocation_authorization_decisions_user ON invocation_authorization_decisions(user_id, checked_at);
+CREATE TABLE IF NOT EXISTS published_resource_state ( -- last verified publication pointer
+  user_id          TEXT PRIMARY KEY,
+  connection_state TEXT NOT NULL,
+  update_state     TEXT NOT NULL,
+  set_hash         TEXT,
+  bundles_json     TEXT NOT NULL,
+  last_verified_at TEXT,
+  error_code       TEXT,
+  error_message    TEXT,
+  checked_at       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_content_snapshots ( -- actual skill/plugin/model evidence per session
+  snapshot_id      TEXT PRIMARY KEY,
+  user_id          TEXT NOT NULL,
+  project_id       TEXT NOT NULL,
+  session_id       TEXT,
+  task_id          TEXT,
+  agent_id         TEXT NOT NULL,
+  bundle_hash      TEXT NOT NULL,
+  model_revision   TEXT NOT NULL,
+  snapshot_json    TEXT NOT NULL,
+  created_at       TEXT NOT NULL,
+  UNIQUE(session_id, bundle_hash)
+);
 `;

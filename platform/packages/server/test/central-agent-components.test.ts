@@ -15,7 +15,7 @@ it("shows migrated current dependencies but never fabricates old snapshots",asyn
  db.prepare("DELETE FROM public_resource_version_pins WHERE resource_id=?").run(agent.id);
  const current=await agentComponents(store,agent.id,"1");
  expect(current.skills[0]?.name).toBe("test-skill");
- expect(current.skills[0]?.files["SKILL.md"]).toContain("Actual skill");
+ expect((current.skills[0]?.files as Record<string,string>)["SKILL.md"]).toContain("Actual skill");
  expect(current.warning).toBe("");
  expect(agentComponentCounts(store,agent.id,"1")).toEqual({skillCount:current.skills.length,hookCount:current.hooks.length});
  const copy=store.copyAgent("admin",agent.id,1,agent.revision);store.publish("admin",agent.id,copy.revision);
@@ -46,5 +46,5 @@ it("edits the live Agent atomically and lists it once without losing old task sn
  const app=new Hono<AppEnv>();app.use("*",async(c,next)=>{c.set("user",{userId:"admin",isAdmin:true} as AppEnv["Variables"]["user"]);await next();});app.route("/control",controlRoutes(store));
  const response=await app.request("/control/admin/agent-cards");
  expect(response.status).toBe(200);
- expect((await response.json()).cards).toHaveLength(1);
+ expect((await response.json() as {cards:unknown[]}).cards).toHaveLength(1);
 });

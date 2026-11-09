@@ -146,6 +146,7 @@ function boundVisible(
 }
 
 export class Environment implements EnvironmentInterface {
+  private readonly authorizeTool: EnvironmentConfig["authorizeTool"];
   private readonly workspaceDir: string;
   /** The running model context's tool configuration; replaced as a whole by `reconfigure`. */
   private toolConfig!: ToolConfig;
@@ -174,6 +175,7 @@ export class Environment implements EnvironmentInterface {
   private readonly fsHost = new SandboxedFsHost();
 
   constructor(config: EnvironmentConfig) {
+    this.authorizeTool = config.authorizeTool;
     this.workspaceDir = config.workspaceDir;
     this.truncatedToolOutputArchive = config.sessionScratchpadDir
       ? new TruncatedToolOutputArchive({
@@ -642,6 +644,15 @@ export class Environment implements EnvironmentInterface {
     // Every path is framed uniformly by Environment: entering execution emits start; the end
     // uniformly emits stop + the full message.
     yield partialToolCallOutput({ eventType: "start", toolCallId });
+
+    try {
+      request.signal?.throwIfAborted();
+      await this.authorizeTool?.(name);
+      request.signal?.throwIfAborted();
+    } catch {
+      yield* emitFailure(toolCallId, "Tool invocation denied: current authorization could not be confirmed.");
+      return;
+    }
 
     // Builtin lookup first; an MCP-prefixed name resolves through the provider (which
     // connects on demand — resolution failures fall through to the unknown-tool reply).

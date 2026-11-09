@@ -39,12 +39,12 @@ it("migrates the complete catalogue, masks credentials, preserves keys on edits,
     expect((await app.request(`/config/${id}`)).status).toBe(403);
     const response = await app.request(`/config/${id}`, { headers: { "x-test-admin": "yes" } });
     expect(response.status).toBe(200);
-    expect((await response.json()).models[0].displayName).toBe("Changed");
+    expect((await response.json() as {models:{displayName:string}[]}).models[0]!.displayName).toBe("Changed");
     const edited = await app.request(`/config/${id}`, { method: "PUT", headers: { "x-test-admin": "yes", "content-type": "application/json" }, body: JSON.stringify({ models: [{ provider: "custom", modelId: "example", displayName: "Route edit" }] }) });
     expect(edited.status, await edited.clone().text()).toBe(200);
     const renamed=await app.request(`/config/${id}/providers/custom`,{method:"PUT",headers:{"x-test-admin":"yes","content-type":"application/json"},body:JSON.stringify({displayName:"测试渠道"})});
     expect(renamed.status).toBe(200);
-    expect((await renamed.json()).providers.custom.displayName).toBe("测试渠道");
+    expect((await renamed.json() as {providers:{custom:{displayName:string}}}).providers.custom.displayName).toBe("测试渠道");
     const afterRename=await reopened.readRaw(id);
     expect((afterRename.providers as any).custom.api_key).toBe("provider-secret-test");
     expect((afterRename.providers as any).custom.base_url).toBe("https://example.org/v1");

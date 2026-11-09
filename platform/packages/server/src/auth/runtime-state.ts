@@ -15,6 +15,8 @@
  * platform newer than its runtime can still use one an older runtime published.
  */
 export interface AccountClientGate {
+  close(): void;
+  authorizeSessionInvocation(projectId: string, agentId: string, sessionId: string): Promise<void>;
   authorizeUserPath(userId:string,path:string,method:string,requestBody?:string):Promise<void>;
   accepts(token: string): boolean;
   validate(token: string): Promise<void>;

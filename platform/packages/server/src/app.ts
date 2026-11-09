@@ -328,7 +328,7 @@ export async function bootAppDeps(
   hmr.resources.register(HMR_INTERFACES_RESOURCE_ID, HMR_INTERFACES);
   hmr.resources.register(HMR_CONFIG_RESOURCE_ID, config);
   hmr.resources.register(HMR_DB_RESOURCE_ID, db);
-  hmr.resources.register(HMR_AUTH_STATE_RESOURCE_ID, authState);
+  hmr.resources.register(HMR_AUTH_STATE_RESOURCE_ID, authState, () => authState.accountClient?.close());
   hmr.resources.register(HMR_CHANNELS_RESOURCE_ID, channels);
   hmr.resources.register(HMR_PROXY_RESOURCE_ID, applyProxySettings);
   hmr.resources.register(HMR_HOST_RESOURCE_ID, hmr);

@@ -188,6 +188,8 @@ export interface CreateAgentOptions {
  * in its config; this is what the HOSTING PROCESS adds on top, for every Agent.
  */
 export interface AgentAssembly {
+  /** Host-owned boundary independent of editable Agent hooks. */
+  authorizeTool?(context: ControlEnvContext & { toolName: string }): Promise<void>;
   /**
    * Sections appended to the assembled system prompt, in order, each as `# <title>` +
    * text. Empty = the prompt is exactly the Agent's own.
@@ -1480,6 +1482,9 @@ export class Agent {
     // parent's.
     const environment = new Environment({
       workspaceDir,
+      ...(this.assembly?.authorizeTool ? { authorizeTool: (toolName: string) => this.assembly!.authorizeTool!({
+        projectId: this.state.projectId, agentId: this.state.agentId, sessionId, toolName,
+      }) } : {}),
       toolConfig: initial.toolConfig,
       // The Session's generic scratchpad root; Environment derives its truncated-tool-output
       // recovery directory from it.

@@ -311,6 +311,7 @@ describe("2026-09-23-machines-columns → current: 2026-10-04-browser-extensions
         "2026-09-23-model-tables-adoption",
         "2026-11-02-qa-project-knowledge",
         "2026-11-02-qa-quality-traceability",
+        "2026-11-06-trae-auth-sync",
       ]);
       db.exec("PRAGMA foreign_keys = ON");
       db.exec(
@@ -376,6 +377,7 @@ describe("a sessions table from before the sidebar mark: 2026-10-12-sessions-kep
         "2026-09-23-model-tables-adoption",
         "2026-11-02-qa-project-knowledge",
         "2026-11-02-qa-quality-traceability",
+        "2026-11-06-trae-auth-sync",
       ]);
       expect(db.prepare("SELECT session_id, kept_at FROM sessions").all()).toEqual([
         { session_id: "s1", kept_at: null },
@@ -435,6 +437,7 @@ describe("an agent_api table from before the session settings: 2026-10-14-agent-
         "2026-09-23-model-tables-adoption",
         "2026-11-02-qa-project-knowledge",
         "2026-11-02-qa-quality-traceability",
+        "2026-11-06-trae-auth-sync",
       ]);
       expect(db.prepare("SELECT * FROM agent_api").get()).toMatchObject({
         enabled: 1,
@@ -497,6 +500,7 @@ describe("an agent_api table from before the concurrency limit: 2026-10-14-agent
         "2026-09-23-model-tables-adoption",
         "2026-11-02-qa-project-knowledge",
         "2026-11-02-qa-quality-traceability",
+        "2026-11-06-trae-auth-sync",
       ]);
       expect(db.prepare("SELECT * FROM agent_api").get()).toMatchObject({
         enabled: 1,
@@ -528,7 +532,12 @@ describe("a machines table from before the adoption times: 2026-10-16-machines-a
   /** A root whose line declared 2026-10-14-agent-api-concurrency, but not the two steps that followed it. */
   function openPreAdoption(): DatabaseSync {
     const db = openFresh();
-    db.exec("ALTER TABLE machines DROP COLUMN adopted_at");
+    // Construct the historical shape explicitly: SQLite's DROP COLUMN can retain a trailing
+    // line comment from the current schema and swallow its closing parenthesis.
+    db.exec(`DROP TABLE machines; CREATE TABLE machines (
+      address TEXT PRIMARY KEY, machine_id TEXT, version TEXT, installed_at TEXT,
+      session_pid INTEGER, remote_port INTEGER, platform TEXT
+    )`);
     stampThrough(db, "2026-10-14-agent-api-concurrency");
     return db;
   }
@@ -547,6 +556,7 @@ describe("a machines table from before the adoption times: 2026-10-16-machines-a
         "2026-09-23-model-tables-adoption",
         "2026-11-02-qa-project-knowledge",
         "2026-11-02-qa-quality-traceability",
+        "2026-11-06-trae-auth-sync",
       ]);
       expect(db.prepare("SELECT address, adopted_at FROM machines").all()).toEqual([
         { address: "ssh:nas", adopted_at: null },
