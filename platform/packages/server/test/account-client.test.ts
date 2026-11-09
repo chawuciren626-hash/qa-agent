@@ -335,3 +335,19 @@ it('blocks pinned sessions on resource revocation, module revocation and logout'
   await user.post('/api/auth/logout', {});
   await expect(bridge.authorizeSessionInvocation('private_project', 'test_agent', 'session-revoke')).rejects.toBeDefined();
 });
+
+it('uses the authenticated service policy and local device for unattended authorization', async () => {
+  const { wire } = await import('@prismshadow/penguin-core/kernel');
+  const { GrantCheckingAuthorizer } = await import('../src/runtime/unattended/authorizer.js');
+  const { localDeviceId } = await import('../src/runtime/unattended/device-identity.js');
+  await loginUser(app!.app, 'admin', 'central-test-password');
+  const authState = app!.boot.tree.api<AuthState>('RuntimeModule','AuthState');
+  const authorizer = wire(GrantCheckingAuthorizer, { authState, config: app!.deps.config });
+  const identity = {tenantId:null, userId:'admin', deviceId:localDeviceId(app!.root), projectId:'default_project', agentId:'test_agent', taskId:'nightly'};
+  const resource = {kind:'schedule_fire' as const, projectId:identity.projectId, agentId:identity.agentId, taskId:identity.taskId, slotMs:Date.now()};
+  const constraints = {operation:'schedule.dispatch',now:new Date().toISOString()};
+  expect((await authorizer.authorizeInvocation(identity,resource,constraints)).allowed).toBe(true);
+  expect((await authorizer.authorizeInvocation({...identity,deviceId:'foreign'},resource,constraints)).reasonCode).toBe('device_mismatch');
+  tokens.clear();
+  expect((await authorizer.authorizeInvocation(identity,resource,constraints)).allowed).toBe(false);
+});

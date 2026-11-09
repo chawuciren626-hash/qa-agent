@@ -116,6 +116,24 @@ import { SandboxModule } from "./sandbox/service.js";
 import { SandboxSettings } from "./sandbox/settings-store.js";
 import { SandboxSettingsStatus } from "./sandbox/settings-status.js";
 import { SchedulerRoutes } from "./http/routes/schedules.js";
+import { UnattendedRoutes } from "./http/routes/unattended.js";
+import { UnattendedBindingsRepo } from "./db/repos/unattended-bindings.js";
+import { UnattendedLifecycleRepo } from "./db/repos/unattended-lifecycle.js";
+import { UnattendedRunsRepo } from "./db/repos/unattended-runs.js";
+import { DefaultUnattendedCoordinator } from "./runtime/unattended/coordinator.js";
+import { GrantCheckingAuthorizer } from "./runtime/unattended/authorizer.js";
+import { LocalRunOutcomeSource, LocalRunCanceller } from "./runtime/unattended/defaults.js";
+import {
+  RunCanceller,
+  RunOutcomeSource,
+  UnattendedAuthorizer,
+  UnattendedCoordinator,
+} from "./runtime/unattended/types.js";
+import {
+  UnattendedBindingStore,
+  UnattendedLifecycleStore,
+  UnattendedRunLedger,
+} from "./mechanisms/unattended.js";
 import { Machines, MachinesModule } from "./machines/service.js";
 import { OrganizationModule, OrgScheduler, OrgService } from "./runtime/organization/service.js";
 import { OrgRoutes } from "./http/routes/organizations.js";
@@ -342,11 +360,19 @@ export class ProjectsModule {}
     AgentStateStore,
     SchedulesRepo,
     Scheduler,
+    UnattendedBindingsRepo,
+    UnattendedRunsRepo,
+    UnattendedLifecycleRepo,
+    GrantCheckingAuthorizer,
+    LocalRunOutcomeSource,
+    LocalRunCanceller,
+    DefaultUnattendedCoordinator,
     CoreSessionLoaders,
     DefaultTitleGenerators,
     SessionsModule,
     SessionApiRoutes,
     SchedulerRoutes,
+    UnattendedRoutes,
     EventsRoutes,
   ],
   exports: [
@@ -365,6 +391,13 @@ export class ProjectsModule {}
     OrgRuns,
     OrgSessions,
     ProjectRuns,
+    UnattendedAuthorizer,
+    UnattendedBindingStore,
+    UnattendedRunLedger,
+    UnattendedLifecycleStore,
+    RunOutcomeSource,
+    RunCanceller,
+    UnattendedCoordinator,
   ],
 })
 export class SessionRuntimeModule {}

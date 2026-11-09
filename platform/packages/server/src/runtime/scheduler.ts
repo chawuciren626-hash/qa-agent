@@ -44,7 +44,7 @@ import type { ScheduleServerEvent, ScheduleStatus } from "../api/types.js";
 import { Component, Interface, Use } from "@prismshadow/penguin-core/kernel";
 import type { ClassCtx } from "@prismshadow/penguin-core/kernel";
 import { userChannelKey } from "../http/routes/events.js";
-import type { Channels, Clock, Paths } from "../hmr/capabilities.js";
+import type { AuthState, Channels, Clock, Paths } from "../hmr/capabilities.js";
 import type {
   Schedules,
   Scheduling,
@@ -53,6 +53,11 @@ import type {
 } from "../mechanisms/sessions.js";
 import type { ProjectConfigStore, Projects } from "../mechanisms/projects.js";
 import type { Errors } from "../mechanisms/observability.js";
+import type {
+  PermissionCeiling,
+  UnattendedCoordinator,
+  UnattendedRedispatchRequest,
+} from "./unattended/types.js";
 
 /** Reconcile and fire-check interval (min period is 5m, so 30s granularity is plenty). */
 const TICK_INTERVAL_MS = 30_000;
@@ -104,6 +109,18 @@ interface PendingFire {
   agentId: string;
   name: string;
   sessionId: string;
+  /** The unattended run opened for this fire (bound tasks only; legacy fires have none). */
+  runId?: string;
+}
+
+/**
+ * Per-fire unattended context carried through dispatch → send: the durable run row's id
+ * and the ceiling authorizeFire answered with. Absent for legacy (unbound) tasks, which
+ * keep the previously verified behavior.
+ */
+interface UnattendedFireContext {
+  runId: string;
+  ceiling?: PermissionCeiling;
 }
 
 /** Displayed status precedence: invalid > done/missed (one-shot) > expired > enabled flag. */
@@ -133,6 +150,7 @@ export interface ScheduleEntryView {
 
 @Component()
 export class Scheduler implements Scheduling {
+  @Use() private readonly authState?: AuthState;
   private intervalMs: number = TICK_INTERVAL_MS;
   private timer: ReturnType<typeof setInterval> | null = null;
   /** key = `${projectId}\0${agentId}\0${name}` */
@@ -162,9 +180,18 @@ export class Scheduler implements Scheduling {
   @Use() private readonly clock!: Clock;
   /** Who a scheduled run acts for: the schedule's creator. Absent where a test wires the scheduler by hand. */
   @Use() private readonly drivers?: SessionDrivers;
+  /**
+   * The unattended boundary (batch 4). Absent (or a task without a binding) → the task keeps
+   * the legacy semantics below. Bound tasks open a durable run per fire, pass the
+   * authorization gate before every send, never escalate approval mode without an explicit
+   * ceiling grant, and survive restarts through the run ledger's sweep.
+   */
+  @Use() private readonly unattended?: UnattendedCoordinator;
   private now(): number {
     return this.clock.now().getTime();
   }
+  /** Start-of-tick timestamp for gap detection (sleep / network-loss approximation). */
+  private lastTickAt: number | null = null;
 
   setup({ effect }: ClassCtx): void {
     // Only active while this App is; the successor's start() reconciles missed fires.
@@ -179,6 +206,7 @@ export class Scheduler implements Scheduling {
   /** Start: run one reconcile immediately (startup semantics: no backfill), then enter the periodic tick. */
   async start(): Promise<void> {
     await this.tickOnce();
+    this.unattended?.recordLifecycle("startup_reconcile");
     this.timer = setInterval(() => {
       void this.tickOnce();
     }, this.intervalMs);
@@ -188,6 +216,7 @@ export class Scheduler implements Scheduling {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.unattended?.recordLifecycle("shutdown");
   }
 
   /** One reconcile + fire pass (deterministic entry for tests and routes; concurrent calls run only one). */
@@ -195,6 +224,15 @@ export class Scheduler implements Scheduling {
     if (this.ticking) return;
     this.ticking = true;
     try {
+      const nowMs = this.now();
+      // A gap far beyond the tick interval means this process was not ticking — machine
+      // sleep, heavy suspension or a stopped clock. Recorded as SUSPICION only: what the
+      // gap actually was is not knowable from inside the process (the real sleep/resume
+      // acceptance stays with the installed-version testing Codex coordinates).
+      if (this.lastTickAt !== null && nowMs - this.lastTickAt > this.intervalMs * 3) {
+        this.unattended?.recordLifecycle("tick_gap_suspected", { gapMs: nowMs - this.lastTickAt });
+      }
+      this.lastTickAt = nowMs;
       const projects = this.projects.listAll();
       for (const project of projects) {
         await this.reconcileProject(project.projectId, project.ownerUserId);
@@ -207,6 +245,13 @@ export class Scheduler implements Scheduling {
         if (!live.has(projectId)) this.agentDirs.delete(projectId);
       }
       await this.drainQueue();
+      if (this.unattended) {
+        await this.unattended.sweep({
+          nowMs: this.now(),
+          inFlight: this.inFlightRunIds(),
+          onRedispatch: (request: UnattendedRedispatchRequest) => this.redispatchRun(request),
+        });
+      }
     } catch (err) {
       this.errors.record({ source: "schedule", err, code: "schedule_tick_failed" });
     } finally {
@@ -292,6 +337,8 @@ export class Scheduler implements Scheduling {
     this.pending.delete(this.keyOf(projectId, agentId, name));
     this.repo.delete(projectId, agentId, name);
     this.files.invalidate(projectId, agentId);
+    // The task is gone: its unattended binding goes with it (run rows stay as audit).
+    this.unattended?.dropTask(projectId, agentId, name);
   }
 
   // -------------------------------------------------------------------------
@@ -440,13 +487,20 @@ export class Scheduler implements Scheduling {
     }
     this.repo.delete(projectId, agentId, def.name);
     this.files.invalidate(projectId, agentId);
+    // A settled task can never fire again: its unattended binding is dropped with it
+    // (re-adding the file means re-binding, never a stale grant reuse).
+    this.unattended?.dropTask(projectId, agentId, def.name);
     return true;
   }
 
   /** Clean up run state and queue entries for deleted files (deleting a file removes the task). */
   private cleanupMissing(projectId: string, agentId: string, presentNames: string[]): void {
     const removed = this.repo.deleteMissing(projectId, agentId, presentNames);
-    for (const name of removed) this.pending.delete(this.keyOf(projectId, agentId, name));
+    for (const name of removed) {
+      this.pending.delete(this.keyOf(projectId, agentId, name));
+      // Deleted file → deleted binding (run rows stay as audit for their task key).
+      this.unattended?.dropTask(projectId, agentId, name);
+    }
   }
 
   /** Fire decision: if enabled and within the window, consume new due times step by step. */
@@ -462,9 +516,27 @@ export class Scheduler implements Scheduling {
     const slot = latestSlotAt(def, nowMs);
     if (slot === null || !slotInWindow(def, slot)) return;
     if (state.lastSlotMs !== null && slot <= state.lastSlotMs) return;
+    // Bound task: open the durable run BEFORE consuming the slot. The UNIQUE(task, slot) row
+    // is the idempotency record — a crash between this point and the physical send leaves a
+    // row the next process resumes (never-sent) or marks unknown (sent), instead of silently
+    // losing the fire. fresh=false → this slot already has a run: never fire twice.
+    let fire: UnattendedFireContext | undefined;
+    if (this.unattended) {
+      const binding = await this.unattended.bindingFor(projectId, agentId, def.name);
+      if (binding) {
+        const { runId, fresh } = await this.unattended.beginFire({
+          projectId,
+          agentId,
+          name: def.name,
+          slotMs: slot,
+        });
+        if (!fresh) return;
+        fire = { runId };
+      }
+    }
     // Consume this slot: never retry the same slot whether the send then succeeds, queues, or fails (the twin rule of no-backfill).
     this.repo.markSlot(projectId, agentId, def.name, slot);
-    await this.dispatch(projectId, agentId, def, state);
+    await this.dispatch(projectId, agentId, def, state, fire);
   }
 
   /** Send one fire: queue if the bound Session is busy; in new-Session mode, create and send immediately. */
@@ -473,8 +545,25 @@ export class Scheduler implements Scheduling {
     agentId: string,
     def: ScheduleDefinition,
     state: ScheduleStateRow,
+    fire?: UnattendedFireContext,
   ): Promise<void> {
     const key = this.keyOf(projectId, agentId, def.name);
+    if (process.env.AITEST_ACCOUNT_CENTER === "1") {
+      this.unattended?.recordLifecycle("fire_blocked", {projectId, agentId, name:def.name, reasonCode:"local_execution_required"});
+      return;
+    }
+    if (this.authState?.accountClient && !fire) {
+      this.unattended?.recordLifecycle("fire_blocked", {projectId, agentId, name:def.name, reasonCode:"explicit_binding_required"});
+      return;
+    }
+    // Bound fire: the authorization gate runs BEFORE any side effect — session creation
+    // included. A blocked or needs_approval fire creates nothing; the coordinator recorded
+    // the run state and notified the owner.
+    if (fire && this.unattended) {
+      const verdict = await this.unattended.authorizeFire(fire.runId);
+      if (!verdict.proceed) return;
+      fire.ceiling = verdict.ceiling;
+    }
     if (def.sessionId !== undefined) {
       const row = this.sessions.findById(def.sessionId);
       if (!row || row.projectId !== projectId || row.agentId !== agentId) {
@@ -492,7 +581,13 @@ export class Scheduler implements Scheduling {
       if (this.runner.statusOf(def.sessionId) !== "idle") {
         // Queue when busy: at most one per task; new slots during the wait are consumed but don't stack.
         if (!this.pending.has(key)) {
-          this.pending.set(key, { projectId, agentId, name: def.name, sessionId: def.sessionId });
+          this.pending.set(key, {
+            projectId,
+            agentId,
+            name: def.name,
+            sessionId: def.sessionId,
+            ...(fire ? { runId: fire.runId } : {}),
+          });
           this.notifyFor(state, {
             type: "schedule_queued",
             projectId,
@@ -503,7 +598,7 @@ export class Scheduler implements Scheduling {
         }
         return;
       }
-      await this.send(projectId, agentId, def, state, def.sessionId);
+      await this.send(projectId, agentId, def, state, def.sessionId, fire);
       return;
     }
     // New-Session mode: each fire opens a new session (optional workspace and paired model ref; same semantics as opening a session manually).
@@ -517,10 +612,16 @@ export class Scheduler implements Scheduling {
         ...(def.modelId !== undefined ? { modelId: def.modelId } : {}),
         ...(def.provider !== undefined ? { provider: def.provider } : {}),
         // Unattended: the Sandbox card's default preset may ask, and nobody would answer.
-        approvalMode: "allow-all",
+        // LEGACY tasks keep the previously verified behavior (allow-all). BOUND tasks only
+        // escalate when the binding's ceiling carries the user's explicit "allow-all" grant;
+        // any other bound fire keeps the preset default — an ask then waits (needs_approval
+        // semantics at the executor) instead of auto-approving itself.
+        ...(fire?.ceiling?.unattendedApproval === "allow-all" || !fire
+          ? { approvalMode: "allow-all" as const }
+          : {}),
         source: "schedule",
       });
-      await this.send(projectId, agentId, def, state, info.sessionId);
+      await this.send(projectId, agentId, def, state, info.sessionId, fire);
     } catch (err) {
       this.errors.record({
         source: "schedule",
@@ -528,6 +629,9 @@ export class Scheduler implements Scheduling {
         code: "schedule_create_session_failed",
         ctx: { projectId, agentId },
       });
+      if (fire && this.unattended) {
+        await this.unattended.noteSendFailed(fire.runId, "create_session_failed");
+      }
     }
   }
 
@@ -537,8 +641,23 @@ export class Scheduler implements Scheduling {
     def: ScheduleDefinition,
     state: ScheduleStateRow,
     sessionId: string,
+    fire?: UnattendedFireContext,
   ): Promise<void> {
     const firedAt = new Date(this.now()).toISOString();
+    if (fire && this.unattended) {
+      const verdict = await this.unattended.authorizeFire(fire.runId);
+      if (!verdict.proceed) return;
+      const binding = await this.unattended.bindingFor(projectId, agentId, def.name);
+      const target = this.sessions.findById(sessionId);
+      if (!binding || (target?.ownerUserId && target.ownerUserId !== binding.ownerUserId)) {
+        await this.unattended.noteSendFailed(fire.runId, "session_owner_mismatch");
+        return;
+      }
+      if (target?.approvalMode === "allow-all" && verdict.ceiling?.unattendedApproval !== "allow-all") {
+        await this.unattended.noteSendFailed(fire.runId, "session_permission_exceeds_ceiling");
+        return;
+      }
+    }
     // The run acts for the schedule's creator: an agent's browser calls in it drive their Chrome.
     if (state.creatorUserId) this.drivers?.note(sessionId, state.creatorUserId);
     try {
@@ -553,9 +672,21 @@ export class Scheduler implements Scheduling {
         code: "schedule_send_failed",
         ctx: { projectId, agentId, sessionId },
       });
+      // Bound fire: the slot is consumed but nothing was sent — no side effect exists, so
+      // the run settles as failed (honest; unlike a DISPATCHED run, whose unknown outcome
+      // stays pending).
+      if (fire && this.unattended) {
+        await this.unattended.noteSendFailed(fire.runId, "send_failed");
+      }
       return;
     }
     this.repo.markFired(projectId, agentId, def.name, firedAt, def.periodMs === undefined);
+    // Bound fire: the physical send happened — record it on the run (running + dispatchedAt).
+    // If a cancel won the race between authorize and send, the coordinator records the
+    // executed-after-cancel evidence instead of overwriting the authoritative status.
+    if (fire && this.unattended) {
+      await this.unattended.noteDispatched(fire.runId, sessionId);
+    }
     // A one-shot is settled the moment it fires (as is a periodic task whose last fire went out
     // after end_at): archive it before the event, or the refetch the event triggers would still
     // list it as done.
@@ -589,8 +720,100 @@ export class Scheduler implements Scheduling {
         continue;
       }
       if (this.runner.statusOf(fire.sessionId) !== "idle") continue;
+      // Bound fire: re-authorize before the deferred send — the grant could have expired,
+      // been revoked, or the run cancelled while the target Session was busy.
+      if (fire.runId && this.unattended) {
+        const verdict = await this.unattended.authorizeFire(fire.runId);
+        if (!verdict.proceed) {
+          this.pending.delete(key);
+          continue;
+        }
+      }
       this.pending.delete(key);
-      await this.send(fire.projectId, fire.agentId, file.parsed.def, state, fire.sessionId);
+      await this.send(
+        fire.projectId,
+        fire.agentId,
+        file.parsed.def,
+        state,
+        fire.sessionId,
+        fire.runId ? { runId: fire.runId } : undefined,
+      );
+    }
+  }
+
+  /** Run ids this process still owns (busy queue) — the sweep must not redispatch them. */
+  private inFlightRunIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const fire of this.pending.values()) {
+      if (fire.runId) ids.add(fire.runId);
+    }
+    return ids;
+  }
+
+  /**
+   * Restart recovery (sweep callback): a bound fire whose run row was opened but never sent
+   * (crash between beginFire and the physical send). No side effect exists yet, so the fire
+   * is resumed once — under a fresh authorization. Returns false when the task is gone,
+   * disabled, refused, or cannot be resumed (the sweep then settles the run, stopping the
+   * per-tick retry).
+   */
+  private async redispatchRun(request: UnattendedRedispatchRequest): Promise<boolean> {
+    const run = request.run;
+    if (!this.unattended) return false;
+    const file = await readScheduleFile(this.root, run.projectId, run.agentId, run.name);
+    if (!file || !file.parsed.ok || !file.parsed.def.enabled) return false;
+    const def = file.parsed.def;
+    const state = this.repo.find(run.projectId, run.agentId, run.name);
+    if (!state) return false;
+    const verdict = await this.unattended.authorizeFire(run.runId);
+    if (!verdict.proceed) return false; // blocked / needs_approval / expired: the run is settled at the gate.
+    if (def.sessionId !== undefined) {
+      const row = this.sessions.findById(def.sessionId);
+      if (!row || row.projectId !== run.projectId || row.agentId !== run.agentId) return false;
+      if (this.runner.statusOf(def.sessionId) !== "idle") {
+        const key = this.keyOf(run.projectId, run.agentId, run.name);
+        if (!this.pending.has(key)) {
+          this.pending.set(key, {
+            projectId: run.projectId,
+            agentId: run.agentId,
+            name: run.name,
+            sessionId: def.sessionId,
+            runId: run.runId,
+          });
+        }
+        return true; // owned again by the busy queue; the sweep stops considering it.
+      }
+      await this.send(run.projectId, run.agentId, def, state, def.sessionId, { runId: run.runId });
+      return true;
+    }
+    // New-Session mode (the ceiling rule mirrors dispatch: explicit grant only).
+    try {
+      const ownerUserId = this.projects.findById(run.projectId)?.ownerUserId;
+      const info = await this.sessionCreator.createSession({
+        projectId: run.projectId,
+        agentId: run.agentId,
+        ...(ownerUserId ? { userId: ownerUserId } : {}),
+        ...(def.workspace !== undefined ? { workspace: def.workspace } : {}),
+        ...(def.modelId !== undefined ? { modelId: def.modelId } : {}),
+        ...(def.provider !== undefined ? { provider: def.provider } : {}),
+        ...(verdict.ceiling?.unattendedApproval === "allow-all"
+          ? { approvalMode: "allow-all" as const }
+          : {}),
+        source: "schedule",
+      });
+      await this.send(run.projectId, run.agentId, def, state, info.sessionId, {
+        runId: run.runId,
+      });
+      return true;
+    } catch (err) {
+      this.errors.record({
+        source: "schedule",
+        err,
+        code: "schedule_create_session_failed",
+        ctx: { projectId: run.projectId, agentId: run.agentId },
+      });
+      await this.unattended.noteSendFailed(run.runId, "create_session_failed");
+      return true; // handled: the run settled as failed, no further retry.
     }
   }
 

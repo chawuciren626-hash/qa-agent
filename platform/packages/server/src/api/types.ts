@@ -3542,6 +3542,24 @@ export type ScheduleServerEvent =
       name: string;
       sessionId: string;
     }
+  /** An unattended-bound task's run changed state (batch 4): authorization outcome, cancellation, expiry, terminal settle. */
+  | {
+      type: "schedule_unattended";
+      projectId: string;
+      agentId: string;
+      name: string;
+      runId: string;
+      status:
+        | "running"
+        | "needs_approval"
+        | "blocked"
+        | "cancelled"
+        | "expired"
+        | "succeeded"
+        | "failed"
+        | "unknown";
+      reasonCode?: string;
+    }
   /** A workbench of the Agent was (re)loaded — its folder changed, a reload was requested, or a version was restored. */
   | { type: "workbench_updated"; projectId: string; agentId: string; workbench: WorkbenchInfo }
   /** A workbench's folder is gone — removed from the Web App or deleted on disk. */

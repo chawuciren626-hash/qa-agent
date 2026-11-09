@@ -17,6 +17,7 @@
 export interface AccountClientGate {
   close(): void;
   authorizeSessionInvocation(projectId: string, agentId: string, sessionId: string): Promise<void>;
+  authorizeInvocation(identity: import("./invocation-authorization.js").InvocationIdentity, resource: import("./invocation-authorization.js").InvocationResource, operation: import("./invocation-authorization.js").InvocationOperation, constraints?: import("./invocation-authorization.js").InvocationConstraints): Promise<import("./invocation-authorization.js").AuthorizationDecision>;
   authorizeUserPath(userId:string,path:string,method:string,requestBody?:string):Promise<void>;
   accepts(token: string): boolean;
   validate(token: string): Promise<void>;
