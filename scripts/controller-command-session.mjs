@@ -205,6 +205,20 @@ function commandDirectories(root,context) {
   if(/^run-[A-Za-z0-9-]+$/.test(context?.run_id ?? '')) bases.push(dataPath(root,'output/runs',context.run_id,'audit/commands'));
   return bases;
 }
+function commandInventory(root,context) {
+  const inventory=new Map(commandDirectories(root,context).map(base=>[base,new Map()]));
+  for(const [base,records] of inventory) {
+    if(!existsSync(base)) continue;
+    assertUnlinked(dataPath(root,'output'),base);
+    for(const name of readdirSync(base).filter(name=>/^[a-f0-9-]{36}$/.test(name))) {
+      const path=resolve(base,name,'command.json');
+      if(!existsSync(path)) continue;
+      assertUnlinked(base,path);
+      records.set(name,digest(readFileSync(path)));
+    }
+  }
+  return inventory;
+}
 function unresolvedOwnedCommand(root,context,startedAt,priorCommands) {
   if(!priorCommands) throw new Error('Command inventory unavailable');
   const bases=commandDirectories(root,context);
@@ -212,11 +226,12 @@ function unresolvedOwnedCommand(root,context,startedAt,priorCommands) {
     if(!existsSync(base)) continue;
     assertUnlinked(dataPath(root,'output'),base);
     for(const name of readdirSync(base).filter(name=>/^[a-f0-9-]{36}$/.test(name))) {
-      if(priorCommands.get(base)?.has(name) && statSync(resolve(base,name)).mtimeMs<Date.parse(startedAt)) continue;
       const path=resolve(base,name,'command.json');
       if(!existsSync(path)) continue;
       assertUnlinked(base,path);
-      const command=JSON.parse(readFileSync(path,'utf8'));
+      const bytes=readFileSync(path);
+      if(priorCommands.get(base)?.get(name)===digest(bytes)) continue;
+      const command=JSON.parse(bytes.toString('utf8'));
       if(command.owner_pid!==process.pid || Date.parse(command.started_at)<Date.parse(startedAt)) continue;
       if(command.result?.termination_confirmed!==true && !processAbsent(command.child_pid)) return resolve(base,name);
     }
@@ -292,7 +307,7 @@ export async function withControllerSession(root, id, operation, { diagnostic = 
   if (pausedDiagnostic) return operation();
   let result; let failure; let caught;let priorCommands;
   try {
-    if(isSafeArtifactAction(recoveryContext)) priorCommands=new Map(commandDirectories(root,recoveryContext).map(base=>[base,new Set(existsSync(base)?readdirSync(base):[])]));
+    if(isSafeArtifactAction(recoveryContext)) priorCommands=commandInventory(root,recoveryContext);
     result = await operation();
     if ((result.exit_code !== undefined && result.exit_code !== 0) || !['completed', 'ready', 'help'].includes(result.status)) failure = { status: result.status, exit_code: result.exit_code ?? 2, evidence_dir: result.evidence_dir ?? null,
       ...(result.result?.termination_confirmed===true?{termination_confirmed:true}:{}) };

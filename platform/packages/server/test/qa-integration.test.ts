@@ -111,7 +111,9 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () =>
   it("session extensions enforce session ownership and reject native open on Web", async () => {
     await owner.put(`/api/projects/${project}/models`, {
       defaultModel: { provider: "anthropic", modelId: "claude-sonnet-4-6" },
-      models: [{ provider: "anthropic", modelId: "claude-sonnet-4-6" }],
+      models: [
+        { provider: "anthropic", modelId: "claude-sonnet-4-6", apiKey: "ci-synthetic-key" },
+      ],
     });
     const result = await owner.post(`/api/projects/${project}/agents/test_agent/sessions`, {});
     expect(result.status).toBe(201);
