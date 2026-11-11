@@ -28,8 +28,8 @@ export function useMemoryListing(
 ): { scopes: ScopeFiles[] | null; error: string | null } {
   /**
    * The Agent a listing is about: its id in its Project, on the server that holds it. The
-   * Project is part of it — every Project has a `default_agent`, and one Project's memory
-   * shown under another's is that other Agent's memory, delete marks and all.
+   * Project is part of the key, so one Project's memory shown under another's cannot
+   * be mistaken for that other Agent's memory, delete marks and all.
    */
   const agentKey = scopeKey(projectId, agentId, machineId);
   const [state, setState] = useState<{

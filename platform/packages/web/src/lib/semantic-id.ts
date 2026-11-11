@@ -9,7 +9,7 @@
  */
 export const SEMANTIC_ID_PATTERN = /^[a-z][a-z0-9_]{1,63}$/;
 
-/** Username: same character rules, length tightened to 2-32 (leaves room for the default Project id `<username>-default_project`). */
+/** Username: same character rules, length tightened to 2-32. */
 export const USERNAME_PATTERN = /^[a-z][a-z0-9_]{1,31}$/;
 
 /** Suffix segment of a non-admin project_id (after `<username>-`): lowercase letters, digits, and underscores only. */
