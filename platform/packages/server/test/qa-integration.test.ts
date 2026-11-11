@@ -109,14 +109,20 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () =>
     expect((await owner.get(`/api/projects/${other}/agents/test_agent/memory/library/${record.id}`)).status).toBe(404);
   });
   it("session extensions enforce session ownership and reject native open on Web", async () => {
-    await owner.put(`/api/projects/${project}/models`, {
-      defaultModel: { provider: "anthropic", modelId: "claude-sonnet-4-6" },
-      models: [
-        { provider: "anthropic", modelId: "claude-sonnet-4-6", apiKey: "ci-synthetic-key" },
-      ],
+    const model = {
+      provider: "custom",
+      modelId: "qa-session-test",
+      clientType: "openai",
+      baseUrl: "http://127.0.0.1:1",
+      apiKey: "test-key",
+    };
+    const configured = await owner.put(`/api/projects/${project}/models`, {
+      defaultModel: { provider: model.provider, modelId: model.modelId },
+      models: [model],
     });
+    expect(configured.status, JSON.stringify(await configured.clone().json())).toBe(200);
     const result = await owner.post(`/api/projects/${project}/agents/test_agent/sessions`, {});
-    expect(result.status).toBe(201);
+    expect(result.status, JSON.stringify(await result.clone().json())).toBe(201);
     const { session } = (await result.json()) as SessionCreateResponse;
     const prefix = `/api/sessions/${session.sessionId}`;
     expect((await owner.get(prefix)).status).toBe(200);
