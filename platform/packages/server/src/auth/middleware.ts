@@ -121,6 +121,8 @@ export type AppEnv = {
     user: UserRow;
     /** How the current session was established — see {@link SessionVia}. */
     sessionVia: SessionVia;
+    /** The account bridge validated and reconstructed this in-process local request. */
+    trustedLocalRequest: boolean;
   };
 };
 

@@ -38,6 +38,15 @@ export abstract class Http {
     userId: string,
     request: Opaque<"Request", Request>,
   ): Promise<Opaque<"Response", Response>>;
+  /**
+   * The account bridge's replay after it has authenticated and authorized the public request.
+   * This is a separate entry point so the elevated marker cannot leak through the per-user
+   * socket cache.
+   */
+  abstract fetchTrustedAs(
+    userId: string,
+    request: Opaque<"Request", Request>,
+  ): Promise<Opaque<"Response", Response>>;
 }
 
 export interface HttpSlots {
@@ -85,8 +94,10 @@ export class HttpModule {
     // each parent it is mounted on, so mounting the groups twice shares handlers, not state.
     const cookieGated = this.assemble(routes, authMiddleware(this.auth, this.config.trustProxy));
     const asUser = new Map<string, Hono<AppEnv>>();
-    const enteredAs = (userId: string): Hono<AppEnv> => {
-      let app = asUser.get(userId);
+    const trustedAsUser = new Map<string, Hono<AppEnv>>();
+    const enteredAs = (userId: string, trustedLocalRequest: boolean): Hono<AppEnv> => {
+      const cache = trustedLocalRequest ? trustedAsUser : asUser;
+      let app = cache.get(userId);
       if (app === undefined) {
         app = this.assemble(routes, async (c, next) => {
           if (this.config.accountClient) {
@@ -102,16 +113,19 @@ export class HttpModule {
           // demanding kind is assumed; the routes whose answer turns on the kind never reach
           // here, the socket declines them for HTTP (api/types.ts sessionKindPath).
           c.set("sessionVia", "password");
+          c.set("trustedLocalRequest", trustedLocalRequest);
           await next();
         });
-        asUser.set(userId, app);
+        cache.set(userId, app);
       }
       return app;
     };
     this.http = {
       fetch: (request: Request) => Promise.resolve(cookieGated.fetch(request)),
       fetchAs: (userId: string, request: Request) =>
-        Promise.resolve(enteredAs(userId).fetch(request)),
+        Promise.resolve(enteredAs(userId, false).fetch(request)),
+      fetchTrustedAs: (userId: string, request: Request) =>
+        Promise.resolve(enteredAs(userId, true).fetch(request)),
     };
   }
 

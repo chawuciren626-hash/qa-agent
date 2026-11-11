@@ -3,12 +3,17 @@ import type { AccountClientGate } from "../auth/runtime-state.js";
 import type { MiddlewareHandler } from "hono";
 import type { AppEnv } from "../auth/middleware.js";
 import type { Access } from "../mechanisms/projects.js";
+
 import { HttpError } from "./errors.js";
 import { qaEnabled } from "../services/qa-engine.js";
 
 export function qaAuthorization(access: Access, central?:AccountClientGate): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     if (!qaEnabled || !c.var.user) return next();
+    // The account bridge validates the public request first, then replays only its selected
+    // operation through the same local surface. Keep that internal request out of the rules
+    // intended for a user's direct write, while external callers still receive those denials.
+    if (c.var.trustedLocalRequest) return next();
     let path: string;
     try { path = decodeURIComponent(c.req.path); }
     catch { throw new HttpError(400, "invalid_path", "Invalid request path."); }

@@ -524,7 +524,7 @@ export function createApp(boot: ServerBoot): Hono<AppEnv> {
 
   if (deps.config.accountClient) {
     const bridge = new AccountClient({ config: deps.config, db: boot.db,
-      localRequest: (userId,request) => boot.tree.api<import("./http/app.js").Http>("HttpModule","http").fetchAs(userId,request),
+      localRequest: (userId,request) => boot.tree.api<import("./http/app.js").Http>("HttpModule","http").fetchTrustedAs(userId,request),
       auth: authService,
       users: () => boot.tree.api<Users>("IdentityModule", "Users"),
       sessions: () => boot.tree.api<AuthSessions>("IdentityModule", "AuthSessions"),
