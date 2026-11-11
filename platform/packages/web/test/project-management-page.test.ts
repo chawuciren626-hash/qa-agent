@@ -11,7 +11,7 @@
  * 数据经真实适配层（src/features/qa/project-management/api.ts → mock.ts），测试里不绕过它，
  * 这样 mock 的查询语义（搜索/筛选/排序/分页）与页面表现一起被覆盖。
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createElement as h, Fragment } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
@@ -19,13 +19,16 @@ import { button, click, field, mount, pressEscape, settle, type, unmountAll, wai
 import { toastStore } from "@prismshadow/penguin-ui";
 import { ProjectManagementPage, resetSessionListState } from "../src/features/qa/project-management/project-management-page";
 import { mockScenarios, resetMockProjects } from "../src/features/qa/project-management/mock";
+import { ApiError } from "../src/api/client";
+
+const apiMocks = vi.hoisted(() => ({ createProject: vi.fn() }));
 
 vi.mock("../src/features/qa/project-management/api", async () => {
   const mock = await import("../src/features/qa/project-management/mock");
   return {
     listProjects: mock.mockListProjects,
     getProject: mock.mockGetProject,
-    createProject: mock.mockCreateProject,
+    createProject: apiMocks.createProject,
     updateProject: mock.mockUpdateProject,
     setProjectPinned: mock.mockSetProjectPinned,
     archiveProject: mock.mockArchiveProject,
@@ -52,12 +55,17 @@ vi.mock("../src/state/auth", () => ({
   useAuth: () => ({ user: { userId: "demo-admin", displayName: "演示管理员", isAdmin: true } }),
 }));
 
+beforeEach(async () => {
+  apiMocks.createProject.mockImplementation((await import("../src/features/qa/project-management/mock")).mockCreateProject);
+});
+
 afterEach(async () => {
   await unmountAll();
   mockScenarios.reset();
   resetMockProjects();
   resetSessionListState();
   state.setCurrentProjectId.mockClear();
+  apiMocks.createProject.mockReset();
 });
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -113,6 +121,22 @@ describe("项目管理页", () => {
     await act(async () => { await sleep(500); });
     await waitFor(() => state.setCurrentProjectId.mock.calls.length > 0, 100);
     expect(state.setCurrentProjectId).toHaveBeenCalledWith("payment_regression");
+  });
+
+  it("创建时的服务端错误显示在对话框级，不伪装成项目名称错误", async () => {
+    apiMocks.createProject.mockRejectedValueOnce(new ApiError(503, "shared_roles_incomplete", "共享智能体角色未发布完整"));
+    await mountPage();
+    await waitForList();
+    await click(document.querySelector<HTMLButtonElement>(".qpm-head-actions .qpm-btn-main")!);
+    await type(field("项目名称"), "支付回归");
+    await type(field("Project id"), "payment_regression");
+    await click(button("创建并进入"));
+    await waitFor(() => bodyText().includes("共享智能体角色未发布完整"), 100);
+    expect(document.querySelector("#qpm-create-name-error")).toBeNull();
+    expect(field("项目名称").getAttribute("aria-invalid")).toBe("false");
+    const dialogError = [...document.querySelectorAll<HTMLElement>('.qpm-modal [role="alert"]')]
+      .find(item => item.textContent?.includes("共享智能体角色未发布完整"));
+    expect(dialogError?.closest(".qpm-form-row")).toBeNull();
   });
 
   it("渲染列表：状态默认进行中，mock 全量 134 条中 111 条进行中，按每页 20 条分页（PM-02）", async () => {

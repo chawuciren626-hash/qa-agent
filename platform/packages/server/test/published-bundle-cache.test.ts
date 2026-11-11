@@ -9,6 +9,17 @@ const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
 describe("per-user published bundle cache", () => {
+  it("maps the published general Agent alias only at the local execution boundary", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "published-alias-"));
+    roots.push(root);
+    const cache = new PublishedBundleCache(root);
+    const resource = { id: "d".repeat(36), kind: "agents" as const, name: "General", description: "", payload: { agentId: "general_agent", prompt: "test", agentsMd: "General instructions" }, audience: ["alice"], revision: 0, version: 1, published: true, updatedAt: "2026-11-11T00:00:00.000Z" };
+    const versions = [publishedResourceRef(resource)];
+    const bundle = { rootId: resource.id, versions, bundleHash: resolvedBundleHash(versions), resources: [resource] };
+    expect(await cache.store("alice", bundle)).toEqual(bundle);
+    expect((await cache.definition("alice", bundle.bundleHash)).agentId).toBe("default_agent");
+    expect((await cache.load("alice", bundle.bundleHash)).resources[0]?.payload.agentId).toBe("general_agent");
+  });
   it("replays versioned runtime and tool settings from the central definition", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "published-runtime-"));
     roots.push(root);

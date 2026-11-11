@@ -1,12 +1,11 @@
 /**
  * The auth flow through the routes: admin seeding, login, logout, password change, the session
- * cookie, the initial Project and the account's UI preferences.
+ * cookie, Project bootstrap boundaries and the account's UI preferences.
  *
  * - A protected API answers 401 without a session; registration does not exist.
  * - The seeded admin owns default_project with its default Agent, carries the initial-password
  *   flag, and a second seed neither duplicates the account nor rerolls its password.
- * - An admin-created account gets `<userId>-default_project`, named after the user, with the
- *   preset default model.
+ * - An admin-created ordinary account starts with zero Projects and creates its own later.
  * - Login, /api/me and logout round-trip; a wrong password is 401.
  * - Changing one's own password checks the old one and the policy, keeps the current session,
  *   clears the initial flag, and retires the old password.
@@ -113,27 +112,14 @@ describe("auth", () => {
     await loginAdmin(t.app);
   });
 
-  it("admin-created: default Project is <userId>-default_project, name defaults", async () => {
+  it("admin-created ordinary account starts with zero Projects", async () => {
     const bob = await provisionUser(t.app, "bob");
     expect(bob.user.isAdmin).toBe(false);
     expect(bob.user.passwordIsInitial).toBe(true);
     const api = apiClient(t.app, bob.cookie);
     const projects = (await (await api.get("/api/projects")).json()) as ProjectsResponse;
-    expect(projects.projects).toHaveLength(1);
-    const p = projects.projects[0]!;
-    expect(p.projectId).toBe("bob-default_project");
-    expect(p.name).toBe("bob");
-    expect(p.role).toBe("owner");
-    expect(p.ownerUserId).toBe("bob");
-    // The initial Project's .project_config.toml carries the display name and preset model config (the default model is written along with it).
-    const toml = await fs.readFile(
-      path.join(t.root, "bob-default_project", ".project_config.toml"),
-      "utf8",
-    );
-    expect(toml).toContain('name = "bob"');
-    expect(toml).toContain(
-      'default_model = { provider = "deepseek", model_id = "deepseek-flash" }',
-    );
+    expect(projects.projects).toEqual([]);
+    await expect(fs.access(path.join(t.root, "bob-default_project"))).rejects.toThrow();
   });
 
   it("login / me / logout round trip; wrong password 401", async () => {

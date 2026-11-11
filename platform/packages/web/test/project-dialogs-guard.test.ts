@@ -27,7 +27,7 @@ import {
 } from "../src/components/layout/project-dialogs";
 import { AuthProvider } from "../src/state/auth";
 import { ProjectProvider } from "../src/state/project";
-import { projectSettingsServer } from "./helpers/project-settings";
+import { PROJECT, projectSettingsServer } from "./helpers/project-settings";
 import {
   button,
   click,
@@ -43,20 +43,48 @@ import {
   waitFor,
 } from "./helpers/dom";
 
-async function openSettings() {
-  const server = projectSettingsServer();
+async function openSettings(
+  options: {
+    projects?: readonly (typeof PROJECT)[];
+    projectId?: string;
+    onProjectDeleted?: (remainingProjectId: string | null) => void;
+  } = {},
+) {
+  const server = projectSettingsServer(options.projects);
   const onClose = vi.fn();
   await mount(
     h(
       AuthProvider,
       null,
-      h(ProjectProvider, null, h(ProjectSettingsDialog, { open: true, onClose }), h(UnsavedPrompt)),
+      h(
+        ProjectProvider,
+        null,
+        h(ProjectSettingsDialog, {
+          open: true,
+          onClose,
+          ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
+          ...(options.onProjectDeleted === undefined
+            ? {}
+            : { onProjectDeleted: options.onProjectDeleted }),
+        }),
+        h(UnsavedPrompt),
+      ),
     ),
   );
   await waitFor(
-    () => document.querySelector(`input[aria-label="${en.project.displayName}"]`) !== null,
+    () => document.querySelector('input[aria-label="' + en.project.displayName + '"]') !== null,
   );
   return { server, onClose };
+}
+
+/** A button in one dialog, since a confirmation stacks above the settings dialog. */
+function buttonIn(dialog: HTMLElement, name: string): HTMLButtonElement {
+  const found = [...dialog.querySelectorAll("button")].find(
+    (candidate) =>
+      candidate.textContent?.trim() === name || candidate.getAttribute("aria-label") === name,
+  );
+  if (found === undefined) throw new Error("no button named " + name + " in dialog");
+  return found;
 }
 
 const promptOpen = () => hasButton(en.common.discard);
@@ -166,6 +194,28 @@ describe("the Project settings dialog", () => {
     expect(button(en.common.save).disabled).toBe(false);
     await type(nameField(), " Research ");
     expect(button(en.common.save).disabled).toBe(true);
+  });
+
+  it("deletes the last ordinary Project and reports that none remains", async () => {
+    const onProjectDeleted = vi.fn();
+    const { server } = await openSettings({ onProjectDeleted });
+    expect(button(en.common.delete)).toBeDefined();
+    await click(button(en.common.delete));
+    const confirmation = dialogs().at(-1);
+    expect(confirmation).toBeDefined();
+    await click(buttonIn(confirmation!, en.common.delete));
+    await waitFor(() => onProjectDeleted.mock.calls.length === 1);
+    expect(onProjectDeleted).toHaveBeenCalledWith(null);
+    expect(server.fetch.requests).toContainEqual(
+      expect.objectContaining({ method: "DELETE", path: "/api/projects/p1" }),
+    );
+  });
+
+  it("keeps the CLI compatibility Project, with no delete action", async () => {
+    const defaultProject = { ...PROJECT, projectId: "default_project", name: "Default Project" };
+    await openSettings({ projects: [defaultProject], projectId: "default_project" });
+    expect(hasButton(en.common.delete)).toBe(false);
+    expect(document.body.textContent).toContain(en.project.deleteDefaultForbidden);
   });
 });
 

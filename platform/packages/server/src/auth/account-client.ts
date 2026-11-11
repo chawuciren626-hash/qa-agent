@@ -4,7 +4,7 @@ import { applyPublicResource, previewPublicAgentUpdate } from "./public-resource
 import { PublishedBundleCache } from "./published-bundle-cache.js";
 import { SharedAgentSessionPins } from "./shared-agent-session-pins.js";
 import { localAdapterHash } from "./trusted-local-adapters.js";
-import type { ResolvedPublishedBundle } from "./published-bundle.js";
+import { localAgentId, type ResolvedPublishedBundle } from "./published-bundle.js";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -173,16 +173,17 @@ export class AccountClient {
     const cache=new PublishedBundleCache(this.deps.config.root);
     const ready:string[]=[];
     for(const item of parsed.bundles){
+      const executionAgentId=localAgentId(item.agentId);
       const bundle=await cache.store(localId,item);
       const definition=await cache.definition(localId,bundle.bundleHash);
-      if(definition.agentId!==item.agentId)throw new HttpError(503,"resource_catalog_invalid","共享智能体目录与定义不一致。");
-      const required=item.agentId==="default_agent"?["qa-default-entry","goal"]:item.agentId==="test_agent"?["qa-delegation-guard"]:["qa-stage-boundary"];
+      if(definition.agentId!==executionAgentId)throw new HttpError(503,"resource_catalog_invalid","共享智能体目录与定义不一致。");
+      const required=executionAgentId==="default_agent"?["qa-default-entry","goal"]:executionAgentId==="test_agent"?["qa-delegation-guard"]:["qa-stage-boundary"];
       if (!process.env.AITEST_ENGINE_ROOT) continue;
       if (!(await Promise.all(required.map(async name => {
         const adapter=definition.localAdapters.find(entry=>entry.name===name);
         return adapter && adapter.hash===await localAdapterHash(process.env.AITEST_ENGINE_ROOT!,name);
       }))).every(Boolean)) continue;
-      ready.push(item.agentId);
+      ready.push(executionAgentId);
     }
     return ready;
   }
@@ -194,7 +195,7 @@ export class AccountClient {
     const listing=await this.remote("/api/control/catalog/roles","GET",undefined,binding);
     if(!listing.ok)throw new HttpError(503,"resource_catalog_unavailable","无法读取共享智能体目录。");
     const parsed=await listing.json() as {roles?:{agentId:string;resourceId:string}[]};
-    const matches=(parsed.roles??[]).filter(role=>role.agentId===agentId);
+    const matches=(parsed.roles??[]).filter(role=>localAgentId(role.agentId)===agentId);
     if(matches.length===0)return null;
     if(matches.length!==1)throw new HttpError(409,"duplicate_shared_role","共享智能体标识重复。");
     const result=await this.remote(`/api/control/catalog/${encodeURIComponent(matches[0]!.resourceId)}/resolved`,"GET",undefined,binding);
@@ -215,7 +216,7 @@ export class AccountClient {
     const entries: { agentId: string; bundleHash: string }[] = [];
     for (const item of publication.agents) {
       const definition = await cache.definition(userId, item.bundleHash);
-      if (definition.agentId !== item.agentId) throw new HttpError(503, "resource_catalog_invalid", "共享智能体目录与定义不一致。");
+      if (definition.agentId !== localAgentId(item.agentId)) throw new HttpError(503, "resource_catalog_invalid", "共享智能体目录与定义不一致。");
       entries.push({ agentId: item.agentId, bundleHash: item.bundleHash });
     }
     const selected=entries.find(entry=>entry.agentId===agentId);
@@ -327,7 +328,7 @@ export class AccountClient {
     if (!response.ok) throw new HttpError(503, "resource_catalog_unavailable", "无法读取共享智能体目录。");
     const parsed = await response.json() as { bundles?: ({ agentId: string } & ResolvedPublishedBundle)[] };
     if (!Array.isArray(parsed.bundles)) throw new HttpError(503, "resource_catalog_invalid", "共享智能体目录无效。");
-    return parsed.bundles.map(item => ({ agentId: item.agentId, bundle: item }));
+    return parsed.bundles.map(item => ({ agentId: localAgentId(item.agentId), bundle: item }));
   }
   private async checkBinding(binding: Binding) {
     const response = await this.remote("/api/me", "GET", undefined, binding);
@@ -557,19 +558,19 @@ export class AccountClient {
       if(agent?.id!==body.resourceId||agent.kind!=="agents"||typeof agentId!=="string"||!/^[a-z][a-z0-9_-]*$/.test(agentId))throw new HttpError(409,"invalid_template","中央 Agent 没有可用的本地标识。");
       const appliedTable=this.deps.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='applied_public_resources'").get();
       const applied=appliedTable?this.deps.db.prepare("SELECT agent_id AS agentId FROM applied_public_resources WHERE project_id=? AND resource_id=? ORDER BY version DESC LIMIT 1").get(body.projectId,body.resourceId) as {agentId:string}|undefined:undefined;
-      const localAgentId=applied?.agentId||agentId;
+      const localTargetAgentId=applied?.agentId||localAgentId(agentId);
       let pathToLocal:string, payload:Record<string,unknown>;
       if(body.kind==="schedule"){
         if(typeof body.name!=="string"||typeof body.startAt!=="string"||body.enabled!==true||!Number.isFinite(Date.parse(body.startAt))||Date.parse(body.startAt)<=Date.now())throw new HttpError(400,"invalid_template_request","请选择模板并提供未来的启动时间。");
         const templates=Array.isArray(agent.payload.scheduleTemplates)?agent.payload.scheduleTemplates as Record<string,unknown>[]:[];
         const selected=templates.find(item=>item.name===body.name);
         if(!selected)throw new HttpError(404,"template_missing","定时任务模板不存在。");
-        pathToLocal=`/api/projects/${encodeURIComponent(body.projectId)}/agents/${encodeURIComponent(localAgentId)}/schedules`;
+        pathToLocal=`/api/projects/${encodeURIComponent(body.projectId)}/agents/${encodeURIComponent(localTargetAgentId)}/schedules`;
         payload={name:selected.name,prompt:selected.prompt,enabled:true,startAt:body.startAt,...(selected.period===undefined?{}:{period:selected.period})};
       }else{
         if(body.name!==undefined||body.startAt!==undefined||body.enabled!==undefined)throw new HttpError(400,"invalid_template_request","Agent API 模板请求包含无关字段。");
         if(!agent.payload.apiTemplate)throw new HttpError(404,"template_missing","Agent API 模板不存在。");
-        pathToLocal=`/api/projects/${encodeURIComponent(body.projectId)}/agents/${encodeURIComponent(localAgentId)}/api`;
+        pathToLocal=`/api/projects/${encodeURIComponent(body.projectId)}/agents/${encodeURIComponent(localTargetAgentId)}/api`;
         payload=agent.payload.apiTemplate as Record<string,unknown>;
       }
       this.requireModule(held.binding,pathToLocal,body.kind==="schedule"?"POST":"PUT");

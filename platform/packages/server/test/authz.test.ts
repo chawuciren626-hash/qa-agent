@@ -116,8 +116,13 @@ describe("authz", () => {
       defaultModel: { provider: "anthropic", modelId: "claude-sonnet-4-6" },
       models: [{ provider: "anthropic", modelId: "claude-sonnet-4-6" }],
     });
+    const agentId = qaEnabled ? "test_agent" : "default_agent";
+    if (qaEnabled) {
+      const initialized = await owner.post(`/api/projects/${projectId}/agents/qa/initialize`, {});
+      expect(initialized.status).toBe(200);
+    }
     const created = await owner.post(
-      `/api/projects/${projectId}/agents/default_agent/sessions`,
+      `/api/projects/${projectId}/agents/${agentId}/sessions`,
       {},
     );
     expect(created.status).toBe(201);
@@ -129,7 +134,7 @@ describe("authz", () => {
     expect((await owner.get("/api/sessions/session-unknown")).status).toBe(404);
   });
 
-  it("deleting Projects: owner-only; default_project and the last accessible refuse", async () => {
+  it("deleting Projects: owner-only; default_project refuses while the last ordinary Project can be removed", async () => {
     expect((await member.delete(`/api/projects/${projectId}`)).status).toBe(403);
     expect((await outsider.delete(`/api/projects/${projectId}`)).status).toBe(404);
     // default_project is managed by admin: non-owners always get 404, and the owner (admin) is refused with 409.
@@ -137,14 +142,10 @@ describe("authz", () => {
     const admin = apiClient(t.app, (await loginAdmin(t.app)).cookie);
     expect((await admin.delete("/api/projects/default_project")).status).toBe(409);
 
-    // outsider-c only has the initial Project created at account setup: deleting it would
-    // leave the account with no usable Project (stuck on the skeleton screen on the Web
-    // side) -> refused with 409.
+    expect((await outsider.post("/api/projects", { projectId: "outsider_c-only" })).status).toBe(201);
+    expect((await outsider.delete("/api/projects/outsider_c-only")).status).toBe(204);
     const cProjects = (await (await outsider.get("/api/projects")).json()) as ProjectsResponse;
-    expect(cProjects.projects).toHaveLength(1);
-    expect(
-      (await outsider.delete(`/api/projects/${cProjects.projects[0]!.projectId}`)).status,
-    ).toBe(409);
+    expect(cProjects.projects).toEqual([]);
 
     expect((await owner.delete(`/api/projects/${projectId}`)).status).toBe(204);
     expect((await owner.get(`/api/projects/${projectId}/models`)).status).toBe(404);

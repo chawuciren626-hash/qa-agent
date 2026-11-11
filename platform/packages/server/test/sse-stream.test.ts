@@ -18,6 +18,7 @@ import type { RuntimeSession } from "../src/runtime/session-manager.js";
 import { fakeSession, sessionRow, uniqueSessionId } from "./fixtures/session.js";
 import { apiClient, createTestApp, loginAdmin, provisionUser, waitFor } from "./helpers.js";
 import type { TestApp } from "./helpers.js";
+import { qaEnabled } from "../src/services/qa-engine.js";
 
 interface SseFrame {
   event?: string;
@@ -75,21 +76,28 @@ function approvalFakeSession(sessionId: string): RuntimeSession {
 describe("sse-stream", () => {
   let t: TestApp;
   let cookie: string;
+  let projectId: string;
   let SID: string;
   let row: SessionRow;
 
   beforeAll(async () => {
     t = await createTestApp();
-    ({ cookie } = await provisionUser(t.app, "streamer"));
+    const user = await provisionUser(t.app, "streamer");
+    cookie = user.cookie;
+    projectId = "streamer-stream_project";
+    expect((await apiClient(t.app, cookie).post("/api/projects", { projectId })).status).toBe(201);
   });
   afterAll(async () => {
     await t.cleanup();
   });
   beforeEach(() => {
     SID = uniqueSessionId();
-    // streamer's own initial Project (default_project belongs to admin; others get 404 via
-    // the index lookup).
-    row = sessionRow(SID, { projectId: "streamer-default_project", approvalMode: "always-ask" });
+    // streamer's explicitly created Project; ordinary accounts no longer receive one at signup.
+    row = sessionRow(SID, {
+      projectId,
+      agentId: qaEnabled ? "test_agent" : "default_agent",
+      approvalMode: "always-ask",
+    });
     t.deps.sessionsRepo.insert(row);
   });
 

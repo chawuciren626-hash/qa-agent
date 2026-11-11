@@ -10,6 +10,9 @@ export function qaRoles() {
 export function initializeQaRoles(agentRoot) {
   return syncPenguinAgents(root,agentRoot,{apply:true});
 }
+export function initializeQaDefaultEntry(agentRoot) {
+  return syncPenguinAgents(root,agentRoot,{apply:true,onlyFallback:true});
+}
 export async function qaRoleTools(id,tools) {
   const next=structuredClone(tools);
   const props=next?.find(t=>t.name==='exec_command')?.parameters?.properties;

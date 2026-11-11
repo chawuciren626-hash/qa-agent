@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { localAdapterHash } from "./trusted-local-adapters.js";
 import { PublishedBundleCache, type CachedSharedAgentDefinition } from "./published-bundle-cache.js";
-import type { ResolvedPublishedBundle } from "./published-bundle.js";
+import { localAgentId, type ResolvedPublishedBundle } from "./published-bundle.js";
 
 export interface CatalogBundleItem {
   agentId: string;
@@ -184,14 +184,16 @@ export class PublishedResourceSync {
     const seen = new Set<string>();
     try {
       for (const item of items) {
-        if (typeof item.agentId !== "string" || seen.has(item.agentId)) throw new SyncError("catalog_invalid", "资源目录重复或无效。");
-        seen.add(item.agentId);
+        if (typeof item.agentId !== "string") throw new SyncError("catalog_invalid", "资源目录重复或无效。");
+        const executionAgentId = localAgentId(item.agentId);
+        if (seen.has(executionAgentId)) throw new SyncError("catalog_invalid", "资源目录重复或无效。");
+        seen.add(executionAgentId);
         const bundle = await this.cache.store(userId, item.bundle);
         const definition = await this.cache.definition(userId, bundle.bundleHash);
-        if (definition.agentId !== item.agentId) throw new SyncError("catalog_invalid", "资源目录与定义不一致。");
+        if (definition.agentId !== executionAgentId) throw new SyncError("catalog_invalid", "资源目录与定义不一致。");
         await this.checkAdapters(definition);
         this.checkCompatibility(bundle, definition);
-        verified.push({ agentId: item.agentId, resourceId: bundle.rootId, version: bundle.versions[0]!.version, bundleHash: bundle.bundleHash, definition, bundle });
+        verified.push({ agentId: executionAgentId, resourceId: bundle.rootId, version: bundle.versions[0]!.version, bundleHash: bundle.bundleHash, definition, bundle });
         if (signal.aborted || this.closed) return;
       }
     } catch (error) {

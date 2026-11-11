@@ -65,6 +65,22 @@ it("activates a verified publication and serves status without refetching on eve
   expect(calls()).toBe(1);
 });
 
+it("publishes the general Agent under the managed local identity", async () => {
+  const { sync, setItems } = await setup();
+  setItems([agentBundle("general_agent", 1)]);
+  await sync.kick("alice");
+  expect(sync.status("alice").state).toBe("current");
+  expect(sync.status("alice").publication?.agents[0]?.agentId).toBe("default_agent");
+});
+
+it("rejects both published aliases of the same managed Agent", async () => {
+  const { sync, setItems } = await setup();
+  setItems([agentBundle("general_agent", 1), agentBundle("default_agent", 2)]);
+  await sync.kick("alice");
+  expect(sync.status("alice").update.errorCode).toBe("catalog_invalid");
+  expect(sync.status("alice").publication).toBeNull();
+});
+
 it("accepts an empty model reference when the agent uses its local model configuration", async () => {
   const { sync, setItems } = await setup();
   setItems([agentBundle("qa", 1, [], "")]);

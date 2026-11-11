@@ -41,7 +41,9 @@ export interface ProjectSettingsServer {
   release(): void;
 }
 
-export function projectSettingsServer(): ProjectSettingsServer {
+export function projectSettingsServer(
+  projects: readonly ProjectSummary[] = [PROJECT],
+): ProjectSettingsServer {
   let policy: CommandPolicyDto = {
     enabled: true,
     rules: [FACTORY_RULE],
@@ -55,25 +57,31 @@ export function projectSettingsServer(): ProjectSettingsServer {
       await new Promise<void>((resolve) => held!.push(resolve));
     }
     if (req.path === "/api/me") return json(ADMIN_ME);
-    if (req.path === "/api/projects" && req.method === "GET") return json({ projects: [PROJECT] });
-    if (req.path === "/api/projects/p1/agents") return json({ agents: [] });
-    if (req.path === "/api/projects/p1/members") {
-      return json({ members: [{ userId: "admin", role: "owner" }] });
-    }
-    if (req.path === "/api/projects/p1/chat-defaults") return json({});
-    if (req.path === "/api/projects/p1/models") return json({ providers: {}, models: [] });
-    if (req.path === "/api/projects/p1/command-policy" && req.method === "GET") {
-      return json(policy);
-    }
-    if (req.path === "/api/projects/p1/command-policy" && req.method === "PUT") {
-      puts.push(req.body);
-      if (refuse) {
-        refuse = false;
-        return apiError(500, "internal", "refused by the test");
+    if (req.path === "/api/projects" && req.method === "GET") return json({ projects });
+    const projectPath = /^\/api\/projects\/([^/]+)(?:\/(.*))?$/.exec(req.path);
+    if (projectPath !== null) {
+      const [, projectId, tail = ""] = projectPath;
+      if (!projects.some((project) => project.projectId === projectId)) {
+        return apiError(404, "project_not_found");
       }
-      const body = req.body as { enabled: boolean; rules: CommandPolicyRuleDto[] };
-      policy = { ...policy, enabled: body.enabled, rules: body.rules };
-      return json(policy);
+      if (tail === "" && req.method === "DELETE") return new Response(null, { status: 204 });
+      if (tail === "agents") return json({ agents: [] });
+      if (tail === "members") {
+        return json({ members: [{ userId: "admin", role: "owner" }] });
+      }
+      if (tail === "chat-defaults") return json({});
+      if (tail === "models") return json({ providers: {}, models: [] });
+      if (tail === "command-policy" && req.method === "GET") return json(policy);
+      if (tail === "command-policy" && req.method === "PUT") {
+        puts.push(req.body);
+        if (refuse) {
+          refuse = false;
+          return apiError(500, "internal", "refused by the test");
+        }
+        const body = req.body as { enabled: boolean; rules: CommandPolicyRuleDto[] };
+        policy = { ...policy, enabled: body.enabled, rules: body.rules };
+        return json(policy);
+      }
     }
     return apiError(404, "not_found");
   });

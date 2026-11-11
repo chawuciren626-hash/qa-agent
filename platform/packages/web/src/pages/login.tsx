@@ -75,7 +75,7 @@ export function LoginPage() {
     setErrors({});
     try {
       await login(userId.trim(), password);
-      navigate("/qa/project", { replace: true });
+      navigate("/qa/projects", { replace: true });
     } catch (e) {
       setErrors({ form: apiErrorText(e) });
     } finally {

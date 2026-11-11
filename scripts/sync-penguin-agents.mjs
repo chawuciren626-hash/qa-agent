@@ -43,7 +43,7 @@ export function sharedInstructionsForRole(source, roleId) {
   return output.join('\n').replace(/\n{3,}/g,'\n\n').trimEnd()+'\n';
 }
 
-export function syncPenguinAgents(root, targetRoot, { apply = false } = {}) {
+export function syncPenguinAgents(root, targetRoot, { apply = false, onlyFallback = false } = {}) {
   root = resolve(root); targetRoot = resolve(targetRoot);
   const manifest = JSON.parse(readFileSync(resolve(root, 'penguin/agents.json'), 'utf8'));
   if (manifest.shared_instructions) assertUnlinked(root, resolve(root, manifest.shared_instructions));
@@ -61,8 +61,9 @@ export function syncPenguinAgents(root, targetRoot, { apply = false } = {}) {
     changes.push({ agent, source, target });
     writes.push({ target, bytes });
   }
-  // Validate every source and target before writing any file.
-  for (const agent of manifest.agents ?? []) {
+  // Validate every source and target before writing any file. Fallback-only
+  // synchronization leaves the shared professional-role references untouched.
+  for (const agent of onlyFallback ? [] : manifest.agents ?? []) {
     if (!/^[a-z0-9_]+$/.test(agent.id)) throw new Error('Invalid agent id');
     const stateDir = resolve(targetRoot, agent.id, 'agent_state');
     assertUnlinked(targetRoot, stateDir);
@@ -107,13 +108,13 @@ export function syncPenguinAgents(root, targetRoot, { apply = false } = {}) {
     }
   }
   const hookDir = resolve(targetRoot, 'test_agent/agent_state/hooks/qa-delegation-guard');
-  for (const name of ['hooks.json', 'guard.mjs', 'finish.mjs', 'project.json']) {
+  for (const name of onlyFallback ? [] : ['hooks.json', 'guard.mjs', 'finish.mjs', 'project.json']) {
     const source = resolve(root, 'penguin/hooks/qa-delegation-guard', name);
     if (name !== 'project.json') assertUnlinked(root, source);
     const content = name === 'project.json' ? JSON.stringify({ root, agent_root: targetRoot }, null, 2) + '\n' : readFileSync(source);
     add('test_agent', name === 'project.json' ? 'generated-local-paths' : source, resolve(hookDir, name), content);
   }
-  for(const agent of manifest.agents?.filter(agent=>agent.id!=='test_agent') ?? []) {
+  for(const agent of onlyFallback ? [] : manifest.agents?.filter(agent=>agent.id!=='test_agent') ?? []) {
     const childHookDir=resolve(targetRoot,agent.id,'agent_state/hooks/qa-stage-boundary');
     for(const name of ['hooks.json','guard.mjs','project.json']) {
       const source=resolve(root,'penguin/hooks/qa-stage-boundary',name);

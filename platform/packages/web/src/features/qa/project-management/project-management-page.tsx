@@ -492,6 +492,9 @@ export function ProjectManagementPage() {
           projectId={settingsProject.projectId}
           allowBasicEdits={settingsProject.capabilities.canMaintain}
           onClose={() => { setSettingsProject(null); void reloadProjects().then(refresh); }}
+          onProjectDeleted={(remainingProjectId) => {
+            if (remainingProjectId === null) navigate("/qa/projects", { replace: true });
+          }}
         />
       )}
 

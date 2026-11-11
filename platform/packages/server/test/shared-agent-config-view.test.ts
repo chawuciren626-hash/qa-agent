@@ -39,3 +39,19 @@ it("shows the published prompt and local Skill overrides without exposing the le
   await expect(service.getConfig("project", "role")).rejects.toThrow("共享智能体定义暂不可用");
   await expect(service.updateConfig("project", "role", { agentsMd: "edit" })).rejects.toThrow("共享服务统一管理");
 });
+
+it("reads a published general Agent through the managed default Agent identity", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shared-alias-view-"));
+  roots.push(root);
+  const state = path.join(root, "project", "agents", "default_agent", "agent_state");
+  await fs.mkdir(state, { recursive: true });
+  await fs.writeFile(path.join(state, "shared-agent.json"), JSON.stringify({ version: 1, agentId: "default_agent" }));
+  const service = new AgentConfigService();
+  Object.assign(service, { paths: { root } });
+  const published = { bundleHash: "sha256:" + "b".repeat(64), resources: [
+    { version: 6, kind: "agents", payload: { agentId: "general_agent", prompt: "General", agentsMd: "General instructions" } },
+  ] } as unknown as ResolvedPublishedBundle;
+  const view = await service.getConfig("project", "default_agent", published);
+  expect(view.config.systemPrompt).toBe("General");
+  expect(view.agentsMd).toBe("General instructions");
+});

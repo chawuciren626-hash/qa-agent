@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate } from "react-router";
+import { Navigate, useNavigate } from "react-router";
 import type { SessionInfo } from "@prismshadow/penguin-server/api";
 import { apiFetch } from "../../api/client";
 import { useAuth } from "../../state/auth";
@@ -73,7 +73,7 @@ function TaskExpansion({ task, run, onDetail }: { task: Task; run?: Run; onDetai
 }
 
 export function QaProjectView() {
-  const { currentProject, setCurrentAgentId } = useProject();
+  const { currentProject, projectsLoading, setCurrentAgentId } = useProject();
   const { user, previewIsolated } = useAuth();
   const navigate = useNavigate();
   const [tab, setTab] = useState("tasks");
@@ -132,6 +132,7 @@ export function QaProjectView() {
   useEffect(() => { if (scrollArea.current) scrollArea.current.scrollTop = 0; }, [currentPage, id, tab, filter, statusFilter, query, pageSize]);
   const open = (task: Task) => { setCurrentAgentId(task.session.agentId); navigate(`/chat/${encodeURIComponent(task.session.sessionId)}`); };
   const detail = (task: Task) => navigate(`/qa/project/tasks/${encodeURIComponent(task.session.sessionId)}`);
+  if (!projectsLoading && currentProject === null) return <Navigate to="/qa/projects" replace />;
   return <main className="qa-project-view h-full min-h-0 min-w-0 overflow-hidden p-5 md:p-8" aria-label="项目视图">
     <div className="qp-layout mx-auto">
       <div className="qp-fixed space-y-6">

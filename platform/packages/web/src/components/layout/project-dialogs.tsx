@@ -223,11 +223,40 @@ type SettingsTab = keyof typeof TAB_ICON_PATHS;
  * does nothing until it answers. The body is mounted only while the dialog is open, so it starts
  * on General every time.
  */
-export function ProjectSettingsDialog({ open, onClose, projectId, allowBasicEdits = true }: { open: boolean; onClose: () => void; projectId?: string; allowBasicEdits?: boolean }) {
-  return open ? <ProjectSettingsBody onClose={onClose} selectedProjectId={projectId} allowBasicEdits={allowBasicEdits} /> : null;
+export function ProjectSettingsDialog({
+  open,
+  onClose,
+  projectId,
+  allowBasicEdits = true,
+  onProjectDeleted,
+}: {
+  open: boolean;
+  onClose: () => void;
+  projectId?: string;
+  allowBasicEdits?: boolean;
+  onProjectDeleted?: (remainingProjectId: string | null) => void;
+}) {
+  return open ? (
+    <ProjectSettingsBody
+      onClose={onClose}
+      selectedProjectId={projectId}
+      allowBasicEdits={allowBasicEdits}
+      {...(onProjectDeleted ? { onProjectDeleted } : {})}
+    />
+  ) : null;
 }
 
-function ProjectSettingsBody({ onClose, selectedProjectId, allowBasicEdits }: { onClose: () => void; selectedProjectId?: string; allowBasicEdits: boolean }) {
+function ProjectSettingsBody({
+  onClose,
+  selectedProjectId,
+  allowBasicEdits,
+  onProjectDeleted,
+}: {
+  onClose: () => void;
+  selectedProjectId?: string;
+  allowBasicEdits: boolean;
+  onProjectDeleted?: (remainingProjectId: string | null) => void;
+}) {
   const { desktopMode } = useAuth();
   const { currentProject, projects } = useProject();
   const [tab, setTab] = useState<SettingsTab>("general");
@@ -283,7 +312,13 @@ function ProjectSettingsBody({ onClose, selectedProjectId, allowBasicEdits }: { 
           </h3>
           <div className="mt-2">
             {active.key === "general" && (
-              <GeneralSection projectId={projectId} selectedProject={selectedProject} isOwner={isOwner && allowBasicEdits} onClose={onClose} />
+              <GeneralSection
+                projectId={projectId}
+                selectedProject={selectedProject}
+                isOwner={isOwner && allowBasicEdits}
+                onClose={onClose}
+                {...(onProjectDeleted ? { onProjectDeleted } : {})}
+              />
             )}
             {active.key === "members" && <MembersSection projectId={projectId} isOwner={isOwner} />}
             {active.key === "defaults" && (
@@ -312,11 +347,13 @@ function GeneralSection({
   selectedProject,
   isOwner,
   onClose,
+  onProjectDeleted,
 }: {
   projectId: string;
   selectedProject: Parameters<typeof projectDisplayName>[0];
   isOwner: boolean;
   onClose: () => void;
+  onProjectDeleted?: (remainingProjectId: string | null) => void;
 }) {
   const { setCurrentProjectId, projects, reloadProjects } = useProject();
   /** The saved display name, with the same id fallback the switcher shows. */
@@ -355,6 +392,7 @@ function GeneralSection({
       const next = projects.find((p) => p.projectId !== projectId);
       await reloadProjects();
       if (next) setCurrentProjectId(next.projectId);
+      onProjectDeleted?.(next?.projectId ?? null);
     } catch (e) {
       toastError(apiErrorText(e));
     }
@@ -408,11 +446,6 @@ function GeneralSection({
             title={S.project.deleteProject}
             description={S.project.deleteDefaultForbidden}
           />
-        ) : projects.length <= 1 ? (
-          // Last accessible Project: deleting it would leave the account with no Project to
-          // select (the page would get stuck on the skeleton screen), so the entry point is
-          // hidden outright, matching the server's 409 rejection.
-          <SettingRow title={S.project.deleteProject} description={S.project.deleteLastForbidden} />
         ) : (
           <SettingRow title={S.project.deleteProject} description={S.project.deleteProjectDesc}>
             <Button size="sm" variant="danger" onClick={() => setConfirmDelete(true)}>

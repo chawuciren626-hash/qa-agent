@@ -1471,7 +1471,6 @@ export const en: Strings = {
     createUser: "Add user",
     initialPassword: "Initial password",
     initialPasswordFlag: "initial password",
-    defaultProjectNote: (id: string): string => `A default Project will be created: ${id}`,
     resetPassword: "Reset password",
     resetPasswordTitle: (u: string): string => `Reset password for ${u}`,
     resetPasswordNote:
@@ -1541,8 +1540,6 @@ export const en: Strings = {
     deleteProject: "Delete Project",
     deleteConfirm:
       "Delete this Project? Its directory will be removed recursively and cannot be recovered.",
-    deleteLastForbidden:
-      "This is the last Project on this account; create another Project before deleting it",
     deleteDefaultForbidden:
       "default_project is shared with the CLI and cannot be deleted from the web",
     noCredentialTitle: "No model credential configured",
@@ -6141,7 +6138,6 @@ Scenarios:
       project_not_found: "This Project no longer exists, or you do not have access.",
       modelscope_refresh_failed:
         "ModelScope authorization could not be renewed after repeated attempts. Re-authorize it on the Models page.",
-      cannot_delete_last_project: "This is the last Project and cannot be deleted.",
       user_exists: "This username is already taken.",
       user_not_found: "This user no longer exists.",
       cannot_delete_admin: "The built-in admin cannot be deleted.",

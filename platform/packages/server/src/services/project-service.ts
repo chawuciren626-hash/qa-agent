@@ -7,10 +7,11 @@
  * are reused by every route; the non-throwing `canAccess` (for error attribution)
  * is likewise just a sibling wrapper around them — all three share the single
  * `resolveAccess` decision, with no second rule set maintained separately.
- * Also handles Project create / list / delete, member authorization, and initial
- * Project provisioning at signup.
+ * Also handles Project create / list / delete, member authorization, and the built-in
+ * administrator's compatibility Project.
  */
 import fs from "node:fs/promises";
+import path from "node:path";
 import { provisionQaProject } from "./qa-project-defaults.js";
 import { qaEnabled, qaEngineModule } from "./qa-engine.js";
 import {
@@ -48,6 +49,9 @@ import type { ErrorLog, UsageStore } from "../mechanisms/observability.js";
 import type { TraceIndex } from "../mechanisms/traces.js";
 import type { OrgCache } from "../mechanisms/organization.js";
 import type { AgentApi } from "../mechanisms/agent-api.js";
+
+/** The isolated QA Project used by the administrator assistant. */
+export const ADMIN_ASSISTANT_PROJECT = "admin_agent_catalog";
 
 /** Fallback timeout for waiting on runs to settle before deleting a Project. */
 const ABORT_SETTLE_TIMEOUT_MS = 5000;
@@ -88,10 +92,20 @@ export class ProjectService implements ProjectLifecycle {
   @Use() private readonly agentApi!: AgentApi;
   @Use() private readonly benchmarkSeeds!: BuiltinBenchmarkSeeds;
 
-  private async sharedRolesReady(userId: string): Promise<boolean> {
+  /**
+   * Checks the roles this Project really uses. Ordinary QA Projects depend on the
+   * professional QA roles only; the administrator assistant is the sole QA Project
+   * that also runs default_agent.
+   */
+  private async sharedRolesReady(
+    userId: string,
+    options: { requireDefaultAgent?: boolean } = {},
+  ): Promise<boolean> {
     // The QA runtime must first supply its safety hooks from a shared, versioned location.
     if (!qaEnabled || !this.authState.accountClient || process.env.AITEST_SHARED_AGENT_RUNTIME !== "1") return false;
-    const required = ["default_agent", ...(qaEngineModule("qa-project-bootstrap").qaRoles() as { id: string }[]).map(role => role.id)];
+    const qaRoles = (qaEngineModule("qa-project-bootstrap").qaRoles() as { id: string }[])
+      .map(role => role.id);
+    const required = options.requireDefaultAgent ? ["default_agent", ...qaRoles] : qaRoles;
     const available = new Set(await this.authState.accountClient.listSharedRoleIds(userId));
     const missing = required.filter(id => !available.has(id));
     if (missing.length) throw new HttpError(503, "shared_roles_incomplete", `共享智能体或本机适配器尚未就绪：${missing.join(", ")}`);
@@ -123,9 +137,10 @@ export class ProjectService implements ProjectLifecycle {
   /**
    * Create a Project: the id is chosen by the creator (a semantic id, checked for
    * duplicates against both the DB and the directory — 409 if taken), the initial
-   * config is written (display name defaults to the id). Admin Projects and
-   * upstream mode receive the built-in Agent and example Benchmarks; personal
-   * testing Projects receive only testing roles.
+   * config is written (display name defaults to the id). Ordinary QA Projects
+   * receive the professional testing roles only. `admin_agent_catalog` is the one
+   * QA Project that also receives the administrator assistant's default_agent;
+   * upstream mode retains its original built-in defaults.
    * A non-admin's id is forced to be "<username>-<suffix>", where the suffix is
    * lowercase letters, digits, and underscores only — the hyphen is a reserved
    * separator, usernames never contain a hyphen, so the first hyphen is the
@@ -158,7 +173,10 @@ export class ProjectService implements ProjectLifecycle {
     ) {
       throw new HttpError(409, "project_exists", `Project id is already taken: ${projectId}.`);
     }
-    const shared = await this.sharedRolesReady(owner.userId);
+    const adminAssistantProject = projectId === ADMIN_ASSISTANT_PROJECT;
+    const shared = await this.sharedRolesReady(owner.userId, {
+      requireDefaultAgent: adminAssistantProject,
+    });
     const displayName = name ?? projectId;
     const createdAt = new Date().toISOString();
     // Insert the DB row first: the primary key is the final arbiter for concurrent
@@ -174,9 +192,7 @@ export class ProjectService implements ProjectLifecycle {
       throw err;
     }
     // If file initialization fails, roll back the DB row and clean up the
-    // directory: an orphaned directory would make retries with this id 409 forever
-    // (a typical scenario: signup failure rolled back the user row, but the
-    // <username>-default_project directory was left behind).
+    // directory: an orphaned directory would make retries with this id 409 forever.
     try {
       await fs.mkdir(projectDir(this.root, projectId), { recursive: true });
       await this.projectConfig.writeInitialConfig(projectId, displayName, owner.userId);
@@ -184,14 +200,20 @@ export class ProjectService implements ProjectLifecycle {
       // with it by the rollback below).
       await this.projectConfig.seedPresetPromotions(projectId);
       await this.projectConfig.applySharedModelExtras(projectId, owner.userId);
-      // In the testing product, personal Projects start with testing roles only.
-      // The General Agent and its sample Benchmarks remain available in admin
-      // Projects and in the unmodified upstream PenguinHarness mode.
-      if (shared && owner.isAdmin) {
-        await loadAgentState({ root: this.root, projectId, agentId: "default_agent", init: { shared: true } });
+      // In the testing product, ordinary Projects start with professional QA roles
+      // only. The administrator assistant's catalog is the sole QA Project that
+      // receives default_agent and its sample Benchmarks. Upstream mode keeps the
+      // original built-in Agent defaults.
+      if (!qaEnabled) {
+        await this.provisionProjectDefaults(projectId);
+      } else if (adminAssistantProject) {
+        await loadAgentState({ root: this.root, projectId, agentId: "default_agent", init: { shared } });
+        qaEngineModule("qa-project-bootstrap").initializeQaDefaultEntry(
+          path.join(this.root, projectId, "agents"),
+        );
         this.agents.insertOrIgnore({ projectId, agentId: "default_agent", createdAt });
         await provisionProjectBenchmarks(this.root, projectId, this.benchmarkSeeds.benchmarks);
-      } else if (!qaEnabled || owner.isAdmin) await this.provisionProjectDefaults(projectId);
+      }
       const testingRoles = await provisionQaProject(this.root, projectId, shared);
       testingRoles.forEach((agentId, index) => this.agents.insertOrIgnore({
         projectId, agentId, createdAt: new Date(Date.now() + index).toISOString(),
@@ -228,18 +250,13 @@ export class ProjectService implements ProjectLifecycle {
   }
 
   /**
-   * Initial Project provisioned at signup:
-   * the built-in admin adopts `default_project` (if the directory already exists,
-   * it's adopted directly without overwriting existing config — shared with the
-   * CLI); other users get `<username>-default_project` created, with display name
-   * defaulting to the username.
+   * Compatibility Project provisioned only for the built-in administrator.
+   * Ordinary users intentionally start with no Project and create one from the
+   * Project management surface. The administrator keeps `default_project` for CLI
+   * compatibility and adopts an existing directory without overwriting it.
    */
-  async provisionInitialProject(user: UserRow, isAdmin: boolean): Promise<void> {
-    if (!isAdmin) {
-      await this.createProject(user, `${user.userId}-${DEFAULT_PROJECT_ID}`, user.userId);
-      return;
-    }
-    const shared = await this.sharedRolesReady(user.userId);
+  async provisionAdminCompatibilityProject(user: UserRow): Promise<void> {
+    const shared = await this.sharedRolesReady(user.userId, { requireDefaultAgent: true });
     const projectId = DEFAULT_PROJECT_ID;
     const fresh = !(await dirExists(projectDir(this.root, projectId)));
     // Initialize the built-in Agent (loaded without overwriting if it already exists) and write
@@ -292,12 +309,9 @@ export class ProjectService implements ProjectLifecycle {
   }
 
   /**
-   * Delete a Project (owner): default_project is refused; deleting the user's
-   * **last accessible Project** is refused too (deleting it would leave the list
-   * empty, with no Project to select in the Web client and the page stuck on a
-   * skeleton screen — a typical case being a non-first user deleting the initial
-   * Project provisioned at signup); active runs are drained first, then the DB and
-   * directory are cleared.
+   * Delete a Project (owner): default_project remains reserved for the CLI, while
+   * ordinary accounts may reach zero Projects and return to Project management.
+   * Active runs are drained first, then the DB and directory are cleared.
    */
   async deleteProject(userId: string, projectId: string): Promise<void> {
     this.requireProjectOwner(userId, projectId);
@@ -308,13 +322,7 @@ export class ProjectService implements ProjectLifecycle {
         "default_project is shared with the CLI and cannot be deleted from the web.",
       );
     }
-    if (this.projects.listAccessible(userId).length <= 1) {
-      throw new HttpError(
-        409,
-        "cannot_delete_last_project",
-        "This is the account's last Project; deleting it would leave no Project available. Create a new Project first.",
-      );
-    }
+
     await this.destroyProject(projectId);
   }
 

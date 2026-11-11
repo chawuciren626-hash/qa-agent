@@ -4,7 +4,7 @@ import { constants } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { InstalledHook, SystemConfig } from "@prismshadow/penguin-core";
-import { validateResolvedBundle, type ResolvedPublishedBundle } from "./published-bundle.js";
+import { localAgentId, validateResolvedBundle, type ResolvedPublishedBundle } from "./published-bundle.js";
 import { parseSkillArchive } from "../http/routes/skills.js";
 
 const MAX_BUNDLE_BYTES = 16 * 1024 * 1024;
@@ -199,7 +199,7 @@ export class PublishedBundleCache {
     const allSkills = [...skills,...plugins.skills];
     if(new Set(allSkills.map(item=>item.name)).size!==allSkills.length)throw Error("Published skills have conflicting names");
     return {
-      resourceId: root.id, agentId, bundleHash: hash, prompt, agentsMd,
+      resourceId: root.id, agentId: localAgentId(agentId), bundleHash: hash, prompt, agentsMd,
       ...(maxTurns === undefined ? {} : { maxTurns: Number(maxTurns) }),
       ...(root.payload.model && typeof root.payload.model === "object" ? { model: {
         ...((root.payload.model as Record<string,unknown>).maxTokens === undefined ? {} : { max_tokens: Number((root.payload.model as Record<string,unknown>).maxTokens) }),

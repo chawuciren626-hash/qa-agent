@@ -106,7 +106,7 @@ export abstract class ProjectLifecycle {
   abstract createProject(owner: UserRow, projectId: string, name?: string): Promise<ProjectSummary>;
   /** Every id `createProject` refuses as taken, as names only: the rows and the data root's entries. */
   abstract takenProjectIds(): Promise<string[]>;
-  abstract provisionInitialProject(user: UserRow, isAdmin: boolean): Promise<void>;
+  abstract provisionAdminCompatibilityProject(user: UserRow): Promise<void>;
   abstract renameProject(userId: string, projectId: string, name: string): Promise<ProjectSummary>;
   abstract deleteProject(userId: string, projectId: string): Promise<void>;
   abstract destroyProject(projectId: string): Promise<void>;

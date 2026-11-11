@@ -233,11 +233,6 @@ function CreateUserForm({ onClose, onDone }: { onClose: () => void; onDone: () =
           autoComplete="new-password"
           hint={S.auth.passwordHint}
         />
-        {USERNAME_PATTERN.test(id) && (
-          <p className="text-xs text-gray-400 dark:text-gray-500">
-            {S.admin.defaultProjectNote(`${id}-default_project`)}
-          </p>
-        )}
       </div>
     </Modal>
   );

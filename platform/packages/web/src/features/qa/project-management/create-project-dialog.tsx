@@ -41,6 +41,7 @@ export function CreateProjectDialog({
   const [description, setDescription] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [idError, setIdError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   /** idle：填写中 | creating：创建中 | enterFailed：项目已创建但进入失败。 */
   const [phase, setPhase] = useState<"idle" | "creating" | "enterFailed">("idle");
   const nameRef = useRef<HTMLInputElement>(null);
@@ -90,6 +91,7 @@ export function CreateProjectDialog({
     }
     setNameError(null);
     setIdError(null);
+    setSubmitError(null);
     setPhase("creating");
     try {
       const created = await onCreate({ projectId, name: trimmed, description: description.trim() });
@@ -103,7 +105,7 @@ export function CreateProjectDialog({
       setPhase("idle");
       const message = e instanceof Error ? e.message : "项目创建失败，请稍后重试";
       if (e instanceof ApiError && ["project_exists", "invalid_project_id", "project_id_prefix_required"].includes(e.code)) setIdError(message);
-      else setNameError(message);
+      else setSubmitError(message);
     }
   };
 
@@ -147,6 +149,7 @@ export function CreateProjectDialog({
               onChange={(e) => {
                 setName(e.target.value);
                 if (nameError) setNameError(null);
+                if (submitError) setSubmitError(null);
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !busy) void submit();
@@ -167,7 +170,7 @@ export function CreateProjectDialog({
               error={idError ?? (suffix && !idValid ? (prefix ? S.project.idPrefixHint : S.project.idHint) : undefined)}
               lockedPrefix={prefix || undefined}
               disabled={busy || phase === "enterFailed"}
-              onChange={(value) => { setIdInput(value); setIdError(null); }}
+              onChange={(value) => { setIdInput(value); setIdError(null); setSubmitError(null); }}
             />
           </div>
           <label className="qpm-form-row">
@@ -179,7 +182,7 @@ export function CreateProjectDialog({
               placeholder="一句话说明项目背景（可选）"
               aria-label="项目简介"
               disabled={busy || phase === "enterFailed"}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(e) => { setDescription(e.target.value); if (submitError) setSubmitError(null); }}
             />
             <span className="qpm-count">{description.length}/{DESCRIPTION_MAX}</span>
           </label>
@@ -187,6 +190,11 @@ export function CreateProjectDialog({
             <span>来源</span>
             <span className="qpm-tag qpm-tag-manual">手动创建</span>
           </div>
+          {submitError && (
+            <div className="qpm-error" role="alert">
+              <p>{submitError}</p>
+            </div>
+          )}
           {phase === "enterFailed" && (
             <div className="qpm-error" role="alert">
               <p>项目已创建，暂时无法进入。</p>

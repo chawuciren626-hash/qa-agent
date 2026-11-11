@@ -17,6 +17,15 @@ export interface ResolvedPublishedBundle {
 
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 
+/**
+ * The account service publishes the built-in QA entry as `general_agent`, while the
+ * managed local runtime keeps its historical `default_agent` identity. Keep the
+ * published bundle immutable and translate only at the local execution boundary.
+ */
+export function localAgentId(agentId: string): string {
+  return agentId === "general_agent" ? "default_agent" : agentId;
+}
+
 /** Hash only immutable published content; mutable database status and draft revision are excluded. */
 export function publishedResourceRef(resource: PublicResource): PublishedResourceRef {
   const { kind, name, description, payload, audience } = resource;

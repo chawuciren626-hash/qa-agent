@@ -82,11 +82,8 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () =>
     expect(agents.agents.map(agent => agent.agentId)).toContain("test_agent");
     expect(agents.agents.map(agent => agent.agentId)).not.toContain("default_agent");
     await expect(fs.access(path.join(app.root, project, "agents/default_agent"))).rejects.toThrow();
-    const initial = await (await owner.get("/api/projects")).json() as {projects:{projectId:string}[]};
-    const ownDefault = initial.projects.find(item => item.projectId === "qa_owner-default_project")?.projectId;
-    expect(ownDefault).toBe("qa_owner-default_project");
-    const initialAgents = await (await owner.get(`/api/projects/${ownDefault}/agents`)).json() as {agents:{agentId:string}[]};
-    expect(initialAgents.agents.map(agent => agent.agentId)).not.toContain("default_agent");
+    const projects = await (await owner.get("/api/projects")).json() as {projects:{projectId:string}[]};
+    expect(projects.projects.map(item => item.projectId)).toEqual([project]);
     const admin = apiClient(app.app, (await loginAdmin(app.app)).cookie);
     const adminAgents = await (await admin.get("/api/projects/default_project/agents")).json() as {agents:{agentId:string}[]};
     expect(adminAgents.agents.map(agent => agent.agentId)).toContain("default_agent");

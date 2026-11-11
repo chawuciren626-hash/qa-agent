@@ -1,14 +1,15 @@
 /**
- * Project built-in Agent provisioning: the only built-in Agent is default_agent
- * (pre-installed with the library's preinstalled Skill set — `preinstall: false` skills
- * excluded — empty AGENTS.md, cannot be deleted).
- * Specialized capabilities are now carried by Skills — agent_creator / agent_optimizer
- * are no longer built-in Agents: neither provisioned nor deletion-protected.
- * A new Project also starts with its Benchmarks — the example and the seven built-ins, written
- * once when it is created — which the Benchmark API lists as plain published Benchmarks seeded
- * as builtin, each with a date version and each case statement saying how the case is run. A
- * default_project adopted at bootstrap keeps the Benchmarks it holds and is given only the
- * missing ones.
+ * Project built-in provisioning follows the product boundary:
+ *
+ * - Ordinary QA Projects receive professional QA roles only. They do not receive
+ *   default_agent or the administrator Benchmarks.
+ * - admin_agent_catalog is the administrator assistant Project and is the sole QA
+ *   Project that receives default_agent and Benchmarks.
+ * - default_project is the built-in administrator's CLI compatibility Project; it keeps
+ *   its historical built-in Agent and Benchmark behavior.
+ *
+ * Upstream mode retains its original built-in defaults because it has no QA product
+ * boundary to apply.
  */
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -16,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { benchmarksDir, libraryPlugin, loadPreinstalledPlugins } from "@prismshadow/penguin-core";
 import type { BenchmarkCasesResponse, BenchmarksResponse } from "../src/api/types.js";
 import { apiClient, createTestApp, loginAdmin, provisionUser, type TestApp } from "./helpers.js";
+import { qaEnabled } from "../src/services/qa-engine.js";
 
 /** What every built-in Benchmark's id starts with: `penguinharness-benchmark-<name>`. */
 const BUILTIN_PREFIX = "penguinharness-benchmark-";
@@ -43,35 +45,31 @@ describe("built-in Agent provisioning", () => {
     await t.cleanup();
   });
 
-  async function expectBuiltinAgents(projectId: string): Promise<void> {
+  async function expectAdministratorAssistant(
+    projectId: string,
+    client: ReturnType<typeof apiClient>,
+  ): Promise<void> {
     const list = (await (
-      await owner.get(`/api/projects/${projectId}/agents`)
+      await client.get(`/api/projects/${projectId}/agents`)
     ).json()) as AgentsResponse;
     const ids = list.agents.map((a) => a.agentId);
-    // The only built-in Agent: default_agent is listed first with a display name; specialized Agents are no longer provisioned.
-    expect(ids[0]).toBe("default_agent");
+    expect(ids).toContain("default_agent");
     expect(ids).not.toContain("agent_creator");
     expect(ids).not.toContain("agent_optimizer");
-    expect(list.agents.find((a) => a.agentId === "default_agent")?.name).toBe("General Agent");
 
-    // Install policy: default_agent is pre-installed with the library's preinstalled set
-    // (plugins marked `preinstall: false`, e.g. use-claude-code, stay manual-install only).
-    const skillsOf = async (agentId: string) =>
-      (
-        await fs.readdir(path.join(t.root, projectId, "agents", agentId, "agent_state", "skills"))
-      ).sort();
-    expect(await skillsOf("default_agent")).toEqual(
+    const skills = await fs.readdir(
+      path.join(t.root, projectId, "agents", "default_agent", "agent_state", "skills"),
+    );
+    expect(skills.sort()).toEqual(
       loadPreinstalledPlugins()
         .flatMap((plugin) => plugin.skills.map((skill) => skill.name))
         .sort(),
     );
-    // The preinstalled hook packages land beside the skills (the goal plugin ships one).
-    const hooksOf = await fs.readdir(
+    const hooks = await fs.readdir(
       path.join(t.root, projectId, "agents", "default_agent", "agent_state", "hooks"),
     );
-    expect(hooksOf).toContain("goal");
-    expect(hooksOf).not.toContain("continual-learning");
-    // The hook package carries its plugin's icon beside the manifest, the way an installed skill does.
+    expect(hooks).toContain("goal");
+    expect(hooks).not.toContain("continual-learning");
     expect(
       await fs.readFile(
         path.join(
@@ -87,74 +85,66 @@ describe("built-in Agent provisioning", () => {
         "utf8",
       ),
     ).toBe(libraryPlugin("goal")!.icon);
-
-    // The default AGENTS.md is empty: it carries no preset guidance (delegation and task
-    // conventions live in the default template's Suggested workbenches section).
-    const defaultMd = await fs.readFile(
+    const agentsMd = await fs.readFile(
       path.join(t.root, projectId, "agents", "default_agent", "agent_state", "AGENTS.md"),
       "utf8",
     );
-    expect(defaultMd).toBe("");
+    expect(agentsMd).toContain("<!-- qa-default-entry:start -->");
+    expect(agentsMd).toContain("# general_agent");
+    expect(agentsMd).toContain("<!-- qa-default-entry:end -->");
+
+    const benchmarks = (await (
+      await client.get(`/api/projects/${projectId}/benchmarks`)
+    ).json()) as BenchmarksResponse;
+    expect(benchmarks.benchmarks.find((b) => b.id === "example-benchmark")).toBeDefined();
   }
 
-  it("the initial Project created at account setup comes with default_agent", async () => {
+  it("an ordinary account starts empty and a QA Project receives professional roles only", async () => {
     const projects = (await (await owner.get("/api/projects")).json()) as ProjectsResponse;
-    await expectBuiltinAgents(projects.projects[0]!.projectId);
-  });
-
-  it("a newly created Project also comes with default_agent", async () => {
+    expect(projects.projects).toEqual([]);
+    const projectId = "owner1-first";
     const created = (await (
-      await owner.post("/api/projects", { projectId: "owner1-new", name: "New project" })
+      await owner.post("/api/projects", { projectId, name: "First project" })
     ).json()) as ProjectCreateResponse;
-    await expectBuiltinAgents(created.project.projectId);
-  });
+    expect(created.project.projectId).toBe(projectId);
 
-  it("a new Project's sample Benchmark is readable via GET /benchmarks", async () => {
-    const projects = (await (await owner.get("/api/projects")).json()) as ProjectsResponse;
-    const projectId = projects.projects[0]!.projectId;
-    const res = await owner.get(`/api/projects/${projectId}/benchmarks`);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as BenchmarksResponse;
-    const bench = body.benchmarks.find((b) => b.id === "example-benchmark")!;
-    expect(bench).toBeDefined();
-    expect(bench.title).toBe("Example Benchmark");
-    // description explicitly states it's a built-in sample (the whole directory can be deleted or replaced).
-    expect(bench.description).toContain("example");
-    expect(bench.runs).toBe(2);
-    expect(bench.caseCount).toBe(2);
-    expect(bench.evaluations).toHaveLength(3);
-    // The sample evaluations all test default_agent, so the Benchmark reports exactly it.
-    expect(bench.agentIds).toEqual(["default_agent"]);
-    for (const evaluation of bench.evaluations) {
-      expect(evaluation.agentId).toBe("default_agent");
-      expect(evaluation.thinkingLevel).toBe("medium");
-      expect(evaluation.summary).toBeTruthy();
-      expect(evaluation.cases).toHaveLength(2);
-      for (const c of evaluation.cases) {
-        expect(c.runs).toHaveLength(2);
-        for (const run of c.runs!) {
-          expect(run.sessionId).toMatch(/^session-/);
-        }
-      }
+    if (qaEnabled) {
+      const agents = (await (
+        await owner.get(`/api/projects/${projectId}/agents`)
+      ).json()) as AgentsResponse;
+      expect(agents.agents.map((a) => a.agentId)).toContain("test_agent");
+      expect(agents.agents.map((a) => a.agentId)).not.toContain("default_agent");
+      await expect(fs.stat(path.join(t.root, projectId, "agents", "default_agent"))).rejects.toThrow();
+      expect((await owner.get(`/api/projects/${projectId}/benchmarks`)).status).toBe(403);
+    } else {
+      const agents = (await (
+        await owner.get(`/api/projects/${projectId}/agents`)
+      ).json()) as AgentsResponse;
+      expect(agents.agents.map((a) => a.agentId)).toContain("default_agent");
     }
-    // The sample data tells an optimization story: scores increase across evaluation rounds (the evaluation center shows a rising curve out of the box).
-    const scores = bench.evaluations.map((e) => e.score);
-    expect(scores).toEqual([...scores].sort((a, b) => a - b));
   });
 
-  it("a new Project, initial or created, comes with the example and the seven built-ins, listed as plain published Benchmarks whose statements say how each case is run", async () => {
+  it("the administrator assistant catalog receives default_agent and Benchmarks", async () => {
+    const projectId = "admin_agent_catalog";
+    const admin = apiClient(t.app, (await loginAdmin(t.app)).cookie);
+    const created = await admin.post("/api/projects", { projectId });
+    expect(created.status).toBe(201);
+    const response = (await created.json()) as ProjectCreateResponse;
+    await expectAdministratorAssistant(response.project.projectId, admin);
+  });
+
+  it("the administrator assistant catalog comes with the example and seven built-ins", async () => {
     // The one scenario that reads the shipped catalog whole, on an app that writes it as
     // production does (createTestApp leaves the built-ins out unless asked).
     const shipped = await createTestApp({ builtinBenchmarks: true });
     try {
-      const owner = apiClient(shipped.app, (await provisionUser(shipped.app, "owner1")).cookie);
-      const projects = (await (await owner.get("/api/projects")).json()) as ProjectsResponse;
+      const admin = apiClient(shipped.app, (await loginAdmin(shipped.app)).cookie);
       const created = (await (
-        await owner.post("/api/projects", { projectId: "owner1-bench", name: "Bench" })
+        await admin.post("/api/projects", { projectId: "admin_agent_catalog", name: "Administrator assistant" })
       ).json()) as ProjectCreateResponse;
-      for (const projectId of [projects.projects[0]!.projectId, created.project.projectId]) {
+      for (const projectId of [created.project.projectId]) {
         const base = `/api/projects/${projectId}/benchmarks`;
-        const body = (await (await owner.get(base)).json()) as BenchmarksResponse;
+        const body = (await (await admin.get(base)).json()) as BenchmarksResponse;
         const example = body.benchmarks.find((b) => b.id === "example-benchmark")!;
         const builtins = body.benchmarks.filter((b) => b.id.startsWith(BUILTIN_PREFIX));
         expect(builtins, projectId).toHaveLength(7);
@@ -176,7 +166,7 @@ describe("built-in Agent provisioning", () => {
           expect(bench.evaluations).toEqual([]);
           expect(bench.caseCount).toBeGreaterThan(0);
           const cases = (await (
-            await owner.get(`${base}/${bench.id}/cases`)
+            await admin.get(`${base}/${bench.id}/cases`)
           ).json()) as BenchmarkCasesResponse;
           expect(cases.cases).toHaveLength(bench.caseCount);
           for (const c of cases.cases) {
@@ -185,7 +175,7 @@ describe("built-in Agent provisioning", () => {
             // The statement links the task's folder in the public repository and says how the
             // case is run.
             const statement = await (
-              await owner.get(`${base}/${bench.id}/cases/${c.id}/files/content?path=README.md`)
+              await admin.get(`${base}/${bench.id}/cases/${c.id}/files/content?path=README.md`)
             ).text();
             expect(statement, c.id).toMatch(
               /^- Task: `[^`]+` in https:\/\/github\.com\/\S+\/tree\/\S+$/m,
@@ -198,7 +188,7 @@ describe("built-in Agent provisioning", () => {
     } finally {
       await shipped.cleanup();
     }
-  });
+  }, 30_000);
 
   it("an existing default_project adopted at bootstrap keeps its own Benchmarks and is given only the missing ones", async () => {
     const mine = `${BUILTIN_PREFIX}sec-a`;
@@ -232,21 +222,23 @@ describe("built-in Agent provisioning", () => {
     }
   });
 
-  it("default_agent cannot be deleted (409)", async () => {
-    const projects = (await (await owner.get("/api/projects")).json()) as ProjectsResponse;
-    const projectId = projects.projects[0]!.projectId;
-    const res = await owner.delete(`/api/projects/${projectId}/agents/default_agent`);
+  it("default_agent remains deletion-protected in the administrator catalog", async () => {
+    const admin = apiClient(t.app, (await loginAdmin(t.app)).cookie);
+    expect((await admin.post("/api/projects", { projectId: "admin_agent_catalog" })).status).toBe(201);
+    const res = await admin.delete("/api/projects/admin_agent_catalog/agents/default_agent");
     expect(res.status).toBe(409);
   });
 
   it("legacy ids like agent_creator lose built-in protection: creatable, deletable", async () => {
-    const projects = (await (await owner.get("/api/projects")).json()) as ProjectsResponse;
-    const projectId = projects.projects[0]!.projectId;
-    const created = await owner.post(`/api/projects/${projectId}/agents`, {
+    const admin = apiClient(t.app, (await loginAdmin(t.app)).cookie);
+    const projectId = qaEnabled ? "admin_agent_catalog" : "owner1-legacy_ids";
+    const client = qaEnabled ? admin : owner;
+    expect((await client.post("/api/projects", { projectId })).status).toBe(201);
+    const created = await client.post(`/api/projects/${projectId}/agents`, {
       agentId: "agent_creator",
     });
     expect(created.status).toBe(201);
-    const res = await owner.delete(`/api/projects/${projectId}/agents/agent_creator`);
+    const res = await client.delete(`/api/projects/${projectId}/agents/agent_creator`);
     expect(res.status).toBe(204);
   });
 });

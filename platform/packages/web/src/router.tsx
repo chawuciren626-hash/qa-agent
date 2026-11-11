@@ -126,7 +126,7 @@ function RequireAuth({ admin = false }: { admin?: boolean }) {
   useRuntimeLanguages(!admin && user != null);
   if (user === undefined) return null; // GET /api/me is still initializing
   if (user === null) return <Navigate to="/login" replace />;
-  if (!admin && module === "plugins") return <Navigate to="/qa/project" replace />;
+  if (!admin && module === "plugins") return <Navigate to="/qa/projects" replace />;
   if(module && !allowedModule(user,module)) return <div className="p-8"><h1>没有此模块的访问权限</h1><p>请联系管理员调整授权。</p><a href="/user/chat">返回工作台</a></div>;
   if(admin && !user.isAdmin) return <div className="p-8"><h1>仅管理员可访问管理后台</h1><a href="/user/">返回用户端</a></div>;
   const workspace = (
@@ -160,7 +160,7 @@ function RequireAuthBare({ children }: { children: React.ReactNode }) {
 function LoginRoute() {
   const { user } = useAuth();
   if (user === undefined) return null;
-  if (user) return <Navigate to="/qa/project" replace />;
+  if (user) return <Navigate to="/qa/projects" replace />;
   return <IntegratedAccountPage login fallback={<LoginPage />} />;
 }
 
@@ -216,7 +216,7 @@ function appRoutes(admin = false, accountCenter = false) {
         />
       ))}
       <Route element={<RequireAuth admin={admin} />}>
-        <Route index element={<Navigate to={admin ? "/overview" : "/qa/project"} replace />} />
+        <Route index element={<Navigate to={admin ? "/overview" : "/qa/projects"} replace />} />
         {admin && <>
           <Route path="/overview" element={<AdminOverviewPage />} />
           <Route path="/chat/:sessionId?" element={<AdminAssistantPage />} />
@@ -263,7 +263,7 @@ function appRoutes(admin = false, accountCenter = false) {
         </Route>
         {/* Settings and user management live in the settings dialog now (see
             SettingsDialog); their old routes fall through to the catch-all. */}
-        <Route path="*" element={<Navigate to={admin ? "/overview" : "/qa/project"} replace />} />
+        <Route path="*" element={<Navigate to={admin ? "/overview" : "/qa/projects"} replace />} />
       </Route>
     </Route>,
   );

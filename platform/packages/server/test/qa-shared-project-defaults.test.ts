@@ -23,18 +23,18 @@ it.skipIf(!process.env.AITEST_ENGINE_ROOT)("creates QA roles as references with 
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-it.skipIf(!process.env.AITEST_ENGINE_ROOT)("initializes a new user's default and two later projects with separate memories and shared references", async () => {
+it.skipIf(!process.env.AITEST_ENGINE_ROOT)("initializes explicitly created Projects with separate memories and shared professional-role references", async () => {
   const app = await createTestApp();
   const prior = process.env.AITEST_SHARED_AGENT_RUNTIME;
   try {
     const roles = (qaEngineModule("qa-project-bootstrap").qaRoles() as { id: string }[]).map(role => role.id);
     const authState = app.boot.tree.api<AuthState>("RuntimeModule", "AuthState");
-    authState.accountClient = { listSharedRoleIds: async () => ["default_agent", ...roles] } as unknown as AuthState["accountClient"];
+    authState.accountClient = { listSharedRoleIds: async () => roles } as unknown as AuthState["accountClient"];
     process.env.AITEST_SHARED_AGENT_RUNTIME = "1";
     const userId = "shared_user";
     await app.deps.adminService.createUser(userId, "local-test-password");
     const owner = { userId, isAdmin: false } as Parameters<typeof app.deps.projectService.createProject>[0];
-    for (const suffix of ["second", "third"]) {
+    for (const suffix of ["default_project", "second", "third"]) {
       await app.deps.projectService.createProject(owner, `${userId}-${suffix}`);
     }
     for (const projectId of [`${userId}-default_project`, `${userId}-second`, `${userId}-third`]) {
@@ -47,12 +47,41 @@ it.skipIf(!process.env.AITEST_ENGINE_ROOT)("initializes a new user's default and
       }
     }
     await app.deps.adminService.createUser("other_user", "local-test-password");
+    await app.deps.projectService.createProject(
+      { userId: "other_user", isAdmin: false } as Parameters<typeof app.deps.projectService.createProject>[0],
+      "other_user-default_project",
+    );
     const memory = (projectId: string) => path.join(app.root, projectId, "agents", "test_agent",
       "agent_state", "memory", "user", "MEMORY.md");
     await fs.writeFile(memory(`${userId}-default_project`), "private marker for the first project");
     for (const projectId of [`${userId}-second`, `${userId}-third`, "other_user-default_project"]) {
       expect(await fs.readFile(memory(projectId), "utf8")).not.toContain("private marker");
     }
+  } finally {
+    if (prior === undefined) delete process.env.AITEST_SHARED_AGENT_RUNTIME;
+    else process.env.AITEST_SHARED_AGENT_RUNTIME = prior;
+    await app.cleanup();
+  }
+});
+
+it.skipIf(!process.env.AITEST_ENGINE_ROOT)("ordinary Projects do not require default_agent, while the administrator assistant catalog does", async () => {
+  const app = await createTestApp();
+  const prior = process.env.AITEST_SHARED_AGENT_RUNTIME;
+  try {
+    const roles = (qaEngineModule("qa-project-bootstrap").qaRoles() as { id: string }[]).map(role => role.id);
+    const authState = app.boot.tree.api<AuthState>("RuntimeModule", "AuthState");
+    authState.accountClient = { listSharedRoleIds: async () => roles } as unknown as AuthState["accountClient"];
+    process.env.AITEST_SHARED_AGENT_RUNTIME = "1";
+    await app.deps.adminService.createUser("role_boundary", "local-test-password");
+    const owner = { userId: "role_boundary", isAdmin: false } as Parameters<typeof app.deps.projectService.createProject>[0];
+    const project = await app.deps.projectService.createProject(owner, "role_boundary-ordinary");
+    const agentDir = path.join(app.root, project.projectId, "agents");
+    await expect(fs.stat(path.join(agentDir, "default_agent"))).rejects.toThrow();
+    for (const role of roles) expect((await fs.stat(path.join(agentDir, role))).isDirectory()).toBe(true);
+
+    const admin = { userId: "admin", isAdmin: true } as Parameters<typeof app.deps.projectService.createProject>[0];
+    await expect(app.deps.projectService.createProject(admin, "admin_agent_catalog"))
+      .rejects.toMatchObject({ code: "shared_roles_incomplete" });
   } finally {
     if (prior === undefined) delete process.env.AITEST_SHARED_AGENT_RUNTIME;
     else process.env.AITEST_SHARED_AGENT_RUNTIME = prior;

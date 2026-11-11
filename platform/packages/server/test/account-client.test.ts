@@ -2,20 +2,27 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { zipSync, strToU8 } from "fflate";
 import { createTestApp, restartTestApp, apiClient, loginUser } from "./helpers.js";
 import type { TestApp } from "./helpers.js";
 import { readAccountClientConfig } from "../src/auth/account-client.js";
 import { publishedResourceRef, resolvedBundleHash } from "../src/auth/published-bundle.js";
+import { localAdapterHash } from "../src/auth/trusted-local-adapters.js";
 import type { AuthState } from "../src/hmr/capabilities.js";
 import type { Http } from "../src/http/app.js";
 
 let server:Server, app:TestApp|undefined, origin:string, offline=false, wrongService=false, roleVersion=1;
+let roleAgentId="test_agent", rolePlugins:ReturnType<typeof trustedAdapter>[]=[];
 let modules:string[], resourceIds:string[], disabled=false, memoryValue="";
 const tokens=new Map<string,string>();
 const captured:{path:string;body:unknown}[]=[];
+function trustedAdapter(id:string,pluginName:string,adapterHash:string){
+  return {id,kind:"plugins" as const,name:pluginName,description:"",payload:{source:"trusted-local-adapter",pluginName,adapterVersion:"1.0.0",adapterHash},audience:["*"],revision:0,version:1,published:true,updatedAt:"2026-11-04T00:00:00.000Z"};
+}
 beforeEach(async()=>{
   tokens.clear();captured.length=0;offline=false;wrongService=false;roleVersion=1;
+  roleAgentId="test_agent";rolePlugins=[];
   modules=["chat","projects","models","plugins","skills"];disabled=false;memoryValue="";
   resourceIds=['a'.repeat(36)];
   server=createServer(async(req,res)=>{
@@ -36,16 +43,18 @@ beforeEach(async()=>{
     if(!id){res.writeHead(401);res.end('{}');return;}
     if(req.url==="/api/control/access"){res.end(JSON.stringify({modules,resourceIds}));return;}
     if(req.url?.startsWith('/api/control/private/agents/')&&req.url.includes('/memory')){res.end(JSON.stringify({entries:memoryValue?[{name:'notes',value:memoryValue}]:[]}));return;}
-    if(req.url==="/api/control/catalog/roles"){res.end(JSON.stringify({roles:[{agentId:'test_agent',resourceId:'a'.repeat(36),version:roleVersion}]}));return;}
+    if(req.url==="/api/control/catalog/roles"){res.end(JSON.stringify({roles:[{agentId:roleAgentId,resourceId:'a'.repeat(36),version:roleVersion}]}));return;}
     if(req.url==="/api/control/catalog/roles/resolved"){
-      const resource={id:'a'.repeat(36),kind:'agents' as const,name:'Shared QA',description:'',payload:{agentId:'test_agent',prompt:'test',agentsMd:`Shared QA instructions v${roleVersion}`,scheduleTemplates:[{name:'daily_check',prompt:'Check the project',period:'1d'}],apiTemplate:{approvalMode:'read-only',maxConcurrentRuns:2}},audience:['*'],revision:0,version:roleVersion,published:true,updatedAt:'2026-11-04T00:00:00.000Z'};
-      const versions=[publishedResourceRef(resource)];
-      res.end(JSON.stringify({bundles:[{agentId:'test_agent',rootId:resource.id,versions,bundleHash:resolvedBundleHash(versions),resources:[resource]}]}));return;
+      const resource={id:'a'.repeat(36),kind:'agents' as const,name:'Shared QA',description:'',payload:{agentId:roleAgentId,prompt:'test',agentsMd:`Shared QA instructions v${roleVersion}`,scheduleTemplates:[{name:'daily_check',prompt:'Check the project',period:'1d'}],apiTemplate:{approvalMode:'read-only',maxConcurrentRuns:2},...(rolePlugins.length?{pluginResources:rolePlugins.map(plugin=>plugin.id)}:{})},audience:['*'],revision:0,version:roleVersion,published:true,updatedAt:'2026-11-04T00:00:00.000Z'};
+      const resources=[resource,...rolePlugins];
+      const versions=resources.map(publishedResourceRef);
+      res.end(JSON.stringify({bundles:[{agentId:roleAgentId,rootId:resource.id,versions,bundleHash:resolvedBundleHash(versions),resources}]}));return;
     }
     if(req.url==="/api/control/catalog/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/resolved"){
-      const resource={id:'a'.repeat(36),kind:'agents' as const,name:'Shared QA',description:'',payload:{agentId:'test_agent',prompt:'test',agentsMd:`Shared QA instructions v${roleVersion}`,scheduleTemplates:[{name:'daily_check',prompt:'Check the project',period:'1d'}],apiTemplate:{approvalMode:'read-only',maxConcurrentRuns:2}},audience:['*'],revision:0,version:roleVersion,published:true,updatedAt:'2026-11-04T00:00:00.000Z'};
-      const versions=[publishedResourceRef(resource)];
-      res.end(JSON.stringify({rootId:resource.id,versions,bundleHash:resolvedBundleHash(versions),resources:[resource]}));return;
+      const resource={id:'a'.repeat(36),kind:'agents' as const,name:'Shared QA',description:'',payload:{agentId:roleAgentId,prompt:'test',agentsMd:`Shared QA instructions v${roleVersion}`,scheduleTemplates:[{name:'daily_check',prompt:'Check the project',period:'1d'}],apiTemplate:{approvalMode:'read-only',maxConcurrentRuns:2},...(rolePlugins.length?{pluginResources:rolePlugins.map(plugin=>plugin.id)}:{})},audience:['*'],revision:0,version:roleVersion,published:true,updatedAt:'2026-11-04T00:00:00.000Z'};
+      const resources=[resource,...rolePlugins];
+      const versions=resources.map(publishedResourceRef);
+      res.end(JSON.stringify({rootId:resource.id,versions,bundleHash:resolvedBundleHash(versions),resources}));return;
     }
     if(req.url==="/api/me"){res.end(JSON.stringify({user:{userId:id,isAdmin:id==="admin",disabled,passwordIsInitial:false,createdAt:new Date().toISOString()}}));return;}
     res.end('{}');
@@ -73,7 +82,6 @@ describe('central identity with full local application',()=>{
     const created=await user.post('/api/projects',{projectId});
     if(created.status!==201)throw Error(await created.text());
     // Provision the published Agent through the host; ordinary users cannot create definitions.
-    await app!.deps.agentService.createAgent(projectId,'test_agent','Test Agent');
     const resourceId='a'.repeat(36);
     const startAt=new Date(Date.now()+24*60*60*1000).toISOString();
     const schedule=await user.post('/api/control/agent-template/apply',{resourceId,projectId,kind:'schedule',name:'daily_check',startAt,enabled:true});
@@ -102,6 +110,33 @@ describe('central identity with full local application',()=>{
     expect(bundle.resources[0]?.payload.prompt).toBe('test');
     expect(captured.some(request=>request.path==='/api/control/catalog/roles')).toBe(true);
     expect(captured.every(request=>request.body===undefined||request.path==='/api/auth/login')).toBe(true);
+  });
+  it('maps the published general_agent role to the managed local default_agent',async()=>{
+    const engineRoot=path.resolve(process.cwd(),'../../..');
+    const previousEngineRoot=process.env.AITEST_ENGINE_ROOT;
+    process.env.AITEST_ENGINE_ROOT=engineRoot;
+    try{
+      const [entryHash,goalHash]=await Promise.all([
+        localAdapterHash(engineRoot,'qa-default-entry'),
+        localAdapterHash(engineRoot,'goal'),
+      ]);
+      roleAgentId='general_agent';
+      rolePlugins=[
+        trustedAdapter('b'.repeat(36),'qa-default-entry',entryHash),
+        trustedAdapter('c'.repeat(36),'goal',goalHash),
+      ];
+      const login=await loginUser(app!.app,'ordinary','central-test-password');
+      const localId=(await (await apiClient(app!.app,login.cookie).get('/api/me')).json() as {user:{userId:string}}).user.userId;
+      const client=app!.boot.tree.api<AuthState>('RuntimeModule','AuthState').accountClient!;
+      expect(await client.listSharedRoleIds(localId)).toContain('default_agent');
+      const bundle=await client.resolveRoleBundle(localId,'default_agent') as
+        | {resources:{payload:{agentId:string}}[]}
+        | null;
+      expect(bundle?.resources[0]?.payload.agentId).toBe('general_agent');
+    }finally{
+      if(previousEngineRoot===undefined)delete process.env.AITEST_ENGINE_ROOT;
+      else process.env.AITEST_ENGINE_ROOT=previousEngineRoot;
+    }
   });
   it('pins a published role for a local session without sending project coordinates',async()=>{
     const login=await loginUser(app!.app,'ordinary','central-test-password');
@@ -195,8 +230,8 @@ describe('central identity with full local application',()=>{
     const login=await loginUser(app!.app,'ordinary','central-test-password');
     const api=apiClient(app!.app,login.cookie);
     const me=await (await api.get('/api/me')).json() as {user:{userId:string}};
-    const projects=await (await api.get('/api/projects')).json() as {projects:{projectId:string}[]};
-    const project=projects.projects[0]!.projectId;
+    const project=`${me.user.userId}-feature_routes`;
+    expect((await api.post('/api/projects',{projectId:project})).status).toBe(201);
     const agents=await (await api.get(`/api/projects/${project}/agents`)).json() as {agents:{agentId:string}[]};
     const agent=agents.agents[0]!.agentId;
     const paths=[
@@ -262,7 +297,9 @@ describe('central identity with full local application',()=>{
     const peerLogin=await loginUser(app!.app,'peer','central-test-password');
     const peer=apiClient(app!.app,peerLogin.cookie);
     const peerId=(await (await peer.get('/api/me')).json() as {user:{userId:string}}).user.userId;
-    const projectId=(await (await owner.get('/api/projects')).json() as {projects:{projectId:string}[]}).projects[0]!.projectId;
+    const ownerId=(await (await owner.get('/api/me')).json() as {user:{userId:string}}).user.userId;
+    const projectId=`${ownerId}-personal_resources`;
+    expect((await owner.post('/api/projects',{projectId})).status).toBe(201);
     expect((await owner.post(`/api/projects/${projectId}/members`,{userId:peerId})).status).toBe(201);
     const dataBase64=Buffer.from(zipSync({'SKILL.md':strToU8('---\nname: central-member\ndescription: Personal test guidance\n---\nUse project-specific checks.')})).toString('base64');
     const response=await peer.post(`/api/projects/${projectId}/agents/qa/personal-resources`,{kind:'skill',dataBase64});
@@ -308,8 +345,9 @@ describe('central identity with full local application',()=>{
   it('keeps local template version records scoped to visible projects without sending them centrally',async()=>{
     const login=await loginUser(app!.app,'ordinary','central-test-password');
     const api=apiClient(app!.app,login.cookie);
-    const projects=await (await api.get('/api/projects')).json() as {projects:{projectId:string}[]};
-    const own=projects.projects[0]!.projectId;
+    const me=await (await api.get('/api/me')).json() as {user:{userId:string}};
+    const own=`${me.user.userId}-template_records`;
+    expect((await api.post('/api/projects',{projectId:own})).status).toBe(201);
     const response=await api.get('/api/control/applied?projectId='+encodeURIComponent(own));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({applied:[]});

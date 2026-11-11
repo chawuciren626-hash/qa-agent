@@ -2,8 +2,8 @@
  * Admin user backend: user list / create / reset password / delete.
  *
  * - Create: username is the user_id (^[a-z][a-z0-9_-]{1,31}$); admin sets the initial
- *   password, flagged with password_is_initial; a default Project `proj-<username>` is
- *   auto-created, rolling back the user row on failure.
+ *   password, flagged with password_is_initial. Ordinary users start with no Project and
+ *   create their first one from Project management.
  * - Reset password: also flags the password as initial and clears all of the user's
  *   login sessions (forcing re-login).
  * - Delete: the built-in admin cannot be deleted; Projects owned by the user are
@@ -71,13 +71,6 @@ export class AdminService implements Admin {
       createdAt: this.clock.now().toISOString(),
     };
     this.users.insert(user);
-    try {
-      await this.projectService.provisionInitialProject(user, false);
-    } catch (err) {
-      // Compensation: roll back the user row if default Project creation fails (e.g. proj-<username> already taken).
-      this.users.delete(user.userId);
-      throw err;
-    }
     return toUserInfo(user);
   }
 

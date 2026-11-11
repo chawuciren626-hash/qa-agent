@@ -81,7 +81,7 @@ export class AuthService implements Auth {
    * printed survives a platform push; everything else about auth is rebuilt with the App.
    */
   @Use() private readonly state!: AuthState;
-  /** Provisions the initial Project at signup — declared at the consumer, below. */
+  /** Provisions the built-in administrator's CLI compatibility Project. */
   @Use() private readonly provisioner!: InitialProjectProvisioner;
   @Use() private readonly config!: Config;
   @Use() private readonly clock!: Clock;
@@ -131,8 +131,8 @@ export class AuthService implements Auth {
 
   /**
    * Startup seeding (idempotent): creates the built-in admin and adopts default_project when
-   * the users table is empty; if the initial Project fails, the user row is rolled back and
-   * the server retries on next startup.
+   * the users table is empty; if compatibility provisioning fails, the user row is rolled back
+   * and the server retries on next startup.
    */
   async seedAdmin(): Promise<void> {
     if (this.users.count() > 0) return;
@@ -155,7 +155,7 @@ export class AuthService implements Auth {
     };
     this.users.insert(user);
     try {
-      await this.provisioner.provisionInitialProject(user, true);
+      await this.provisioner.provisionAdminCompatibilityProject(user);
     } catch (err) {
       this.users.delete(user.userId);
       throw err;
@@ -412,8 +412,8 @@ export class AuthService implements Auth {
   }
 }
 
-/** What signing a new user in needs of project administration — declared at the consumer. */
+/** What seeding the built-in administrator needs of Project administration. */
 @Interface()
 export abstract class InitialProjectProvisioner {
-  abstract provisionInitialProject(user: UserRow, isAdmin: boolean): Promise<void>;
+  abstract provisionAdminCompatibilityProject(user: UserRow): Promise<void>;
 }

@@ -1,8 +1,9 @@
 import type { MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { ADMIN_ASSISTANT_PROJECT } from "../services/project-service.js";
 
 /** The administrator's assistant runs in one isolated central Project. */
-export const CENTRAL_ASSISTANT_PROJECT = "admin_agent_catalog";
+export const CENTRAL_ASSISTANT_PROJECT = ADMIN_ASSISTANT_PROJECT;
 
 export function centralAssistantPath(method: string, path: string): boolean {
   if (path === "/api/events") return method === "GET";

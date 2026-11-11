@@ -1817,6 +1817,9 @@ export function Sidebar({
         <ProjectSettingsDialog
           open={projectSettingsOpen}
           onClose={() => setProjectSettingsOpen(false)}
+          onProjectDeleted={(remainingProjectId) => {
+            if (remainingProjectId === null) navigate("/qa/projects", { replace: true });
+          }}
         />
       )}
       {/* Rename chat */}

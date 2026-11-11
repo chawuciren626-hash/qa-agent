@@ -1842,7 +1842,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     appliedContext.current = contextKey;
     // Sync the fetch context and reset the loaded pages in the same synchronous step:
     // reload() picks the pages to refetch from pageState, so a Project switch can't carry
-    // page state across via shared Agent ids (default_agent exists in every Project).
+    // page state across via shared Agent ids.
     // deletedSessionIds is deliberately NOT reset: session ids are globally unique and never
     // reused, so a Session deleted before a Project switch is still deleted after it — and
     // re-arming its lookup would just re-create the 404 this set exists to prevent.

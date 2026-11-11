@@ -73,7 +73,7 @@ import { maskApiKey } from "./project-config-service.js";
 import { Component, Use } from "@prismshadow/penguin-core/kernel";
 import type { Config, Paths } from "../hmr/capabilities.js";
 import type { AgentConfig } from "../mechanisms/agents.js";
-import type { ResolvedPublishedBundle } from "../auth/published-bundle.js";
+import { localAgentId, type ResolvedPublishedBundle } from "../auth/published-bundle.js";
 
 const COMPACTION_MODES = ["summarize", "discard"] as const;
 
@@ -158,7 +158,8 @@ export class AgentConfigService implements AgentConfig {
   async getConfig(projectId: string, agentId: string, published?: ResolvedPublishedBundle): Promise<AgentConfigView> {
     await this.requireExists(projectId, agentId);
     const shared = await fs.stat(path.join(agentStateDir(this.root, projectId, agentId), "shared-agent.json")).then(stat => stat.isFile(), () => false);
-    if (shared && (!published || published.resources[0]?.payload.agentId !== agentId))
+    const publishedAgentId = published?.resources[0]?.payload.agentId;
+    if (shared && (!published || typeof publishedAgentId !== "string" || localAgentId(publishedAgentId) !== agentId))
       throw new HttpError(503, "shared_agent_unavailable", "共享智能体定义暂不可用。");
     const yamlPath = systemConfigPath(this.root, projectId, agentId);
     const localYaml = await fs.readFile(yamlPath, "utf8").catch((error: NodeJS.ErrnoException) => {
