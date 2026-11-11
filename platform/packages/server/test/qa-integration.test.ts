@@ -108,7 +108,7 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () =>
     expect((await owner.post("/api/projects", {projectId: other})).status).toBe(201);
     expect((await owner.get(`/api/projects/${other}/agents/test_agent/memory/library/${record.id}`)).status).toBe(404);
   });
-  it("session extensions check project membership and reject native open on Web", async () => {
+  it("session extensions enforce session ownership and reject native open on Web", async () => {
     await owner.put(`/api/projects/${project}/models`, {
       defaultModel: { provider: "anthropic", modelId: "claude-sonnet-4-6" },
       models: [{ provider: "anthropic", modelId: "claude-sonnet-4-6" }],
@@ -117,21 +117,30 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () =>
     expect(result.status).toBe(201);
     const { session } = (await result.json()) as SessionCreateResponse;
     const prefix = `/api/sessions/${session.sessionId}`;
-    expect((await outsider.get(prefix + "/human-actions")).status).toBe(404);
-    expect((await member.get(prefix + "/human-actions")).status).toBe(200);
-    expect((await outsider.get(prefix + "/files/evidence?path=anything")).status).toBe(404);
-    expect((await member.get(prefix + "/files/evidence?path=../../credentials.json")).status).toBe(
+    expect((await owner.get(prefix)).status).toBe(200);
+    expect((await owner.get(prefix + "/human-actions")).status).toBe(200);
+    expect((await owner.get(prefix + "/files/evidence?path=../../credentials.json")).status).toBe(
       400,
     );
-    expect((await member.post(prefix + "/files/open-deliverable?path=anything", {})).status).toBe(
+    expect((await owner.post(prefix + "/files/open-deliverable?path=anything", {})).status).toBe(
       403,
     );
-    expect((await member.post(prefix + "/human-actions", { decision: "invented" })).status).toBe(
+    expect((await owner.post(prefix + "/human-actions", { decision: "invented" })).status).toBe(
       400,
     );
+    expect((await outsider.get(prefix + "/human-actions")).status).toBe(404);
+    expect((await member.get(prefix + "/human-actions")).status).toBe(404);
+    expect((await outsider.get(prefix + "/files/evidence?path=anything")).status).toBe(404);
+    expect((await member.get(prefix + "/files/evidence?path=anything")).status).toBe(404);
+    expect((await member.post(prefix + "/files/open-deliverable?path=anything", {})).status).toBe(
+      404,
+    );
+    expect((await member.post(prefix + "/human-actions", { decision: "continue" })).status).toBe(
+      404,
+    );
     const admin = apiClient(app.app, (await loginAdmin(app.app)).cookie);
-    expect((await admin.get(prefix)).status).toBe(200);
-    expect((await admin.patch(prefix, { title: "代改任务" })).status).toBe(403);
+    expect((await admin.get(prefix)).status).toBe(404);
+    expect((await admin.patch(prefix, { title: "代改任务" })).status).toBe(404);
     expect((await admin.post("/api/me/archived-sessions/delete", { sessionIds: [session.sessionId] })).status).toBe(403);
     expect((await admin.post("/api/me/archived-sessions/unarchive", { sessionIds: [session.sessionId] })).status).toBe(403);
     expect((await admin.post("/api/me/archived-sessions/delete", { filter: { projectId: project } })).status).toBe(403);
@@ -140,7 +149,7 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () =>
     expect((await admin.post(`/api/projects/${project}/benchmarks/archive`, {})).status).toBe(403);
     expect((await owner.get(prefix)).status).toBe(200);
     const socket = app.boot.tree.api<Http>("HttpModule", "http");
-    expect((await socket.fetchAs("admin", new Request(`http://localhost${prefix}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "代改任务" }) }))).status).toBe(403);
+    expect((await socket.fetchAs("admin", new Request(`http://localhost${prefix}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "代改任务" }) }))).status).toBe(404);
   });
   it("lets an administrator inspect agents but not create another user's task", async () => {
     const admin = apiClient(app.app, (await loginAdmin(app.app)).cookie);

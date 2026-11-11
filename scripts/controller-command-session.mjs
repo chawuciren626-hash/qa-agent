@@ -350,6 +350,8 @@ export function reviewControllerSession(root, id, options, agentRoot) {
     state.events.push({ type: 'review_accepted', at: new Date().toISOString(), ...options, evidence_sha256: digest(bytes), previous_failure: state.failure, ...(budgetReview ? {previous_correction_count:state.corrections[correctionKey]} : {}) });
     if (budgetReview) delete state.corrections[correctionKey];
     writeJson(path, state);
-    return { status: state.status, session_id: id, resumed_execution: false, sha256: digest(readFileSync(path)) };
+    // Acceptance records the reviewed diagnosis without clearing the product failure latch.
+    // Callers may proceed with safe inspection, while stopped mutations remain blocked.
+    return { status: 'ready', session_id: id, resumed_execution: false, sha256: digest(readFileSync(path)) };
   });
 }

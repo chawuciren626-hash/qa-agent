@@ -93,7 +93,8 @@ async function scenario(name,sourceUrl) {
           {status:'passed',delivery:{summary:'task'}};
       }
     },
-    './delivery-presentation.mjs':{deliveryPresentation:()=>{fail('delivery');fail('reconcile_presentation');return {reply_template:'verified'};}}
+    './delivery-presentation.mjs':{deliveryPresentation:()=>{fail('delivery');fail('reconcile_presentation');return {reply_template:'verified'};}},
+    './interrupted-report-recovery.mjs':{verifyInterruptedReportRecovery:()=>assert.fail('not interrupted report recovery')}
   };
   const module=new SourceTextModule(readFileSync(new URL(sourceUrl),'utf8'));
   await module.link(specifier=>{

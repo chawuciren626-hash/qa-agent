@@ -14,13 +14,13 @@ export function prepareTestWorkspace(engine) {
   const base=realpathSync(mkdtempSync(resolve(parent,'qa-engineering-')));
   const root=resolve(base,'engine');mkdirSync(root);
   // Copy source, never copy business output, credentials, or the installed application's data.
-  const directories=['scripts','schemas','skills','penguin','acceptance','benchmarks','tests/acceptance','.github'];
+  const directories=['scripts','schemas','skills','penguin','acceptance','benchmarks','tests/acceptance','.github','docs'];
   for(const name of directories) cpSync(resolve(engine,name),resolve(root,name),{recursive:true,filter:path=>{
     if(lstatSync(path).isSymbolicLink()) throw new Error('Test source may not contain links');
     return !path.split(/[\\/]/).includes('__pycache__');
   }});
   mkdirSync(resolve(root,'config'));
-  for(const name of ['test-delivery-template.json','project.json','orchestration-workflow.json','quality-governance.json','test-selection-policy.json','session-workspaces.json','test-assets.example.json','test-env.example.json','test-environments.example.json']) cpSync(resolve(engine,'config',name),resolve(root,'config',name));
+  for(const name of ['test-delivery-template.json','project.json','orchestration-workflow.json','quality-governance.json','test-selection-policy.json','session-workspaces.json','test-assets.example.json','test-env.example.json','test-environments.example.json','release-resources.json']) cpSync(resolve(engine,'config',name),resolve(root,'config',name));
   cpSync(resolve(engine,'config/test-assets.example.json'),resolve(root,'config/test-assets.json'));
   for(const name of ['host-compatibility.json','product-installation.example.json']) cpSync(resolve(engine,'config',name),resolve(root,'config',name));
   for(const file of ['package.json','package-lock.json','README.md','.gitignore','playwright.config.ts','tsconfig.playwright.json','requirements-ci.txt']) cpSync(resolve(engine,file),resolve(root,file));

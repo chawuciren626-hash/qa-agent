@@ -92,7 +92,7 @@ test('child interface sync adds only transport metadata and preserves model/prox
     if(method==='PUT') configs.get(path).config.toolsBuiltin=body.config.toolsBuiltin;
     return structuredClone(configs.get(path));
   };
-  const changed=await syncChildInterfaces(api,{apply:true});assert.equal(changed.roles.length,6);assert.equal((await syncChildInterfaces(api)).status,'in_sync');
+  const changed=await syncChildInterfaces(api,{apply:true});assert.equal(changed.roles.length,7);assert.equal((await syncChildInterfaces(api)).status,'in_sync');
   for(const value of configs.values()) {assert.equal(value.config.model,'synthetic-model');assert.equal(value.config.proxy.enabled,true);assert.deepEqual(value.config.toolsBuiltin[1],tools[1]);}
   assert.deepEqual(childInlineTools(childInlineTools(tools)),childInlineTools(tools));
   assert.throws(()=>childInlineTools([{name:'exec_command',parameters:{type:'object',properties:{cmd:{type:'string'},qa_request:{type:'string'}}}}]),/Custom/);

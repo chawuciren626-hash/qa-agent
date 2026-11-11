@@ -898,13 +898,17 @@ test('readonly fill timeout preserves inspection and partial finish without repl
   await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic readonly field',headless:true});
   const started=Date.now();
   const running=f.send({action:'browser_task',operation:{type:'fill',request_id:'readonly-fill',target:{by:'css',value:'#locked'},value:'changed'}});
-  let health;
-  for(let i=0;i<20;i++) {
+  let health,observed=false;
+  // Command startup can be delayed while the rest of the suite is still releasing browser workers.
+  // Wait for the worker to publish the started operation, while keeping the fixture below its
+  // existing 25 second evidence bound.
+  for(let i=0;i<200;i++) {
     await pause(100);
     health=await (await requestBrowserWorker(JSON.parse(readFileSync(resolve(f.dir,'execution/browser-private.json'))),{operation:{type:'health'}})).json();
-    if(health.active_operation?.request_id==='readonly-fill') break;
+    if(health.active_operation?.request_id==='readonly-fill') {observed=true;break;}
   }
   const result=await running;
+  assert.equal(observed,true,'readonly fill must be observable while the bounded operation is active');
   assert.equal(health.busy,true);assert.equal(health.active_operation.request_id,'readonly-fill');
   assert.equal(result.exit_code,0,JSON.stringify(result));
   assert.equal(result.data.status,'needs_inspection');

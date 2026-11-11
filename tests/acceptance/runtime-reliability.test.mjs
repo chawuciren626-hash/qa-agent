@@ -158,11 +158,11 @@ test('repeated no-output exhaustion ends clearly; generic retries and tool outco
   assert.equal(attemptHarness([generic]).result.attemptInput[1],generic);
 });
 
-test('progress policy retains audit counts without fixed correction or revision gates',()=>{
+test('progress policy records stalls while retaining the repeated-call circuit breaker',()=>{
   const state={};const context={key:'draft',request_sha256:'one'};
   for(let i=1;i<=7;i++) {
     const recovery=recordCorrection(state,'artifact_revision',context,new Error('same'),null);
-    assert.equal(recovery.retry_allowed,true);assert.equal(recovery.failure_number,i);assert.equal(recovery.stalled,i>=3);
+    assert.equal(recovery.retry_allowed,i<3);assert.equal(recovery.failure_number,i);assert.equal(recovery.stalled,i>=3);
   }
   assert.equal(recordCorrection(state,'artifact_revision',{...context,request_sha256:'two'},new Error('same'),null).stalled,false);
   assert.equal(recordCorrection(state,'artifact_revision',context,new Error('different'),null).stalled,false);

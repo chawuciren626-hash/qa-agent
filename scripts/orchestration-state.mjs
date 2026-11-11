@@ -152,11 +152,14 @@ export function currentStageDecision(manifest, stageId) {
   return decision;
 }
 
-export function assertRecoveryDecisions(manifest, stageId) {
+export function assertRecoveryDecisions(manifest, stageId, {allowCurrentRevision = false} = {}) {
   if ((manifest.confirmations ?? []).some(item => typeof item.stage !== 'string')) throw new Error('Human decision stage is missing; preserve the decision for diagnosis');
   for (const id of stageDependencyScope(manifest, stageId)) {
     const decision = currentStageDecision(manifest, id);
     if (['pending', 'rejected', 'revision_requested'].includes(decision?.status)) {
+      // A revision request authorizes redispatch of that same stage; it never bypasses a pending,
+      // rejected or unreviewed decision on a dependency.
+      if (allowCurrentRevision && id === stageId && decision.status === 'revision_requested') continue;
       throw new Error(`Human decision must be respected: ${id} ${decision.status}`);
     }
   }
@@ -180,7 +183,6 @@ export function assertDesignMutable(manifest, stageId) {
 }
 
 export function assertStageReady(manifest, stageId) {
-  assertDesignMutable(manifest,stageId);
   if(manifest.test_tracks)throw new Error('Dispatch a typed child run, not the task group');
   if(manifest.test_track && stageId===(manifest.test_track.type==='api'?'execution':'api_execution'))throw new Error('Execution channel differs from test track');
   assertStageHistory(manifest, stageId);
@@ -201,6 +203,7 @@ export function assertStageReady(manifest, stageId) {
   if (unapprovedDependencies.length) {
     throw new Error(`阶段 ${stageId} 的前置阶段尚未批准: ${unapprovedDependencies.join(", ")}`);
   }
+  assertRecoveryDecisions(manifest, stageId, {allowCurrentRevision: state === 'revision_requested'});
   if (stage.confirmation === "before" && !hasExecutionAuthorization(manifest, stageId) && !(manifest.confirmations ?? []).some(item=>item.stage===stageId && !item.kind && item.status==='approved')) {
     throw new Error(`阶段 ${stageId} 需要执行前人工批准。`);
   }

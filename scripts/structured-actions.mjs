@@ -555,7 +555,6 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
         if(saved.test_tracks && parsed.action==='run_status')return {status:'completed',exit_code:0,execution_mode:'in_process',launches_child:false,data:testTrackStatus(root,parsed.run_id)};
         if(parsed.action!=='run_status')assertTrackStage(saved,parsed.stage);
         if(parsed.action==='dispatch')assertSiblingResources(root,saved,parsed.stage,parsed.resource_keys??[]);
-        if(parsed.action==='dispatch')try{assertDesignMutable(saved,parsed.stage);}catch(error){throw new CommandUsageError(error.message);}
         if(parsed.action==='dispatch' && ['execution','api_execution'].includes(parsed.stage) && !['prepare','resume_browser'].includes(parsed.mode)) assertExecutionDesignReady(runDirectory(root,parsed.run_id),parsed.stage);
       }
       if(parsed.action==='plan_run' && parsed.source_mode==='live_product') {
