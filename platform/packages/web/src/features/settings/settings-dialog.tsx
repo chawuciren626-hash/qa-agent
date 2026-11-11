@@ -83,6 +83,7 @@ export function SettingsDialog({
   section,
   pluginFocus,
   accountCenter = false,
+  onlySections,
 }: {
   open: boolean;
   onClose: () => void;
@@ -91,6 +92,7 @@ export function SettingsDialog({
   /** On the Plugins page: the card an opening scrolls to (e.g. `sandbox`). */
   pluginFocus?: string;
   accountCenter?: boolean;
+  onlySections?: readonly SettingsSectionKey[];
 }) {
   // uploadLimits feeds the Upload limits page's "?" (sectionInfo below); the rest pick pages.
   const { user, desktopMode, sessionVia, accountClient, uploadLimits } = useAuth();
@@ -100,7 +102,7 @@ export function SettingsDialog({
     sessionVia,
     accountClient,
     accountCenter,
-  });
+  }).filter(item => onlySections === undefined || onlySections.includes(item.key));
   const [active, setActive] = useState<SettingsSectionKey | null>(null);
   const requestClose = useGuardedClose(onClose, SETTINGS_SCOPE);
 

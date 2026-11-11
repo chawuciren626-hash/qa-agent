@@ -146,6 +146,7 @@ export interface ImportOpening {
 }
 
 export interface ImportPluginTabsProps {
+  allowAgentImport?: boolean;
   projectId: string;
   /** Where the body opens; the agent tab with nothing typed when absent. */
   initial?: ImportOpening;
@@ -158,12 +159,13 @@ export interface ImportPluginTabsProps {
 /** The dialog's body: the server-wide line, then the tabs with the active one's form. */
 export function ImportPluginTabs({
   projectId,
-  initial = { tab: IMPORT_TABS[0] },
+  allowAgentImport = true,
+  initial = { tab: allowAgentImport ? "agent" : "zip" },
   onOpenChat,
   onLanded,
 }: ImportPluginTabsProps) {
   const opened = (at: ImportTab) => (initial.tab === at ? (initial.value ?? "") : "");
-  const [tab, setTab] = useState<ImportTab>(initial.tab);
+  const [tab, setTab] = useState<ImportTab>(!allowAgentImport && initial.tab === "agent" ? "zip" : initial.tab);
   // What each tab holds survives a look at another tab.
   const form = useFormDraft<ImportDraft>(
     { npm: opened("npm"), link: opened("link"), source: opened("agent") },
@@ -273,9 +275,9 @@ export function ImportPluginTabs({
             {fault === "subpath" && (
               <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-muted">
                 <span>{S.plugins.importLinkSubpath}</span>
-                <Button size="sm" variant="link" onClick={() => askAgentWith(value)}>
+                {allowAgentImport && <Button size="sm" variant="link" onClick={() => askAgentWith(value)}>
                   {S.plugins.importLinkAskAgent}
-                </Button>
+                </Button>}
               </p>
             )}
           </div>
@@ -360,7 +362,7 @@ export function ImportPluginTabs({
       </h3>
       <div>
         <Tabs
-          items={IMPORT_TABS.map((key) => ({ key, label: S.plugins.importTabs[key] }))}
+          items={IMPORT_TABS.filter(key => allowAgentImport || key !== "agent").map((key) => ({ key, label: S.plugins.importTabs[key] }))}
           active={tab}
           onChange={(next) => {
             setTab(next);
@@ -411,6 +413,7 @@ export function ImportPluginTabs({
 }
 
 export interface ImportPluginModalProps {
+  allowAgentImport?: boolean;
   open: boolean;
   projectId: string;
   /** The Agent the chat path opens a draft with — the Project's default; null leaves the path disabled. */
@@ -421,6 +424,7 @@ export interface ImportPluginModalProps {
 }
 
 export function ImportPluginModal({
+  allowAgentImport = true,
   open,
   projectId,
   agentId,
@@ -448,9 +452,10 @@ export function ImportPluginModal({
       widthClass="sm:max-w-lg"
     >
       <ImportPluginTabs
+        allowAgentImport={allowAgentImport}
         projectId={projectId}
         onOpenChat={
-          agentId === null
+          !allowAgentImport || agentId === null
             ? null
             : (text) => {
                 // The source goes with the chat, so nothing typed is left to lose; forgotten

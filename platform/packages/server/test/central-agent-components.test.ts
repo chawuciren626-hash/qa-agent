@@ -48,3 +48,18 @@ it("edits the live Agent atomically and lists it once without losing old task sn
  expect(response.status).toBe(200);
  expect((await response.json() as {cards:unknown[]}).cards).toHaveLength(1);
 });
+
+it("publishes professional plugin associations without editing the administrator assistant or old task versions",()=>{
+ let plugin=store.save("admin",{kind:"plugins",name:"Office",payload:{source:"upstream-library",pluginName:"office",pluginVersion:"0.2.17"},audience:["*"]});plugin=store.publish("admin",plugin.id,plugin.revision);
+ let retained=store.save("admin",{kind:"plugins",name:"guard",payload:{pluginName:"guard",instructions:"Keep guard"},audience:["*"]});retained=store.publish("admin",retained.id,retained.revision);
+ let agent=store.save("admin",{kind:"agents",name:"专业测试",payload:{agentId:"test_agent",prompt:"p",agentsMd:"a",pluginResources:[retained.id]},audience:["*"]});agent=store.publish("admin",agent.id,agent.revision);
+ const before=agent;
+ agent=store.saveLiveAgent("admin",agent.id,{kind:"agents",name:agent.name,description:agent.description,audience:agent.audience,revision:agent.revision,payload:{...agent.payload,pluginResources:[retained.id,plugin.id]}});
+ expect(agent.version).toBe(2);
+ expect(store.versionBundle(agent.id,2).resources.map(r=>r.id)).toContain(plugin.id);
+ expect(store.versionBundle(agent.id,1).resources.map(r=>r.id)).not.toContain(plugin.id);
+ expect(()=>store.saveLiveAgent("admin",agent.id,{kind:"agents",name:before.name,description:before.description,audience:before.audience,revision:before.revision,payload:{...before.payload,pluginResources:[]}})).toThrow();
+ agent=store.saveLiveAgent("admin",agent.id,{kind:"agents",name:agent.name,description:agent.description,audience:agent.audience,revision:agent.revision,payload:{...agent.payload,pluginResources:[retained.id]}});
+ expect(agent.payload.pluginResources).toEqual([retained.id]);
+ expect(store.versionBundle(agent.id,2).resources.map(r=>r.id)).toContain(plugin.id);
+});

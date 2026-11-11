@@ -1,3 +1,4 @@
+import { useProfessionalPlugins, ProfessionalPluginInstalls } from "../admin/professional-agent-plugins";
 /**
  * The plugin market: every plugin as one card (plugin-card.tsx) — the library's plugins
  * (Skills and/or a hook package, loaded by core from the @penguinharness/* packages and
@@ -177,9 +178,11 @@ export function pluginUpdatePlan(
   return { perAgent, plugins: [...plugins].sort() };
 }
 
-export function PluginsPage() {
-  const adminView = window.location.pathname.startsWith("/admin/");
-  useDocumentTitle(S.nav.plugins);
+export function PluginsPage({ managedAdmin = false }: { managedAdmin?: boolean } = {}) {
+  const adminView = !managedAdmin && window.location.pathname.startsWith("/admin/");
+  useDocumentTitle(managedAdmin ? "插件管理" : S.nav.plugins);
+  const professional = useProfessionalPlugins(managedAdmin);
+  const [professionalPlugin, setProfessionalPlugin] = useState<PluginItem | null>(null);
   const navigate = useNavigate();
   const { locale } = useLocale();
   const { user } = useAuth();
@@ -256,7 +259,7 @@ export function PluginsPage() {
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const [categoryError, setCategoryError] = useState("");
   const [categoryBusy, setCategoryBusy] = useState(false);
-  const qaMarket = document.documentElement.hasAttribute("data-qa-client");
+  const qaMarket = !managedAdmin && document.documentElement.hasAttribute("data-qa-client");
   const reloadCategories = async () => {
     const result = await controlRequest("/api/control/admin/plugin-categories");
     setCustomCategories(result.categories);
@@ -791,7 +794,7 @@ export function PluginsPage() {
 
   const rows = pluginRows(groups ?? [], moduleParts(deployment, index ?? [], view));
   const categories = [
-    ...pluginCategories(groups ?? [], locale).filter(item => item.id !== "sandbox" && !categoryOverrides[item.id]?.deleted).map(item => ({ ...item, title: categoryOverrides[item.id]?.name ?? item.title })),
+    ...pluginCategories(groups ?? [], locale).filter(item => (managedAdmin || item.id !== "sandbox") && !categoryOverrides[item.id]?.deleted).map(item => ({ ...item, title: categoryOverrides[item.id]?.name ?? item.title })),
     ...(adminView ? customCategories.map(item => ({ id: item.id, title: item.name })) : []),
   ];
   const categoryOf = (row: PluginRow) => {
@@ -816,18 +819,20 @@ export function PluginsPage() {
       );
     }
   }
+  if (managedAdmin) for (const row of rows) if (row.library) usages.set(row.key, {usedBy:professional.agents.filter(agent => professional.uses(agent,row.library!)).map(agent => agent.resourceId),behind:[]});
   const statusOf = (row: PluginRow): PluginStatus => pluginStatus(row, usages.get(row.key) ?? null);
   const unsatisfiedCount = rows.filter((row) => row.module?.unsatisfied !== undefined).length;
   const searching = query.trim() !== "" || incompatibleOnly || category !== "";
   const visible = rows.filter(
-    (row) => row.category !== "sandbox" && ((!qaMarket && !adminView) || !category || categoryOf(row) === category) && rowMatches(row, query) && (!incompatibleOnly || row.module?.unsatisfied !== undefined),
+    (row) => (managedAdmin || row.category !== "sandbox") && ((!qaMarket && !adminView && !managedAdmin) || !category || categoryOf(row) === category) && rowMatches(row, query) && (!incompatibleOnly || row.module?.unsatisfied !== undefined),
   );
   const sections = groupRows(visible, statusOf, groupBy, categories);
   const categoryTitle = (id: string) => categories.find((c) => c.id === id)?.title ?? id;
 
   const pluginCard = (row: PluginRow) => (
     <PluginCard
-      framed={qaMarket || adminView || groupBy === "none"}
+      framed={!managedAdmin && (qaMarket || adminView || groupBy === "none")}
+      {...(managedAdmin && row.library ? {onManageInstall:() => setProfessionalPlugin(row.library!)} : {})}
       key={row.key}
       row={row}
       status={statusOf(row)}
@@ -840,9 +845,10 @@ export function PluginsPage() {
       failed={unreadable}
       pending={
         (row.module !== undefined && modulesPending) ||
-        (row.library !== undefined && libraryPending)
+        (row.library !== undefined && (managedAdmin ? professional.loading : libraryPending))
       }
       canManageLibrary={canManageLibrary}
+      showQuickStart={!managedAdmin}
       canQuickStart={currentAgent !== null && (canManageLibrary || !!row.library && pluginComplete(row.library, installed.get(currentAgent.agentId)))}
       isAdmin={isAdmin}
       isOwner={isOwner && canManageLibrary}
@@ -898,7 +904,7 @@ export function PluginsPage() {
       setCategoryError(apiErrorText(cause));
     }
   };
-  const card = (row: PluginRow) => adminView ? (
+  const card = (row: PluginRow) => managedAdmin ? <article className="admin-plugin-card" key={row.key}>{pluginCard(row)}<div className="admin-plugin-card-category"><span>所属分类</span><span className="ml-auto">{categoryTitle(categoryOf(row))}</span></div></article> : adminView ? (
     <div className="admin-plugin-card" key={row.key}>
       {pluginCard(row)}
       <div className="admin-plugin-card-category">
@@ -913,16 +919,16 @@ export function PluginsPage() {
   // The scrollbar gutter stays reserved: a search that shortens the page below the viewport
   // would otherwise take the scrollbar with it and shift everything sideways as it is typed.
   return (
-    <PageFrame width={adminView ? "full" : undefined} className={`${adminView ? "admin-plugin-frame" : "[scrollbar-gutter:stable]"} ${qaMarket && !adminView ? "qa-plugin-market" : ""}`} contentClassName={adminView ? "admin-plugin-content" : undefined}>
+    <PageFrame width={adminView || managedAdmin ? "full" : undefined} className={`${adminView || managedAdmin ? "admin-plugin-frame" : "[scrollbar-gutter:stable]"} ${qaMarket && !adminView ? "qa-plugin-market" : ""}`} contentClassName={adminView || managedAdmin ? "admin-plugin-content" : undefined}>
       {/* The options loaded plugins declare live on the Settings dialog's Plugins page, an
           admin's page; the header's Settings button opens the dialog there rather than sending
           anyone through the user menu to find it. */}
       <PageHeader
-        title={adminView ? "插件管理" : qaMarket ? "插件市场" : S.plugins.pageTitle}
+        title={managedAdmin || adminView ? "插件管理" : qaMarket ? "插件市场" : S.plugins.pageTitle}
         info={S.plugins.pageDesc}
         actions={
           <PluginsHeaderActions
-            hideFilters={qaMarket || adminView}
+            hideFilters={qaMarket || adminView || managedAdmin}
             query={query}
             onQuery={setQuery}
             groupBy={groupBy}
@@ -945,6 +951,7 @@ export function PluginsPage() {
           />
         }
       >
+        {managedAdmin && <p className="mt-2 text-sm text-fg-muted">为专业 Agent 配置插件能力，客户端按已发布版本在本机执行。</p>}
         {qaMarket && <p className="qm-description">发现实用插件，扩展 AITestHarness 的测试能力。<span>共 {rows.length} 个插件</span></p>}
         {/* Last stop on the plugins trail: what the sidebar's dot was pointing at, the control
           that takes all of it in one press, and the way to clear it for someone who has looked
@@ -998,6 +1005,7 @@ export function PluginsPage() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         section="plugins"
+        {...(managedAdmin ? { onlySections: ["plugins", "sandbox"] as const } : {})}
       />
       {adminView && categoryDialogOpen && <Modal open title={editingCategoryId ? "编辑插件分类" : "添加插件分类"} onClose={() => setCategoryDialogOpen(false)} footer={<><Button size="sm" onClick={() => setCategoryDialogOpen(false)}>取消</Button><Button size="sm" variant="primary" disabled={!newCategoryName.trim() || categoryBusy} onClick={async () => {
         const name = newCategoryName.trim();
@@ -1009,6 +1017,7 @@ export function PluginsPage() {
       }}>{editingCategoryId ? "保存" : "添加分类"}</Button></>}><label className="block text-sm">分类名称<input autoFocus className="mt-2 w-full rounded border bg-transparent p-2" value={newCategoryName} maxLength={40} onChange={event => setNewCategoryName(event.target.value)} placeholder="如：性能测试" /></label>{categoryError && <p role="alert" className="mt-3 text-sm text-red-600">{categoryError}</p>}</Modal>}
       {isAdmin && projectId !== null && (
         <ImportPluginModal
+          allowAgentImport={!managedAdmin}
           open={importOpen}
           projectId={projectId}
           agentId={pickDefaultAgent(agents)?.agentId ?? null}
@@ -1017,6 +1026,8 @@ export function PluginsPage() {
         />
       )}
 
+      {managedAdmin && professionalPlugin && <ProfessionalPluginInstalls plugin={professionalPlugin} state={professional} onClose={() => setProfessionalPlugin(null)} />}
+      {managedAdmin && professional.error && <p role="alert">{professional.error}</p>}
       {error ? (
         <div className="mt-2 flex items-center gap-3">
           <p className={`text-sm ${toneInk.danger}`}>{error}</p>
@@ -1033,6 +1044,14 @@ export function PluginsPage() {
               <Skeleton className="mt-3 h-6 w-36" />
             </SkeletonCard>
           ))}
+        </div>
+      ) : managedAdmin ? (
+        <div className="admin-plugin-columns">
+          <aside className="admin-plugin-categories" aria-label="所属分类"><p className="admin-plugin-category-heading">所属分类</p><nav>
+            <button type="button" className={category === "" ? "active" : ""} onClick={() => setCategory("")}><span className="admin-plugin-category-mark">全</span><span className="admin-plugin-category-name">全部插件</span><small>{rows.length}</small></button>
+            {categories.map((item,index) => <div key={item.id} className={`admin-plugin-category-row${index === 0 ? " first" : ""}`}><button type="button" className={category === item.id ? "active" : ""} onClick={() => setCategory(item.id)}><span className="admin-plugin-category-mark">{item.title.slice(0,1)}</span><span className="admin-plugin-category-name">{item.title}</span><small>{rows.filter(row => categoryOf(row) === item.id).length}</small></button></div>)}
+          </nav></aside>
+          <section className="admin-plugin-results" aria-label="插件列表"><div className="admin-plugin-results-head"><h2>{category ? categoryTitle(category) : "全部插件"}</h2><span>{visible.length} 个插件</span><input type="search" aria-label="搜索插件" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索插件名称或描述" /></div><div className="admin-plugin-results-scroll"><div className="admin-plugin-grid">{visible.map(card)}</div>{!visible.length && <p className="admin-plugin-empty">没有匹配的插件</p>}</div></section>
         </div>
       ) : adminView ? (
         <div className="admin-plugin-columns">
@@ -1196,7 +1215,7 @@ export function PluginsPage() {
           </div>
         </ConfirmModal>
       )}
-      {selfId !== undefined && viewingHere && <LocalCapabilitiesPanel />}
+      {!managedAdmin && selfId !== undefined && viewingHere && <LocalCapabilitiesPanel />}
     </PageFrame>
   );
 }

@@ -308,6 +308,9 @@ it("confirms a candidate explicitly and records that confirmation created the ru
   await click(button("知识候选"));
   await waitFor(() => document.querySelectorAll(".pk-candidate").length === 1);
   expect(document.body.textContent).toContain("候选不会自动成为规则");
+  // The new layout confirms from the detail card: the candidate must be opened first.
+  await click(document.querySelector(".pk-candidate")!);
+  await waitFor(() => hasButton("确认并生成规则"));
   await click(button("确认并生成规则"));
   await settle();
   expect(confirm).toHaveBeenCalled();

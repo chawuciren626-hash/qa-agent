@@ -163,6 +163,8 @@ export interface PluginCardProps {
   pending?: boolean;
   /** Whether there is a current Agent for quick start to open a draft on. */
   canQuickStart: boolean;
+  showQuickStart?: boolean;
+  onManageInstall?: () => void;
   canManageLibrary?: boolean;
   /** Only an admin changes what the server runs. */
   isAdmin: boolean;
@@ -295,7 +297,7 @@ export function PluginCard(props: PluginCardProps) {
         </Button>,
       );
     }
-    if (plugin !== undefined && libraryQuickStart(plugin) !== null) {
+    if (props.showQuickStart !== false && plugin !== undefined && libraryQuickStart(plugin) !== null) {
       out.push(
         <Button
           key="quick"
@@ -320,7 +322,7 @@ export function PluginCard(props: PluginCardProps) {
           className={look}
           aria-label={`${S.skills.manageInstall} ${plugin.name}`}
           title={S.skills.manageInstall}
-          onClick={() => setInstallOpen(true)}
+          onClick={() => props.onManageInstall ? props.onManageInstall() : setInstallOpen(true)}
         >
           <GlyphIcon d={INSTALL_ICON} size={ICON_SIZE.iconButton} />
           {words(S.skills.manageInstall)}

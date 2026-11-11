@@ -46,8 +46,8 @@ import { LocalWorkspacePage } from "./pages/local-workspace";
 import { ChatPage } from "./features/chat/chat-page";
 import { QaSectionPage } from "./features/qa/workspace-ui";
 import { QaProjectView } from "./features/qa/project-view";
+import { ProjectManagementPage } from "./features/qa/project-management/project-management-page";
 import { QaTaskDetail } from "./features/qa/task-detail";
-import { ProjectKnowledgePage } from "./features/qa/project-knowledge-page";
 import { QualityTraceabilityPage } from "./features/qa/quality-traceability-page";
 import { PersonalSkillsPage } from "./features/qa/personal-skills-page";
 import { AgentsPage } from "./features/agents/agents-page";
@@ -91,7 +91,8 @@ const BUILTIN_PAGES: Record<string, React.ComponentType> = {
 function TestingChatPage() {
   const { search } = useLocation();
   const view = new URLSearchParams(search).get("view");
-  return view === "library" || view === "schedules" ? <QaSectionPage view={view} /> : <ChatPage />;
+  if (view === "library") return <Navigate to="/qa/library" replace />;
+  return view === "schedules" ? <QaSectionPage view={view} /> : <ChatPage />;
 }
 
 function ModelsSettingsRedirect() {
@@ -125,6 +126,7 @@ function RequireAuth({ admin = false }: { admin?: boolean }) {
   useRuntimeLanguages(!admin && user != null);
   if (user === undefined) return null; // GET /api/me is still initializing
   if (user === null) return <Navigate to="/login" replace />;
+  if (!admin && module === "plugins") return <Navigate to="/qa/project" replace />;
   if(module && !allowedModule(user,module)) return <div className="p-8"><h1>没有此模块的访问权限</h1><p>请联系管理员调整授权。</p><a href="/user/chat">返回工作台</a></div>;
   if(admin && !user.isAdmin) return <div className="p-8"><h1>仅管理员可访问管理后台</h1><a href="/user/">返回用户端</a></div>;
   const workspace = (
@@ -239,10 +241,13 @@ function appRoutes(admin = false, accountCenter = false) {
             organization is doing; its channels are the sidebar's own list beside it. Both
             fall back to /chat while company mode is unavailable (see OrgLayout). */}
         <Route path="/qa/library" element={<QaSectionPage view="library" />} />
-        <Route path="/qa/knowledge" element={<ProjectKnowledgePage />} />
+        <Route path="/qa/knowledge" element={<Navigate to="/qa/library?section=knowledge_documents" replace />} />
         <Route path="/qa/quality" element={<QualityTraceabilityPage />} />
         <Route path="/qa/personal-skills" element={<PersonalSkillsPage />} />
         <Route path="/qa/project" element={<QaProjectView />} />
+        {/* 项目管理（外壳状态 A / 品牌态）：跨项目页面，不依赖已进入项目；
+            模块权限沿用 projects（module-permissions 的 /qa/project 前缀规则覆盖 /qa/projects）。 */}
+        <Route path="/qa/projects" element={<ProjectManagementPage />} />
         <Route path="/qa/project/tasks/:sessionId" element={<QaTaskDetail />} />
         <Route path="/org" element={<OrgIndexRedirect />} />
         <Route path="/org/:projectId/:orgId" element={<OrgLayout />}>

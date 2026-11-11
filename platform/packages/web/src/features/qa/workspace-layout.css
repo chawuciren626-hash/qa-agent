@@ -106,3 +106,8 @@
 .qp-record-wrap { min-width:0; overflow-x:auto; flex:1; }.qp-record-table { width:100%; border-collapse:collapse; font-size:12px; }.qp-record-table th,.qp-record-table td { padding:11px 12px; border-bottom:1px solid var(--qa-border); text-align:left; }.qp-record-table th { color:var(--qa-muted); font-weight:600; background:var(--qa-hover); }.qp-record-table td:nth-child(2) { min-width:180px; }.qp-record-table button { color:#2563eb; white-space:nowrap; }
 @media(max-width:1100px) { .qp-expansion { grid-template-columns:1fr; }.qp-stats { gap:8px; }.qp-stat { padding:10px; }.qp-task-top { flex-wrap:wrap; }.qp-title { max-width:none; flex:1; }.qp-source { margin-left:auto; } }
 @media(max-width:760px) { .qa-project-view { padding:16px; }.qp-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }.qp-task-time { order:2; }.qp-task-bottom { flex-wrap:wrap; }.qp-mini-flow { width:150px; } }
+
+/* 工作台项目选择器。 */
+.qa-project-switcher-row { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; }
+.qa-project-trigger { align-items: center; }
+.qa-project-name { flex: 1; min-width: 0; text-align: left; }

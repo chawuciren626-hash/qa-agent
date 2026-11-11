@@ -733,3 +733,9 @@ describe("a shared plugin's accessible removal", () => {
     expect(button).not.toContain("aria-describedby");
   });
 });
+
+it("managed administration hides quick start while preserving upstream Agent installation", () => {
+  const html = card(libraryRow, true, {showQuickStart: false, onDeletePlugin: null});
+  expect(buttonText(html, `${en.skills.quickInvoke} data-analysis`)).toBeUndefined();
+  expect(buttonText(html, `${en.skills.manageInstall} data-analysis`)).toBe(en.skills.manageInstall);
+});

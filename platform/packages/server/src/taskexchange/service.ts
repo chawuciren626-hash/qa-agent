@@ -21,6 +21,7 @@
 import { randomUUID } from "node:crypto";
 import { Component, Use } from "@prismshadow/penguin-core/kernel";
 import type { Projects } from "../mechanisms/projects.js";
+import type { Db } from "../hmr/capabilities.js";
 import type { ExchangeTasks, TaskExchangeStore } from "../mechanisms/taskexchange.js";
 import type {
   ExchangeDeviceRow,
@@ -60,6 +61,7 @@ export interface CreateTaskArgs {
 export class ExchangeService implements ExchangeTasks {
   @Use() private readonly store!: TaskExchangeStore;
   @Use() private readonly projects!: Projects;
+  @Use() private readonly db!: Db;
 
   private nowIso(nowMs?: number): string {
     return new Date(nowMs ?? Date.now()).toISOString();
@@ -106,6 +108,8 @@ export class ExchangeService implements ExchangeTasks {
     if (!project || project.ownerUserId !== args.userId) {
       throw new ExchangeError(422, "unresolvable_project_ref", `No project for this user: ${args.body.projectRef}`);
     }
+    const state = this.db.prepare("SELECT status FROM project_management WHERE project_id=?").get(args.body.projectRef) as { status?: string } | undefined;
+    if (state && state.status !== "active") throw new ExchangeError(409, "project_inactive", "Project is archived or disabled.");
     if (args.body.deadlineMs !== null && args.body.deadlineMs <= args.nowMs) {
       throw new ExchangeError(422, "deadline_in_past", "deadlineMs is already past: the task could never run.");
     }

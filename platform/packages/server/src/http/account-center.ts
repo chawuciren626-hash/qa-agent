@@ -11,9 +11,20 @@ export function centralAssistantPath(method: string, path: string): boolean {
   return /^\/api\/sessions\/[a-zA-Z0-9_-]+(?:\/.*)?$/.test(path);
 }
 
+/** Upstream plugin reads and schema-driven settings, behind the administrator guard. */
+export function accountCenterPluginPath(method: string, path: string): boolean {
+  if (method === "GET" && (
+    path === "/api/plugins" || path === "/api/plugins/registry" ||
+    /^\/api\/plugins\/registry\/(readme|archive)$/.test(path) ||
+    /^\/api\/plugins\/[^/]+\/(files|readme|archive)$/.test(path)
+  )) return true;
+  if (path === "/api/admin/plugin-config") return method === "GET" || method === "PUT";
+  return path === "/api/admin/plugin-config/action" && method === "POST";
+}
+
 /** Central deployment: identity, public configuration and the administrator's assistant. */
 export function accountCenterPath(method: string, path: string): boolean {
-  if (centralAssistantPath(method, path)) return true;
+  if (centralAssistantPath(method, path) || accountCenterPluginPath(method, path)) return true;
   if (path.startsWith("/api/control/") && ["GET", "POST", "PUT", "DELETE"].includes(method)) return true;
   if (path === "/api/auth/admin-login" && method === "POST") return true;
   if (path === "/api/account-client/config" && method === "GET") return true;
@@ -30,7 +41,7 @@ export function accountCenterGate(enabled: boolean | undefined): MiddlewareHandl
   const cap = bodyLimit({ maxSize: 2 * 1024 * 1024 });
   return async (c, next) => {
     if (!enabled) return next();
-    if (!accountCenterPath(c.req.method, c.req.path)) return c.json({ error: { code: "account_center_only", message: "此服务仅开放中央管理、管理员助手及其专属会话接口。" } }, 404);
+    if (!accountCenterPath(c.req.method, c.req.path)) return c.json({ error: { code: "account_center_only", message: "此服务仅开放服务端管理、管理员助手及其专属会话接口。" } }, 404);
     return centralAssistantPath(c.req.method, c.req.path) ? next() : cap(c, next);
   };
 }

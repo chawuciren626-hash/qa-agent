@@ -1,3 +1,4 @@
+import { ProfessionalAgentPluginTab } from "./professional-agent-plugin-tab";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import type { AgentConfigResponse, AgentConfigUpdateRequest } from "@prismshadow/penguin-server/api";
@@ -10,7 +11,7 @@ import { PromptTab, RuntimeTab, ToolsTab } from "../agents/agent-settings-page";
 import { SNAPSHOT_BUTTON_CLASS } from "../agents/snapshot-file";
 import "../agents/agent-settings-page.css";
 
-type TabKey = "overview" | "prompt" | "runtime" | "tools" | "skills" | "hooks" | "workbenches" | "memory" | "vault" | "schedules" | "api";
+type TabKey = "plugins" | "overview" | "prompt" | "runtime" | "tools" | "skills" | "hooks" | "workbenches" | "memory" | "vault" | "schedules" | "api";
 interface Resource { id: string; kind: string; name: string; description: string; payload: Record<string, unknown>; audience: string[]; revision: number; version: number; published: boolean; hasWorkCopy?: boolean }
 interface Version { version: number; body: { name: string; description: string; payload: Record<string, unknown>; audience: string[] } }
 interface Entry { name: string; value?: string; updatedAt: string }
@@ -18,6 +19,7 @@ interface Defaults { skills?: {enabled:boolean;prompt:string}; hooks?:{enabled:b
 const tabs: { key: TabKey; label: () => string }[] = [
   { key: "overview", label: () => S.agent.tabOverview }, { key: "prompt", label: () => S.agent.tabPrompt },
   { key: "runtime", label: () => S.agent.tabRuntime }, { key: "tools", label: () => S.agent.tabTools },
+  { key: "plugins", label: () => "插件" },
   { key: "skills", label: () => S.agent.tabSkills }, { key: "hooks", label: () => S.agent.tabHooks },
   { key: "workbenches", label: () => S.agent.tabWorkbenches }, { key: "memory", label: () => S.agent.tabMemory },
   { key: "vault", label: () => S.agent.tabVault }, { key: "schedules", label: () => S.agent.tabSchedules },
@@ -140,6 +142,7 @@ export function CentralAgentSettingsPage() {
         {tab === "runtime" && <fieldset disabled={!editable}><RuntimeTab key={`${resourceId}:${requestedVersion}`} data={data} onSave={save} projectId="" /></fieldset>}
         {tab === "tools" && <fieldset disabled={!editable}><ToolsTab key={`${resourceId}:${requestedVersion}`} data={data} onSave={save} /></fieldset>}
         {(tab === "skills" || tab === "hooks") && <CentralAgentComponentTab key={`${resourceId}:${requestedVersion}:${tab}`} resourceId={resourceId} version={viewingDraft?"draft":String(effectiveVersion)} feature={tab} data={data} editable={editable} catalog={publishedCatalog} onSave={save} selectedIds={entries(tab === "skills"?"skillResources":"pluginResources")} onChange={ids=>saveReferences(tab === "skills"?"skillResources":"pluginResources",ids)} />}
+        {tab === "plugins" && <ProfessionalAgentPluginTab resourceId={resourceId} onChanged={load} />}
         {tab === "workbenches" && <div className="space-y-4"><HelpFold label={S.agent.tabWorkbenches}>{S.workbenches.agentTabDesc}</HelpFold><SettingsEmpty>{S.workbenches.empty}</SettingsEmpty></div>}
         {tab === "memory" && <CentralPrivateEntries resourceId={resourceId} kind="memory" />}
         {tab === "vault" && <CentralPrivateEntries resourceId={resourceId} kind="vault" />}

@@ -1,8 +1,9 @@
+import { publishedPluginRuntime } from "./published-plugin-runtime.js";
 import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import type { SystemConfig } from "@prismshadow/penguin-core";
+import type { InstalledHook, SystemConfig } from "@prismshadow/penguin-core";
 import { validateResolvedBundle, type ResolvedPublishedBundle } from "./published-bundle.js";
 import { parseSkillArchive } from "../http/routes/skills.js";
 
@@ -24,6 +25,8 @@ export interface CachedSharedAgentDefinition {
   hooksConfig?: SystemConfig["hooks"];
   skills: readonly { name: string; directory: string }[];
   pluginInstructions: readonly string[];
+  hookPackages?: readonly InstalledHook[];
+  mcpServers?: NonNullable<NonNullable<SystemConfig["tools"]>["mcpServers"]>;
   localAdapters: readonly { name: string; version: string; hash: string }[];
 }
 
@@ -187,10 +190,14 @@ export class PublishedBundleCache {
         localAdapters.push({ name: pluginName, version: adapterVersion, hash: adapterHash });
         continue;
       }
-      if (resource.payload.source === "upstream-library") throw Error("Executable shared plugin requires a compatible local runtime");
+      if (resource.payload.source === "upstream-library") continue;
       if (typeof resource.payload.instructions !== "string") throw Error("Invalid published plugin instructions");
       if (resource.payload.instructions.trim()) pluginInstructions.push(resource.payload.instructions);
     }
+    const skills = await this.materializeSkills(userId, hash);
+    const plugins = await publishedPluginRuntime(bundle,path.join(path.dirname(this.file(userId,hash)),hash.slice(7)));
+    const allSkills = [...skills,...plugins.skills];
+    if(new Set(allSkills.map(item=>item.name)).size!==allSkills.length)throw Error("Published skills have conflicting names");
     return {
       resourceId: root.id, agentId, bundleHash: hash, prompt, agentsMd,
       ...(maxTurns === undefined ? {} : { maxTurns: Number(maxTurns) }),
@@ -207,7 +214,7 @@ export class PublishedBundleCache {
       } } : {}),
       ...(Array.isArray(root.payload.toolsBuiltin) ? { builtinTools: root.payload.toolsBuiltin as NonNullable<NonNullable<SystemConfig["tools"]>["builtin"]> } : {}),
       skillsConfig: root.payload.skills as SystemConfig["skills"], hooksConfig: root.payload.hooks as SystemConfig["hooks"],
-      skills: await this.materializeSkills(userId, hash), pluginInstructions, localAdapters,
+      skills: allSkills, hookPackages: plugins.hookPackages, mcpServers: plugins.mcpServers, pluginInstructions, localAdapters,
     };
   }
 }

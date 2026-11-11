@@ -27,6 +27,7 @@ import {
   type KnowledgeResourceType
 } from "../../services/qa-knowledge-authorization.js";
 import { renderUntrustedMaterial } from "../../services/qa-knowledge-untrusted.js";
+import { QaLibraryReference } from "../../services/qa-library-reference.js";
 
 function limitOf(c: Context, code: string): number | undefined {
   const raw = c.req.query("limit");
@@ -130,6 +131,17 @@ export function registerQaProjectKnowledgeRoutes(app: Hono<AppEnv>, deps: Agents
   };
 
   // ---------------------------------------------------------------- documents
+
+  const personalReferences = new QaLibraryReference(store, (projectId, userId, itemId) =>
+    qaEngineModule('client-library').libraryOperation(root, projectId, userId, 'GET', itemId));
+  app.get('/qa/knowledge/library/:itemId', async c => {
+    const { projectId, userId } = scope(c);
+    return c.json(await personalReferences.preview(projectId, userId, requireValidId(c, 'itemId')));
+  });
+  app.post('/qa/knowledge/library/:itemId', async c => {
+    const { projectId, userId } = ownerScope(c);
+    return c.json(await personalReferences.promote(projectId, userId, requireValidId(c, 'itemId'), await readJson(c)));
+  });
 
   app.get("/qa/documents", async (c) => {
     const { projectId } = scope(c);

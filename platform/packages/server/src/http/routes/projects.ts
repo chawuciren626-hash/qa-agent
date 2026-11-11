@@ -21,16 +21,22 @@ import type { DesktopService } from "../../services/desktop-service.js";
 import { membersRoutes } from "./members.js";
 import type { ProjectLifecycle } from "../../mechanisms/projects.js";
 import type { Machines } from "../../machines/service.js";
+import type { Db } from "../../hmr/capabilities.js";
+import type { ProjectRuns } from "../../services/project-service.js";
+import { managedProjectsRoutes } from "./managed-projects.js";
 
 /** What this route group reaches — bound by its module (src/modules). */
 export interface ProjectsRouteDeps {
   projectService: ProjectLifecycle;
+  db?: Db;
+  runs?: ProjectRuns;
   /** The machines this Project uses carry its name too (machines/service.ts). */
   machines: Pick<Machines, "syncConfigEverywhere">;
 }
 
 export function projectsRoutes(deps: ProjectsRouteDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+  if (deps.db && deps.runs) app.route("/managed", managedProjectsRoutes({ db: deps.db, projectService: deps.projectService, runs: deps.runs }));
 
   app.get("/", async (c) => {
     const projects = await deps.projectService.listProjects(c.var.user.userId);
@@ -89,6 +95,8 @@ export function projectsRoutes(deps: ProjectsRouteDeps): Hono<AppEnv> {
 })
 export class ProjectAdminRoutes {
   @Use() private readonly projectService!: ProjectLifecycle;
+  @Use() private readonly db!: Db;
+  @Use() private readonly runs!: ProjectRuns;
   @Use() private readonly desktop!: Desktop;
   @Use() private readonly machines!: Machines;
   @Bind("project-admin.projects") projectsRoutes!: Hono<AppEnv>;
@@ -96,6 +104,8 @@ export class ProjectAdminRoutes {
   setup() {
     this.projectsRoutes = projectsRoutes({
       projectService: this.projectService,
+      db: this.db,
+      runs: this.runs,
       machines: this.machines,
     });
     this.membersRoutes = membersRoutes({

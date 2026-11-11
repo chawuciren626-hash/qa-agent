@@ -718,6 +718,8 @@ export function agentSessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
     const agentId = requireValidId(c, "agentId");
     if (qaEnabled && c.var.user.isAdmin) deps.access.requireProjectOwner(c.var.user.userId, projectId);
     else deps.access.requireProjectAccess(c.var.user.userId, projectId);
+    const projectState = deps.db.prepare("SELECT status FROM project_management WHERE project_id=?").get(projectId) as { status?: string } | undefined;
+    if (projectState && projectState.status !== "active") throw new HttpError(409, "project_inactive", "项目已归档或停用，无法创建任务");
     await deps.agentConfigService.requireExists(projectId, agentId);
     const body = await readJson(c);
     const modelId = optionalString(body, "modelId", { minLen: 1, label: "modelId" });
@@ -1154,6 +1156,8 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
 
   app.post("/:sessionId/tasks", async (c) => {
     const row = resolveSession(c);
+    const projectState = deps.db.prepare("SELECT status FROM project_management WHERE project_id=?").get(row.projectId) as { status?: string } | undefined;
+    if (projectState && projectState.status !== "active") throw new HttpError(409, "project_inactive", "项目已归档或停用，无法执行任务");
     const body = await readJson(c);
     const goal = parseGoalField(body);
     // A person starting a run is who it acts for; the API token is an agent (or a tool) on

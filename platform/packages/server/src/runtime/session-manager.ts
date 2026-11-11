@@ -83,6 +83,7 @@ import type { RecallableFile } from "../services/task-attachments.js";
 import { cliShimDir } from "../services/cli-shim.js";
 import { HttpError, isMissingCredential, modelCredentialMissing } from "../http/errors.js";
 import type { SessionRow } from "../db/repos/sessions.js";
+import type { ProjectRuns } from "../services/project-service.js";
 import { ApprovalRegistry, makeApprove } from "./approvals.js";
 import { goalOutcomeOf, goalProgressOf } from "./goal-events.js";
 import { InputEcho } from "./input-echo.js";
@@ -1896,6 +1897,14 @@ export class SessionManager {
     return runnings;
   }
 
+  activeCount(projectId: string): number {
+    let count = 0;
+    for (const entry of this.entries.values()) {
+      if (entry.projectId === projectId && entry.running) count++;
+    }
+    return count;
+  }
+
   /**
    * Before deleting an Agent, converge all its active runs and clear them out of the
    * active table (same semantics as abortProject). Also marks this Agent as "being
@@ -2860,6 +2869,7 @@ export class SessionsModule {
   /** Company-mode caches: which organization owns a Session (read at every command spawn). */
   @Use() private readonly orgCache!: OrgCache;
   @Provide() manager!: Sessions;
+  @Provide() projectRuns!: ProjectRuns;
   @Provide() sessionService!: SessionServiceIface;
   @Provide() env!: SessionEnv;
   setup() {
@@ -2891,7 +2901,7 @@ export class SessionsModule {
           agentId === "test_agent" ? ["qa-delegation-guard"] : ["qa-stage-boundary"];
         for (const requiredHook of requiredHooks) if (!definition.localAdapters.some(adapter => adapter.name === requiredHook))
           throw new Error(`Published QA role lacks required safety adapter: ${requiredHook}`);
-        const hookPackages = await loadTrustedLocalAdapters(process.env.AITEST_ENGINE_ROOT!, definition.localAdapters);
+        const hookPackages = [...await loadTrustedLocalAdapters(process.env.AITEST_ENGINE_ROOT!, definition.localAdapters), ...(definition.hookPackages ?? [])];
         if (!role) return { ...definition, hookPackages };
         const state = await loadAgentState({ root: config.root, projectId, agentId });
         const builtinTools = await qaEngineModule("qa-project-bootstrap").qaRoleTools(agentId, state.systemConfig.tools?.builtin);
@@ -3043,6 +3053,7 @@ export class SessionsModule {
           .approvalMode,
     });
     this.manager = manager;
+    this.projectRuns = manager;
     this.sessionService = sessionService;
     this.env = env;
   }

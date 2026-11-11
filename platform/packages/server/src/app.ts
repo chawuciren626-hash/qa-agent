@@ -175,7 +175,7 @@ import type { Errors } from "./mechanisms/observability.js";
 import type { Access } from "./mechanisms/projects.js";
 import type { Auth, Admin, Users, AuthSessions } from "./mechanisms/identity.js";
 import { AccountClient } from "./auth/account-client.js";
-import { accountCenterGate, centralAssistantPath, CENTRAL_ASSISTANT_PROJECT } from "./http/account-center.js";
+import { accountCenterGate, accountCenterPluginPath, centralAssistantPath, CENTRAL_ASSISTANT_PROJECT } from "./http/account-center.js";
 import { CentralAssistant, centralAssistantRoutes } from "./http/central-assistant.js";
 import { ControlStore, controlRoutes } from "./http/control-plane.js";
 import type { AuthState } from "./hmr/capabilities.js";
@@ -548,7 +548,7 @@ export function createApp(boot: ServerBoot): Hono<AppEnv> {
       const startsTask = c.req.method === "POST" && (c.req.path.startsWith("/api/sessions/") || c.req.path.startsWith(`/api/projects/${CENTRAL_ASSISTANT_PROJECT}/`));
       if (!isModels && !startsTask) return next();
       return authMiddleware(authService(), deps.config.trustProxy)(c, async () => {
-        if (!c.var.user.isAdmin) throw new HttpError(403, "admin_required", "仅管理员可使用中央助手。");
+        if (!c.var.user.isAdmin) throw new HttpError(403, "admin_required", "仅管理员可使用服务端管理功能。");
         await store.modelConfig.syncAssistantRuntime(deps.config.root);
         if (isModels) {
           c.res = c.redirect(`/api/control/admin/model-config/central-model-catalog${c.req.path.slice(modelsPath.length)}${new URL(c.req.url).search}`, 307);
@@ -562,9 +562,9 @@ export function createApp(boot: ServerBoot): Hono<AppEnv> {
   }
 
   if (accountCenter) app.use("/api/*", async (c, next) => {
-    if (!centralAssistantPath(c.req.method, c.req.path)) return next();
+    if (!centralAssistantPath(c.req.method, c.req.path) && !accountCenterPluginPath(c.req.method, c.req.path)) return next();
     return authMiddleware(authService(), deps.config.trustProxy)(c, async () => {
-      if (!c.var.user.isAdmin) throw new HttpError(403, "admin_required", "仅管理员可使用中央助手。");
+      if (!c.var.user.isAdmin) throw new HttpError(403, "admin_required", "仅管理员可使用服务端管理功能。");
       if (c.req.path === "/api/projects" && c.req.method === "POST") {
         const body = await c.req.raw.clone().json().catch(() => null) as { projectId?: unknown } | null;
         if (body?.projectId !== CENTRAL_ASSISTANT_PROJECT)

@@ -3,7 +3,8 @@ import type { AgentConfigResponse, AgentConfigUpdateRequest, HookItem, SkillMeta
 import { toastError } from "@prismshadow/penguin-ui";
 import { controlRequest } from "../../api/control";
 import { S } from "../../lib/strings";
-import { SkillImportDialogContent, SkillsTabView } from "../agents/skills-tab";
+import { SkillsTabView } from "../agents/skills-tab";
+import { ExistingSkillPicker } from "./existing-skill-picker";
 import { HookImportDialogContent, HooksTabView } from "../agents/hooks-tab";
 import { usePromptInjectionControls } from "../agents/prompt-injection-controls";
 import { CentralSkillFiles } from "../skills/central-skill-files";
@@ -57,10 +58,8 @@ export function CentralAgentComponentTab({resourceId,version,feature,data,editab
  const change=async(ids:string[])=>{setBusy(true);try{await onChange(ids);setReload(v=>v+1);return true;}catch(cause){toastError(String(cause));return false;}finally{setBusy(false);}};
  const confirmRemove=async()=>{const item=items?.find(item=>item.name===removing);if(item&&await change(selectedIds.filter(id=>id!==item.resourceId)))setRemoving(null);};
  const transport={
-  install:async(_agentId:string,archive:{dataBase64:string})=>{
-   if(feature === "hooks")throw Error("钩子只能关联服务端已发布的受信包；请在上方填写包名，通过管理员助手添加。ZIP 上传暂不支持。");
-   const skill=await controlRequest("/api/control/skills/admin","POST",{archiveBase64:archive.dataBase64,publish:true});
-   if(!await change([...selectedIds,skill.id]))throw Error("技能已导入技能库，但关联失败，请刷新后重试。");
+  install:async()=>{
+   throw Error("钩子只能关联服务端已发布的受信包；请在上方填写包名，通过管理员助手添加。ZIP 上传暂不支持。");
   },
   prompt:(source:string)=>`请为智能体「${data.config.name??resourceId}」配置${feature === "skills"?"技能":"钩子"}。资源 ID：${resourceId}。来源：${source}。\n先查找并确认来源；已有已发布资源则添加引用。读取 GET /api/control/admin/agents/${resourceId}/live，保留其他字段及 revision，使用 PUT /api/control/admin/agents/${resourceId}/live 更新引用，保存后线上生效。不要写本机 Agent 目录。可选的已发布资源：${catalog.filter(item=>feature === "skills"?item.kind === "skills":item.kind === "plugins"&&item.payload.source === "trusted-local-adapter").map(item=>item.name).join("、")}。`,
   openChat:(_agentId:string,text:string)=>{
@@ -70,9 +69,9 @@ export function CentralAgentComponentTab({resourceId,version,feature,data,editab
   },
  };
  const dialogProps={projectId:"",agentId:resourceId,onClose:()=>setImportOpen(false),onImported:()=>{setImportOpen(false);setReload(v=>v+1);},transport};
- const importDialog=feature === "skills"?<SkillImportDialogContent {...dialogProps}/>:<HookImportDialogContent {...dialogProps}/>;
+ const importDialog=feature === "skills"?<ExistingSkillPicker boundIds={selectedIds} boundNames={components?.skills.map(skill=>skill.name)??[]} onAdd={change} onClose={()=>setImportOpen(false)}/>:<HookImportDialogContent {...dialogProps}/>;
  const common={busy,error:error??components?.warning??null,agentName:data.config.name??resourceId,editable,removing,setRemoving,confirmRemove,importOpen,setImportOpen,importDialog,toggleCard};
- return feature==="skills"?<SkillsTabView {...common} skills={components?.skills??(error?[]:null)} alertStrip={alertStrip} promptSection={promptSection} exportSkill={exportItem} viewing={viewing} setViewing={setViewing}
+ return feature==="skills"?<SkillsTabView {...common} addLabel="添加技能" skills={components?.skills??(error?[]:null)} alertStrip={alertStrip} promptSection={promptSection} exportSkill={exportItem} viewing={viewing} setViewing={setViewing}
   renderFiles={name=>{const item=components?.skills.find(item=>item.name===name);return item&&Object.keys(item.files).length?<CentralSkillFiles name={name} files={item.files}/>:<p className="text-sm text-gray-500">此版本没有可预览的组件快照。</p>;}}/>
   :<HooksTabView {...common} isOwner hooks={components?.hooks??(error?[]:null)} exportHook={exportItem}/>;
 }

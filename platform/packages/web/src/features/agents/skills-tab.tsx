@@ -187,12 +187,12 @@ export function SkillsTab({
     renderFiles={name=><InstalledSkillFiles projectId={projectId} agentId={agentId} machineId={machineId} name={name} />} />;
 }
 
-export function SkillsTabView({skills, busy, error, agentName, editable = true, managedSection, toggleCard, alertStrip, promptSection, exportSkill, confirmRemove, removing, setRemoving, importOpen, setImportOpen, viewing, setViewing, importDialog, renderFiles}: {
+export function SkillsTabView({skills, busy, error, agentName, editable = true, managedSection, toggleCard, alertStrip, promptSection, exportSkill, confirmRemove, removing, setRemoving, importOpen, setImportOpen, viewing, setViewing, importDialog, renderFiles, addLabel}: {
  skills: SkillMetadataItem[] | null; busy: boolean; error: string | null; agentName: string; editable?: boolean;
  managedSection?: ReactNode; toggleCard: ReactNode; alertStrip: ReactNode; promptSection: ReactNode;
  exportSkill: (name:string)=>Promise<void>; confirmRemove:()=>Promise<void>; removing:string|null; setRemoving:(name:string|null)=>void;
  importOpen:boolean; setImportOpen:(value:boolean)=>void; viewing:SkillMetadataItem|null; setViewing:(value:SkillMetadataItem|null)=>void;
- importDialog:ReactNode; renderFiles:(name:string)=>ReactNode;
+ importDialog:ReactNode; renderFiles:(name:string)=>ReactNode; addLabel?:string;
 }) {
  const {locale}=useLocale();
  const metaLine=(skill:SkillMetadataItem)=>skill.version;
@@ -213,10 +213,10 @@ export function SkillsTabView({skills, busy, error, agentName, editable = true, 
         <Button
           size="sm"
           variant="primary"
-          disabled={skills === null || !editable}
+          disabled={skills === null || !editable || busy}
           onClick={() => setImportOpen(true)}
         >
-          {S.skills.importSkill}
+          {addLabel ?? S.skills.importSkill}
         </Button>
       </div>
 

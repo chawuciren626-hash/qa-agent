@@ -437,4 +437,5 @@ export class ShippedBuiltinBenchmarkSeeds implements BuiltinBenchmarkSeeds {}
 @Interface()
 export abstract class ProjectRuns {
   abstract abortProject(projectId: string): Promise<void>[];
+  abstract activeCount(projectId: string): number;
 }

@@ -617,11 +617,11 @@ export function createWorkspaceUI(deps) {
       );
     };
     const allowed = key => key === "models" || user?.isAdmin || !user?.modulePermissions || user.modulePermissions.includes(key);
-    const nav = (label, icon, path) =>
-      (!allowed(path.includes("library")?"library":path.includes("schedules")?"schedules":path.includes("qa/project")?"projects":path.split("/")[1]) ? null : h(
+    const nav = (label, icon, path, moduleKey = path.includes("library")?"library":path.includes("schedules")?"schedules":path.includes("qa/project")?"projects":path.split("/")[1]) =>
+      (!allowed(moduleKey) ? null : h(
         "button",
         {
-          className: `qa-nav ${location.pathname + location.search === path ? "is-active" : ""}`,
+          className: `qa-nav ${(path === "/qa/library" ? location.pathname === "/qa/library" || (location.pathname === "/chat" && new URLSearchParams(location.search).get("view") === "library") : location.pathname + location.search === path) ? "is-active" : ""}`,
           onClick: () => go(path),
           key: label,
         },
@@ -659,7 +659,7 @@ export function createWorkspaceUI(deps) {
         { className: "qa-nav-list", "aria-label": "功能导航" },
         nav("项目视图", "folder", "/qa/project"),
         nav("定时任务", "clock", "/chat?view=schedules"),
-        nav("项目资料", "book", "/chat?view=library"),
+        nav("项目资料", "book", "/qa/library", "library"),
       ),
       h(
         "div",
@@ -1643,13 +1643,17 @@ function createSectionsUI(deps) {
     const { agents } = useProject(),
       { sessions } = useSessions(),
       navigate = useNavigate();
+    const location = deps.useLocation?.();
+    const section = new URLSearchParams(location?.search || "").get("section") || "mine";
+    const validView = value => ["mine", "recent", "search", "artifacts", "knowledge_documents", "knowledge_candidates", "knowledge_rules"].includes(value) ? value : "mine";
     const agent =
       agents.find((a) => a.agentId === "test_agent")?.agentId ||
       agents[0]?.agentId ||
       "test_agent";
     const base = `/api/projects/${enc(projectId)}/agents/${enc(agent)}/memory/library`;
     const list = useLoad(base),
-      [view, setView] = R.useState("mine"),
+      [view, setView] = R.useState(validView(section)),
+      [knowledgeDocumentId, setKnowledgeDocumentId] = R.useState(undefined),
       [folder, setFolder] = R.useState(null),
       [selected, setSelected] = R.useState(null),
       [edit, setEdit] = R.useState(null),
@@ -1661,7 +1665,15 @@ function createSectionsUI(deps) {
     const fileInput = R.useRef(null),
       selectionSeq = R.useRef(0);
     const rows = list.data?.entries || [];
+    R.useEffect(() => {setView(validView(section));}, [section]);
+    const knowledgeViews = {
+      knowledge_documents: { tab: "documents", label: "项目参考资料", icon: "book" },
+      knowledge_candidates: { tab: "candidates", label: "待确认知识", icon: "clock" },
+      knowledge_rules: { tab: "rules", label: "正式规则", icon: "book" },
+    };
+    const knowledgeView = deps.ProjectKnowledgePanel ? knowledgeViews[view] : null;
     async function open(row) {
+      nav("mine");
       const seq = ++selectionSeq.current;
       setError("");
       if (row.kind === "folder") {
@@ -1745,6 +1757,13 @@ function createSectionsUI(deps) {
       setSearch("");
       setFolder(null);
       setError("");
+      setMenu(false);
+      setKnowledgeDocumentId(undefined);
+      navigate(`/qa/library?section=${encodeURIComponent(mode)}`, {replace:true});
+    }
+    function openReference(documentId) {
+      nav("knowledge_documents");
+      setKnowledgeDocumentId(documentId);
     }
     const visible = rows.filter((row) =>
       search
@@ -1761,7 +1780,7 @@ function createSectionsUI(deps) {
     }
     return h(
       "section",
-      { className: "qa-library" },
+      { className: `qa-library ${deps.ProjectKnowledgePanel ? "qa-library-integrated" : ""}` },
       h(
         "aside",
         { className: "qa-library-sidebar" },
@@ -1769,7 +1788,7 @@ function createSectionsUI(deps) {
           "div",
           { className: "qa-library-title" },
           h("h1", null, "项目资料"),
-          button("刷新", list.reload),
+          !knowledgeView && button("刷新", list.reload),
         ),
         h(
           "div",
@@ -1867,7 +1886,7 @@ function createSectionsUI(deps) {
                 {
                   key: row.id,
                   className:
-                    selected?.id === row.id || folder === row.id
+                    !knowledgeView && (selected?.id === row.id || folder === row.id)
                       ? "is-active"
                       : "",
                   onClick: () => open(row),
@@ -1888,13 +1907,25 @@ function createSectionsUI(deps) {
         ),
         h(
           "div",
+          { className: "qa-library-knowledge-section" },
+          deps.ProjectKnowledgePanel && h("div", { className: "qa-library-group" }, "项目知识"),
+          deps.ProjectKnowledgePanel && h("nav", { className: "qa-library-nav", "aria-label": "项目知识分类" },
+            ...Object.entries(knowledgeViews).map(([key, entry]) => h("button", {
+              key, className: view === key ? "is-active" : "", "aria-current": view === key ? "page" : undefined,
+              onClick: () => nav(key),
+            }, h(Icon, { name: entry.icon }), entry.label)),
+          ),
+        ),
+        h(
+          "div",
           { className: "qa-library-storage" },
-          "存储于本机 · 仅当前账号",
+          "我的资料：本机保存 · 仅当前账号",
           h(
             "div",
             null,
             `已用 ${sizeText(list.data?.usedBytes || 0)} / 100 MB`,
           ),
+          deps.ProjectKnowledgePanel && h("div", { className: "qa-library-storage-note" }, "项目参考资料按项目权限使用，纳入前确认"),
         ),
       ),
       h(
@@ -1906,8 +1937,10 @@ function createSectionsUI(deps) {
           h(
             "div",
             { className: "qa-library-crumb" },
-            h("button", { onClick: () => nav("mine") }, "我的资料"),
-            ...ancestors.map((r) =>
+            knowledgeView
+              ? h("span", null, `项目资料 / ${knowledgeView.label}`)
+              : h("button", { onClick: () => nav("mine") }, "我的资料"),
+            ...(!knowledgeView ? ancestors : []).map((r) =>
               h(
                 "button",
                 {
@@ -1920,9 +1953,9 @@ function createSectionsUI(deps) {
                 " / " + r.name,
               ),
             ),
-            selected && h("span", null, " / " + selected.name),
+            !knowledgeView && selected && h("span", null, " / " + selected.name),
           ),
-          selected &&
+          !knowledgeView && selected &&
             h(
               "div",
               { className: "qa-row-actions" },
@@ -1939,9 +1972,12 @@ function createSectionsUI(deps) {
               button("删除", () => setRemove(selected)),
             ),
         ),
-        errorBox(error || list.error),
-        list.error && button("重新加载", list.reload),
-        list.loading || busy
+        !knowledgeView && selected && deps.PersonalReferenceActions && h(deps.PersonalReferenceActions, {projectId, document:selected, onOpen:openReference}),
+        !knowledgeView && errorBox(error || list.error),
+        !knowledgeView && list.error && button("重新加载", list.reload),
+        knowledgeView
+          ? h(deps.ProjectKnowledgePanel, { tab: knowledgeView.tab, documentId:knowledgeDocumentId })
+          : list.loading || busy
           ? h("div", { className: "qa-page-empty" }, "正在加载资料…")
           : selected
             ? h(DocumentView, { doc: selected })
@@ -1972,6 +2008,7 @@ function createSectionsUI(deps) {
                     "aria-label": "搜索资料",
                     autoFocus: view === "search",
                   }),
+                  view === "search" && deps.ProjectReferenceSearch && h(deps.ProjectReferenceSearch, {projectId, query:search, onOpen:openReference}),
                   !visible.length
                     ? h(
                         "div",
@@ -2049,7 +2086,7 @@ function createSectionsUI(deps) {
             }),
           ),
         },
-        h("p", null, `确认删除「${remove?.name || ""}」？此操作不可撤销。`),
+        h("p", null, `确认删除「${remove?.name || ""}」？此操作不可撤销。已纳入的项目参考版本及历史任务记录仍会保留；可在项目参考资料中另行归档。`),
         errorBox(error),
       ),
     );
@@ -2223,99 +2260,456 @@ function createSectionsUI(deps) {
       ),
     );
   }
+  // Artifact browser: task batches as tree roots, lazily expanded type/other directories,
+  // filtered with the parent chain of every hit kept visible. Reads only — nothing here moves
+  // or uploads workspace files.
+  const ART_TYPE_RULES = [
+    ["报告", /\.(html?)$/i],
+    ["数据表", /\.(xlsx|xls|csv)$/i],
+    ["截图", /\.(png|jpe?g|gif|webp|bmp|svg)$/i],
+    ["录像", /\.(mp4|webm|mov|avi|mkv)$/i],
+    ["日志", /\.(log|txt)$/i],
+    ["抓包", /\.(har|pcap|pcapng)$/i],
+  ];
+  const ART_TYPE_LABELS = ART_TYPE_RULES.map(([label]) => label);
+  const artKindOf = (name) => {
+    for (const [label, re] of ART_TYPE_RULES) if (re.test(name)) return label;
+    return "文件";
+  };
+  const artIsText = (name) =>
+    /\.(md|markdown|txt|log|json|csv|xml|ya?ml|har|html?|js|ts|css|ini|cfg)$/i.test(name);
+  const ART_PREVIEW_LIMIT = 512 * 1024;
   function ArtifactBrowser({ sessions, navigate }) {
-    const [session, setSession] = R.useState(null),
-      [path, setPath] = R.useState("");
-    const files = useLoad(
-      session
-        ? `/api/sessions/${enc(session.sessionId)}/files?path=${enc(path)}`
-        : null,
-    );
     const active = sessions.filter(
       (s) => !s.origin?.length && s.workspace && !s.archived,
     );
+    const [expanded, setExpanded] = R.useState(() => new Set()),
+      [dirs, setDirs] = R.useState({}),
+      [sel, setSel] = R.useState(null),
+      [query, setQuery] = R.useState(""),
+      [kind, setKind] = R.useState(""),
+      [preview, setPreview] = R.useState(null);
+    const loadedDirs = R.useRef(new Set()),
+      previewSeq = R.useRef(0);
+    const keyOf = (sessionId, path) => `${sessionId}:${path}`;
+    const rootLabel = (session) =>
+      `${String(session.lastActiveAt || "").slice(0, 10) || "任务"}_${session.title || session.sessionId}`;
+
+    function ensureDir(session, path, key) {
+      if (loadedDirs.current.has(key)) return;
+      loadedDirs.current.add(key);
+      setDirs((current) => ({ ...current, [key]: { loading: true, error: "", entries: null } }));
+      request(`/api/sessions/${enc(session.sessionId)}/files?path=${enc(path)}`)
+        .then((data) =>
+          setDirs((current) => ({
+            ...current,
+            [key]: { loading: false, error: "", entries: data?.entries || [] },
+          })),
+        )
+        .catch((e) => {
+          loadedDirs.current.delete(key);
+          setDirs((current) => ({
+            ...current,
+            [key]: { loading: false, error: e.message, entries: null },
+          }));
+        });
+    }
+    function rescan() {
+      const byId = new Map(active.map((s) => [s.sessionId, s]));
+      loadedDirs.current = new Set();
+      setDirs({});
+      for (const key of expanded) {
+        const splitAt = key.indexOf(":");
+        const session = byId.get(key.slice(0, splitAt));
+        if (session) ensureDir(session, key.slice(splitAt + 1), key);
+      }
+    }
+    function clickNode(session, path, entry, isRoot = false) {
+      previewSeq.current++;
+      setPreview(null);
+      if (entry.kind === "dir") {
+        path = isRoot ? "" : path ? `${path}/${entry.name}` : entry.name;
+        const key = keyOf(session.sessionId, path);
+        setSel({ session, path, name: entry.name, kind: "dir", sizeBytes: entry.sizeBytes, mtime: entry.mtime });
+        setExpanded((current) => {
+          const next = new Set(current);
+          if (next.has(key)) next.delete(key);
+          else next.add(key);
+          return next;
+        });
+        ensureDir(session, path, key);
+      } else {
+        setSel({ session, path, name: entry.name, kind: "file", sizeBytes: entry.sizeBytes, mtime: entry.mtime });
+      }
+    }
+    // Text preview of the selected file, read with the page's own same-origin cookie; larger
+    // and binary files fall back to the download action instead of being read into the page.
+    R.useEffect(() => {
+      const seq = ++previewSeq.current;
+      if (!sel || sel.kind !== "file" || !artIsText(sel.name) || (sel.sizeBytes || 0) > ART_PREVIEW_LIMIT) {
+        setPreview(null);
+        return;
+      }
+      const controller = new AbortController();
+      setPreview({ loading: true, text: "", error: "" });
+      const filePath = sel.path ? `${sel.path}/${sel.name}` : sel.name;
+      fetch(
+        `/api/sessions/${enc(sel.session.sessionId)}/files/content?path=${enc(filePath)}`,
+        { credentials: "same-origin", signal: controller.signal },
+      )
+        .then((res) => {
+          if (!res.ok) throw Error(`读取失败（${res.status}）`);
+          return res.text();
+        })
+        .then((text) => {
+          if (seq === previewSeq.current) setPreview({ loading: false, text, error: "" });
+        })
+        .catch((e) => {
+          if (seq === previewSeq.current) setPreview({ loading: false, text: "", error: e.message });
+        });
+      return () => {
+        previewSeq.current++;
+        controller.abort();
+      };
+    }, [sel]);
+
+    const q = query.trim().toLowerCase();
+    const filtering = !!(q || kind);
+    const matchFile = (name) =>
+      (!q || name.toLowerCase().includes(q)) && (!kind || artKindOf(name) === kind);
+    // Search and the type filter run over the directories already loaded: a hit keeps its full
+    // parent chain visible, and unloaded directories survive only when their own name matches.
+    function filterLoaded(entries, session, path) {
+      const out = [];
+      for (const entry of entries) {
+        if (entry.kind === "file") {
+          if (matchFile(entry.name)) out.push(entry);
+          continue;
+        }
+        const childPath = path ? `${path}/${entry.name}` : entry.name;
+        const state = dirs[keyOf(session.sessionId, childPath)];
+        const selfName = !q || entry.name.toLowerCase().includes(q);
+        if (!state?.entries) {
+          if (selfName && !kind) out.push(entry);
+          continue;
+        }
+        const kids = filterLoaded(state.entries, session, childPath);
+        if (kids.length || (selfName && !kind)) out.push({ ...entry, filtered: kids });
+      }
+      return out;
+    }
+    function renderNodes(entries, session, path, depth, out) {
+      for (const entry of entries) {
+        const childPath = path ? `${path}/${entry.name}` : entry.name;
+        const key = keyOf(session.sessionId, childPath);
+        const isOpen = expanded.has(key);
+        if (entry.kind === "dir") {
+          const state = dirs[key];
+          const kids = entry.filtered ?? state?.entries ?? [];
+          const count =
+            entry.filtered !== undefined
+              ? entry.filtered.length
+              : state?.entries
+                ? state.entries.length
+                : null;
+          out.push(
+            h(
+              "button",
+              {
+                key,
+                className: `qa-art-tnode${sel?.kind === "dir" && sel.path === childPath && sel.session.sessionId === session.sessionId ? " sel" : ""}`,
+                style: { paddingLeft: 8 + depth * 16 },
+                onClick: () => clickNode(session, path, entry),
+                title: entry.name,
+              },
+              h("span", { className: `qa-art-tw ${isOpen ? "open" : ""}` }, "▶"),
+              h("span", { className: "qa-art-ic" }, isOpen ? "📂" : "📁"),
+              h("span", { className: "qa-art-nm" }, entry.name),
+              h("span", { className: "qa-art-sz" }, count === null ? "…" : `${count} 个文件`),
+            ),
+          );
+          if ((isOpen || (filtering && kids.length)) && kids.length)
+            renderNodes(kids, session, childPath, depth + 1, out);
+        } else {
+          out.push(
+            h(
+              "button",
+              {
+                key,
+                className: `qa-art-tnode${sel?.kind === "file" && sel.path === path && sel.name === entry.name && sel.session.sessionId === session.sessionId ? " sel" : ""}`,
+                style: { paddingLeft: 8 + depth * 16 },
+                onClick: () => clickNode(session, path, entry),
+                title: entry.name,
+              },
+              h("span", { className: "qa-art-tw leaf" }, "▶"),
+              h("span", { className: "qa-art-ic" }, "📄"),
+              h("span", { className: "qa-art-nm" }, entry.name),
+              h("span", { className: "qa-art-ttag" }, artKindOf(entry.name)),
+              h("span", { className: "qa-art-sz" }, sizeText(entry.sizeBytes || 0)),
+            ),
+          );
+        }
+      }
+    }
+    const roots = active.map((session) => ({
+      session,
+      name: rootLabel(session),
+    }));
+    const rows = [];
+    for (const root of roots) {
+      const key = keyOf(root.session.sessionId, "");
+      const state = dirs[key];
+      const rootMatch = !q || root.name.toLowerCase().includes(q);
+      let kids = null;
+      if (state?.entries) kids = filtering ? filterLoaded(state.entries, root.session, "") : state.entries;
+      if (filtering && !rootMatch && (!kids || !kids.length)) continue;
+      const isOpen = expanded.has(key);
+      rows.push(
+        h(
+          "button",
+          {
+            key,
+            className: `qa-art-tnode${sel?.kind === "dir" && sel.path === "" && sel.session.sessionId === root.session.sessionId ? " sel" : ""}`,
+            style: { paddingLeft: 8 },
+            onClick: () => clickNode(root.session, "", { name: root.name, kind: "dir" }, true),
+            title: root.name,
+          },
+          h("span", { className: `qa-art-tw ${isOpen ? "open" : ""}` }, "▶"),
+          h("span", { className: "qa-art-ic" }, isOpen ? "📂" : "📁"),
+          h("span", { className: "qa-art-nm" }, root.name),
+          h(
+            "span",
+            { className: "qa-art-sz" },
+            state?.entries ? `${state.entries.length} 个文件` : state?.loading ? "…" : "",
+          ),
+        ),
+      );
+      if ((isOpen || (filtering && kids?.length)) && kids?.length)
+        renderNodes(kids, root.session, "", 1, rows);
+    }
+    let totalFiles = 0,
+      totalBytes = 0;
+    for (const state of Object.values(dirs))
+      for (const entry of state.entries || [])
+        if (entry.kind === "file") {
+          totalFiles++;
+          totalBytes += entry.sizeBytes || 0;
+        }
+    const rootError =
+      roots.map((r) => dirs[keyOf(r.session.sessionId, "")]?.error).find(Boolean) || "";
+    const selError =
+      sel && sel.kind === "dir" ? dirs[keyOf(sel.session.sessionId, sel.path)]?.error || "" : "";
+    const crumbs = [];
+    if (sel) {
+      const parts = [rootLabel(sel.session), ...(sel.path ? sel.path.split("/") : [])];
+      if (sel.kind === "file") parts.push(sel.name);
+      parts.forEach((part, i) =>
+        crumbs.push(
+          h(
+            "span",
+            { key: `seg${i}`, className: `qa-art-seg${i === parts.length - 1 ? " cur" : ""}` },
+            part,
+          ),
+          i < parts.length - 1 &&
+            h("span", { key: `sep${i}`, className: "qa-art-sep" }, "›"),
+        ),
+      );
+    }
+    const selDirEntries =
+      sel && sel.kind === "dir" ? dirs[keyOf(sel.session.sessionId, sel.path)]?.entries : null;
+    const selIsImage = /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(sel?.name || "");
+    const selIsVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(sel?.name || "");
+    const detail = sel && h(
+      "div",
+      { className: "qa-art-detail" },
+      h("div", { className: "qa-art-crumbs" }, ...crumbs),
+      sel.kind === "dir"
+        ? [
+            h(
+              "div",
+              { className: "qa-library-heading", key: "head" },
+              h("h2", { key: "t" }, `📁 ${sel.name}`),
+              sel.path &&
+                h(
+                  "div",
+                  { className: "qa-header-actions", key: "acts" },
+                  button("打开所属任务", () => navigate(`/chat/${enc(sel.session.sessionId)}`)),
+                ),
+            ),
+            h(
+              "p",
+              { className: "qa-page-note", key: "note" },
+              selDirEntries
+                ? `此目录共 ${selDirEntries.filter((e) => e.kind === "file").length} 个文件，点击条目继续进入或查看。`
+                : "正在读取目录内容…",
+            ),
+            selDirEntries
+              ? h(
+                  "div",
+                  { key: "list" },
+                  ...selDirEntries.map((entry) =>
+                    h(
+                      "button",
+                      {
+                        key: entry.name,
+                        className: "qa-art-tnode",
+                        style: { paddingLeft: 0 },
+                        onClick: () => clickNode(sel.session, sel.path, entry),
+                        title: entry.name,
+                      },
+                      h("span", { className: "qa-art-ic" }, entry.kind === "dir" ? "📁" : "📄"),
+                      h("span", { className: "qa-art-nm" }, entry.name),
+                      entry.kind === "file" &&
+                        h("span", { className: "qa-art-ttag" }, artKindOf(entry.name)),
+                      h(
+                        "span",
+                        { className: "qa-art-sz" },
+                        entry.kind === "file" ? sizeText(entry.sizeBytes || 0) : "",
+                      ),
+                    ),
+                  ),
+                )
+              : null,
+          ]
+        : [
+            h(
+              "div",
+              { className: "qa-library-heading", key: "head" },
+              h("h2", { key: "t" }, sel.name),
+              h(
+                "div",
+                { className: "qa-header-actions", key: "acts" },
+                h(
+                  "a",
+                  {
+                    className: "qa-button",
+                    href: `/api/sessions/${enc(sel.session.sessionId)}/files/content?download=1&path=${enc(sel.path ? `${sel.path}/${sel.name}` : sel.name)}`,
+                    download: sel.name,
+                  },
+                  "下载",
+                ),
+                button("打开所属任务", () => navigate(`/chat/${enc(sel.session.sessionId)}`)),
+              ),
+            ),
+            h(
+              "div",
+              { className: "qa-art-meta-grid", key: "meta" },
+              h("div", { key: "time" }, h("span", null, "生成时间"), h("b", null, sel.mtime ? dateText(sel.mtime) : "—")),
+              h("div", { key: "task" }, h("span", null, "来源任务"), h("b", null, sel.session.title || sel.session.sessionId)),
+              h("div", { key: "by" }, h("span", null, "生成者"), h("b", null, sel.session.agentId || "—")),
+              h("div", { key: "kind" }, h("span", null, "类型"), h("b", null, artKindOf(sel.name))),
+              h("div", { key: "size" }, h("span", null, "大小"), h("b", null, sizeText(sel.sizeBytes || 0))),
+            ),
+            h("div", { className: "qa-k-sec-title", key: "pt" }, "内容预览"),
+            selIsImage || selIsVideo
+              ? h(
+                  "div",
+                  { className: "qa-art-ph", key: "ph" },
+                  h("span", { key: "ic" }, selIsVideo ? "🎬" : "🖼"),
+                  h("span", { key: "tx" }, `${artKindOf(sel.name)}预览区：内嵌渲染暂未开放，可下载后在本地查看。`),
+                )
+              : preview?.loading
+                ? h("p", { key: "pl", className: "qa-page-note" }, "正在读取文件内容…")
+                : preview?.error
+                  ? h("p", { key: "pe", role: "alert", className: "qa-page-error" }, preview.error)
+                  : preview
+                    ? h("pre", { key: "pv", className: "qa-k-prov qa-art-preview" }, preview.text || "（空文件）")
+                    : h(
+                        "p",
+                        { key: "pb", className: "qa-page-note" },
+                        "该文件类型暂不支持内嵌预览，可下载后在本地查看。",
+                      ),
+          ],
+    );
     return h(
       "div",
-      { className: "qa-library-content" },
+      { className: "qa-library-content qa-art" },
       h(
         "div",
         { className: "qa-library-heading" },
         h("h2", null, "本地产物"),
-        session &&
-          button("打开所属任务", () =>
-            navigate(`/chat/${enc(session.sessionId)}`),
-          ),
+        h(
+          "div",
+          { className: "qa-header-actions" },
+          sel && button("打开所属任务", () => navigate(`/chat/${enc(sel.session.sessionId)}`)),
+          button("⟳ 重新扫描", rescan),
+        ),
       ),
       h(
         "p",
         { className: "qa-page-note" },
-        "浏览已有测试任务的工作文件夹，资料保留在原位置。",
+        "浏览各任务在工作文件夹中生成的产物文件，按任务批次与目录层级归档；资料保留在原位置。",
       ),
-      h(
-        "select",
-        {
-          "aria-label": "选择产物所属任务",
-          value: session?.sessionId || "",
-          onChange: (e) => {
-            setSession(
-              active.find((s) => s.sessionId === e.target.value) || null,
-            );
-            setPath("");
-          },
-        },
-        h("option", { value: "" }, "选择测试任务"),
-        ...active.map((s) =>
-          h(
-            "option",
-            { value: s.sessionId, key: s.sessionId },
-            s.title || s.sessionId,
-          ),
-        ),
-      ),
-      session &&
-        h(
-          "div",
-          null,
-          h(
+      !active.length
+        ? h(
             "div",
-            { className: "qa-artifact-path" },
-            button(
-              "上一级",
-              () => setPath(path.split("/").slice(0, -1).join("/")),
-              false,
-              { disabled: !path },
-            ),
-            h("span", null, path || "/"),
-          ),
-          errorBox(files.error),
-          files.loading
-            ? h("p", null, "正在加载文件…")
-            : h(
-                "div",
-                { className: "qa-library-files" },
-                ...(files.data?.entries || []).map((file) =>
-                  h(
-                    "div",
-                    { className: "qa-library-file", key: file.name },
-                    file.kind === "dir"
-                      ? button("▰ " + file.name, () =>
-                          setPath([path, file.name].filter(Boolean).join("/")),
-                        )
-                      : h(
-                          "a",
-                          {
-                            href: `/api/sessions/${enc(session.sessionId)}/files/content?download=1&path=${enc([path, file.name].filter(Boolean).join("/"))}`,
-                            download: file.name,
-                          },
-                          file.name,
-                        ),
-                    h("small", null, sizeText(file.sizeBytes || 0)),
-                  ),
-                ),
-                files.data?.entries?.length === 0 &&
-                  h("p", null, "此文件夹为空"),
+            { className: "qa-page-empty" },
+            h("p", null, "还没有可浏览的任务产物"),
+            h("span", null, "完成任务后，其工作文件夹中的产物会出现在这里"),
+          )
+        : [
+            h(
+              "div",
+              { className: "qa-art-toolbar", key: "tb" },
+              h("input", {
+                className: "qa-k-search",
+                value: query,
+                onChange: (e) => setQuery(e.target.value),
+                placeholder: "搜索文件或目录名…",
+                "aria-label": "搜索产物",
+              }),
+              h(
+                "select",
+                {
+                  className: "qa-k-select",
+                  "aria-label": "产物类型",
+                  value: kind,
+                  onChange: (e) => setKind(e.target.value),
+                },
+                h("option", { value: "" }, "全部类型"),
+                ...ART_TYPE_LABELS.map((label) => h("option", { value: label, key: label }, label)),
               ),
-        ),
+              h(
+                "span",
+                { className: "qa-k-total" },
+                `已加载 ${totalFiles} 个文件 · ${sizeText(totalBytes)} · ${roots.length} 个任务批次`,
+              ),
+              filtering &&
+                h(
+                  "span",
+                  { className: "qa-k-total", key: "hint" },
+                  "搜索与筛选覆盖已加载（展开过）的目录",
+                ),
+            ),
+            errorBox(rootError || selError),
+            h(
+              "div",
+              { className: "qa-art-split", key: "split" },
+              h(
+                "div",
+                { className: "qa-art-tree-card" },
+                rows.length
+                  ? rows
+                  : h(
+                      "p",
+                      { className: "qa-k-empty-list" },
+                      "没有匹配的产物。搜索与筛选仅覆盖已加载的目录，可先展开目录再筛选。",
+                    ),
+              ),
+              sel
+                ? detail
+                : h(
+                    "div",
+                    { className: "qa-art-detail" },
+                    h(
+                      "div",
+                      { className: "qa-k-empty" },
+                      h("span", null, "📁"),
+                      h("span", null, "从左侧目录树选择一个文件或目录查看详情"),
+                    ),
+                  ),
+            ),
+          ],
     );
   }
   return SectionPage;

@@ -221,14 +221,14 @@ export class PublishedResourceSync {
 
   private checkCompatibility(bundle: ResolvedPublishedBundle, definition: CachedSharedAgentDefinition): void {
     const modelRef = bundle.resources[0]?.payload.modelResource;
-    if (modelRef !== undefined) {
+    if (modelRef) {
       const model = bundle.resources.find(resource => resource.kind === "models" && resource.id === modelRef);
       if (!model) throw new SyncError("model_incompatible", "发布中引用的模型不存在。");
       const revision = model.payload.modelRevision;
       if (revision !== undefined && typeof revision !== "string") throw new SyncError("model_incompatible", "模型修订无效。");
     }
     for (const resource of bundle.resources.filter(item => item.kind === "plugins")) {
-      if (resource.payload.source === "upstream-library" || !definition) throw new SyncError("plugin_incompatible", "共享插件需要本地兼容运行时。");
+      if (!definition) throw new SyncError("plugin_incompatible", "共享插件需要本地兼容运行时。");
       const range = resource.payload.minHostVersion;
       if (range !== undefined && (typeof range !== "string" || !versionAtLeast(this.serverVersion, range))) {
         throw new SyncError("plugin_incompatible", "插件要求的宿主版本高于当前版本。");

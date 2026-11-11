@@ -13,8 +13,8 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-function agentBundle(agentId: string, version: number, extra: unknown[] = []) {
-  const agent = { id: String(version).repeat(36).slice(0, 36), kind: "agents" as const, name: agentId, description: "", payload: { agentId, prompt: `v${version}`, agentsMd: `${agentId} instructions`, ...(extra.length ? { pluginResources: extra.map(item => (item as { id: string }).id) } : {}) }, audience: ["alice"], revision: 0, version, published: true, updatedAt: "2026-11-06T00:00:00.000Z" };
+function agentBundle(agentId: string, version: number, extra: unknown[] = [], modelResource?: string) {
+  const agent = { id: String(version).repeat(36).slice(0, 36), kind: "agents" as const, name: agentId, description: "", payload: { agentId, prompt: `v${version}`, agentsMd: `${agentId} instructions`, ...(modelResource === undefined ? {} : { modelResource }), ...(extra.length ? { pluginResources: extra.map(item => (item as { id: string }).id) } : {}) }, audience: ["alice"], revision: 0, version, published: true, updatedAt: "2026-11-06T00:00:00.000Z" };
   const resources = [agent, ...extra as { id: string; kind: string }[]];
   const versions = resources.map(item => publishedResourceRef(item as never));
   return { agentId, bundle: { rootId: agent.id, versions, bundleHash: resolvedBundleHash(versions), resources } };
@@ -63,6 +63,22 @@ it("activates a verified publication and serves status without refetching on eve
   expect(sync.status("alice").offlineUsable).toEqual([]);
   for (let i = 0; i < 5; i++) sync.status("alice");
   expect(calls()).toBe(1);
+});
+
+it("accepts an empty model reference when the agent uses its local model configuration", async () => {
+  const { sync, setItems } = await setup();
+  setItems([agentBundle("qa", 1, [], "")]);
+  await sync.kick("alice");
+  expect(sync.status("alice").state).toBe("current");
+  expect(sync.status("alice").publication?.agents[0]?.agentId).toBe("qa");
+});
+
+it("rejects a nonempty model reference missing from the published bundle", async () => {
+  const { sync, setItems } = await setup();
+  setItems([agentBundle("qa", 1, [], "b".repeat(36))]);
+  await sync.kick("alice");
+  expect(sync.status("alice").update.errorCode).toBe("verification_failed");
+  expect(sync.status("alice").publication).toBeNull();
 });
 
 it("pins a new session to the newer publication while keeping the last verified one on failure", async () => {

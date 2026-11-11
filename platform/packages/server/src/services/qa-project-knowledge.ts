@@ -554,6 +554,8 @@ export class QaProjectKnowledgeStore {
   // ---------------------------------------------------------------- documents
 
   createDocument(input: {
+    /** Reserved for trusted local import adapters; never taken from a public request. */
+    internalDocumentId?: string;
     projectId: string;
     userId: string;
     title: unknown;
@@ -574,7 +576,8 @@ export class QaProjectKnowledgeStore {
       throw new HttpError(409, "document_limit", "项目资料数量已达上限。");
     }
     const at = iso(this.now());
-    const documentId = `doc-${this.id()}`;
+    const documentId = input.internalDocumentId ?? `doc-${this.id()}`;
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(documentId)) throw new HttpError(400, "invalid_document", "资料标识无效。");
     const revisionId = `rev-${this.id()}`;
     const hash = sha256(content);
     this.tx(() => {
@@ -710,6 +713,8 @@ export class QaProjectKnowledgeStore {
     title?: unknown;
     content?: unknown;
     changeNote?: unknown;
+    /** Only trusted import adapters may advance source provenance. */
+    internalSource?: DocumentSource;
   }): DocumentDetail {
     const row = this.documentRow(input.projectId, input.documentId);
     if (row.status !== "active") throw new HttpError(409, "document_archived", "资料已归档，不能继续修订。");
@@ -729,15 +734,15 @@ export class QaProjectKnowledgeStore {
     const at = iso(this.now());
     const hash = sha256(content);
     const changeNote = optionalText(input.changeNote, 1000, "invalid_document", "修订说明") ?? "";
-    const source = parseJson(row.source_json, { type: "manual" });
+    const source = input.internalSource ? parseSource(input.internalSource) : parseJson(row.source_json, { type: "manual" });
     this.tx(() => {
       this.db.prepare(`INSERT INTO qa_document_revisions
         (revision_id,document_id,project_id,revision,title,content,encoding,content_hash,byte_size,change_note,source_json,author_user_id,created_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         revisionId, row.document_id, row.project_id, nextRevision, title, content, "utf8", hash, bytes, changeNote, JSON.stringify(source), input.userId, at
       );
-      this.db.prepare("UPDATE qa_documents SET title=?,revision=?,current_revision=?,current_revision_id=?,content_hash=?,byte_size=?,updated_at=?,updated_by=? WHERE document_id=?")
-        .run(title, expected + 1, nextRevision, revisionId, hash, bytes, at, input.userId, row.document_id);
+      this.db.prepare("UPDATE qa_documents SET title=?,revision=?,current_revision=?,current_revision_id=?,content_hash=?,byte_size=?,updated_at=?,updated_by=?,source_json=? WHERE document_id=?")
+        .run(title, expected + 1, nextRevision, revisionId, hash, bytes, at, input.userId, JSON.stringify(source), row.document_id);
       this.upsertIndex(row.project_id, row.document_id, revisionId, nextRevision, hash, title, content, at);
     });
     return this.getDocument(input.projectId, input.documentId);

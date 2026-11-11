@@ -19,6 +19,7 @@ import { CentralAgentPrivateStore, type PrivateAgentKind } from "./central-agent
 import { agentComponents, agentComponentCounts } from "./central-agent-components.js";
 import { centralSkillRoutes } from "./central-skills.js";
 import { pluginLibraryRoutes } from "./routes/plugins.js";
+import { withGlobalPlugins, registerGlobalPluginRoutes } from "./global-plugins.js";
 
 export const CONTROL_BODY_LIMIT = 2 * 1024 * 1024;
 
@@ -394,7 +395,7 @@ export class ControlStore {
     const pinned=!!this.db.prepare("SELECT 1 FROM public_resource_version_pins WHERE resource_id=? AND version=?").get(id,latest.version);
     const fixed=pinned?this.versionBundle(id,latest.version).resources:this.bundle(id,userId,admin).map(resource=>this.getVersion(resource.id,resource.version));
     // New tasks follow the current Skill pointer; replayBundle retains the exact captured versions.
-    const resources=fixed.map(resource=>resource.kind==="skills"?this.getVersion(resource.id,this.get(resource.id).version):resource);
+    const resources=withGlobalPlugins(this,fixed.map(resource=>resource.kind==="skills"?this.getVersion(resource.id,this.get(resource.id).version):resource),userId,admin);
     const versions=resources.map(publishedResourceRef);
     return {rootId:id,versions,bundleHash:resolvedBundleHash(versions),resources};
   }
@@ -441,6 +442,7 @@ export function controlRoutes(store:ControlStore):Hono<AppEnv>{
   app.use("/admin/*",async(c,next)=>{if(!c.var.user.isAdmin)throw new HttpError(403,"admin_required","仅管理员可以访问管理后台。");await next();});
   app.route("/skills",centralSkillRoutes(store));
   app.route("/admin/plugin-library",pluginLibraryRoutes());
+  registerGlobalPluginRoutes(app,store,message=>new HttpError(409,"global_plugin_conflict",message));
   app.route("/admin/model-config",centralModelConfigRoutes(store.modelConfig));
   const privateKind=(value:string):PrivateAgentKind=>{if(value!=="memory"&&value!=="vault")fail("私有数据类型无效。");return value as PrivateAgentKind;};
   const privateScope=(userId:string,scope:unknown,projectId:unknown)=>{

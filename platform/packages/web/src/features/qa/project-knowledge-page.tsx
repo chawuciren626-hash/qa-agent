@@ -104,19 +104,19 @@ function Field({
   );
 }
 
-export function ProjectKnowledgePage() {
+export function ProjectKnowledgePage({ initialTab = "documents", embedded = false, initialDocumentId }: { initialTab?: Tab; embedded?: boolean; initialDocumentId?: string } = {}) {
   const { currentProject } = useProject();
-  return <ProjectKnowledgePageContent key={currentProject?.projectId ?? "no-project"} />;
+  return <ProjectKnowledgePageContent key={`${currentProject?.projectId ?? "no-project"}:${initialTab}:${initialDocumentId ?? ""}`} initialTab={initialTab} embedded={embedded} initialDocumentId={initialDocumentId} />;
 }
 
-function ProjectKnowledgePageContent() {
+function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }: { initialTab: Tab; embedded: boolean; initialDocumentId?: string }) {
   const { user } = useAuth();
   const { currentProject } = useProject();
   const projectId = currentProject?.projectId;
   const base = `/api/projects/${encodeURIComponent(projectId ?? "")}/agents/qa`;
   const owner = canEditKnowledge(currentProject, user?.userId);
 
-  const [tab, setTab] = useState<Tab>("documents");
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -127,7 +127,8 @@ function ProjectKnowledgePageContent() {
   const [documents, setDocuments] = useState<DocumentView[] | null>(null);
   const [docQuery, setDocQuery] = useState("");
   const [docStatus, setDocStatus] = useState<"all" | DocumentStatus>("all");
-  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(initialDocumentId ?? null);
+  const [candidateDraft, setCandidateDraft] = useState<{title:string; statement:string; rationale:string; documentId:string; revision:number} | null>(null);
   const [detail, setDetail] = useState<DocumentDetailView | null>(null);
   const [revisions, setRevisions] = useState<RevisionView[] | null>(null);
   const [docEditor, setDocEditor] = useState<
@@ -143,7 +144,8 @@ function ProjectKnowledgePageContent() {
 
   // Candidates
   const [candidates, setCandidates] = useState<CandidateView[] | null>(null);
-  const [candidateStatus, setCandidateStatus] = useState<"all" | CandidateStatus>("all");
+  const [candidateStatus, setCandidateStatus] = useState<"all" | CandidateStatus>(embedded ? "pending" : "all");
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
 
   // Rules
   const [rules, setRules] = useState<RuleView[] | null>(null);
@@ -248,6 +250,11 @@ function ProjectKnowledgePageContent() {
     };
   }, [selectedRuleId, base, reload, fail]);
 
+  const selectedCandidate = useMemo(
+    () => candidates?.find((candidate) => candidate.candidateId === selectedCandidateId) ?? null,
+    [candidates, selectedCandidateId],
+  );
+
   const openCreate = () => {
     setDraftTitle("");
     setDraftContent("");
@@ -309,6 +316,18 @@ function ProjectKnowledgePageContent() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function submitCandidate() {
+    if (!candidateDraft || busy) return;
+    setBusy(true); setError(null);
+    try {
+      await apiFetch(`${base}/knowledge/candidates`, {method:'POST', body:{
+        title:candidateDraft.title, statement:candidateDraft.statement, rationale:candidateDraft.rationale,
+        sourceRefs:[{type:'document', documentId:candidateDraft.documentId, revision:candidateDraft.revision}],
+      }});
+      setCandidateDraft(null); setNotice('已提交待确认知识，尚未成为正式规则。'); refresh();
+    } catch(failure) { fail(failure); } finally { setBusy(false); }
   }
 
   async function previewFile(file: File): Promise<UploadPreviewView> {
@@ -505,6 +524,36 @@ function ProjectKnowledgePageContent() {
     }
   }
 
+  /**
+   * Client-side export of the rule the page has already loaded: a Markdown copy for reading and
+   * archiving. No server route is involved, so this never bypasses any authorization.
+   */
+  function exportRuleMarkdown() {
+    if (!ruleDetail) return;
+    const lines = [
+      `# ${ruleDetail.title}`,
+      "",
+      `- 规则 ID：${ruleDetail.ruleId}`,
+      `- 版本：v${ruleDetail.version}`,
+      `- 状态：${ruleStatusLabel(ruleDetail.status)}`,
+      `- 确认人：${ruleDetail.confirmedBy}`,
+      `- 创建：${timeLabel(ruleDetail.createdAt)}`,
+      `- 更新：${timeLabel(ruleDetail.updatedAt)}`,
+      ...(ruleDetail.sourceCandidateId ? [`- 来源候选：${ruleDetail.sourceCandidateId}`] : []),
+      "",
+      "## 规则正文",
+      "",
+      ruleDetail.statement,
+    ];
+    const blob = new Blob([lines.join("\n") + "\n"], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${ruleDetail.ruleId}.md`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
   const statusLine = useMemo(() => {
     if (!currentProject) return "尚未选择项目";
     return owner
@@ -521,17 +570,21 @@ function ProjectKnowledgePageContent() {
   }
 
   return (
-    <main className="flex h-full flex-col gap-4 overflow-hidden p-6">
+    <main className={`flex h-full flex-col gap-4 overflow-hidden p-6 ${embedded ? "qa-knowledge-embedded" : ""}`}>
       <header className="shrink-0">
-        <h1 className="text-xl font-semibold">项目资料与知识</h1>
+        <h1 className="text-xl font-semibold">{embedded ? { documents: "项目参考资料", candidates: "待确认知识", rules: "正式规则" }[tab] : "项目资料与知识"}</h1>
         <p className="mt-1 text-sm opacity-70">
-          {projectDisplayName(currentProject!)} · 资料按修订保存；候选必须由项目所有者明确确认才会成为正式规则。
+          {projectDisplayName(currentProject!)} · {embedded ? {
+            documents: "管理当前项目的参考文本及历史版本。可在我的资料中选择“用于项目任务”，确认后纳入。",
+            candidates: "查看候选结论及来源依据，由项目所有者确认后生成正式规则。",
+            rules: "查看已确认的业务规则，支持版本追溯、修订和停用。",
+          }[tab] : "资料按修订保存；候选必须由项目所有者明确确认才会成为正式规则。"}
         </p>
         <p className="mt-2 text-xs opacity-70" role="status">
           {statusLine}
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <div className="flex rounded border border-[var(--border)]" role="tablist">
+          {!embedded && <div className="flex rounded border border-[var(--border)]" role="tablist">
             {TABS.map((entry) => (
               <button
                 key={entry.id}
@@ -547,7 +600,7 @@ function ProjectKnowledgePageContent() {
                 {entry.label}
               </button>
             ))}
-          </div>
+          </div>}
           <Button size="sm" variant="ghost" onClick={refresh}>
             刷新
           </Button>
@@ -565,344 +618,478 @@ function ProjectKnowledgePageContent() {
         </p>
       )}
 
-      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-        <section className="flex min-h-0 flex-col rounded border border-[var(--border)]">
+      <div className="qa-k-toolbar">
+        {tab === "documents" && (
+          <>
+            <input
+              className="qa-k-search"
+              aria-label="搜索资料"
+              placeholder="搜索标题或正文"
+              value={docQuery}
+              onChange={(event) => setDocQuery(event.target.value)}
+            />
+            <select
+              className="qa-k-select"
+              aria-label="资料状态"
+              value={docStatus}
+              onChange={(event) => setDocStatus(event.target.value as "all" | DocumentStatus)}
+            >
+              <option value="all">全部状态</option>
+              <option value="active">生效</option>
+              <option value="archived">已归档</option>
+            </select>
+            <span className="qa-k-total">{documents === null ? "" : `共 ${documents.length} 份资料`}</span>
+            <span className="qa-k-spacer" />
+            {owner && (
+              <>
+                <Button size="sm" onClick={openCreate} disabled={busy}>
+                  新建资料
+                </Button>
+                <label className="cursor-pointer rounded border px-3 py-1.5 text-sm">
+                  {embedded ? "导入文本文件" : "导入 UTF-8 文件"}
+                  <input
+                    type="file"
+                    className="hidden"
+                    aria-label="导入资料文件"
+                    accept=".md,.markdown,.txt,.yaml,.yml,.json,.csv,.html,.htm"
+                    disabled={busy}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = "";
+                      if (file) void importFile(file);
+                    }}
+                  />
+                </label>
+              </>
+            )}
+          </>
+        )}
+        {tab === "candidates" && (
+          <>
+            <select
+              className="qa-k-select"
+              aria-label="候选状态"
+              value={candidateStatus}
+              onChange={(event) =>
+                setCandidateStatus(event.target.value as "all" | CandidateStatus)
+              }
+            >
+              <option value="all">全部状态</option>
+              <option value="pending">待确认</option>
+              <option value="accepted">已确认</option>
+              <option value="rejected">已拒绝</option>
+            </select>
+            <span className="qa-k-total">{candidates === null ? "" : `共 ${candidates.length} 条候选`}</span>
+            <span className="qa-k-spacer" />
+            <span className="qa-k-total">候选不会自动成为规则；确认动作由项目所有者显式完成。</span>
+          </>
+        )}
+        {tab === "rules" && (
+          <>
+            <select
+              className="qa-k-select"
+              aria-label="规则状态"
+              value={ruleStatus}
+              onChange={(event) => setRuleStatus(event.target.value as "all" | RuleStatus)}
+            >
+              <option value="all">全部状态</option>
+              <option value="active">生效</option>
+              <option value="retired">已停用</option>
+            </select>
+            <span className="qa-k-total">{rules === null ? "" : `共 ${rules.length} 条规则`}</span>
+          </>
+        )}
+      </div>
+
+      <div className="qa-k-split">
+        <section className="qa-k-list-card">
           {tab === "documents" && (
-            <>
-              <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border)] p-3">
-                <input
-                  className="min-w-40 flex-1 rounded border bg-transparent p-2 text-sm"
-                  aria-label="搜索资料"
-                  placeholder="搜索标题或正文"
-                  value={docQuery}
-                  onChange={(event) => setDocQuery(event.target.value)}
-                />
-                <select
-                  className="rounded border bg-transparent p-2 text-sm"
-                  aria-label="资料状态"
-                  value={docStatus}
-                  onChange={(event) => setDocStatus(event.target.value as "all" | DocumentStatus)}
-                >
-                  <option value="all">全部状态</option>
-                  <option value="active">生效</option>
-                  <option value="archived">已归档</option>
-                </select>
-                {owner && (
-                  <>
-                    <Button size="sm" onClick={openCreate} disabled={busy}>
-                      新建资料
-                    </Button>
-                    <label className="cursor-pointer rounded border px-3 py-1.5 text-sm">
-                      导入 UTF-8 文件
-                      <input
-                        type="file"
-                        className="hidden"
-                        aria-label="导入资料文件"
-                        accept=".md,.markdown,.txt,.yaml,.yml,.json,.csv,.html,.htm"
-                        disabled={busy}
-                        onChange={(event) => {
-                          const file = event.target.files?.[0];
-                          event.target.value = "";
-                          if (file) void importFile(file);
-                        }}
-                      />
-                    </label>
-                  </>
-                )}
-              </div>
-              <div className="min-h-0 flex-1 overflow-auto p-2">
-                {documents === null ? (
-                  <p className="p-2 text-sm opacity-70">正在读取资料…</p>
-                ) : documents.length === 0 ? (
-                  <p className="p-2 text-sm opacity-70">
-                    还没有资料。{owner ? "新建文本资料或导入 UTF-8 文件后，任务会按快照引用。" : ""}
-                  </p>
-                ) : (
-                  <ul className="space-y-1">
-                    {documents.map((document) => (
-                      <li key={document.documentId}>
-                        <button
-                          className={`pk-doc w-full rounded p-2 text-left text-sm ${selectedDocId === document.documentId ? "bg-[var(--surface-2)]" : "hover:bg-[var(--surface-2)]"}`}
-                          onClick={() => setSelectedDocId(document.documentId)}
-                        >
-                          <span className="flex flex-wrap items-center gap-2">
-                            <strong>{document.title}</strong>
-                            <span className="text-xs opacity-70">
-                              {documentFormatLabel(document.format)} · {documentStatusLabel(document.status)} · 修订{" "}
-                              {document.revision}
-                            </span>
-                          </span>
-                          <span className="mt-1 block text-xs opacity-70">
-                            {documentSourceLabel(document.source)} · 更新 {timeLabel(document.updatedAt)} · 内容{" "}
-                            {shortHash(document.contentHash)}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </>
+            <div className="qa-k-list-scroll">
+              {documents === null ? (
+                <p className="qa-k-empty-list">正在读取资料…</p>
+              ) : documents.length === 0 ? (
+                <p className="qa-k-empty-list">
+                  还没有资料。{owner ? "新建文本资料或导入 UTF-8 文件后，任务会按快照引用。" : ""}
+                </p>
+              ) : (
+                documents.map((document) => (
+                  <button
+                    key={document.documentId}
+                    className={`pk-doc qa-k-li${selectedDocId === document.documentId ? " sel" : ""}`}
+                    onClick={() => setSelectedDocId(document.documentId)}
+                  >
+                    <span className="qa-k-li-top">
+                      <span className="qa-k-li-name">{document.title}</span>
+                      <span className="qa-k-right">修订 {document.revision}</span>
+                    </span>
+                    <span className="qa-k-li-tags">
+                      <span className="qa-k-tag blue">{documentFormatLabel(document.format)}</span>
+                      <span className={`qa-k-tag ${document.status === "active" ? "green" : "grey"}`}>
+                        {documentStatusLabel(document.status)}
+                      </span>
+                    </span>
+                    <span className="qa-k-li-excerpt">
+                      {documentSourceLabel(document.source)} · 更新 {timeLabel(document.updatedAt)} ·{" "}
+                      {document.byteSize} 字节 · 内容 {shortHash(document.contentHash)}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
           )}
 
           {tab === "candidates" && (
-            <>
-              <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border)] p-3">
-                <select
-                  className="rounded border bg-transparent p-2 text-sm"
-                  aria-label="候选状态"
-                  value={candidateStatus}
-                  onChange={(event) =>
-                    setCandidateStatus(event.target.value as "all" | CandidateStatus)
-                  }
-                >
-                  <option value="all">全部状态</option>
-                  <option value="pending">待确认</option>
-                  <option value="accepted">已确认</option>
-                  <option value="rejected">已拒绝</option>
-                </select>
-                <p className="text-xs opacity-70">候选不会自动成为规则；确认动作由项目所有者显式完成。</p>
-              </div>
-              <div className="min-h-0 flex-1 overflow-auto p-2">
-                {candidates === null ? (
-                  <p className="p-2 text-sm opacity-70">正在读取候选…</p>
-                ) : candidates.length === 0 ? (
-                  <p className="p-2 text-sm opacity-70">当前筛选下没有知识候选。</p>
-                ) : (
-                  <ul className="space-y-2">
-                    {candidates.map((candidate) => (
-                      <li
-                        key={candidate.candidateId}
-                        className="pk-candidate rounded border border-[var(--border)] p-3 text-sm"
+            <div className="qa-k-list-scroll">
+              {candidates === null ? (
+                <p className="qa-k-empty-list">正在读取候选…</p>
+              ) : candidates.length === 0 ? (
+                <p className="qa-k-empty-list">当前筛选下没有知识候选。</p>
+              ) : (
+                candidates.map((candidate) => (
+                  <button
+                    key={candidate.candidateId}
+                    className={`pk-candidate qa-k-li${selectedCandidateId === candidate.candidateId ? " sel" : ""}`}
+                    onClick={() => setSelectedCandidateId(candidate.candidateId)}
+                  >
+                    <span className="qa-k-li-top">
+                      <span className="qa-k-li-name">{candidate.title}</span>
+                    </span>
+                    <span className="qa-k-li-tags">
+                      <span
+                        className={`qa-k-tag ${candidate.status === "pending" ? "amber" : candidate.status === "accepted" ? "green" : "red"}`}
                       >
-                        <div className="flex flex-wrap items-center gap-2">
-                          <strong>{candidate.title}</strong>
-                          <span className="text-xs opacity-70">
-                            {candidateStatusLabel(candidate.status)} · 第 {candidate.revision} 版
-                          </span>
-                        </div>
-                        <p className="mt-1 whitespace-pre-wrap">{candidate.statement}</p>
-                        {candidate.rationale && (
-                          <p className="mt-1 whitespace-pre-wrap text-xs opacity-70">
-                            理由：{candidate.rationale}
-                          </p>
-                        )}
-                        <p className="mt-1 text-xs opacity-70">
-                          来源：{candidateOriginLabel(candidate.createdBy)} · 提交 {timeLabel(candidate.createdAt)}
-                        </p>
-                        <ul className="mt-1 list-disc pl-5 text-xs opacity-70">
-                          {candidate.sourceRefs.map((ref, index) => (
-                            <li key={index}>{evidenceLine(ref)}</li>
-                          ))}
-                        </ul>
-                        {candidate.status === "pending" && owner && (
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            <Button
-                              size="sm"
-                              variant="primary"
-                              disabled={busy}
-                              onClick={() => void confirmCandidate(candidate)}
-                            >
-                              确认并生成规则
-                            </Button>
-                            <Button
-                              size="sm"
-                              disabled={busy}
-                              onClick={() => void rejectCandidate(candidate)}
-                            >
-                              拒绝
-                            </Button>
-                          </div>
-                        )}
-                        {candidate.status !== "pending" && (
-                          <p className="mt-2 text-xs opacity-70">
-                            处理：{candidate.reviewedBy ?? "—"} · {timeLabel(candidate.reviewedAt)}
-                            {candidate.reviewNote ? ` · ${candidate.reviewNote}` : ""}
-                            {candidate.confirmedRuleId ? ` · 规则 ${candidate.confirmedRuleId}` : ""}
-                          </p>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </>
-          )}
-
-          {tab === "rules" && (
-            <>
-              <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border)] p-3">
-                <select
-                  className="rounded border bg-transparent p-2 text-sm"
-                  aria-label="规则状态"
-                  value={ruleStatus}
-                  onChange={(event) => setRuleStatus(event.target.value as "all" | RuleStatus)}
-                >
-                  <option value="all">全部状态</option>
-                  <option value="active">生效</option>
-                  <option value="retired">已停用</option>
-                </select>
-              </div>
-              <div className="min-h-0 flex-1 overflow-auto p-2">
-                {rules === null ? (
-                  <p className="p-2 text-sm opacity-70">正在读取规则…</p>
-                ) : rules.length === 0 ? (
-                  <p className="p-2 text-sm opacity-70">还没有正式规则。知识候选需由项目所有者确认后才会生成规则。</p>
-                ) : (
-                  <ul className="space-y-2">
-                    {rules.map((rule) => (
-                      <li key={rule.ruleId}>
-                        <button
-                          className={`pk-rule w-full rounded border border-[var(--border)] p-3 text-left text-sm ${selectedRuleId === rule.ruleId ? "bg-[var(--surface-2)]" : "hover:bg-[var(--surface-2)]"}`}
-                          onClick={() => setSelectedRuleId(rule.ruleId)}
-                        >
-                          <span className="flex flex-wrap items-center gap-2">
-                            <strong>{rule.title}</strong>
-                            <span className="text-xs opacity-70">
-                              v{rule.version} · {ruleStatusLabel(rule.status)}
-                            </span>
-                          </span>
-                          <span className="mt-1 block whitespace-pre-wrap">{rule.statement}</span>
-                          <span className="mt-1 block text-xs opacity-70">
-                            确认人 {rule.confirmedBy} · 内容 {shortHash(rule.contentHash)}
-                            {rule.sourceCandidateId ? ` · 候选 ${rule.sourceCandidateId}` : ""}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </>
-          )}
-        </section>
-
-        <section className="min-h-0 overflow-auto rounded border border-[var(--border)] p-3">
-          {tab === "documents" && (
-            detail === null ? (
-              <p className="text-sm opacity-70">
-                {selectedDocId ? "正在读取资料详情…" : "从左侧选择一份资料查看正文和修订历史。"}
-              </p>
-            ) : (
-              <article className="space-y-3">
-                <header>
-                  <h2 className="text-lg font-medium">{detail.document.title}</h2>
-                  <p className="mt-1 text-xs opacity-70">
-                    {documentFormatLabel(detail.document.format)} · {documentStatusLabel(detail.document.status)} · 当前修订{" "}
-                    {detail.document.revision} · {detail.document.byteSize} 字节 · 内容{" "}
-                    {shortHash(detail.document.contentHash)}
-                  </p>
-                  <p className="mt-1 text-xs opacity-70">
-                    {documentSourceLabel(detail.document.source)} · 创建 {detail.document.createdBy} · 更新{" "}
-                    {detail.document.updatedBy} {timeLabel(detail.document.updatedAt)}
-                  </p>
-                  <p className="mt-1 text-xs opacity-70">
-                    本次修订 {detail.revision.revision} · {detail.revision.authorUserId} ·{" "}
-                    {timeLabel(detail.revision.createdAt)}
-                    {detail.revision.changeNote ? ` · ${detail.revision.changeNote}` : ""}
-                  </p>
-                </header>
-                {owner && detail.document.status === "active" && (
-                  <div className="flex flex-wrap gap-2">
-                    <Button size="sm" onClick={openEdit} disabled={busy}>
-                      编辑并生成新修订
-                    </Button>
-                    <Button size="sm" disabled={busy} onClick={() => void archiveDocument()}>
-                      归档资料
-                    </Button>
-                  </div>
-                )}
-                <div>
-                  <Button size="sm" variant="ghost" onClick={() => void loadRevisions()}>
-                    查看修订历史
-                  </Button>
-                  {revisions !== null && (
-                    <ul className="mt-2 space-y-1 text-xs">
-                      {revisions.map((revision) => (
-                        <li key={revision.revisionId} className="rounded border border-[var(--border)] p-2">
-                          <strong>修订 {revision.revision}</strong> · {revision.authorUserId} ·{" "}
-                          {timeLabel(revision.createdAt)} · 内容 {shortHash(revision.contentHash)}
-                          {revision.changeNote ? ` · ${revision.changeNote}` : ""}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-                <pre className="whitespace-pre-wrap break-words rounded border border-[var(--border)] p-3 text-xs">
-                  {detail.content}
-                </pre>
-              </article>
-            )
-          )}
-
-          {tab === "candidates" && (
-            <div className="space-y-2 text-sm">
-              <h2 className="text-lg font-medium">候选如何成为规则</h2>
-              <p className="opacity-70">
-                Agent 或个人提交的候选只是证据整理，必须由项目所有者明确确认；确认时服务端记录确认人、确认时间与候选版本号，
-                并生成规则 v1。拒绝会保留原因，且不会生成规则。
-              </p>
+                        {candidateStatusLabel(candidate.status)}
+                      </span>
+                      <span className="qa-k-tag grey">第 {candidate.revision} 版</span>
+                    </span>
+                    <span className="qa-k-li-excerpt">{candidate.statement}</span>
+                    <span className="qa-k-li-sub">
+                      {candidateOriginLabel(candidate.createdBy)} · 提交 {timeLabel(candidate.createdAt)}
+                    </span>
+                  </button>
+                ))
+              )}
             </div>
           )}
 
           {tab === "rules" && (
-            ruleDetail === null ? (
-              <p className="text-sm opacity-70">
-                {selectedRuleId ? "正在读取规则详情…" : "从左侧选择一条规则查看版本历史。"}
-              </p>
-            ) : (
-              <article className="space-y-3">
-                <header>
-                  <h2 className="text-lg font-medium">{ruleDetail.title}</h2>
-                  <p className="mt-1 text-xs opacity-70">
-                    v{ruleDetail.version} · {ruleStatusLabel(ruleDetail.status)} · 确认人{" "}
-                    {ruleDetail.confirmedBy} · 内容 {shortHash(ruleDetail.contentHash)}
-                  </p>
-                  <p className="mt-1 text-xs opacity-70">
-                    创建 {timeLabel(ruleDetail.createdAt)} · 更新 {timeLabel(ruleDetail.updatedAt)}
-                    {ruleDetail.sourceCandidateId ? ` · 来源候选 ${ruleDetail.sourceCandidateId}` : ""}
-                  </p>
-                </header>
-                <p className="whitespace-pre-wrap rounded border border-[var(--border)] p-3 text-sm">
-                  {ruleDetail.statement}
-                </p>
-                {ruleDetail.sourceRefs.length > 0 && (
-                  <ul className="list-disc pl-5 text-xs opacity-70">
-                    {ruleDetail.sourceRefs.map((ref, index) => (
-                      <li key={index}>{evidenceLine(ref)}</li>
-                    ))}
-                  </ul>
-                )}
-                {owner && ruleDetail.status === "active" && (
-                  <div className="flex flex-wrap gap-2">
-                    <Button size="sm" disabled={busy} onClick={() => openRuleEditor(ruleDetail)}>
-                      修订规则
-                    </Button>
-                    <Button size="sm" disabled={busy} onClick={() => void retireRule(ruleDetail)}>
-                      停用规则
-                    </Button>
-                  </div>
-                )}
-                <div>
-                  <h3 className="text-sm font-medium">版本历史</h3>
-                  <ul className="mt-2 space-y-1 text-xs">
-                    {ruleDetail.versions.map((version) => (
-                      <li key={`${version.ruleId}-${version.version}`} className="rounded border border-[var(--border)] p-2">
-                        <strong>v{version.version}</strong> · {ruleStatusLabel(version.status)} ·{" "}
-                        {version.actorUserId} · {timeLabel(version.createdAt)} · 内容{" "}
-                        {shortHash(version.contentHash)}
-                        {version.changeNote ? ` · ${version.changeNote}` : ""}
-                        <p className="mt-1 whitespace-pre-wrap opacity-70">{version.statement}</p>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </article>
-            )
+            <div className="qa-k-list-scroll">
+              {rules === null ? (
+                <p className="qa-k-empty-list">正在读取规则…</p>
+              ) : rules.length === 0 ? (
+                <p className="qa-k-empty-list">还没有正式规则。知识候选需由项目所有者确认后才会生成规则。</p>
+              ) : (
+                rules.map((rule) => (
+                  <button
+                    key={rule.ruleId}
+                    className={`qa-k-li${selectedRuleId === rule.ruleId ? " sel" : ""}`}
+                    onClick={() => setSelectedRuleId(rule.ruleId)}
+                  >
+                    <span className="qa-k-li-top">
+                      <span className={`qa-k-tag ${rule.status === "active" ? "green" : "grey"}`}>
+                        {ruleStatusLabel(rule.status)}
+                      </span>
+                      <span className="qa-k-li-name">{rule.title}</span>
+                      <span className="qa-k-right">v{rule.version}</span>
+                    </span>
+                    <span className="qa-k-li-sub">
+                      确认人 {rule.confirmedBy} · 内容 {shortHash(rule.contentHash)}
+                      {rule.sourceCandidateId ? ` · 来源候选 ${rule.sourceCandidateId}` : ""}
+                    </span>
+                    <span className="qa-k-li-excerpt">{rule.statement}</span>
+                  </button>
+                ))
+              )}
+            </div>
           )}
         </section>
+
+        <div className="qa-k-detail-col">
+          {tab === "candidates" && (
+            <details className="qa-k-info-card">
+              <summary>候选如何成为规则</summary>
+              <p>
+                Agent 或个人提交的候选只是证据整理，必须由项目所有者明确确认；确认时服务端记录确认人、确认时间与候选版本号，
+                并生成规则 v1。拒绝会保留原因，且不会生成规则。
+              </p>
+            </details>
+          )}
+          <section className="qa-k-detail-card">
+            {tab === "documents" && (
+              detail === null ? (
+                <div className="qa-k-empty">
+                  <span>📄</span>
+                  <p>{selectedDocId ? "正在读取资料详情…" : "从左侧选择一份资料查看正文和修订历史。"}</p>
+                </div>
+              ) : (
+                <>
+                  <div className="qa-k-detail-head">
+                    <div className="qa-k-detail-headmain">
+                      <h2 className="qa-k-detail-title">{detail.document.title}</h2>
+                      <p className="qa-k-detail-id">
+                        {documentFormatLabel(detail.document.format)} · {documentStatusLabel(detail.document.status)} ·
+                        当前修订 {detail.document.revision} · {detail.document.byteSize} 字节 · 内容{" "}
+                        {shortHash(detail.document.contentHash)}
+                      </p>
+                      <p className="qa-k-detail-id">
+                        {documentSourceLabel(detail.document.source)} · 创建 {detail.document.createdBy} · 更新{" "}
+                        {detail.document.updatedBy} {timeLabel(detail.document.updatedAt)}
+                      </p>
+                      <p className="qa-k-detail-id">
+                        本次修订 {detail.revision.revision} · {detail.revision.authorUserId} ·{" "}
+                        {timeLabel(detail.revision.createdAt)}
+                        {detail.revision.changeNote ? ` · ${detail.revision.changeNote}` : ""}
+                      </p>
+                    </div>
+                    <div className="qa-k-acts">
+                      {owner && detail.document.status === "active" && (
+                        <Button size="sm" onClick={openEdit} disabled={busy}>
+                          编辑并生成新修订
+                        </Button>
+                      )}
+                      {owner && detail.document.status === "active" && (
+                        <Button size="sm" disabled={busy} onClick={() => void archiveDocument()}>
+                          归档资料
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        disabled={busy || detail.document.status !== "active"}
+                        onClick={() =>
+                          setCandidateDraft({
+                            title: detail.document.title,
+                            statement: "",
+                            rationale: "",
+                            documentId: detail.document.documentId,
+                            revision: detail.document.currentRevision,
+                          })
+                        }
+                      >
+                        整理为待确认知识
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="qa-k-detail-body">
+                    {detail.document.source.ref?.startsWith("local-library:") && (
+                      <p className="qa-k-meta-lines">
+                        来源：我的资料「{detail.document.source.filename}」。此处保留已确认的文本版本；原资料修改后需重新确认更新，删除原资料不会删除本记录。
+                      </p>
+                    )}
+                    <div className="qa-k-sec-title">正文预览（当前修订 {detail.revision.revision}）</div>
+                    <pre className="qa-k-prov">{detail.content}</pre>
+                    <div className="qa-k-sec-title" style={{ marginTop: 18 }}>
+                      修订历史
+                      <span className="qa-k-cnt">每版留痕，可追溯</span>
+                      <Button size="sm" variant="ghost" onClick={() => void loadRevisions()}>
+                        查看修订历史
+                      </Button>
+                    </div>
+                    {revisions !== null && (
+                      <div>
+                        {revisions.map((revision) => (
+                          <div key={revision.revisionId} className="qa-k-ver-line">
+                            <div className="qa-k-ver-top">
+                              <span className="qa-k-vno">修订 {revision.revision}</span>
+                              <span className="qa-k-ver-log">
+                                {revision.authorUserId} · 内容 {shortHash(revision.contentHash)}
+                                {revision.changeNote ? ` · ${revision.changeNote}` : ""}
+                              </span>
+                              <span className="qa-k-when">{timeLabel(revision.createdAt)}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )
+            )}
+
+            {tab === "candidates" && (
+              selectedCandidate === null ? (
+                <div className="qa-k-empty">
+                  <span>🗳️</span>
+                  <p>从左侧选择一条候选，查看结论、来源依据和处理操作。</p>
+                </div>
+              ) : (
+                <>
+                  <div className="qa-k-detail-head">
+                    <div className="qa-k-detail-headmain">
+                      <h2 className="qa-k-detail-title">{selectedCandidate.title}</h2>
+                      <p className="qa-k-detail-id">
+                        候选 {selectedCandidate.candidateId} · 第 {selectedCandidate.revision} 版 ·{" "}
+                        {candidateOriginLabel(selectedCandidate.createdBy)} · 提交{" "}
+                        {timeLabel(selectedCandidate.createdAt)}
+                      </p>
+                    </div>
+                    <div className="qa-k-acts">
+                      <span
+                        className={`qa-k-tag ${selectedCandidate.status === "pending" ? "amber" : selectedCandidate.status === "accepted" ? "green" : "red"}`}
+                        style={{ fontSize: 12, padding: "3px 10px" }}
+                      >
+                        {candidateStatusLabel(selectedCandidate.status)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="qa-k-detail-body">
+                    <div className="qa-k-sec-title">候选结论</div>
+                    <pre className="qa-k-prov">{selectedCandidate.statement}</pre>
+                    {selectedCandidate.rationale && (
+                      <>
+                        <div className="qa-k-sec-title" style={{ marginTop: 16 }}>
+                          依据说明
+                        </div>
+                        <div className="qa-k-cite">
+                          <div className="qa-k-cite-who">提交理由</div>
+                          {selectedCandidate.rationale}
+                        </div>
+                      </>
+                    )}
+                    {selectedCandidate.sourceRefs.length > 0 && (
+                      <>
+                        <div className="qa-k-sec-title">来源依据</div>
+                        <ul className="qa-k-cite-list">
+                          {selectedCandidate.sourceRefs.map((ref, index) => (
+                            <li key={index} className="qa-k-cite">
+                              {evidenceLine(ref)}
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
+                    {selectedCandidate.status !== "pending" && (
+                      <p className="qa-k-meta-lines">
+                        处理：{selectedCandidate.reviewedBy ?? "—"} · {timeLabel(selectedCandidate.reviewedAt)}
+                        {selectedCandidate.reviewNote ? ` · ${selectedCandidate.reviewNote}` : ""}
+                        {selectedCandidate.confirmedRuleId ? ` · 规则 ${selectedCandidate.confirmedRuleId}` : ""}
+                      </p>
+                    )}
+                    {selectedCandidate.status === "pending" && (
+                      <div className="qa-k-confirm-bar">
+                        <span className="qa-k-confirm-txt">
+                          确认后由服务端记录<b>确认人 / 时间 / 候选版本</b>，生成<b>规则 v1</b>
+                          并进入「正式规则」；拒绝会保留原因，不会生成规则。
+                        </span>
+                        <span className="qa-k-confirm-acts">
+                          {owner ? (
+                            <>
+                              <Button size="sm" disabled={busy} onClick={() => void rejectCandidate(selectedCandidate)}>
+                                拒绝
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="primary"
+                                disabled={busy}
+                                onClick={() => void confirmCandidate(selectedCandidate)}
+                              >
+                                确认并生成规则
+                              </Button>
+                            </>
+                          ) : (
+                            <span className="qa-k-total">确认动作由项目所有者完成。</span>
+                          )}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )
+            )}
+
+            {tab === "rules" && (
+              ruleDetail === null ? (
+                <div className="qa-k-empty">
+                  <span>📜</span>
+                  <p>{selectedRuleId ? "正在读取规则详情…" : "从左侧选择一条规则查看正文与版本历史。"}</p>
+                </div>
+              ) : (
+                <>
+                  <div className="qa-k-detail-head">
+                    <div className="qa-k-detail-headmain">
+                      <h2 className="qa-k-detail-title">{ruleDetail.title}</h2>
+                      <p className="qa-k-detail-id">
+                        {ruleDetail.ruleId} · v{ruleDetail.version} · {ruleStatusLabel(ruleDetail.status)} · 确认人{" "}
+                        {ruleDetail.confirmedBy} · 内容 {shortHash(ruleDetail.contentHash)}
+                      </p>
+                      <p className="qa-k-detail-id">
+                        创建 {timeLabel(ruleDetail.createdAt)} · 更新 {timeLabel(ruleDetail.updatedAt)}
+                        {ruleDetail.sourceCandidateId ? ` · 来源候选 ${ruleDetail.sourceCandidateId}` : ""}
+                      </p>
+                    </div>
+                    <div className="qa-k-acts">
+                      {owner && ruleDetail.status === "active" && (
+                        <>
+                          <Button size="sm" disabled={busy} onClick={() => openRuleEditor(ruleDetail)}>
+                            修订规则
+                          </Button>
+                          <Button size="sm" disabled={busy} onClick={() => void retireRule(ruleDetail)}>
+                            停用规则
+                          </Button>
+                        </>
+                      )}
+                      <Button size="sm" variant="ghost" onClick={exportRuleMarkdown}>
+                        导出 Markdown
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="qa-k-detail-body">
+                    <div className="qa-k-sec-title">
+                      规则正文
+                      {ruleDetail.status === "retired" && <span className="qa-k-tag grey">已停用 · 不进入新任务</span>}
+                    </div>
+                    <pre className="qa-k-prov">{ruleDetail.statement}</pre>
+                    {ruleDetail.sourceRefs.length > 0 && (
+                      <>
+                        <div className="qa-k-sec-title" style={{ marginTop: 16 }}>
+                          来源依据
+                        </div>
+                        <ul className="qa-k-cite-list">
+                          {ruleDetail.sourceRefs.map((ref, index) => (
+                            <li key={index} className="qa-k-cite">
+                              {evidenceLine(ref)}
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
+                    <div className="qa-k-sec-title" style={{ marginTop: 16 }}>
+                      版本追溯
+                      <span className="qa-k-cnt">共 {ruleDetail.versions.length} 版</span>
+                    </div>
+                    <div>
+                      {ruleDetail.versions.map((version) => (
+                        <div key={`${version.ruleId}-${version.version}`} className="qa-k-ver-line">
+                          <div className="qa-k-ver-top">
+                            <span className="qa-k-ver-no">v{version.version}</span>
+                            <span className="qa-k-ver-log">
+                              {ruleStatusLabel(version.status)} · {version.actorUserId} · 内容{" "}
+                              {shortHash(version.contentHash)}
+                              {version.changeNote ? ` · ${version.changeNote}` : ""}
+                            </span>
+                            <span className="qa-k-when">{timeLabel(version.createdAt)}</span>
+                          </div>
+                          <p className="qa-k-ver-statement">{version.statement}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )
+            )}
+          </section>
+        </div>
       </div>
 
+      <Modal open={candidateDraft !== null} title="整理为待确认知识" onClose={() => {if(!busy)setCandidateDraft(null);}}
+        footer={<><Button disabled={busy} onClick={()=>setCandidateDraft(null)}>取消</Button><Button variant="primary" disabled={busy || !candidateDraft?.title.trim() || !candidateDraft?.statement.trim()} onClick={()=>void submitCandidate()}>提交待确认知识</Button></>}>
+        {candidateDraft && <div className="space-y-3">
+          <p className="text-sm opacity-70">关联当前资料第 {candidateDraft.revision} 个内容版本。提交后由项目所有者审核，不会自动成为规则。</p>
+          <Field label="知识标题"><input aria-label="知识标题" className="w-full rounded border p-2" value={candidateDraft.title} onChange={e=>setCandidateDraft({...candidateDraft,title:e.target.value})}/></Field>
+          <Field label="待确认结论"><textarea aria-label="待确认结论" className="w-full rounded border p-2" rows={5} value={candidateDraft.statement} onChange={e=>setCandidateDraft({...candidateDraft,statement:e.target.value})}/></Field>
+          <Field label="依据说明"><textarea aria-label="依据说明" className="w-full rounded border p-2" rows={3} value={candidateDraft.rationale} onChange={e=>setCandidateDraft({...candidateDraft,rationale:e.target.value})}/></Field>
+          {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+        </div>}
+      </Modal>
       <Modal
         open={docEditor !== null}
         title={docEditor?.mode === "edit" ? "编辑资料（生成新修订）" : "新建文本资料"}

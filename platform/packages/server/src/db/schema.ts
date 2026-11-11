@@ -62,6 +62,25 @@ CREATE TABLE IF NOT EXISTS projects (
   owner_user_id TEXT NOT NULL REFERENCES users(user_id),
   created_at    TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS project_management (
+  project_id TEXT PRIMARY KEY REFERENCES projects(project_id) ON DELETE CASCADE,
+  description TEXT,
+  source_type TEXT NOT NULL DEFAULT 'manual' CHECK(source_type IN ('manual','sync')),
+  source_system_name TEXT,
+  external_project_id TEXT,
+  external_url TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','archived','disabled')),
+  purpose TEXT CHECK(purpose IN ('business','internal')),
+  last_synced_at TEXT,
+  revision INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS project_management_prefs (
+  user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  is_pinned INTEGER NOT NULL DEFAULT 0,
+  last_visited_at TEXT,
+  PRIMARY KEY (user_id, project_id)
+);
 CREATE TABLE IF NOT EXISTS project_members (  -- member grants only; owners are not stored here
   project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
   user_id    TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,

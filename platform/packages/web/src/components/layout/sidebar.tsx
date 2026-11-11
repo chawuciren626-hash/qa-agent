@@ -210,6 +210,7 @@ import { navNoteFor, useUpdateBadges } from "../../lib/use-update-badges";
 import { pendingScheduleSessions } from "../../features/schedules/schedule-panel-state";
 import { useSchedulesAcross } from "../../features/schedules/schedule-store";
 import { QaSidebar, QaSessionActions } from "../../features/qa/workspace-ui";
+import { QaBrandSidebar } from "../../features/qa/project-management/brand-sidebar";
 import { useCompany } from "../../state/company";
 import { NoOrganizationsSidebar, OrgSwitcher } from "../../features/company/org-switcher";
 import { CompanyBetaBadge } from "../../features/company/company-beta";
@@ -1960,6 +1961,12 @@ export function Sidebar({
     </>
   );
 
+  // 外壳状态 A（品牌态）：项目管理页 /qa/projects 的侧栏只保留品牌块、项目管理导航、
+  // 说明卡与账号区（应用外壳两态布局规格 §3）。其余路由维持既有工作台态侧栏不变。
+  if (!inCompany && location.pathname === "/qa/projects") return (
+    <QaBrandSidebar {...(onCollapse ? { onCollapse } : {})} />
+  );
+
   // Deployment identity is known before this shell mounts. An unfinished Agent fetch
   // must not briefly select the upstream sidebar (also applies on Project switches).
   if (!inCompany && (accountClient || agents.some((agent) => agent.agentId === "test_agent"))) return (
@@ -2137,7 +2144,6 @@ export function Sidebar({
       </SidebarNavGroup>
 
       {!inCompany && allowedModule(user,"library") && <button className="mx-3 my-2 rounded px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800" onClick={() => go("/qa/library")}>项目资料</button>}
-      {!inCompany && allowedModule(user,"library") && <button className="mx-3 mb-2 rounded px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800" onClick={() => go("/qa/knowledge")}>项目知识</button>}
       {!inCompany && allowedModule(user,"projects") && <button className="mx-3 mb-2 rounded px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800" onClick={() => go("/qa/quality")}>质量追踪</button>}
       {inCompany ? (
         navOrg !== null ? (

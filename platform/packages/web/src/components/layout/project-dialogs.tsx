@@ -223,19 +223,20 @@ type SettingsTab = keyof typeof TAB_ICON_PATHS;
  * does nothing until it answers. The body is mounted only while the dialog is open, so it starts
  * on General every time.
  */
-export function ProjectSettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  return open ? <ProjectSettingsBody onClose={onClose} /> : null;
+export function ProjectSettingsDialog({ open, onClose, projectId, allowBasicEdits = true }: { open: boolean; onClose: () => void; projectId?: string; allowBasicEdits?: boolean }) {
+  return open ? <ProjectSettingsBody onClose={onClose} selectedProjectId={projectId} allowBasicEdits={allowBasicEdits} /> : null;
 }
 
-function ProjectSettingsBody({ onClose }: { onClose: () => void }) {
+function ProjectSettingsBody({ onClose, selectedProjectId, allowBasicEdits }: { onClose: () => void; selectedProjectId?: string; allowBasicEdits: boolean }) {
   const { desktopMode } = useAuth();
-  const { currentProject } = useProject();
+  const { currentProject, projects } = useProject();
   const [tab, setTab] = useState<SettingsTab>("general");
   const requestClose = useGuardedClose(onClose, PROJECT_SETTINGS_SCOPE);
 
-  const projectId = currentProject?.projectId;
-  const isOwner = currentProject?.role === "owner";
-  if (!currentProject || !projectId) return null;
+  const selectedProject = selectedProjectId ? projects.find(project => project.projectId === selectedProjectId) : currentProject;
+  const projectId = selectedProject?.projectId;
+  const isOwner = selectedProject?.role === "owner";
+  if (!selectedProject || !projectId) return null;
 
   // `info` is the page's semantic explanation, disclosed by a "?" beside the pane heading —
   // the only title these pages have, since each section renders its rows without repeating it.
@@ -282,7 +283,7 @@ function ProjectSettingsBody({ onClose }: { onClose: () => void }) {
           </h3>
           <div className="mt-2">
             {active.key === "general" && (
-              <GeneralSection projectId={projectId} isOwner={isOwner} onClose={onClose} />
+              <GeneralSection projectId={projectId} selectedProject={selectedProject} isOwner={isOwner && allowBasicEdits} onClose={onClose} />
             )}
             {active.key === "members" && <MembersSection projectId={projectId} isOwner={isOwner} />}
             {active.key === "defaults" && (
@@ -308,16 +309,18 @@ function ProjectSettingsBody({ onClose }: { onClose: () => void }) {
  */
 function GeneralSection({
   projectId,
+  selectedProject,
   isOwner,
   onClose,
 }: {
   projectId: string;
+  selectedProject: Parameters<typeof projectDisplayName>[0];
   isOwner: boolean;
   onClose: () => void;
 }) {
-  const { currentProject, setCurrentProjectId, projects, reloadProjects } = useProject();
+  const { setCurrentProjectId, projects, reloadProjects } = useProject();
   /** The saved display name, with the same id fallback the switcher shows. */
-  const savedName = currentProject ? projectDisplayName(currentProject) : "";
+  const savedName = projectDisplayName(selectedProject);
   /** Display-name edit buffer (owner only); saving is explicit, so it stays dirty until Save. */
   const form = useFormDraft(savedName, {
     scope: PROJECT_SETTINGS_SCOPE,

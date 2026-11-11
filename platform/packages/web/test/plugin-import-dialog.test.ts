@@ -50,13 +50,14 @@ const installed = (name: string) =>
 const TAB = /<button[^>]*role="tab"[^>]*aria-selected="(true|false)"[^>]*>(.*?)<\/button>/gs;
 
 /** The dialog's body as it first renders: on the agent tab with nothing typed, or where `initial` opens it. */
-const render = (initial?: ImportOpening) =>
+const render = (initial?: ImportOpening, allowAgentImport = true) =>
   renderToStaticMarkup(
     createElement(
       LocaleProvider,
       null,
       createElement(ImportPluginTabs, {
         projectId: PROJECT,
+        allowAgentImport,
         ...(initial !== undefined ? { initial } : {}),
         onOpenChat: () => undefined,
         onLanded: () => undefined,
@@ -183,4 +184,13 @@ describe("a repository folder on the link tab", () => {
     expect(prompt).toContain(FOLDER);
     expect(prompt).toContain("plugin-porting");
   });
+});
+
+it("managed administration only offers direct imports, including when an old draft names the agent tab", () => {
+  const html = render({tab: "agent"}, false);
+  expect([...html.matchAll(TAB)].map(m => words(m[2]!))).toEqual([
+    en.plugins.importTabs.zip, en.plugins.importTabs.npm, en.plugins.importTabs.link,
+  ]);
+  expect(selectedTab(html)).toBe(en.plugins.importTabs.zip);
+  expect(buttons(render({tab: "link", value: "https://github.com/example/repo/tree/main/plugin"}, false)).some(b => b.words === en.plugins.importLinkAskAgent)).toBe(false);
 });
