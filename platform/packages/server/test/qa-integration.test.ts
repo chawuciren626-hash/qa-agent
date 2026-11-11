@@ -14,8 +14,17 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () =>
   let outsider: ReturnType<typeof apiClient>;
   const project = "qa_owner-shared";
   const base = `/api/projects/${project}/agents/qa`;
+  const dataEnvKeys = ["QA_APP_DATA_ROOT", "QA_WORKSPACE_ROOT"] as const;
+  let previousDataEnv: (string | undefined)[] = [];
   beforeEach(async () => {
-    app = await createTestApp();
+    previousDataEnv = dataEnvKeys.map((key) => process.env[key]);
+    app = await createTestApp({
+      beforeSeed: async (root) => {
+        // Use the test's disposable root instead of the installation's fixed E: workspace.
+        process.env.QA_APP_DATA_ROOT = path.join(root, "qa-data");
+        process.env.QA_WORKSPACE_ROOT = path.join(root, "qa-workspaces");
+      },
+    });
     owner = apiClient(app.app, (await provisionUser(app.app, "qa_owner")).cookie);
     member = apiClient(app.app, (await provisionUser(app.app, "qa_member")).cookie);
     outsider = apiClient(app.app, (await provisionUser(app.app, "qa_outsider")).cookie);
@@ -26,6 +35,11 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA project integration", () =>
   });
   afterEach(async () => {
     await app?.cleanup();
+    dataEnvKeys.forEach((key, index) => {
+      const previous = previousDataEnv[index];
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    });
   });
   it("restricts initialization to owners, installs ten roles, and preserves existing edits on repeat", async () => {
     const admin = apiClient(app.app, (await loginAdmin(app.app)).cookie);
