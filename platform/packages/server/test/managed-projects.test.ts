@@ -7,6 +7,16 @@ let test: TestApp | undefined;
 afterEach(async () => { await test?.cleanup(); test = undefined; });
 
 describe("managed projects", () => {
+  it.runIf(Boolean(process.env.AITEST_ENGINE_ROOT))("lets an ordinary user load an empty project list and quick switch", async () => {
+    test = await createTestApp();
+    const user = apiClient(test.app, (await provisionUser(test.app, "empty_project_user")).cookie);
+    const list = await user.get("/api/projects/managed?page=1&pageSize=20");
+    expect(list.status, await list.clone().text()).toBe(200);
+    expect(await list.json()).toEqual({ total: 0, page: 1, pageSize: 20, projects: [], canCreate: true });
+    const quickSwitch = await user.get("/api/projects/managed/quick-switch");
+    expect(quickSwitch.status, await quickSwitch.clone().text()).toBe(200);
+    expect(await quickSwitch.json()).toEqual({ projects: [] });
+  });
   it("counts in-progress test runs in the list and detail without treating planned runs as active", async () => {
     test = await createTestApp();
     const admin = apiClient(test.app, (await loginAdmin(test.app)).cookie);

@@ -33,6 +33,9 @@ export function qaAuthorization(access: Access, central?:AccountClientGate): Mid
     const match = /^\/api\/projects\/([^/]+)(?:\/(.*))?$/.exec(path);
     if (!match) return next();
     const [, projectId, tail = ""] = match;
+    // `/managed` is a project-management namespace, not a project identifier. Its real
+    // project operations enforce access and ownership inside managedProjectsRoutes.
+    if (projectId === "managed") return next();
     // Check membership first so an outsider sees the same 404 for every project resource.
     const membership = access.requireProjectAccess(c.var.user.userId, projectId!);
     const own = () => membership.ownerUserId === c.var.user.userId;
