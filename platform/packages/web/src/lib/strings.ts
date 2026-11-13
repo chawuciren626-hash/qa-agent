@@ -1605,6 +1605,7 @@ export const zh = {
     id: "Project id",
     idHint: "2~64 位：小写字母开头，仅小写字母、数字与下划线；创建后不可修改",
     idPrefixHint: "id 固定以「用户名-」为前缀，后接小写字母、数字或下划线；创建后不可修改",
+    idSuffixHint: "仅填写后缀：小写字母、数字或下划线；系统会自动添加账号命名空间，创建后不可修改",
     displayName: "显示名",
     /** Create dialog only: leaving the name empty falls back to the id. In Project settings the saved name cannot be blanked. */
     displayNameHint: "留空则使用 Project id 作为名称",

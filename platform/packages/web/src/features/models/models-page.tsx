@@ -113,6 +113,7 @@ import * as api from "../../api/endpoints";
 
 import { ApiError } from "../../api/client";
 import { S } from "../../lib/strings";
+import { dispatchModelConfigChanged } from "./model-config-event";
 import { apiErrorText } from "../../lib/api-error";
 import { cardBodyClick } from "../../lib/card-open";
 import { useDocumentTitle } from "../../lib/use-document-title";
@@ -1048,7 +1049,8 @@ function ModelsPageContent({ embedded, projectId, isOwner, agents, todo, central
     setProviders(res.providers ?? {});
     setDefaultModel(res.defaultModel);
     setVisionModel(res.visionModel);
-  }, []);
+    if (projectId) dispatchModelConfigChanged(projectId);
+  }, [projectId]);
 
   const load = useCallback(async () => {
     if (!projectId) return;

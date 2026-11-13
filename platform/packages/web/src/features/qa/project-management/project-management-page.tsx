@@ -14,6 +14,7 @@ import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router";
 import type { ManagedProject, ProjectListQuery, ProjectListResult } from "./types";
 import {
+  archiveProject,
   createProject,
   enterProject,
   listProjects,
@@ -25,7 +26,7 @@ import { STATUS_LABEL, sourceText, timeText } from "./format";
 import { CreateProjectDialog } from "./create-project-dialog";
 import { ProjectDetailPanel } from "./project-detail-panel";
 import { ProjectSettingsDialog } from "../../../components/layout/project-dialogs";
-import { toastError, toastSuccess } from "@prismshadow/penguin-ui";
+import { ConfirmModal, toastError, toastSuccess } from "@prismshadow/penguin-ui";
 import { useProject } from "../../../state/project";
 import "./project-management.css";
 
@@ -102,6 +103,9 @@ export function ProjectManagementPage() {
   const [detailId, setDetailId] = useState<string | null>(initial?.detail ?? null);
   const [editOnOpen, setEditOnOpen] = useState(false);
   const [settingsProject, setSettingsProject] = useState<ManagedProject | null>(null);
+  /** 待确认归档的项目；确认后由服务端再次校验活跃任务。 */
+  const [archiveTarget, setArchiveTarget] = useState<ManagedProject | null>(null);
+  const [archivingId, setArchivingId] = useState<string | null>(null);
   /** 新建弹窗。 */
   const [creatingOpen, setCreatingOpen] = useState(false);
   /** 进入失败重试的上下文（创建成功但进入失败 → 重试进入，不重复创建）。 */
@@ -229,6 +233,23 @@ export function ProjectManagementPage() {
       return false;
     }
   }, [navigate, setCurrentProjectId]);
+
+  /** 归档先确认；服务端仍会二次校验运行/排队任务，失败时不修改列表状态。 */
+  const archive = useCallback(async (project: ManagedProject) => {
+    setArchivingId(project.projectId);
+    try {
+      await archiveProject(project.projectId);
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "归档失败，请重试");
+      setArchivingId(null);
+      return;
+    }
+    setArchivingId(null);
+    setArchiveTarget(null);
+    toastSuccess("项目已归档");
+    refresh();
+    void reloadProjects().catch(() => undefined);
+  }, [refresh, reloadProjects]);
 
   const restore = useCallback(async (project: ManagedProject) => {
     try {
@@ -450,6 +471,7 @@ export function ProjectManagementPage() {
                           onDetail={() => openDetail(project.projectId)}
                           onEdit={() => openDetail(project.projectId, true)}
                           onSettings={() => setSettingsProject(project)}
+                          onArchive={() => setArchiveTarget(project)}
                           onRestore={() => void restore(project)}
                         />
                       </div>
@@ -511,6 +533,23 @@ export function ProjectManagementPage() {
         />
       )}
 
+      {archiveTarget && (
+        <ConfirmModal
+          open
+          title="归档项目"
+          onClose={() => { if (archivingId === null) setArchiveTarget(null); }}
+          onConfirm={() => void archive(archiveTarget)}
+          confirmLabel="归档项目"
+          cancelLabel="取消"
+          tone="primary"
+          busy={archivingId === archiveTarget.projectId}
+        >
+          <p className="text-sm text-gray-600 dark:text-gray-300">
+            归档“{archiveTarget.name}”后，将移出进行中的项目列表，并停止在该项目中新建或启动测试。历史任务和产物仍可查看，可随时恢复。
+          </p>
+        </ConfirmModal>
+      )}
+
     </main>
   );
 }
@@ -526,6 +565,7 @@ function RowMenu({
   onDetail,
   onEdit,
   onSettings,
+  onArchive,
   onRestore,
 }: {
   project: ManagedProject;
@@ -537,6 +577,7 @@ function RowMenu({
   onDetail: () => void;
   onEdit: () => void;
   onSettings: () => void;
+  onArchive: () => void;
   onRestore: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -580,6 +621,7 @@ function RowMenu({
     ...(project.capabilities.canEnter ? [{ label: entering ? "进入中…" : "进入项目", action: onEnter, disabled: entering }] : []),
     ...(project.capabilities.canMaintain ? [{ label: "编辑信息", action: onEdit }] : []),
     ...(project.status === "active" ? [{ label: "项目设置", action: onSettings }] : []),
+    ...(project.capabilities.canArchive ? [{ label: "归档项目", action: onArchive }] : []),
     ...(project.capabilities.canRestore ? [{ label: "恢复项目", action: onRestore }] : []),
   ];
   return (

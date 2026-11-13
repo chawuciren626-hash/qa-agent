@@ -111,7 +111,7 @@ describe("authz", () => {
     expect((await member.get(`/api/projects/${projectId}/models`)).status).toBe(404);
   });
 
-  it("Session-level routes authorize via index lookup: member can see, outsider 404", async () => {
+  it("Session-level routes keep a Project member out of another owner's Session", async () => {
     await owner.put(`/api/projects/${projectId}/models`, {
       defaultModel: { provider: "anthropic", modelId: "claude-sonnet-4-6" },
       models: [{ provider: "anthropic", modelId: "claude-sonnet-4-6" }],
@@ -129,8 +129,11 @@ describe("authz", () => {
     const { session } = (await created.json()) as SessionCreateResponse;
 
     expect((await owner.get(`/api/sessions/${session.sessionId}`)).status).toBe(200);
-    expect((await member.get(`/api/sessions/${session.sessionId}`)).status).toBe(200);
+    expect((await member.get(`/api/sessions/${session.sessionId}`)).status).toBe(404);
     expect((await outsider.get(`/api/sessions/${session.sessionId}`)).status).toBe(404);
+    expect(
+      (await member.patch(`/api/sessions/${session.sessionId}`, { title: "member edit" })).status,
+    ).toBe(404);
     expect((await owner.get("/api/sessions/session-unknown")).status).toBe(404);
   });
 

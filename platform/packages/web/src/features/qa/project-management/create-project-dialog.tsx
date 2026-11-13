@@ -36,6 +36,9 @@ export function CreateProjectDialog({
   const { user } = useAuth();
   const { currentProject, projects } = useProject();
   const prefix = user && !user.isAdmin ? `${user.userId}-` : "";
+  /** The account namespace is an internal isolation rule; keep it out of the form text. */
+  const normalizeSuffix = (value: string) =>
+    prefix !== "" && value.startsWith(prefix) ? value.slice(prefix.length) : value;
   const [name, setName] = useState("");
   const [idInput, setIdInput] = useState("");
   const [description, setDescription] = useState("");
@@ -86,7 +89,7 @@ export function CreateProjectDialog({
       return;
     }
     if (!idValid) {
-      setIdError(suffix ? (prefix ? S.project.idPrefixHint : S.project.idHint) : "请填写 Project id");
+      setIdError(suffix ? (prefix ? S.project.idSuffixHint : S.project.idHint) : "请填写 Project id");
       return;
     }
     setNameError(null);
@@ -163,14 +166,13 @@ export function CreateProjectDialog({
               projectId={currentProject?.projectId ?? projects[0]?.projectId ?? null}
               kind="project"
               label={S.project.id}
-              hint={prefix ? S.project.idPrefixHint : S.project.idHint}
+              hint={prefix ? S.project.idSuffixHint : S.project.idHint}
               value={idInput}
               source={name}
               taken={projects.map(project => project.projectId)}
-              error={idError ?? (suffix && !idValid ? (prefix ? S.project.idPrefixHint : S.project.idHint) : undefined)}
-              lockedPrefix={prefix || undefined}
+              error={idError ?? (suffix && !idValid ? (prefix ? S.project.idSuffixHint : S.project.idHint) : undefined)}
               disabled={busy || phase === "enterFailed"}
-              onChange={(value) => { setIdInput(value); setIdError(null); setSubmitError(null); }}
+              onChange={(value) => { setIdInput(normalizeSuffix(value)); setIdError(null); setSubmitError(null); }}
             />
           </div>
           <label className="qpm-form-row">

@@ -31,8 +31,8 @@
  * - Given a running archived Session, delete aborts its run before the files go.
  * - Given a subagent or company Session, archiving or unarchiving it is a 409 that changes
  *   nothing.
- * - Given a change, the Project's owner and members hear `session_archived` /
- *   `session_deleted` for each Session, and nobody else does.
+ * - Given a change in the caller's own Project, its owner and members hear
+ *   `session_archived` / `session_deleted` for each Session, and nobody else does.
  * - Given a malformed request, the answer is a 400 (an unknown Project a 404), and nothing moves.
  */
 import fs from "node:fs/promises";
@@ -44,18 +44,20 @@ import type {
   ArchivedSessionGroupsResponse,
   ArchivedSessionsBatchResponse,
   ArchivedSessionsResponse,
+  ProjectCreateResponse,
   ServerEvent,
   SessionResponse,
   SessionSource,
   SessionsResponse,
 } from "../src/api/types.js";
 import { ADMIN_USER_ID } from "../src/auth/service.js";
+import { qaEnabled } from "../src/services/qa-engine.js";
 import { userChannelKey } from "../src/http/routes/events.js";
 import { apiClient, createTestApp, provisionUser, waitFor, writeTraceFile } from "./helpers.js";
 import type { TestApp } from "./helpers.js";
 import { fakeSession } from "./fixtures/session.js";
 
-const AGENT = "default_agent";
+const AGENT = qaEnabled ? "test_agent" : "default_agent";
 const DAY = "2026-10-11";
 
 describe("the archive page", () => {
@@ -66,7 +68,7 @@ describe("the archive page", () => {
   // Benchmarks out), and on the Windows runner writing and removing them is a real share of a
   // scenario's time. So each scenario boots its own app and removes its own data root (one root
   // shared by all of them once outgrew the 30 s hook budget), and provisions only the users it
-  // needs; each user brings a default Project.
+  // needs; each scenario creates the ordinary Projects its contract exercises.
   beforeEach(async () => {
     t = await createTestApp();
   });
@@ -74,18 +76,25 @@ describe("the archive page", () => {
     await t.cleanup();
   });
 
-  /** The owner and its own Project P1; P3 is the admin's, which the owner cannot open. */
+  /** The owner and its explicitly created Project P1; P3 is the admin's, which the owner cannot open. */
   async function world() {
     const names = { owner: "ar_owner", peer: "ar_peer", stranger: ADMIN_USER_ID };
     const owner = apiClient(t.app, (await provisionUser(t.app, names.owner)).cookie);
-    return { names, owner, p1: `${names.owner}-default_project`, p3: "default_project" };
+    const p1 = `${names.owner}-default_project`;
+    const created = await owner.post("/api/projects", { projectId: p1, name: names.owner });
+    expect(created.status).toBe(201);
+    expect(((await created.json()) as ProjectCreateResponse).project.projectId).toBe(p1);
+    return { names, owner, p1, p3: "default_project" };
   }
 
-  /** `world()` and the peer: a member of P1, whose own Project P2 has the owner as a member. */
+  /** `world()` and the peer: a member of P1, whose own explicitly created Project P2 has the owner as a member. */
   async function worldWithPeer() {
     const w = await world();
     const peer = apiClient(t.app, (await provisionUser(t.app, w.names.peer)).cookie);
     const p2 = `${w.names.peer}-default_project`;
+    const created = await peer.post("/api/projects", { projectId: p2, name: w.names.peer });
+    expect(created.status).toBe(201);
+    expect(((await created.json()) as ProjectCreateResponse).project.projectId).toBe(p2);
     expect(
       (await w.owner.post(`/api/projects/${w.p1}/members`, { userId: w.names.peer })).status,
     ).toBe(201);
@@ -113,6 +122,7 @@ describe("the archive page", () => {
       title?: string;
       prompt?: string;
       trace?: boolean;
+      ownerUserId?: string;
       extra?: AmspRecord[];
       /** When it was created and last active (ISO); by default each seed is a second newer. */
       at?: string;
@@ -127,6 +137,7 @@ describe("the archive page", () => {
     t.deps.sessionsRepo.insert({
       sessionId,
       projectId,
+      ownerUserId: opts.ownerUserId ?? "ar_owner",
       agentId: AGENT,
       provider: "custom",
       modelId: "m-x",
@@ -172,8 +183,12 @@ describe("the archive page", () => {
     const scheduled = await seed(w.p1, { source: "schedule", workspace: tempWorkspace(w.p1) });
     const apiUnrun = await seed(w.p1, { client: "api", trace: false, workspace: "/tmp/arch-ws-b" });
     const subagent = await seed(w.p1, { source: "subagent" });
-    const peerCli = await seed(w.p2, { source: "cli", workspace: "/tmp/arch-ws-c" });
-    const hidden = await seed(w.p3, { source: "cli" });
+    const peerCli = await seed(w.p2, {
+      source: "cli",
+      workspace: "/tmp/arch-ws-c",
+      ownerUserId: w.names.peer,
+    });
+    const hidden = await seed(w.p3, { source: "cli", ownerUserId: w.names.stranger });
     return { active, byHand, cliA, cliB, scheduled, apiUnrun, subagent, peerCli, hidden };
   }
 

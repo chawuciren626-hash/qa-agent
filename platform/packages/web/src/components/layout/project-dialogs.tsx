@@ -100,8 +100,10 @@ function CreateProjectForm({
 }) {
   const { user } = useAuth();
   const { currentProject } = useProject();
-  // Non-admin Project ids are forced to have a "<username>-" prefix: the input locks the prefix segment, only the rest is editable.
+  // Non-admin Project ids keep an internal account namespace. Only its suffix is shown in the form.
   const prefix = user && !user.isAdmin ? `${user.userId}-` : "";
+  const normalizeSuffix = (value: string) =>
+    prefix !== "" && value.startsWith(prefix) ? value.slice(prefix.length) : value;
   const form = useFormDraft({ name: "", idInput: "" });
   const { name, idInput } = form.draft;
   /** What the server refused about the id (a duplicate, say); cleared by the next edit of it. */
@@ -180,16 +182,15 @@ function CreateProjectForm({
           projectId={currentProject?.projectId ?? null}
           kind="project"
           label={S.project.id}
-          hint={prefix ? S.project.idPrefixHint : S.project.idHint}
+          hint={prefix ? S.project.idSuffixHint : S.project.idHint}
           value={idInput}
           source={name}
           error={
-            refused ?? (idBroken ? (prefix ? S.project.idPrefixHint : S.project.idHint) : undefined)
+            refused ?? (idBroken ? (prefix ? S.project.idSuffixHint : S.project.idHint) : undefined)
           }
           disabled={busy}
-          {...(prefix ? { lockedPrefix: prefix } : {})}
           onChange={(next) => {
-            form.patch({ idInput: next });
+            form.patch({ idInput: normalizeSuffix(next) });
             setRefused(undefined);
           }}
         />

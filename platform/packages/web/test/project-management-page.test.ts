@@ -21,7 +21,10 @@ import { ProjectManagementPage, resetSessionListState } from "../src/features/qa
 import { mockScenarios, resetMockProjects } from "../src/features/qa/project-management/mock";
 import { ApiError } from "../src/api/client";
 
-const apiMocks = vi.hoisted(() => ({ createProject: vi.fn() }));
+const apiMocks = vi.hoisted(() => ({ createProject: vi.fn(), archiveProject: vi.fn() }));
+const authState = vi.hoisted(() => ({
+  user: { userId: "demo-admin", displayName: "演示管理员", isAdmin: true },
+}));
 
 vi.mock("../src/features/qa/project-management/api", async () => {
   const mock = await import("../src/features/qa/project-management/mock");
@@ -31,7 +34,7 @@ vi.mock("../src/features/qa/project-management/api", async () => {
     createProject: apiMocks.createProject,
     updateProject: mock.mockUpdateProject,
     setProjectPinned: mock.mockSetProjectPinned,
-    archiveProject: mock.mockArchiveProject,
+    archiveProject: apiMocks.archiveProject,
     restoreProject: mock.mockRestoreProject,
     enterProject: mock.mockEnterProject,
     quickSwitchProjects: mock.mockQuickSwitchProjects,
@@ -52,11 +55,14 @@ vi.mock("../src/state/project", () => ({
   }),
 }));
 vi.mock("../src/state/auth", () => ({
-  useAuth: () => ({ user: { userId: "demo-admin", displayName: "演示管理员", isAdmin: true } }),
+  useAuth: () => ({ user: authState.user }),
 }));
 
 beforeEach(async () => {
-  apiMocks.createProject.mockImplementation((await import("../src/features/qa/project-management/mock")).mockCreateProject);
+  authState.user = { userId: "demo-admin", displayName: "演示管理员", isAdmin: true };
+  const mock = await import("../src/features/qa/project-management/mock");
+  apiMocks.createProject.mockImplementation(mock.mockCreateProject);
+  apiMocks.archiveProject.mockImplementation(mock.mockArchiveProject);
 });
 
 afterEach(async () => {
@@ -66,6 +72,7 @@ afterEach(async () => {
   resetSessionListState();
   state.setCurrentProjectId.mockClear();
   apiMocks.createProject.mockReset();
+  apiMocks.archiveProject.mockReset();
 });
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -121,6 +128,29 @@ describe("项目管理页", () => {
     await act(async () => { await sleep(500); });
     await waitFor(() => state.setCurrentProjectId.mock.calls.length > 0, 100);
     expect(state.setCurrentProjectId).toHaveBeenCalledWith("payment_regression");
+  });
+
+  it("普通用户只填写项目编号后缀，不暴露内部账号命名空间", async () => {
+    authState.user = {
+      userId: "acct_b1f5cd9daa868943851fd35a",
+      displayName: "测试用户",
+      isAdmin: false,
+    };
+    await mountPage();
+    await waitForList();
+    await click(document.querySelector<HTMLButtonElement>(".qpm-head-actions .qpm-btn-main")!);
+    const idField = field("Project id");
+    expect(idField.value).toBe("");
+    expect(document.querySelector(".qpm-modal")?.textContent).not.toContain("acct_b1f5cd9daa868943851fd35a");
+    await type(field("项目名称"), "支付回归");
+    await type(idField, "payment_regression");
+    await click(button("创建并进入"));
+    await waitFor(() => apiMocks.createProject.mock.calls.length === 1, 100);
+    expect(apiMocks.createProject).toHaveBeenCalledWith({
+      projectId: "acct_b1f5cd9daa868943851fd35a-payment_regression",
+      name: "支付回归",
+      description: "",
+    });
   });
 
   it("创建时的服务端错误显示在对话框级，不伪装成项目名称错误", async () => {
@@ -218,9 +248,47 @@ describe("项目管理页", () => {
     expect(menu?.textContent).toContain("项目设置");
     expect(menu?.textContent).toContain("编辑信息");
     expect(menu?.textContent).not.toContain("置顶项目");
-    expect(menu?.textContent).not.toContain("归档项目");
+    expect(menu?.textContent).toContain("归档项目");
     await pressEscape();
     expect(document.querySelector("div.qpm-menu")).toBeNull();
+  });
+
+  it("归档项目先显示确认弹窗，确认后调用接口、关闭弹窗并提示成功", async () => {
+    await mountPage();
+    await waitForList();
+    apiMocks.archiveProject.mockResolvedValueOnce(undefined);
+    await click(document.querySelector<HTMLButtonElement>("button.qpm-more")!);
+    const archiveAction = [...document.querySelectorAll<HTMLButtonElement>(".qpm-menu button")]
+      .find((item) => item.textContent === "归档项目")!;
+    await click(archiveAction);
+    await waitFor(() => document.querySelector('[role="dialog"][aria-label="归档项目"]') !== null, 100);
+    expect(bodyText()).toContain("将移出进行中的项目列表");
+    expect(apiMocks.archiveProject).not.toHaveBeenCalled();
+    await click(button("归档项目"));
+    await waitFor(() => apiMocks.archiveProject.mock.calls.length === 1, 100);
+    expect(apiMocks.archiveProject).toHaveBeenCalledWith("PRJ-0002");
+    await waitFor(() => toastStore.getState().items.some((item) => item.text.includes("项目已归档")), 100);
+    await waitFor(() => document.querySelector('[role="dialog"][aria-label="归档项目"]') === null, 100);
+  });
+
+  it("归档被活跃任务拒绝时保留确认弹窗并显示服务端原因", async () => {
+    apiMocks.archiveProject.mockRejectedValueOnce(new ApiError(
+      409,
+      "project_tasks_active",
+      "该项目存在运行中或排队中的任务，请先处理后再归档",
+    ));
+    await mountPage();
+    await waitForList();
+    await click(document.querySelector<HTMLButtonElement>("button.qpm-more")!);
+    const archiveAction = [...document.querySelectorAll<HTMLButtonElement>(".qpm-menu button")]
+      .find((item) => item.textContent === "归档项目")!;
+    await click(archiveAction);
+    await waitFor(() => document.querySelector('[role="dialog"][aria-label="归档项目"]') !== null, 100);
+    await click(button("归档项目"));
+    await waitFor(() => toastStore.getState().items.some((item) => item.text === "该项目存在运行中或排队中的任务，请先处理后再归档"), 100);
+    expect(apiMocks.archiveProject).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[role="dialog"][aria-label="归档项目"]')).not.toBeNull();
+    expect(nameButtons().some((item) => item.textContent === "会员中心改版回归")).toBe(true);
   });
 
   it("编辑信息直接打开表单，查看详情不显示操作区", async () => {

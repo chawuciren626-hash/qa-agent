@@ -75,6 +75,10 @@ import { sessionsOwnerUser } from "./steps/2026-11-06-sessions-owner-user.js";
 import { unattendedScheduling } from "./steps/2026-11-06-unattended-scheduling.js";
 import { taskExchange } from "./steps/2026-11-06-task-exchange.js";
 import { traeConnectorsPlugins } from "./steps/2026-11-06-trae-connectors-plugins.js";
+import { qaU2Contracts } from "./steps/2026-11-13-u2-contracts.js";
+import { qaU2ExecutionAttempts } from "./steps/2026-11-13-u2-execution-attempts.js";
+import { qaU3ExecutionSafety } from "./steps/2026-11-13-u3-execution-safety.js";
+import { qaU3CancellationDrills } from "./steps/2026-11-13-u3-cancellation-drills.js";
 
 export type { Migration } from "./migration.js";
 export { IrreversibleMigrationError, UnknownMigrationError, appliedMigrations } from "./runner.js";
@@ -115,6 +119,10 @@ export const MIGRATIONS: readonly Migration[] = [
   taskExchange,
   traeConnectorsPlugins,
   qaKnowledgeLibrary,
+  qaU2Contracts,
+  qaU2ExecutionAttempts,
+  qaU3ExecutionSafety,
+  qaU3CancellationDrills,
 ];
 
 /**

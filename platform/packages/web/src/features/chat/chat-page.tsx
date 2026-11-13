@@ -125,6 +125,7 @@ import { machineForSession } from "../../lib/session-machines";
 import { HistoryLoadFailed } from "./history-load-failed";
 import { nameOnMachine } from "../../lib/workspace-machines";
 import { CHAT_DEFAULTS_CHANGED_EVENT, chatDefaultsChangedDetail } from "./chat-defaults-event";
+import { MODEL_CONFIG_CHANGED_EVENT, modelConfigChangedForProject } from "../models/model-config-event";
 import { advanceCostStat, applyUsageFetch, createCostStatHold } from "./header-stats";
 import type { CostStatDisplay } from "./header-stats";
 import { buildInputHistory } from "./input-history";
@@ -1287,14 +1288,17 @@ export function ChatPage({ fixedAgentId }: { fixedAgentId?: string } = {}) {
   useEffect(() => {
     if (!projectId) return;
     let cancelled = false;
+    let requestId = 0;
     setLocalModels(null);
-    void (async () => {
+    const refresh = async (checkGuide: boolean) => {
+      const currentRequest = ++requestId;
       try {
         const res = await api.getModels(projectId, null);
-        if (cancelled) return;
+        if (cancelled || currentRequest !== requestId) return;
         setLocalModels(scoped(projectId, res));
+        if (!checkGuide) return;
         const { prefs } = await api.getPrefs();
-        if (cancelled || prefs.credentialGuideSeen) return;
+        if (cancelled || currentRequest !== requestId || prefs.credentialGuideSeen) return;
         const def = res.models.find((m) => sameModelRef(m, res.defaultModel));
         const missing = !res.defaultModel || !def || !hasConfiguredKey(def);
         if (missing) setCredentialGuide(true);
@@ -1303,9 +1307,15 @@ export function ChatPage({ fixedAgentId }: { fixedAgentId?: string } = {}) {
       } catch {
         // A failed fetch doesn't affect the rest of the page.
       }
-    })();
+    };
+    const onModelConfigChanged = (event: Event) => {
+      if (modelConfigChangedForProject(event, projectId)) void refresh(false);
+    };
+    window.addEventListener(MODEL_CONFIG_CHANGED_EVENT, onModelConfigChanged);
+    void refresh(true);
     return () => {
       cancelled = true;
+      window.removeEventListener(MODEL_CONFIG_CHANGED_EVENT, onModelConfigChanged);
     };
   }, [projectId]);
 

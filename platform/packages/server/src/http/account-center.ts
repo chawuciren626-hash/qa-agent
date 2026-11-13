@@ -32,6 +32,7 @@ export function accountCenterPath(method: string, path: string): boolean {
   if (method === "GET" && /^\/(?:admin|user)(?:\/[a-zA-Z0-9_-]+)*\/?$/.test(path)) return true;
   if (method === "GET" && ["/api/install", "/api/auth/registration", "/api/me", "/api/me/prefs", "/api/admin/users"].includes(path)) return true;
   if (method === "POST" && ["/api/auth/login", "/api/auth/logout", "/api/auth/register", "/api/me/sessions/revoke", "/api/admin/users"].includes(path)) return true;
+  if (method === "DELETE" && /^\/api\/admin\/users\/[a-z][a-z0-9_]{1,31}$/.test(path)) return true;
   if (method === "PUT" && ["/api/me/password", "/api/me/profile", "/api/me/prefs"].includes(path)) return true;
   if (method === "PUT" && /^\/api\/admin\/users\/[a-z][a-z0-9_]{1,31}\/status$/.test(path)) return true;
   if (method === "POST" && /^\/api\/admin\/users\/[a-z][a-z0-9_]{1,31}\/(password|sessions\/revoke)$/.test(path)) return true;

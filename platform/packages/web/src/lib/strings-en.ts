@@ -1489,6 +1489,8 @@ export const en: Strings = {
       "2–64 chars: starts with a lowercase letter; lowercase letters, digits and underscores only; cannot be changed later",
     idPrefixHint:
       "The id is prefixed with your username and a hyphen; append lowercase letters, digits or underscores; cannot be changed later",
+    idSuffixHint:
+      "Enter the suffix only: lowercase letters, digits or underscores; the account namespace is added automatically and cannot be changed later",
     displayName: "Display name",
     /** Create dialog only: leaving the name empty falls back to the id. In Project settings the saved name cannot be blanked. */
     displayNameHint: "Leave empty to use the Project id as the name",

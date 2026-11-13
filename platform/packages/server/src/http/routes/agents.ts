@@ -17,6 +17,8 @@ import { registerQaProjectKnowledgeRoutes } from "./qa-project-knowledge.js";
 import type { KnowledgeAuthorizer } from "../../services/qa-knowledge-authorization.js";
 import type { KnowledgeReceiver } from "../../services/qa-knowledge-receiver.js";
 import { registerQaQualityTraceabilityRoutes } from "./qa-quality-traceability.js";
+import { registerQaU2ContractRoutes } from "./qa-u2-contracts.js";
+import { registerQaU3SafetyRoutes } from "./qa-u3-safety.js";
 import type {
   AgentCreateResponse,
   AgentsResponse,
@@ -90,6 +92,8 @@ export function agentsRoutes(deps: AgentsRouteDeps): Hono<AppEnv> {
   registerQaProjectRoutes(app, deps);
   registerQaProjectKnowledgeRoutes(app, deps);
   registerQaQualityTraceabilityRoutes(app, deps);
+  registerQaU2ContractRoutes(app, deps);
+  registerQaU3SafetyRoutes(app, deps);
 
   app.get("/", async (c) => {
     // Defensive id validation: don't rely on the implicit invariant that requireProjectAccess always runs before path construction.
