@@ -1,0 +1,23 @@
+/**
+ * Barrel for the long-running command session module.
+ */
+export { CommandSessionManager } from "./session-manager.js";
+export { ManagedSession, isStopSignal, resultForExit } from "./session.js";
+export type { ProcessExit, SpawnOptions } from "./session.js";
+export { resolveShell, sessionShell } from "./shell.js";
+export { pathPrependPrefix, prependPathEnv } from "./path-prepend.js";
+export type { ShellInvocation, ResolveShellOptions } from "./shell.js";
+export {
+  DEFAULT_EXEC_YIELD_MS,
+  DEFAULT_WRITE_YIELD_MS,
+  DEFAULT_EMPTY_POLL_YIELD_MS,
+} from "./limits.js";
+export { ServiceUrlScanner, extractLastLocalUrl } from "./service-url.js";
+export {
+  parsePsPids,
+  parseSsListenPorts,
+  parseLsofListenPorts,
+  parseWindowsProbe,
+  probeGroupListenPorts,
+} from "./port-probe.js";
+export type { ListenSocket } from "./port-probe.js";

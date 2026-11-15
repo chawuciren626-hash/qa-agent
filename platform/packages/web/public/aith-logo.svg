@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img">
+  <title>AITestHarness</title>
+  <rect width="512" height="512" rx="118" fill="#185FA5"/>
+  <path d="M168 388 L256 154 L344 388" fill="none" stroke="#E6F1FB" stroke-width="29" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M212 300 L252 340 L311 260" fill="none" stroke="#5DCAA5" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

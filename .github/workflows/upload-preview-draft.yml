@@ -1,0 +1,78 @@
+name: Upload verified preview to draft Release
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Windows installation candidate run ID
+        required: true
+        type: string
+      tag:
+        description: Existing draft preview release tag
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: write
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      CANDIDATE_RUN: ${{ inputs.run_id }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate successful build and matching draft
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_RUN" =~ ^[0-9]+$ ]]
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$CANDIDATE_RUN" > /tmp/build.json
+          gh release view "$RELEASE_TAG" --json isDraft,isPrerelease,targetCommitish > /tmp/release.json
+          python - <<'PY'
+          import json
+          build=json.load(open('/tmp/build.json'));release=json.load(open('/tmp/release.json'))
+          assert build['name']=='Windows installation candidate' and build['conclusion']=='success'
+          assert release['isDraft'] and release['isPrerelease']
+          assert release['targetCommitish']==build['head_sha']
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installation-candidate
+          path: candidate
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify checksums and prepare provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os,json,hashlib,pathlib
+          root=pathlib.Path('candidate');version=os.environ['RELEASE_TAG'][1:]
+          expected={f'AITestHarness-{version}-win-x64.exe','product-payload.json','THIRD-PARTY-NOTICES.txt','acceptance.json','RELEASE-NOTES.md','SHA256SUMS.txt'}
+          assert {p.name for p in root.iterdir()}==expected
+          for line in (root/'SHA256SUMS.txt').read_text().splitlines():
+              digest,name=line.split('  ',1)
+              assert name in expected and name!='SHA256SUMS.txt'
+              assert hashlib.sha256((root/name).read_bytes()).hexdigest()==digest
+          manifest=json.loads((root/'product-payload.json').read_text())
+          acceptance=json.loads((root/'acceptance.json').read_text())
+          assert manifest['product_version']==version and acceptance['product_version']==version
+          assert acceptance['installer_sha256']==hashlib.sha256((root/f'AITestHarness-{version}-win-x64.exe').read_bytes()).hexdigest()
+          assert acceptance['payload_manifest_sha256']==hashlib.sha256((root/'product-payload.json').read_bytes()).hexdigest()
+          assert acceptance['distribution_ready'] is False
+          acceptance.update(publication='github_prerelease',source_commit=json.load(open('/tmp/build.json'))['head_sha'],build_origin='github_actions',build_run_id=os.environ['CANDIDATE_RUN'])
+          (root/'acceptance.json').write_text(json.dumps(acceptance,indent=2)+'\n')
+          (root/'RELEASE-NOTES.md').write_bytes(pathlib.Path('docs/releases/'+os.environ['RELEASE_TAG']+'.md').read_bytes())
+          (root/'SHA256SUMS.txt').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in sorted(root.iterdir()) if p.name!='SHA256SUMS.txt'))
+          PY
+      - name: Upload to draft only
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" candidate/* --clobber
+          gh release edit "$RELEASE_TAG" --notes-file candidate/RELEASE-NOTES.md
+          # Publication remains a separate maintainer action after asset verification.

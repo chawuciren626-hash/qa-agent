@@ -1,0 +1,1107 @@
+/**
+ * WeChat messaging — the fourth channel's mirror of messaging.test.ts, over a fake transport
+ * (the wire itself is messaging-wechat-transport.test.ts's). No test opens a socket.
+ *
+ * This channel has NO typed credential (it is bound by a scan), so its PUT carries
+ * preferences alone, its test endpoint takes no body, and its inbound side is a long poll
+ * whose FIRST answer is a drain, so a binding switched on after a week dark does not replay
+ * that week as a task flood. Pictures and files travel both ways.
+ *
+ * - A stored config is narrowed (one missing a credential refused; no host means the entry
+ *   host); a reply anchor reads back to its chat; the poll backs off further after each
+ *   failure, up to a ceiling.
+ * - The connector's seam carries text, images and files, downloading nothing until the bridge
+ *   asks.
+ * - The GET masks the token and names the bot id as the account; the PUT saves preferences
+ *   only and never creates a binding; the clear flag drops the token, refused while connected;
+ *   saving never collides, enabling does; the probe reads the stored binding; the channel
+ *   joins the channel-agnostic read.
+ * - The connection is ready before any poll answers; the drain runs until the platform
+ *   answers and never again on that connection, without spending itself on a silent window;
+ *   the first poll's backlog is dropped, keeping its cursor, except a message sent in the last
+ *   five minutes, which is answered (an older one still teaches its token); a refused token
+ *   stops the loop with its own reason; a poll failure is one outage report, recovering on its
+ *   own, and a failure that recovers on its own does not silence the refusal behind it.
+ * - An inbound message reaches the Agent and the reply goes back with the conversation token
+ *   (kept across a reconnect); the test message goes to the remembered chat, and is refused
+ *   with 409 while no token is known; an empty message gets the not-supported notice; a picture
+ *   reaches the model as an image typed from its bytes, a file as a path under the sender's
+ *   name, an oversize one as a size refusal; outbound, a picture goes as a picture and any
+ *   other file as an attachment, and Markdown renders only when the binding asks; one dropped
+ *   poll is retried without an outage, two in a row are one.
+ * - The conversation ledger: a token outlives a reconnect and a restart; ten sends per token,
+ *   the tenth onward combined after a quiet period, past that held; a refused reply is held and
+ *   delivered under its header before the next message reaches the bridge; stored
+ *   conversations go with the last binding that references their bot.
+ */
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { assistantText } from "@prismshadow/penguin-core";
+import type { AmspRecord } from "@prismshadow/penguin-core";
+import { wire } from "@prismshadow/penguin-core/kernel";
+import type {
+  MessagingBindingsResponse,
+  WeChatBindingResponse,
+  WeChatTestResponse,
+} from "../src/api/types.js";
+import type { RuntimeSession } from "../src/runtime/session-manager.js";
+import {
+  MESSAGING_TEST_MESSAGE,
+  MESSAGING_UNSUPPORTED_NOTICE,
+} from "../src/runtime/messaging/bridge.js";
+import { MessagingReplyHeldError } from "../src/runtime/messaging/connector.js";
+import { messagingErrorKind } from "../src/runtime/messaging/error-kind.js";
+import { MessagingMediaTooLargeError } from "../src/runtime/messaging/media.js";
+import type {
+  WeChatBotClient,
+  WeChatCredentials,
+  WeChatInboundEvent,
+  WeChatMediaRef,
+  WeChatOutboundFile,
+  WeChatSendArgs,
+  WeChatTransport,
+  WeChatUpdates,
+} from "../src/runtime/messaging/wechat-api.js";
+import {
+  WECHAT_API_BASE,
+  WECHAT_SEND_REFUSED_CODE,
+  WeChatApiError,
+} from "../src/runtime/messaging/wechat-api.js";
+import type { WeChatConversationStore } from "../src/runtime/messaging/wechat-connector.js";
+import {
+  WECHAT_HELD_HEADER,
+  WECHAT_REPLY_BUDGET,
+  WeChatConnector,
+  chatOfWeChatReplyRef,
+  createMemoryWeChatConversationStore,
+  wechatConfigOf,
+  wechatRetryDelayMs,
+} from "../src/runtime/messaging/wechat-connector.js";
+import { openDatabase } from "../src/db/database.js";
+import { MessagingBindingsRepo } from "../src/db/repos/messaging-bindings.js";
+import { MessagingConversationsRepo } from "../src/db/repos/messaging-conversations.js";
+import { forwardingTo } from "./fixtures/forwarding.js";
+import { fakeSession, sessionRow, uniqueSessionId } from "./fixtures/session.js";
+import { apiClient, createTestApp, provisionUser, waitFor } from "./helpers.js";
+import type { TestApp } from "./helpers.js";
+
+const BASE = (sid: string) => `/api/sessions/${sid}/messaging/wechat`;
+const PROJECT = "birder-default_project";
+
+const BOT_ID = "bot_9001";
+const BOT_TOKEN = "scan-issued-token-XYZ";
+const SCANNER = "ilink_user_aaa";
+const USER = "ilink_user_bbb";
+
+/** A stored config exactly as a completed scan writes one. */
+const SCANNED_CONFIG = {
+  botId: BOT_ID,
+  botToken: BOT_TOKEN,
+  baseUrl: WECHAT_API_BASE,
+  userId: SCANNER,
+};
+
+/** PNG magic bytes, so the connector's sniff answers `image/png` from the bytes alone. */
+const IMAGE_BYTES = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  Buffer.from("pretend this is a chart"),
+]);
+const FILE_BYTES = Buffer.from("%PDF-1.7 a report");
+
+// ---------------------------------------------------------------------------
+// Fake transport: answers polls the test feeds it, and records every send.
+// ---------------------------------------------------------------------------
+
+type Send =
+  | { kind: "text"; args: WeChatSendArgs }
+  | { kind: "image"; args: WeChatSendArgs; file: WeChatOutboundFile }
+  | { kind: "file"; args: WeChatSendArgs; file: WeChatOutboundFile };
+
+class FakeWeChatClient implements WeChatBotClient {
+  readonly sends: Send[] = [];
+  readonly cursors: string[] = [];
+  readonly fetches: Array<{ ref: WeChatMediaRef; maxBytes: number; what: string }> = [];
+  /** Whether each poll asked for a drain, in order — the first should and no later one may. */
+  readonly drains: boolean[] = [];
+  credentialChecks = 0;
+  polls = 0;
+  /** Batches waiting to be served, oldest first. */
+  private readonly queue: WeChatInboundEvent[][] = [];
+  private wake: (() => void) | null = null;
+
+  constructor(
+    readonly creds: WeChatCredentials,
+    private readonly t: FakeWeChatTransport,
+  ) {}
+
+  async checkCredentials(): Promise<void> {
+    this.credentialChecks += 1;
+    if (this.t.failAuth !== null) throw new Error(this.t.failAuth);
+  }
+
+  async getUpdates({
+    cursor,
+    signal,
+    drain = false,
+  }: {
+    cursor: string;
+    signal: AbortSignal;
+    drain?: boolean;
+  }): Promise<WeChatUpdates> {
+    this.polls += 1;
+    this.cursors.push(cursor);
+    this.drains.push(drain);
+    const failure = this.t.failPollWith.shift();
+    if (failure !== undefined) throw failure;
+    if (this.t.failPoll !== null) throw new Error(this.t.failPoll);
+    const queued = this.queue.shift();
+    if (queued !== undefined) {
+      return { messages: queued, cursor: `cursor-${this.polls}`, timedOut: false };
+    }
+    // A drain asks only for what the platform is already holding, so it comes back at once.
+    // With nothing to hand over the production adapter's window CLOSES instead: an empty list,
+    // the cursor it was given, and `timedOut` — never an advanced cursor, which would tell the
+    // loop the platform had answered when it had not. A long poll PARKS, which is what
+    // production does and what makes the readiness test below meaningful.
+    if (drain && !this.t.stallPolls) return { messages: [], cursor, timedOut: true };
+    await new Promise<void>((resolve) => {
+      this.wake = resolve;
+      signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    if (signal.aborted) throw new Error("connection closed");
+    return { messages: this.queue.shift() ?? [], cursor: `cursor-${this.polls}`, timedOut: false };
+  }
+
+  async sendText(args: WeChatSendArgs): Promise<void> {
+    const failure = this.t.failSendWith.shift();
+    if (failure !== undefined) throw failure;
+    if (this.t.failSend !== null) throw new Error(this.t.failSend);
+    this.sends.push({ kind: "text", args });
+  }
+  async sendImage(args: WeChatSendArgs & { file: WeChatOutboundFile }): Promise<void> {
+    const { file, ...rest } = args;
+    this.sends.push({ kind: "image", args: rest, file });
+  }
+  async sendFile(args: WeChatSendArgs & { file: WeChatOutboundFile }): Promise<void> {
+    const { file, ...rest } = args;
+    this.sends.push({ kind: "file", args: rest, file });
+  }
+
+  async fetchMedia(ref: WeChatMediaRef, maxBytes: number, what: string): Promise<Buffer> {
+    this.fetches.push({ ref, maxBytes, what });
+    if (this.t.oversizedMedia) throw new MessagingMediaTooLargeError(what, maxBytes);
+    return what === "The image" ? IMAGE_BYTES : FILE_BYTES;
+  }
+
+  /**
+   * Feeds one batch to the poll loop. With no arguments it queues an EMPTY batch, which is
+   * how a test makes a parked poll return without delivering anything — the shape the
+   * recovery half of the outage test needs.
+   */
+  push(...events: WeChatInboundEvent[]): void {
+    this.queue.push(events);
+    this.wake?.();
+    this.wake = null;
+  }
+}
+
+class FakeWeChatTransport implements WeChatTransport {
+  readonly clients: FakeWeChatClient[] = [];
+  failAuth: string | null = null;
+  failSend: string | null = null;
+  /** Failures the next text sends throw, one each and in order, ahead of `failSend`. */
+  readonly failSendWith: Error[] = [];
+  failPoll: string | null = null;
+  /** Failures the next polls throw, one each and in order, ahead of `failPoll`. */
+  readonly failPollWith: Error[] = [];
+  /** Every poll parks, the drain included — an idle bot, which is the readiness case. */
+  stallPolls = false;
+  oversizedMedia = false;
+
+  createClient(creds: WeChatCredentials): FakeWeChatClient {
+    const client = new FakeWeChatClient(creds, this);
+    this.clients.push(client);
+    return client;
+  }
+
+  /** The client the poll loop is running on (the connection's, not a send's). */
+  poller(): FakeWeChatClient {
+    const client = this.clients.find((c) => c.polls > 0);
+    if (client === undefined) throw new Error("no fake wechat poll started");
+    return client;
+  }
+
+  allSends(): Send[] {
+    return this.clients.flatMap((c) => c.sends);
+  }
+  texts(): WeChatSendArgs[] {
+    return this.allSends()
+      .filter((s) => s.kind === "text")
+      .map((s) => s.args);
+  }
+}
+
+/**
+ * One input part as the fake Session records it. Deliberately a loose shape rather than
+ * core's payload union: a run's input mixes composer text with `image_url` parts, and the
+ * assertions read one field of whichever arrived (the shape messaging-telegram.test.ts uses).
+ */
+interface InputPayload {
+  type?: string;
+  role?: string;
+  text?: string;
+  image_url?: string;
+}
+
+/** A plain inbound text message from a fixed user. */
+function inboundText(text: string, messageId: string, contextToken = "ctx-1"): WeChatInboundEvent {
+  return { userId: USER, messageId, text, contextToken, images: [], files: [] };
+}
+
+/** A conversation store already holding a fresh token for USER, as if they had just written. */
+function storeWithToken(contextToken = "ctx-1"): WeChatConversationStore {
+  const store = createMemoryWeChatConversationStore();
+  store.put(BOT_ID, USER, { contextToken, spent: 0, held: [] });
+  return store;
+}
+
+/** Fake Session: records each run's input payloads and replies with a fixed assistant text. */
+function echoFakeSession(
+  sessionId: string,
+  runs: InputPayload[][],
+  reply = "Reply text",
+): RuntimeSession {
+  return fakeSession(sessionId, {
+    async *run(input: AmspRecord[]) {
+      runs.push(input.map((m) => m.payload as InputPayload));
+      yield assistantText(reply);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+
+describe("wechat config and reply refs", () => {
+  it("narrows a stored document and rejects one missing a credential", () => {
+    expect(wechatConfigOf({ ...SCANNED_CONFIG })).toEqual(SCANNED_CONFIG);
+    expect(() => wechatConfigOf({ botId: BOT_ID })).toThrow(/malformed wechat binding config/);
+    expect(() => wechatConfigOf({ botId: "", botToken: BOT_TOKEN })).toThrow();
+  });
+
+  it("polls the entry host for a document that names none", () => {
+    // A bot with no IDC assignment lives there anyway, so this is the platform's own answer
+    // rather than a guess.
+    const cfg = wechatConfigOf({ botId: BOT_ID, botToken: BOT_TOKEN });
+    expect(cfg.baseUrl).toBe(WECHAT_API_BASE);
+    expect(cfg.userId).toBe("");
+  });
+
+  it("reads a reply anchor back to the chat it names", () => {
+    expect(chatOfWeChatReplyRef(`${USER}:12345`)).toBe(USER);
+    expect(() => chatOfWeChatReplyRef("nocolon")).toThrow(/malformed wechat reply ref/);
+  });
+
+  it("backs off further after each failure, up to a ceiling", () => {
+    expect(wechatRetryDelayMs(2)).toBeGreaterThan(wechatRetryDelayMs(1));
+    expect(wechatRetryDelayMs(3)).toBeGreaterThan(wechatRetryDelayMs(2));
+    // Past some number of failures the wait stops growing.
+    expect(wechatRetryDelayMs(30)).toBe(wechatRetryDelayMs(20));
+  });
+});
+
+describe("the wechat connector's own seam", () => {
+  it("carries text, images and files with no download until the bridge asks", async () => {
+    // Handles, not bytes: a redelivery is dropped before anything is transferred.
+    const transport = new FakeWeChatTransport();
+    const connector = new WeChatConnector(transport, { retryDelayMs: () => 0 });
+    const received: Array<{ chatId: string; text: string | null; images: number; files: number }> =
+      [];
+    const conn = await connector.connect(SCANNED_CONFIG, {
+      onMessage: (msg) => {
+        received.push({
+          chatId: msg.chatId,
+          text: msg.text,
+          images: msg.images?.length ?? 0,
+          files: msg.files?.length ?? 0,
+        });
+      },
+    });
+    const client = await waitForPoller(transport);
+    client.push({
+      userId: USER,
+      messageId: "1",
+      text: "look at this",
+      images: [{ url: "https://cdn/i", aesKey: "a2V5" }],
+      files: [{ fileName: "report.pdf", media: { url: "https://cdn/f" } }],
+    });
+    await waitFor(() => received.length === 1);
+    expect(received[0]).toEqual({ chatId: USER, text: "look at this", images: 1, files: 1 });
+    expect(client.fetches).toHaveLength(0);
+    conn.close();
+  });
+});
+
+/** Waits for the connector's poll loop to have made its first call. */
+async function waitForPoller(transport: FakeWeChatTransport): Promise<FakeWeChatClient> {
+  await waitFor(() => transport.clients.some((c) => c.polls > 0));
+  return transport.poller();
+}
+
+describe("wechat binding routes and the long poll", () => {
+  let t: TestApp;
+  let api: ReturnType<typeof apiClient>;
+  let fake: FakeWeChatTransport;
+  let runs: InputPayload[][];
+  /**
+   * The case's two Sessions, fresh per case: the app is the describe's, and a binding, a poll
+   * and a status belong to their Session.
+   */
+  let SID: string;
+  let SID2: string;
+
+  /** Store a scanned config as the scan route would, then flip the toggle on. */
+  const bindEnabled = async (sid: string, config: Record<string, unknown> = SCANNED_CONFIG) => {
+    t.deps.messagingRepo.upsert({
+      sessionId: sid,
+      channel: "wechat",
+      accountId: String(config.botId),
+      config,
+    });
+    expect((await api.post(`${BASE(sid)}/state`, { enabled: true })).status).toBe(200);
+    await waitFor(() => t.deps.messaging.statusOf(sid, "wechat").state === "connected");
+  };
+
+  beforeAll(async () => {
+    // A small non-zero backoff rather than zero: the loop retries in a tight cycle during
+    // the outage test, and a zero delay would spin without yielding.
+    t = await createTestApp({
+      wechatTransport: forwardingTo(() => fake),
+      wechatRetryDelayMs: () => 5,
+    });
+    const { cookie } = await provisionUser(t.app, "birder");
+    api = apiClient(t.app, cookie);
+  });
+  afterAll(async () => {
+    await t.cleanup();
+  });
+  beforeEach(() => {
+    fake = new FakeWeChatTransport();
+    runs = [];
+    SID = uniqueSessionId();
+    SID2 = uniqueSessionId();
+    const row = sessionRow(SID, { projectId: PROJECT });
+    t.deps.sessionsRepo.insert(row);
+    t.deps.manager.adopt(row, echoFakeSession(SID, runs));
+  });
+  afterEach(() => {
+    // What the case bound goes with it, long poll and all.
+    for (const row of t.deps.messagingRepo.listAll()) t.deps.messaging.unbindSession(row.sessionId);
+  });
+
+  // —— Routes ——————————————————————————————————————————————————————————————
+
+  it("the GET masks the token and names the bot id as the account", async () => {
+    t.deps.messagingRepo.upsert({
+      sessionId: SID,
+      channel: "wechat",
+      accountId: BOT_ID,
+      config: SCANNED_CONFIG,
+    });
+    const body = (await (await api.get(BASE(SID))).json()) as WeChatBindingResponse;
+    expect(body.binding?.channel).toBe("wechat");
+    expect(body.binding?.botId).toBe(BOT_ID);
+    expect(body.binding?.botTokenMasked).toBe("scan…-XYZ");
+    expect(JSON.stringify(body)).not.toContain(BOT_TOKEN);
+    // Neither the API host nor the scanner's id is projected: one is infrastructure, the
+    // other identifies a person, and the editor renders neither.
+    expect(JSON.stringify(body)).not.toContain(SCANNER);
+    expect(body.binding?.enabled).toBe(false);
+  });
+
+  it("the PUT saves preferences only, and refuses to create a binding at all", async () => {
+    // There is no credential to carry, so a PUT before a scan has nothing it could store.
+    const bare = await api.put(BASE(SID), { renderMarkdown: false });
+    expect(bare.status).toBe(400);
+    expect(((await bare.json()) as { error: { code: string } }).error.code).toBe(
+      "wechat_token_required",
+    );
+
+    t.deps.messagingRepo.upsert({
+      sessionId: SID,
+      channel: "wechat",
+      accountId: BOT_ID,
+      config: SCANNED_CONFIG,
+    });
+    const res = await api.put(BASE(SID), { renderMarkdown: false, linePerMessage: true });
+    expect(res.status).toBe(200);
+    const saved = t.deps.messagingRepo.find(SID, "wechat")!;
+    expect(saved.renderMarkdown).toBe(false);
+    expect(saved.linePerMessage).toBe(true);
+    // The rest of the stored document survives a preferences save untouched — the connector
+    // needs the host and the scanner's id, and this request knows neither.
+    expect(saved.config).toEqual(SCANNED_CONFIG);
+  });
+
+  it("the clear flag drops the token, and is refused while the connection is live", async () => {
+    await bindEnabled(SID);
+    const live = await api.put(BASE(SID), { clearBotToken: true });
+    expect(live.status).toBe(409);
+    expect(((await live.json()) as { error: { code: string } }).error.code).toBe(
+      "messaging_disable_before_clear",
+    );
+
+    expect((await api.post(`${BASE(SID)}/state`, { enabled: false })).status).toBe(200);
+    expect((await api.put(BASE(SID), { clearBotToken: true })).status).toBe(200);
+    const cleared = t.deps.messagingRepo.find(SID, "wechat")!;
+    expect(cleared.config.botToken).toBe("");
+    // The row and its identity stay: only a fresh scan can make it connectable again.
+    expect(cleared.accountId).toBe(BOT_ID);
+    const gate = await api.post(`${BASE(SID)}/state`, { enabled: true });
+    expect(gate.status).toBe(400);
+    expect(((await gate.json()) as { error: { code: string } }).error.code).toBe(
+      "wechat_token_required",
+    );
+  });
+
+  it("the bot id is the account: saving never collides, enabling does", async () => {
+    t.deps.sessionsRepo.insert(sessionRow(SID2, { projectId: PROJECT }));
+    t.deps.manager.adopt(sessionRow(SID2, { projectId: PROJECT }), echoFakeSession(SID2, []));
+    await bindEnabled(SID);
+    // The same bot saved on a second Session is fine; only the connection is exclusive.
+    t.deps.messagingRepo.upsert({
+      sessionId: SID2,
+      channel: "wechat",
+      accountId: BOT_ID,
+      config: SCANNED_CONFIG,
+    });
+    const clash = await api.post(`${BASE(SID2)}/state`, { enabled: true });
+    expect(clash.status).toBe(409);
+    expect(((await clash.json()) as { error: { code: string } }).error.code).toBe(
+      "account_enabled_elsewhere",
+    );
+  });
+
+  it("the credential probe takes no body and reads the stored binding", async () => {
+    const bare = await api.post(`${BASE(SID)}/test`, {});
+    expect(bare.status).toBe(400);
+    expect(((await bare.json()) as { error: { code: string } }).error.code).toBe(
+      "wechat_token_required",
+    );
+
+    t.deps.messagingRepo.upsert({
+      sessionId: SID,
+      channel: "wechat",
+      accountId: BOT_ID,
+      config: SCANNED_CONFIG,
+    });
+    const ok = (await (await api.post(`${BASE(SID)}/test`, {})).json()) as WeChatTestResponse;
+    expect(ok.ok).toBe(true);
+    // The platform names no account, so success carries no label.
+    expect("botUsername" in ok).toBe(false);
+
+    fake.failAuth = "invalid bot token";
+    const bad = (await (await api.post(`${BASE(SID)}/test`, {})).json()) as WeChatTestResponse;
+    expect(bad.ok).toBe(false);
+    expect(bad.error).toContain("invalid bot token");
+  });
+
+  it("joins the channel-agnostic read beside the others", async () => {
+    t.deps.messagingRepo.upsert({
+      sessionId: SID,
+      channel: "wechat",
+      accountId: BOT_ID,
+      config: SCANNED_CONFIG,
+    });
+    t.deps.messagingRepo.upsert({
+      sessionId: SID,
+      channel: "telegram",
+      accountId: "42",
+      config: { botToken: "42:tele" },
+    });
+    const body = (await (
+      await api.get(`/api/sessions/${SID}/messaging`)
+    ).json()) as MessagingBindingsResponse;
+    expect(body.bindings.map((b) => b.binding.channel).sort()).toEqual(["telegram", "wechat"]);
+  });
+
+  // —— The long poll ————————————————————————————————————————————————————————
+
+  it("reports the connection ready before any poll has answered", async () => {
+    // The reported bug: a long poll is a request held open until something arrives, so a
+    // connection reported ready only when one came back sat at `connecting` for the whole
+    // window on an idle bot — usable throughout, and saying so nowhere.
+    fake.stallPolls = true;
+    t.deps.messagingRepo.upsert({
+      sessionId: SID,
+      channel: "wechat",
+      accountId: BOT_ID,
+      config: SCANNED_CONFIG,
+    });
+    expect((await api.post(`${BASE(SID)}/state`, { enabled: true })).status).toBe(200);
+    await waitFor(() => t.deps.messaging.statusOf(SID, "wechat").state === "connected");
+    // Ready on the probe, with the poll behind it still parked and having returned nothing.
+    const client = fake.poller();
+    expect(client.credentialChecks).toBeGreaterThan(0);
+    expect(client.polls).toBeGreaterThan(0);
+  });
+
+  it("drains until the platform answers, then never again on that connection", async () => {
+    await bindEnabled(SID);
+    const client = fake.poller();
+    client.push(inboundText("hello", "m-0"));
+    await waitFor(() => client.drains.includes(false));
+    // Every drain comes first and there are at most DRAIN_ATTEMPTS of them: a window that
+    // closed on its own deadline handed over no cursor, so spending the drain on it would
+    // leave the next ordinary poll to relay a whole backlog as live traffic. The retry is
+    // bounded because an idle bot's poll may park every time.
+    const drains = client.drains.slice(0, client.drains.indexOf(false));
+    expect(drains.length).toBeGreaterThan(0);
+    expect(drains.length).toBeLessThanOrEqual(2);
+    expect(drains.every((d) => d === true)).toBe(true);
+    expect(client.drains.slice(drains.length).every((d) => d === false)).toBe(true);
+  });
+
+  it("does not spend the drain on a window that closed without an answer", async () => {
+    // The hole this closes: the adapter reports a timed-out window as an empty list with the
+    // cursor it was GIVEN, so a drain spent there leaves the cursor at the beginning and the
+    // next ordinary poll hands the whole backlog to the Agent as live traffic.
+    await bindEnabled(SID);
+    const client = fake.poller();
+    await waitFor(() => client.drains.length >= 2);
+    // The fake's empty drain times out exactly as production's does, so the second call is
+    // still a drain rather than an ordinary poll asking from the same unmoved cursor.
+    expect(client.drains[0]).toBe(true);
+    expect(client.drains[1]).toBe(true);
+    expect(client.cursors[1]).toBe(client.cursors[0]);
+  });
+
+  it("stops with the credential's own reason when the token is refused", async () => {
+    // The probe runs ahead of the poll, so a revoked token reports what is actually wrong
+    // instead of an endless poll failure.
+    fake.failAuth = "invalid bot token";
+    t.deps.messagingRepo.upsert({
+      sessionId: SID,
+      channel: "wechat",
+      accountId: BOT_ID,
+      config: SCANNED_CONFIG,
+    });
+    expect((await api.post(`${BASE(SID)}/state`, { enabled: true })).status).toBe(200);
+    await waitFor(() => t.deps.messaging.statusOf(SID, "wechat").state === "error");
+    expect(t.deps.messaging.statusOf(SID, "wechat").lastError).toContain("invalid bot token");
+  });
+
+  it("drops the first poll's backlog and keeps only its cursor", async () => {
+    // A binding switched on after a week dark must not replay that week as a task flood.
+    fake.createClient = ((creds: WeChatCredentials) => {
+      const client = new FakeWeChatClient(creds, fake);
+      fake.clients.push(client);
+      // Queued before the loop starts, so it is what the FIRST poll returns.
+      client.push(inboundText("sent while nothing was connected", "old-1"));
+      return client;
+    }) as FakeWeChatTransport["createClient"];
+
+    await bindEnabled(SID);
+    const client = fake.poller();
+    // The drain's cursor is carried into the next poll rather than starting over.
+    await waitFor(() => client.cursors.length >= 2);
+    expect(client.cursors[0]).toBe("");
+    expect(client.cursors[1]).toBe("cursor-1");
+
+    client.push(inboundText("hello", "new-1"));
+    await waitFor(() => runs.length === 1);
+    // Only the message that arrived after the drain ever became a task.
+    expect(runs).toHaveLength(1);
+    expect(runs[0]![0]!.text).toBe("hello");
+  });
+
+  it("relays an inbound message to the Agent and its reply back, carrying the conversation token", async () => {
+    await bindEnabled(SID);
+    const client = fake.poller();
+    client.push(inboundText("what is the weather?", "m-1", "ctx-42"));
+    await waitFor(() => fake.texts().length > 0);
+    expect(runs[0]![0]!.text).toBe("what is the weather?");
+    expect(fake.texts()[0]).toEqual({ userId: USER, text: "Reply text", contextToken: "ctx-42" });
+    // The chat is remembered, which is what the test-message button needs.
+    expect(t.deps.messagingRepo.find(SID, "wechat")?.lastChatId).toBe(USER);
+  });
+
+  it("sends the fixed test message to the remembered chat", async () => {
+    await bindEnabled(SID);
+    const noChat = await api.post(`${BASE(SID)}/test-message`, {});
+    expect(noChat.status).toBe(409);
+    expect(((await noChat.json()) as { error: { code: string } }).error.code).toBe(
+      "wechat_no_chat",
+    );
+
+    fake.poller().push(inboundText("hi", "m-2"));
+    await waitFor(() => fake.texts().length > 0);
+    expect((await api.post(`${BASE(SID)}/test-message`, {})).status).toBe(200);
+    expect(fake.texts().at(-1)!.text).toBe(MESSAGING_TEST_MESSAGE);
+  });
+
+  it("answers a message carrying nothing at all with the shared not-supported notice", async () => {
+    // The one inbound shape this channel cannot read: a recording WeChat could not
+    // transcribe. It arrives with no text and no attachment, and the bridge's own notice is
+    // what the chat gets — no channel-specific refusal says more than that one already does.
+    await bindEnabled(SID);
+    fake.poller().push({
+      userId: USER,
+      messageId: "m-3",
+      text: "",
+      contextToken: "ctx-1",
+      images: [],
+      files: [],
+    });
+    await waitFor(() => fake.texts().length > 0);
+    expect(fake.texts()[0]!.text).toBe(MESSAGING_UNSUPPORTED_NOTICE);
+    expect(runs).toHaveLength(0);
+  });
+
+  it("keeps the conversation token across a disable and a re-enable", async () => {
+    // The reported bug: every reconnect dropped the token, and WeChat refuses a send without
+    // one ("prepare failed"), so after a restart, a re-enable or a saved preference nothing the
+    // bot said arrived until the user wrote again.
+    await bindEnabled(SID);
+    fake.poller().push(inboundText("hi", "m-4", "ctx-99"));
+    await waitFor(() => fake.texts().length > 0);
+    expect(fake.texts()[0]!.contextToken).toBe("ctx-99");
+
+    expect((await api.post(`${BASE(SID)}/state`, { enabled: false })).status).toBe(200);
+    await bindEnabled(SID);
+    expect((await api.post(`${BASE(SID)}/test-message`, {})).status).toBe(200);
+    expect(fake.texts().at(-1)!.contextToken).toBe("ctx-99");
+  });
+
+  it("refuses the test message with 409 while no conversation token is known, holding nothing", async () => {
+    // A test that WeChat would refuse cannot be held for later: arriving an hour after the
+    // button was pressed, it would prove nothing.
+    await bindEnabled(SID);
+    t.deps.messagingRepo.recordChat(SID, "wechat", USER, true);
+    const res = await api.post(`${BASE(SID)}/test-message`, {});
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe(
+      "wechat_needs_recent_message",
+    );
+    expect(fake.texts()).toHaveLength(0);
+    expect(t.deps.messaging.statusOf(SID, "wechat").heldReplySince).toBeUndefined();
+  });
+
+  it("reports a poll failure as an outage, and recovers on its own when it clears", async () => {
+    await bindEnabled(SID);
+    const client = fake.poller();
+    fake.failPoll = "connection reset";
+    // The loop is parked on a long poll, so waking it is what makes it call again and fail.
+    client.push();
+    await waitFor(() => t.deps.messaging.statusOf(SID, "wechat").state === "error");
+    // Recovery needs nothing to arrive: the probe at the top of the cycle reports it, so the
+    // connection comes back while the poll behind it is still parked.
+    fake.failPoll = null;
+    await waitFor(() => t.deps.messaging.statusOf(SID, "wechat").state === "connected");
+  });
+
+  // —— Media, in both directions ————————————————————————————————————————————
+
+  it("an inbound picture reaches the model as an image part, typed from its bytes", async () => {
+    await bindEnabled(SID);
+    fake.poller().push({
+      userId: USER,
+      messageId: "m-5",
+      text: "",
+      images: [{ url: "https://cdn/i", aesKey: "a2V5" }],
+      files: [],
+    });
+    await waitFor(() => runs.length === 1);
+    expect(runs[0]).toHaveLength(1);
+    expect(runs[0]![0]!.type).toBe("image_url");
+    // The wire names no type for an image; the bytes are the only source, and conclusive.
+    expect(runs[0]![0]!.image_url).toBe(`data:image/png;base64,${IMAGE_BYTES.toString("base64")}`);
+    expect(fake.poller().fetches[0]!.what).toBe("The image");
+  });
+
+  it("an inbound file reaches the model as a path, keeping the sender's own name", async () => {
+    await bindEnabled(SID);
+    fake.poller().push({
+      userId: USER,
+      messageId: "m-6",
+      text: "summarize this",
+      images: [],
+      files: [{ fileName: "report.pdf", media: { url: "https://cdn/f" } }],
+    });
+    await waitFor(() => runs.length === 1);
+    const text = runs[0]![0]!.text!;
+    expect(text.startsWith("summarize this\n\n[attached file: ")).toBe(true);
+    expect(text).toContain("report.pdf");
+  });
+
+  it("refuses an oversized inbound transfer as a size problem the sender can fix", async () => {
+    await bindEnabled(SID);
+    fake.oversizedMedia = true;
+    fake.poller().push({
+      userId: USER,
+      messageId: "m-7",
+      text: "",
+      contextToken: "ctx-1",
+      images: [{ url: "https://cdn/i" }],
+      files: [],
+    });
+    await waitFor(() => fake.texts().length > 0);
+    expect(fake.texts()[0]!.text).toContain("limit");
+    expect(runs).toHaveLength(0);
+  });
+
+  it("a failure that only ever hits the poll still backs off and reports once", async () => {
+    // The probe and the poll are different endpoints. A credential that keeps authenticating
+    // while `getupdates` keeps refusing — an endpoint-specific 5xx, a rate limit, a cursor the
+    // platform has started rejecting — must not zero the counter on every recovery: that walks
+    // the backoff nowhere and writes one error record per attempt, which for a token revoked
+    // overnight is what the loop exists not to do.
+    const delays: number[] = [];
+    const errors: unknown[] = [];
+    fake.failPoll = "getupdates refused";
+    const connector = new WeChatConnector(fake, {
+      // Non-zero so the loop yields to the macrotask queue between attempts; a zero delay
+      // resolves as a microtask and starves the poller below.
+      retryDelayMs: (failures) => {
+        delays.push(failures);
+        return 1;
+      },
+    });
+    const conn = await connector.connect(SCANNED_CONFIG, {
+      onMessage: async () => {},
+      onError: (err) => errors.push(err),
+    });
+    try {
+      await waitFor(() => delays.length >= 4);
+      // The counter climbs across attempts rather than resetting to 1 on every recovery…
+      expect(delays.slice(0, 4)).toEqual([1, 2, 3, 4]);
+      // …so the outage is one error record rather than one per attempt.
+      expect(errors).toHaveLength(1);
+    } finally {
+      conn.close();
+    }
+  });
+
+  it("a failure that recovers on its own does not silence the refusal behind it", async () => {
+    // A dropped request is filed as routine, so if it kept the outage's one report, a token
+    // refused on every retry after it would never be filed at all: the binding stays down and
+    // the dashboard reads zero defects. The transport's verdicts are asserted where they are
+    // made (messaging-wechat-transport.test.ts); these stand in for them.
+    const errors: unknown[] = [];
+    fake.failPollWith.push(
+      new WeChatApiError(undefined, "wechat getUpdates failed: fetch failed", { recovers: true }),
+      new WeChatApiError(undefined, "wechat getUpdates failed: HTTP 401 invalid bot token"),
+      new WeChatApiError(undefined, "wechat getUpdates failed: HTTP 401 invalid bot token"),
+    );
+    const connector = new WeChatConnector(fake, { retryDelayMs: () => 1 });
+    const conn = await connector.connect(SCANNED_CONFIG, {
+      onMessage: async () => {},
+      onError: (err) => errors.push(err),
+    });
+    try {
+      await waitFor(() => fake.failPollWith.length === 0 && errors.length === 2);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      // The blip, then the refusal behind it — and nothing more: the repeat stays quiet.
+      expect(errors.map((err) => messagingErrorKind(err, "messaging_connect_failed"))).toEqual([
+        "expected",
+        "unexpected",
+      ]);
+    } finally {
+      conn.close();
+    }
+  });
+
+  it("retries one dropped poll at once without an outage, and reports two in a row as one", async () => {
+    // A single request lost on the way is the commonest failure there is, and the next one
+    // usually lands: opening an outage for it flashed the panel into `error` and filed a record.
+    const dropped = () =>
+      new WeChatApiError(undefined, "wechat getUpdates failed: fetch failed", {
+        network: true,
+        recovers: true,
+      });
+    const run = async (blips: number) => {
+      const transport = new FakeWeChatTransport();
+      for (let i = 0; i < blips; i++) transport.failPollWith.push(dropped());
+      const backoffs: number[] = [];
+      const errors: unknown[] = [];
+      const connector = new WeChatConnector(transport, {
+        retryDelayMs: (failures) => {
+          backoffs.push(failures);
+          return 1;
+        },
+      });
+      const conn = await connector.connect(SCANNED_CONFIG, {
+        onMessage: async () => {},
+        onError: (err) => errors.push(err),
+      });
+      try {
+        // Parked on an ordinary long poll: everything before it has played out.
+        await waitFor(() => transport.clients.some((c) => c.drains.includes(false)));
+        return { backoffs, errors };
+      } finally {
+        conn.close();
+      }
+    };
+    expect(await run(1)).toEqual({ backoffs: [], errors: [] });
+    const twice = await run(2);
+    expect(twice.backoffs).toEqual([1]);
+    const kinds = twice.errors.map((err) => messagingErrorKind(err, "messaging_connect_failed"));
+    expect(kinds).toEqual(["expected"]);
+  });
+
+  it("sends a picture as a picture and any other file as an attachment", async () => {
+    // The capability QQ has to refuse outright: outbound media, both kinds, no public URL.
+    const connector = new WeChatConnector(fake, { retryDelayMs: () => 0, store: storeWithToken() });
+    const outbound = await connector.createClient(SCANNED_CONFIG);
+    await outbound.sendImage(USER, { fileName: "chart.png", data: IMAGE_BYTES });
+    await outbound.sendFile(USER, { fileName: "report.pdf", data: FILE_BYTES });
+    const sends = fake.clients.at(-1)!.sends;
+    expect(sends.map((s) => s.kind)).toEqual(["image", "file"]);
+    expect(sends[0]!.kind === "image" && sends[0]!.file.data.equals(IMAGE_BYTES)).toBe(true);
+    expect(sends[0]!.kind === "image" && sends[0]!.file.fileName).toBe("chart.png");
+    expect(sends[1]!.kind === "file" && sends[1]!.file.fileName).toBe("report.pdf");
+  });
+
+  it("renders a reply's Markdown when the binding asks, and sends the source when it does not", async () => {
+    const connector = new WeChatConnector(fake, { retryDelayMs: () => 0, store: storeWithToken() });
+    const outbound = await connector.createClient(SCANNED_CONFIG);
+    await outbound.sendText(USER, "# Title\n\n**bold**", { markdown: true });
+    await outbound.sendText(USER, "# Title\n\n**bold**");
+    const sends = fake.clients.at(-1)!.sends;
+    // WeChat reads Markdown itself, so a rendered heading stays a heading.
+    expect(sends[0]!.args.text).toBe("# Title\n\n**bold**");
+    expect(sends[1]!.args.text).toBe("# Title\n\n**bold**");
+    // …and the case where rendering actually changes something: a fifth-level heading has no
+    // scale here, so its markers go rather than arriving as five literal `#`.
+    await outbound.sendText(USER, "##### Deep", { markdown: true });
+    expect(fake.clients.at(-1)!.sends.at(-1)!.args.text).toBe("Deep");
+  });
+});
+
+/**
+ * The conversation ledger, over the connector alone. WeChat checks a context token on every
+ * send, and one token funds about ten; what the route tests above cannot show is a token
+ * outliving its connection, the budget running out, and a refused reply waiting for the user's
+ * next message instead of being lost.
+ */
+describe("the wechat conversation ledger", () => {
+  let fake: FakeWeChatTransport;
+  beforeEach(() => {
+    fake = new FakeWeChatTransport();
+  });
+
+  it("echoes a token learned before a reconnect, and after a restart reads it back from the store", async () => {
+    const store = createMemoryWeChatConversationStore();
+    const connector = new WeChatConnector(fake, { retryDelayMs: () => 0, store });
+    const received: string[] = [];
+    const first = await connector.connect(SCANNED_CONFIG, {
+      onMessage: (msg) => {
+        received.push(msg.messageId);
+      },
+    });
+    (await waitForPoller(fake)).push(inboundText("hi", "m-1", "ctx-7"));
+    await waitFor(() => received.length === 1);
+    first.close();
+
+    const again = await connector.connect(SCANNED_CONFIG, { onMessage: () => {} });
+    try {
+      await (await connector.createClient(SCANNED_CONFIG)).sendText(USER, "after a reconnect");
+    } finally {
+      again.close();
+    }
+    // A restart: a new connector, nothing in memory, the same rows.
+    const restarted = new WeChatConnector(fake, { retryDelayMs: () => 0, store });
+    await (await restarted.createClient(SCANNED_CONFIG)).sendText(USER, "after a restart");
+    expect(fake.texts().map((s) => s.contextToken)).toEqual(["ctx-7", "ctx-7"]);
+  });
+
+  it("sends nine at once, combines the rest into the tenth after a quiet period, and holds past it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const connector = new WeChatConnector(fake, { store: storeWithToken(), tailFlushMs: 50 });
+      const client = await connector.createClient(SCANNED_CONFIG);
+      const immediate = Array.from({ length: WECHAT_REPLY_BUDGET - 1 }, (_, i) => `m${i + 1}`);
+      for (const text of immediate) await client.sendText(USER, text);
+      expect(fake.texts().map((s) => s.text)).toEqual(immediate);
+
+      await client.sendText(USER, "m10");
+      await client.sendText(USER, "m11");
+      // Withheld for the reserved slot until the run goes quiet.
+      expect(fake.texts()).toHaveLength(WECHAT_REPLY_BUDGET - 1);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(fake.texts()).toHaveLength(WECHAT_REPLY_BUDGET);
+      expect(fake.texts().at(-1)!.text).toBe("m10\n\nm11");
+
+      await expect(client.sendText(USER, "m12")).rejects.toBeInstanceOf(MessagingReplyHeldError);
+      expect(fake.texts()).toHaveLength(WECHAT_REPLY_BUDGET);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("holds a refused reply and delivers it under its header before the next message reaches the bridge", async () => {
+    const at = "2026-10-10T08:00:00.000Z";
+    const connector = new WeChatConnector(fake, {
+      retryDelayMs: () => 0,
+      now: () => Date.parse(at),
+    });
+    const held: Array<string | null> = [];
+    /** Each inbound message as the bridge saw it, with what had been sent by then. */
+    const seen: Array<{ text: string | null; sentBefore: string[] }> = [];
+    const conn = await connector.connect(SCANNED_CONFIG, {
+      onMessage: (msg) => {
+        seen.push({ text: msg.text, sentBefore: fake.texts().map((s) => s.text) });
+      },
+      onHeldChange: (since) => held.push(since),
+    });
+    try {
+      const poller = await waitForPoller(fake);
+      poller.push(inboundText("first", "m-1", "ctx-old"));
+      await waitFor(() => seen.length === 1);
+
+      // The token expired while the run was working: WeChat's catch-all refusal.
+      fake.failSendWith.push(
+        new WeChatApiError(WECHAT_SEND_REFUSED_CODE, "wechat send failed: prepare failed", {
+          authenticated: true,
+          recovers: true,
+        }),
+      );
+      const client = await connector.createClient(SCANNED_CONFIG);
+      await expect(client.sendText(USER, "the answer")).rejects.toBeInstanceOf(
+        MessagingReplyHeldError,
+      );
+      expect(held).toEqual([at]);
+
+      poller.push(inboundText("second", "m-2", "ctx-new"));
+      await waitFor(() => seen.length === 2);
+      expect(seen[1]).toEqual({
+        text: "second",
+        sentBefore: [`${WECHAT_HELD_HEADER}\n\nthe answer`],
+      });
+      expect(fake.texts()[0]!.contextToken).toBe("ctx-new");
+      expect(held).toEqual([at, null]);
+    } finally {
+      conn.close();
+    }
+  });
+
+  it("keeps held replies a backlog token cannot carry, and sends them on the next live one", async () => {
+    const store = createMemoryWeChatConversationStore();
+    store.put(BOT_ID, USER, { contextToken: "ctx-old", spent: 10, held: ["the answer"] });
+    // The drain reads a message from days ago, whose token WeChat has long expired.
+    const original = fake.createClient.bind(fake);
+    fake.createClient = ((creds: WeChatCredentials) => {
+      const client = original(creds) as FakeWeChatClient;
+      client.push(inboundText("sent while nothing was connected", "old-1", "ctx-backlog"));
+      return client;
+    }) as FakeWeChatTransport["createClient"];
+    fake.failSendWith.push(
+      new WeChatApiError(WECHAT_SEND_REFUSED_CODE, "wechat send failed: prepare failed", {
+        authenticated: true,
+        recovers: true,
+      }),
+    );
+    const connector = new WeChatConnector(fake, { retryDelayMs: () => 0, store });
+    const held: Array<string | null> = [];
+    const seen: string[] = [];
+    const conn = await connector.connect(SCANNED_CONFIG, {
+      onMessage: (msg) => {
+        seen.push(msg.text ?? "");
+      },
+      onHeldChange: (since) => held.push(since),
+    });
+    try {
+      const poller = await waitForPoller(fake);
+      await waitFor(() => fake.failSendWith.length === 0);
+      // Refused under a token of unknown age: the token's fault, not the text's.
+      expect(store.get(BOT_ID, USER)?.held).toEqual(["the answer"]);
+      expect(held).not.toContain(null);
+
+      poller.push(inboundText("hello", "m-1", "ctx-live"));
+      await waitFor(() => seen.length === 1);
+      expect(fake.texts().map((s) => [s.text, s.contextToken])).toEqual([
+        [`${WECHAT_HELD_HEADER}\n\nthe answer`, "ctx-live"],
+      ]);
+      expect(held.at(-1)).toBeNull();
+    } finally {
+      conn.close();
+    }
+  });
+});
+
+/**
+ * The drain decides backlog by send time, over the connector alone with a pinned clock: the
+ * route suite's drain tests use messages without one, which must keep reading as backlog.
+ */
+describe("the wechat drain's age rule", () => {
+  it("answers a drained message sent a minute ago, and drops an hour-old one while learning its token", async () => {
+    const now = Date.parse("2026-10-10T08:00:00.000Z");
+    const earlier = "ilink_user_ccc";
+    const fake = new FakeWeChatTransport();
+    const original = fake.createClient.bind(fake);
+    fake.createClient = ((creds: WeChatCredentials) => {
+      const client = original(creds) as FakeWeChatClient;
+      // What a restart leaves for the first poll: one message from an hour ago, and one sent
+      // while the server was coming back up.
+      client.push(
+        {
+          ...inboundText("from an hour ago", "old-1", "ctx-old"),
+          userId: earlier,
+          createdAtMs: now - 60 * 60_000,
+        },
+        {
+          ...inboundText("sent during the restart", "new-1", "ctx-new"),
+          createdAtMs: now - 60_000,
+        },
+      );
+      return client;
+    }) as FakeWeChatTransport["createClient"];
+    const store = createMemoryWeChatConversationStore();
+    const connector = new WeChatConnector(fake, { retryDelayMs: () => 0, store, now: () => now });
+    const seen: string[] = [];
+    const conn = await connector.connect(SCANNED_CONFIG, {
+      onMessage: (msg) => {
+        seen.push(msg.text ?? "");
+      },
+    });
+    try {
+      // The batch is handled in order, so the old message has been dealt with by now.
+      await waitFor(() => seen.length === 1);
+      expect(seen).toEqual(["sent during the restart"]);
+      expect(store.get(BOT_ID, earlier)?.contextToken).toBe("ctx-old");
+      expect(store.get(BOT_ID, USER)?.contextToken).toBe("ctx-new");
+    } finally {
+      conn.close();
+    }
+  });
+});
+
+describe("stored conversations", () => {
+  it("go with the last binding that references their bot", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const bindings = wire(MessagingBindingsRepo, { db });
+      const conversations = wire(MessagingConversationsRepo, { db });
+      const bind = (sessionId: string, accountId = BOT_ID) =>
+        bindings.upsert({ sessionId, channel: "wechat", accountId, config: SCANNED_CONFIG });
+      const stored = () => conversations.get("wechat", BOT_ID, USER);
+      bind("s1");
+      bind("s2");
+      conversations.put("wechat", BOT_ID, USER, { contextToken: "ctx-1" });
+      // The same bot saved on another Session still answers this user with the same token.
+      bindings.delete("s1", "wechat");
+      expect(stored()).toEqual({ contextToken: "ctx-1" });
+      // A re-scan onto another bot leaves this one referenced by nothing.
+      bind("s2", "bot_other");
+      expect(stored()).toBeNull();
+
+      bind("s3");
+      conversations.put("wechat", BOT_ID, USER, { contextToken: "ctx-2" });
+      bindings.deleteSession("s3");
+      expect(stored()).toBeNull();
+      // ...and a send still in flight at the delete cannot write its bookkeeping back.
+      conversations.put("wechat", BOT_ID, USER, { contextToken: "ctx-2" });
+      expect(stored()).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+});

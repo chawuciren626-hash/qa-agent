@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DefectRecord",
+  "type": "object",
+  "required": ["defect_id", "fingerprint", "category", "lifecycle_status", "confidence", "related_cases", "evidence_refs", "title"],
+  "properties": {
+    "defect_id": { "type": "string" },
+    "fingerprint": { "type": "string" },
+    "scope_id": { "type": "string", "minLength": 1 },
+    "category": { "enum": ["product_defect", "script_issue", "environment_issue", "test_data_issue", "needs_review"] },
+    "lifecycle_status": { "enum": ["draft", "needs_review", "confirmed", "rejected", "fixed", "closed"] },
+    "confidence": { "enum": ["low", "medium", "strong"] },
+    "severity": { "enum": ["Blocker", "Critical", "Major", "Minor", "Trivial", "unknown"] },
+    "severity_standard_version": { "const": 1 },
+    "severity_reason": { "type": "string", "minLength": 1 },
+    "severity_dimensions": {
+      "type": "object",
+      "properties": {
+        "user_business_impact": { "enum": ["critical", "major", "minor", "none", "unknown"] },
+        "reach_frequency": { "enum": ["all", "many", "some", "few", "unknown"] },
+        "recoverability": { "enum": ["none", "expensive", "workaround", "easy", "unknown"] },
+        "data_security_compliance": { "enum": ["confirmed", "suspected", "none", "unknown"] }
+      },
+      "required": ["user_business_impact", "reach_frequency", "recoverability", "data_security_compliance"],
+      "additionalProperties": false
+    },
+    "severity_evidence": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "priority": { "enum": ["P0", "P1", "P2", "P3", "unknown"] },
+    "related_cases": { "type": "array", "items": { "type": "string" } },
+    "evidence_refs": { "type": "array", "items": { "type": "string" } },
+    "title": { "type": "string" },
+    "expected_result": { "type": "string" },
+    "actual_result": { "type": "string" },
+    "analysis": { "type": "string" },
+    "duplicate_of": { "type": ["string", "null"] }
+  }
+}

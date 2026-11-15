@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TestAssetCatalog",
+  "type": "object",
+  "required": ["catalog_version", "assets"],
+  "properties": {
+    "catalog_version": { "const": 2 },
+    "assets": { "type": "array", "items": { "type": "object", "required": ["id", "kind", "name", "version", "status", "scope", "tags", "source", "data"], "properties": { "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" }, "kind": { "enum": ["requirement_rule", "test_data_profile", "ui_locator_bundle", "assertion_bundle", "api_contract", "defect_pattern"] }, "name": { "type": "string" }, "version": { "type": "string" }, "status": { "enum": ["candidate", "verified", "deprecated"] }, "scope": { "type": "object" }, "tags": { "type": "array", "items": { "type": "string" } }, "source": { "type": "object" }, "validation": { "type": "object" }, "data": { "type": "object" } } } }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "name": "citation-exists-semantics-unsupported",
+  "description": "Both clauses cite a real quote, but the quote only supports free shipping; the promised delivery estimate has no source support.",
+  "input": {
+    "sources": {
+      "inputs/pricing.txt": "订单金额超过 100 元时包邮。"
+    },
+    "rules": [],
+    "points": [
+      {
+        "id": "TP-2",
+        "module": "订单",
+        "feature": "包邮规则",
+        "description": "订单金额超过 100 元时包邮，并在页面展示预计送达时间",
+        "risk": "高",
+        "coverage_type": ["functional"],
+        "rule_ids": []
+      }
+    ],
+    "cases": [
+      {
+        "case_id": "CASE-2",
+        "title": "满 100 元包邮",
+        "priority": "P1",
+        "type": "functional",
+        "preconditions": [],
+        "steps": ["输入订单金额 120 元", "提交订单"],
+        "expected": "页面提示包邮；页面显示预计送达时间",
+        "automation_feasible": true,
+        "related_test_point": "TP-2",
+        "coverage_type": ["functional"],
+        "expected_basis": [
+          {
+            "expected": "页面提示包邮",
+            "kind": "requirement",
+            "source_path": "inputs/pricing.txt",
+            "quote": "订单金额超过 100 元时包邮"
+          },
+          {
+            "expected": "页面显示预计送达时间",
+            "kind": "requirement",
+            "source_path": "inputs/pricing.txt",
+            "quote": "订单金额超过 100 元时包邮"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "caseStatus": "needs_revision",
+    "expectedBasis": "unsupported",
+    "designValidity": "supported",
+    "reasonIncludes": "引文未支持",
+    "citationExists": true
+  }
+}

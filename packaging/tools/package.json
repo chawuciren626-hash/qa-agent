@@ -1,0 +1,12 @@
+{
+  "name": "aitestharness-build-tools",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "7zip-bin": "5.2.0",
+    "node-win-x64": "24.14.0"
+  }
+}

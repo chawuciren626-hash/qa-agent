@@ -1,0 +1,17 @@
+{
+  "catalog_version": 2,
+  "catalog_name": "QA Test Asset Catalog",
+  "assets": [
+    {
+      "id": "example-login-ui-v1",
+      "kind": "ui_locator_bundle",
+      "name": "示例登录页面定位器",
+      "version": "1.0.0",
+      "status": "candidate",
+      "scope": { "application": "example-application", "modules": ["login"], "environments": ["example"] },
+      "tags": ["ui", "login"],
+      "source": { "type": "observed_ui", "reference": "页面观察记录", "captured_at": "YYYY-MM-DD" },
+      "data": { "locators": { "username": "data-testid:login-username", "submit": "role:button[name=登录]" } }
+    }
+  ]
+}

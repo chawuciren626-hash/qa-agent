@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QualityMetrics",
+  "type": "object",
+  "required": ["run_id", "generated_at", "design", "execution", "trust", "defects", "quality_gate"],
+  "properties": {
+    "run_id": { "type": "string" },
+    "generated_at": { "type": "string" },
+    "design": { "type": "object" },
+    "execution": { "type": "object" },
+    "trust": { "type": "object" },
+    "defects": { "type": "object" },
+    "quality_gate": { "type": "object" }
+  }
+}

@@ -1,0 +1,305 @@
+/**
+ * Server runtime config (ServerConfig) — parsed from environment variables.
+ *
+ * The data root directory is shared with the SDK / CLI (`resolveRoot()`:
+ * PENGUIN_HOME or ~/.penguin/data); the SQLite index database defaults to
+ * `<root>/web.db` (overridable via PENGUIN_WEB_DB, tests use ":memory:").
+ * In production, the SPA is served statically once the frontend build output
+ * directory (PENGUIN_WEB_DIST, the bundled web-dist/, or ../web/dist) is
+ * detected to exist.
+ * Docs: /docs/configuration § "Environment variables".
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { NIGHTLY_INDEX_URL } from "./plugin/registry.js";
+import { fileURLToPath } from "node:url";
+import { DEFAULT_SERVER_PORT, resolveRoot } from "@prismshadow/penguin-core";
+import { PENGUIN_GO_BASE_URL } from "./model-catalog/catalog.js";
+import { resolveCliLaunch, type CliLaunch } from "./services/cli-shim.js";
+
+import { readAccountClientConfig, type AccountClientConfig } from "./auth/account-client.js";
+
+export interface ServerConfig {
+  accountClient?: AccountClientConfig;
+  /** Local data root directory (shared with the SDK/CLI). */
+  root: string;
+  /** HTTP listen address and port (defaults to 127.0.0.1:7364, deliberately avoiding common ports like 3000/8080). */
+  host: string;
+  /**
+   * Listen port. `0` asks the OS for an ephemeral port (the desktop shell always does),
+   * in which case the value is only a request: index.ts writes the ACTUAL bound port back
+   * here once listening, because preview URLs are built from the server's own port rather
+   * than the browser's (dev serves the SPA on a different port; see resolvePreviewTarget).
+   */
+  port: number;
+  /** SQLite database path; ":memory:" for test injection. */
+  dbPath: string;
+  /** Frontend static assets directory; whether it's enabled is decided by checking existence when the app is assembled. */
+  webDist: string;
+  /**
+   * Origin that serves Workspace HTML previews (PENGUIN_PREVIEW_ORIGIN), e.g.
+   * `https://preview.example.com`. It must differ from the App origin by **hostname** —
+   * cookies ignore ports, so a second port would still share the session cookie. Unset
+   * is the norm locally: the loopback counterpart (`127.0.0.1` <-> `localhost`) is
+   * derived per request instead.
+   */
+  previewOrigin: string | null;
+  /**
+   * Trusted Penguin Go origin (PENGUIN_GO_ORIGIN); never supplied by a browser request.
+   *
+   * OPTIONAL like cliEntry: a runtime older than this field publishes none, and a pushed
+   * platform must still boot there — authorization and balance consumers then use the
+   * default `normalizePenguinGoOrigin(undefined)` returns.
+   */
+  penguinGoOrigin?: string;
+  /**
+   * Base URL of the ModelScope authorization bridge (MODELSCOPE_BRIDGE_URL), without a
+   * trailing slash — e.g. `https://go.penguin.ooo/modelscope`. The harness sends the
+   * start/poll exchange here and never to ModelScope itself: the bridge holds the OAuth
+   * client secret. Unlike `penguinGoOrigin` this value carries a path prefix in production,
+   * because the bridge is mounted under one and strips it from the incoming request.
+   *
+   * OPTIONAL for the same reason as penguinGoOrigin; ModelScopeAuthProvider defaults it.
+   */
+  modelscopeBridgeUrl?: string;
+  /**
+   * Fixed initial password for the seeded built-in admin (PENGUIN_SEED_ADMIN_PASSWORD),
+   * used by automated tests and e2e. Null is the norm: the seed then generates a random
+   * password that is hashed and discarded unseen, and the account is claimed through the
+   * first-login link instead.
+   */
+  seedAdminPassword: string | null;
+  /** Login session validity period (30 days). */
+  authSessionTtlMs: number;
+  /**
+   * Sliding renewal threshold: a session validated with less than this much left is renewed to
+   * the full TTL. Set one day below the TTL, so any session used at least a day after it was
+   * issued renews — in practice a session in regular use never expires, and the TTL is the
+   * idle timeout.
+   */
+  authSessionRenewMs: number;
+  /**
+   * Desktop mode (PENGUIN_DESKTOP_TOKEN): the per-launch token minted by the desktop
+   * shell. Non-null enables the one-shot claim link and the Bearer-token shutdown
+   * endpoints and requires a loopback HOST — desktop mode passes the token through a
+   * URL, which must never leave the machine.
+   */
+  desktopToken: string | null;
+  /**
+   * Port announcement file (PENGUIN_PORT_FILE): once the App is up, the actual
+   * bound port is written here — the supervising process's way to learn the port when
+   * it starts the server with PORT=0.
+   */
+  portFile: string | null;
+  /**
+   * Trust `x-forwarded-proto` from the request (PENGUIN_TRUST_PROXY=1). Off by default:
+   * the header is caller-supplied, so on a non-loopback bind an untrusted caller could
+   * set it to `https` to walk through the hot-update network gate (hmr/routes.ts) while
+   * actually speaking plaintext — or get session cookies stamped `Secure` over plain HTTP,
+   * which the browser then never sends back (a sign-in that never takes). Enable this only
+   * behind a reverse proxy that terminates TLS and either sets or strips the header itself
+   * before it reaches this process; an HTTPS deployment that leaves it off issues session
+   * cookies WITHOUT the `Secure` flag (auth/middleware.ts cookieOptions).
+   */
+  trustProxy: boolean;
+  /**
+   * The CLI entry script this harness offers as `penguin` to the Agents it runs and in its
+   * terminals — the file the `<root>/bin/penguin` shim runs (see services/cli-shim.ts).
+   * `PENGUIN_CLI_ENTRY` when set: `penguin server|web` exports its own entry there, and the
+   * desktop shell passes the bundled one to the server it forks. Otherwise, on a server running
+   * from a checkout, that checkout's CLI: its source while the server runs from source, else its
+   * build (resolveCliLaunch). Null = no CLI to offer; see cliLaunch for why.
+   *
+   * Related to but wider than the self-update endpoint's use of the same variable
+   * (http/routes/version.ts), which accepts only an INSTALLED entry it can re-run as
+   * `penguin update`: a checkout has no release to update to, but its CLI is exactly the
+   * one an Agent working on that checkout should be running.
+   *
+   * OPTIONAL for the same reason: absent — a runtime older than this field — reads as null,
+   * no CLI to offer and no shim written.
+   */
+  cliEntry?: string | null;
+  /**
+   * How the shim runs cliEntry and where it came from: the interpreter options before it (the
+   * TypeScript loader for a source run), the checkout this server runs from, the origin, and —
+   * when cliEntry is null on a checkout — why its CLI cannot run, which the shim and the
+   * terminals then say instead of falling through to another installation's `penguin`.
+   *
+   * OPTIONAL like cliEntry, and for the same reason: a runtime older than this field publishes
+   * none, which reads as a plain entry from an installation — no options, no checkout, nothing
+   * to report.
+   */
+  cliLaunch?: Omit<CliLaunch, "entry">;
+  /**
+   * The published plugin index this deployment reads (PENGUIN_PLUGIN_INDEX), or null
+   * for none. Unset = the index repository's published document; `off` = builtin entries only
+   * and no outbound request, the same opt-out shape PENGUIN_UPDATE_CHECK=off gives the version
+   * check; any other value replaces the URL, which is what a fork or a private index needs.
+   *
+   * OPTIONAL because the config a RUNTIME publishes is whatever its own build knew: a runtime
+   * older than this field carries none, and a pushed platform still has to boot on it. Absent
+   * therefore reads as unset — the published index — while an explicit null is the opt-out.
+   */
+  pluginIndexUrl?: string | null;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Default frontend build output directory, first match wins:
+ * - `<this package>/web-dist`: npm package layout — the release workflow copies the built
+ *   web assets into the published package, so an `npm install` gets the Web UI too;
+ * - `<this package>/../web/dist`: monorepo layout (resolves the same whether running
+ *   from src or dist), also the fallback when neither exists.
+ */
+function defaultWebDist(): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const bundled = path.resolve(here, "..", "web-dist");
+  if (fs.existsSync(bundled)) return bundled;
+  return path.resolve(here, "..", "..", "web", "dist");
+}
+
+/**
+ * The CLI this server offers (services/cli-shim.ts resolveCliLaunch), looked up from this
+ * module's own location: `packages/server/src/…` under tsx — TypeScript source, so the
+ * checkout's CLI source is offered — `packages/server/dist/…` when built, the desktop shell's
+ * bundle in a source desktop run, all reached by the same walk to the workspace root.
+ */
+function cliLaunchFor(env: NodeJS.ProcessEnv): CliLaunch {
+  const here = fileURLToPath(import.meta.url);
+  return resolveCliLaunch({
+    explicit: env.PENGUIN_CLI_ENTRY,
+    moduleDir: path.dirname(here),
+    source: /\.[cm]?tsx?$/.test(here),
+    electron: process.versions.electron !== undefined,
+  });
+}
+
+/**
+ * Validates PENGUIN_PREVIEW_ORIGIN into a bare origin, or throws. An unparseable value
+ * is a hard failure rather than a silent fallback: falling back would quietly serve
+ * previews same-origin, which is the configuration this variable exists to avoid.
+ */
+function normalizePreviewOrigin(raw: string | undefined): string | null {
+  if (!raw || raw.trim() === "") return null;
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    throw new Error(`Invalid PENGUIN_PREVIEW_ORIGIN=${raw} (expected an absolute origin)`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`Invalid PENGUIN_PREVIEW_ORIGIN=${raw} (only http/https are supported)`);
+  }
+  return url.origin;
+}
+
+/** HTTPS in production; plain HTTP is accepted only for an explicit loopback integration. */
+export function normalizePenguinGoOrigin(raw: string | undefined): string {
+  const value = raw?.trim() || new URL(PENGUIN_GO_BASE_URL).origin;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`Invalid PENGUIN_GO_ORIGIN=${value} (expected an absolute HTTP(S) origin)`);
+  }
+  if (
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    throw new Error(
+      `Invalid PENGUIN_GO_ORIGIN=${value} (paths, credentials, query and fragment are not allowed)`,
+    );
+  }
+  const loopback =
+    url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+    throw new Error(`Invalid PENGUIN_GO_ORIGIN=${value} (HTTPS required except for loopback HTTP)`);
+  }
+  return url.origin;
+}
+
+/**
+ * Validates MODELSCOPE_BRIDGE_URL into a base URL with no trailing slash, or throws.
+ *
+ * Deliberately looser than normalizePenguinGoOrigin in exactly one place: a PATH PREFIX is
+ * allowed, because the bridge is mounted under one in production
+ * (`https://go.penguin.ooo/modelscope`) and strips it from the request itself — so the
+ * prefix is part of the address the client must call. Credentials, query, fragment and
+ * plaintext HTTP stay rejected.
+ */
+export function normalizeModelScopeBridgeUrl(raw: string | undefined): string {
+  const value = raw?.trim() || "https://go.penguin.ooo/modelscope";
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`Invalid MODELSCOPE_BRIDGE_URL=${value} (expected an absolute HTTP(S) URL)`);
+  }
+  if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
+    throw new Error(
+      `Invalid MODELSCOPE_BRIDGE_URL=${value} (credentials, query and fragment are not allowed)`,
+    );
+  }
+  if (url.protocol !== "https:") {
+    throw new Error(`Invalid MODELSCOPE_BRIDGE_URL=${value} (HTTPS required)`);
+  }
+  // A bare origin parses as pathname "/", which must become "" rather than stay a slash, or
+  // every appended route would read `//oauth/start`.
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+
+/** PENGUIN_PLUGIN_INDEX -> the URL to read, or null when the lookup is off. */
+function resolvePluginIndexUrl(raw: string | undefined): string | null {
+  const value = raw?.trim();
+  if (value === undefined || value === "") return NIGHTLY_INDEX_URL;
+  return value.toLowerCase() === "off" ? null : value;
+}
+
+/** Parses server config from environment variables (PORT / HOST / PENGUIN_HOME / PENGUIN_WEB_DIST / PENGUIN_WEB_DB / PENGUIN_PREVIEW_ORIGIN / PENGUIN_GO_ORIGIN / MODELSCOPE_BRIDGE_URL / PENGUIN_SEED_ADMIN_PASSWORD / PENGUIN_DESKTOP_TOKEN / PENGUIN_PORT_FILE / PENGUIN_TRUST_PROXY / PENGUIN_CLI_ENTRY / PENGUIN_PLUGIN_INDEX). */
+export function resolveServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
+  const root = env.PENGUIN_HOME ?? resolveRoot();
+  // An empty PORT string is treated as unset (the common `.env` case of an empty
+  // `PORT=`): Number("") === 0 would pass the range check and bind to a random
+  // port; this matches the CLI's resolvePort convention.
+  const port = Number(env.PORT || DEFAULT_SERVER_PORT);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error(`Invalid port configuration PORT=${env.PORT}`);
+  }
+  const host = env.HOST ?? "127.0.0.1";
+  const desktopToken = env.PENGUIN_DESKTOP_TOKEN?.trim() || null;
+  // Desktop mode redeems its token through a URL: never allow it off loopback.
+  if (desktopToken !== null && host !== "127.0.0.1" && host !== "localhost") {
+    throw new Error(`Desktop mode requires a loopback HOST (got HOST=${host})`);
+  }
+  const cli = cliLaunchFor(env);
+  return {
+    root,
+    ...(readAccountClientConfig(root, env) ? { accountClient: readAccountClientConfig(root, env)! } : {}),
+    host,
+    port,
+    dbPath: env.PENGUIN_WEB_DB ?? path.join(root, "web.db"),
+    webDist: env.PENGUIN_WEB_DIST ?? defaultWebDist(),
+    previewOrigin: normalizePreviewOrigin(env.PENGUIN_PREVIEW_ORIGIN),
+    penguinGoOrigin: normalizePenguinGoOrigin(env.PENGUIN_GO_ORIGIN),
+    modelscopeBridgeUrl: normalizeModelScopeBridgeUrl(env.MODELSCOPE_BRIDGE_URL),
+    // An empty/whitespace value is treated as unset, which leaves the seed to generate one.
+    seedAdminPassword: env.PENGUIN_SEED_ADMIN_PASSWORD?.trim() || null,
+    authSessionTtlMs: 30 * DAY_MS,
+    authSessionRenewMs: 29 * DAY_MS,
+    desktopToken,
+    portFile: env.PENGUIN_PORT_FILE?.trim() || null,
+    trustProxy: env.PENGUIN_TRUST_PROXY === "1",
+    cliEntry: cli.entry,
+    cliLaunch: {
+      execArgs: cli.execArgs,
+      checkout: cli.checkout,
+      origin: cli.origin,
+      unavailable: cli.unavailable,
+    },
+    pluginIndexUrl: resolvePluginIndexUrl(env.PENGUIN_PLUGIN_INDEX),
+  };
+}

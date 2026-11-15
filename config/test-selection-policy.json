@@ -1,0 +1,36 @@
+{
+  "policy_version": 1,
+  "default_estimated_duration_ms": 10000,
+  "profiles": {
+    "smoke": {
+      "description": "优先验证高优先级或高风险核心路径",
+      "match": "priority_or_risk",
+      "priorities": ["P0"],
+      "risk_levels": ["high"],
+      "mandatory_priorities": ["P0"],
+      "max_estimated_duration_ms": 600000
+    },
+    "core_regression": {
+      "description": "核心功能回归",
+      "match": "priority",
+      "priorities": ["P0", "P1"],
+      "mandatory_priorities": ["P0"],
+      "max_estimated_duration_ms": 1800000
+    },
+    "regression": {
+      "description": "常规回归，覆盖所有可执行测试类型",
+      "match": "all",
+      "max_estimated_duration_ms": 3600000
+    },
+    "full": {
+      "description": "全量测试，不按预算裁剪",
+      "match": "all",
+      "max_estimated_duration_ms": null
+    },
+    "targeted": {
+      "description": "按变更模块或标签选择影响范围",
+      "match": "changed_scope",
+      "max_estimated_duration_ms": 1800000
+    }
+  }
+}

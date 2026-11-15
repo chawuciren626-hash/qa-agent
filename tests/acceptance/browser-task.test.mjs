@@ -1,0 +1,1112 @@
+import test from 'node:test';
+
+// 密钥注入走 protected-inputs（DPAPI，仅 Windows）。非 win32 沙箱显式 skip，
+// 注明原因而非让红色噪声淹没真实回归。
+const DPAPI_REQUIRED = process.platform !== 'win32' ? `requires Windows DPAPI (protected-inputs is win32-only; platform=${process.platform})` : false;
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { randomUUID, createHash } from 'node:crypto';
+import { resolve } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
+import { Worker } from 'node:worker_threads';
+import { spawnSync } from 'node:child_process';
+import { requestBrowserWorker } from '../../scripts/browser-task.mjs';
+import { answerHumanAction, listHumanActions, humanConfirmationText } from '../../scripts/browser-human-action.mjs';
+import { readProcessIdentity, compareProcessIdentity } from '../../scripts/process-identity.mjs';
+import { chromium } from '@playwright/test';
+import xlsx from '../../scripts/spreadsheet-runtime.mjs';
+import { writeJson } from '../../scripts/orchestration-state.mjs';
+import { executeAction } from '../../scripts/structured-actions.mjs';
+import { inspectIndependentArtifacts } from '../../scripts/independent-task.mjs';
+import { readControllerSession, withControllerSession } from '../../scripts/controller-command-session.mjs';
+import { validateBrowserOperation, browserErrorDiagnostic, browserRecoveryHint, browserRequestPolicy, captureBrowserEvidence, browserWorkerResponse, waitForBrowserContent, observeFeedbackPaint, beginDynamicFeedback, endDynamicFeedback } from '../../scripts/browser-task.mjs';
+const root=resolve(import.meta.dirname,'../..');
+const pause=ms=>new Promise(done=>setTimeout(done,ms));
+
+test('worker transport closes sockets and bounds stalled or oversized responses',async t=>{
+  let mode='ok';const sockets=new Set();
+  const server=createServer((req,res)=>{
+    req.resume();assert.equal(req.headers.connection,'close');
+    if(mode==='stall') return;
+    res.end(mode==='large'?'x'.repeat(4*1024*1024+1):JSON.stringify({status:'worker_health'}));
+  });
+  server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>sockets.delete(socket));});
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  t.after(async()=>{for(const socket of sockets) socket.destroy();await new Promise(done=>server.close(done));});
+  const connection={port:server.address().port,token:'synthetic'},request={operation:{type:'health'}};
+  assert.equal((await (await requestBrowserWorker(connection,request)).json()).status,'worker_health');
+  await pause(50);assert.equal(sockets.size,0);
+  mode='stall';await assert.rejects(()=>requestBrowserWorker(connection,request,{timeoutMs:50}),/transport timeout/);
+  mode='large';await assert.rejects(()=>requestBrowserWorker(connection,request),/exceeds limit/);
+});
+
+test('worker HTTP rejection is distinct from an uncertain action outcome',async()=>{
+  const response=(status,body)=>new Response(body===undefined?null:JSON.stringify(body),{status});
+  const rejected={status:'invalid_operation',operation_started:false,diagnostic:{category:'duplicate_case_id'}};
+  assert.deepEqual(await browserWorkerResponse(response(400,rejected),'same-id'),rejected);
+  assert.equal((await browserWorkerResponse(response(403),'same-id')).status,'worker_access_rejected');
+  const busy=await browserWorkerResponse(response(409),'same-id');
+  assert.equal(busy.status,'worker_busy');assert.equal(busy.request_id,'same-id');
+  assert.equal(busy.operation_started,false);
+  await assert.rejects(()=>browserWorkerResponse(response(400,{status:'invalid_operation'}),'same-id'));
+  await assert.rejects(()=>browserWorkerResponse(response(500,rejected),'same-id'));
+  await assert.rejects(()=>browserWorkerResponse(new Response('broken',{status:400}),'same-id'));
+});
+
+test('browser launch failures have a specific sanitized diagnostic',()=>{
+  const diagnostic=browserErrorDiagnostic(new Error('Executable does not exist at C:/private/browser.exe'),'browser_launch');
+  assert.deepEqual(diagnostic,{phase:'browser_launch',category:'browser_binary_missing'});
+});
+
+test('private connection publication remains complete JSON during concurrent polling',async t=>{
+  const dir=resolve(root,'output/acceptance',randomUUID());mkdirSync(dir,{recursive:true});
+  const path=resolve(dir,'browser-private.json');
+  writeJson(path,{port:null,token:'synthetic'},{mode:0o600});
+  const writer=new Worker(`const {workerData}=require('node:worker_threads');
+    import(workerData.module).then(({writeJson})=>{
+      for(let i=0;i<300;i++) writeJson(workerData.path,{port:10000+i,token:'synthetic',padding:'x'.repeat(32000)},{mode:0o600});
+    });`,{eval:true,workerData:{path,module:new URL('../../scripts/orchestration-state.mjs',import.meta.url).href}});
+  t.after(()=>writer.terminate());
+  let done=false,error,exit;
+  writer.on('error',value=>{error=value;done=true;});
+  writer.on('exit',code=>{exit=code;done=true;});
+  let reads=0;
+  while(!done) {
+    const value=JSON.parse(readFileSync(path,'utf8'));assert.equal(value.token,'synthetic');reads++;
+    await pause(1);
+  }
+  assert.ifError(error);assert.equal(exit,0);assert.ok(reads>0);
+  assert.equal(JSON.parse(readFileSync(path,'utf8')).port,10299);
+  if(process.platform!=='win32') assert.equal(statSync(path).mode & 0o777,0o600);
+});
+
+async function fixture(url,{lifecycle=false}={}) {
+  const parent=`session-2026-10-13-00-00-00-${randomUUID().replaceAll('-','')}`;
+  const agentRoot=resolve(root,'output/acceptance',randomUUID()), traces=resolve(agentRoot,'test_agent/traces/2026-10-13');mkdirSync(traces,{recursive:true});
+  const parentFile=resolve(traces,`${parent}_001.jsonl`);
+  writeFileSync(parentFile,JSON.stringify({type:'session_meta',payload:{session_id:parent,agent_state:resolve(agentRoot,'test_agent/agent_state'),workspace:root}}));
+  const sourceText=`请对 ${url} 执行全流程测试，登录时由我处理。仅使用本地合成页面。`;
+  if(lifecycle) writeFileSync(parentFile,readFileSync(parentFile,'utf8')+'\n'+JSON.stringify({type:'model_msg',timestamp:new Date().toISOString(),payload:{type:'text',role:'user',text:sourceText}}));
+  const call=r=>executeAction(root,parent,()=>JSON.stringify(r),{agentRoot});
+  const created=await call({action:'create_run'});assert.equal(created.exit_code,0);
+  const id=created.run_id,dir=resolve(root,'output/runs',id),send=r=>call({run_id:id,...r});
+  assert.equal((await send({action:'archive_input',name:'request.txt',text:`${url} Please test adding a synthetic record in this engineering fixture.`})).exit_code,0);
+  assert.equal((await send({action:'plan_run',stages:['execution']})).exit_code,0);
+  if(lifecycle) {
+    // Synthetic sealed design isolates the execution adapter; this is not a real Agent design run.
+    const path=resolve(dir,'manifest.json'),m=JSON.parse(readFileSync(path));
+    writeJson(resolve(dir,'design/test_cases.json'),[{case_id:'TC-1',title:'Observed case',expected:'Visible fixture',steps:['Inspect heading'],preconditions:[],priority:'P1'},{case_id:'TC-2',title:'Unexecuted case',expected:'Not tested',steps:['Not run'],preconditions:[],priority:'P2'}]);
+    const hash=createHash('sha256').update(readFileSync(resolve(dir,'design/test_cases.json'))).digest('hex');
+    m.orchestration.plan.workflow_mode='lifecycle';
+    const execution=m.orchestration.plan.stages.find(s=>s.id==='execution');execution.depends_on=['test_cases'];execution.confirmation='before';
+    const design=m.orchestration.plan.stages.find(s=>s.id==='test_cases');Object.assign(design,{selected:true,depends_on:[],confirmation:'none'});m.stages.test_cases.status='completed';
+    m.orchestration.events.push({type:'completed',stage:'test_cases',evidence:{artifact_contract:{version:1,run_id:id,stage:'test_cases',status:'passed',files:[{path:'design/test_cases.json',sha256:hash}]}}});
+    writeJson(path,m);
+    const denied=await send({action:'dispatch',stage:'execution',agent:'automation_execution_agent',skills:['playwright-execution'],mode:'browser'});
+    assert.equal(denied.status,'rejected','Native authorization cannot be omitted');
+  }
+  const sourceRow=lifecycle?JSON.parse(readFileSync(parentFile,'utf8').trim().split('\n').at(-1)):null;
+  const sourceKey=sourceRow?createHash('sha256').update(JSON.stringify([parent,sourceRow.timestamp,sourceRow.payload.text])).digest('hex'):null;
+  const dispatch=()=>send({action:'dispatch',stage:'execution',agent:'automation_execution_agent',skills:['playwright-execution'],...(lifecycle?{mode:'browser',source_message_key:sourceKey}:{})});
+  const dispatched=await dispatch();assert.equal(dispatched.exit_code,0,JSON.stringify(dispatched));
+  const browser=async operation=>{
+    const result=await send({action:'browser_task',operation});assert.equal(result.exit_code,0,JSON.stringify(result));return result.data;
+  };
+  const append=rows=>writeFileSync(parentFile,readFileSync(parentFile,'utf8')+'\n'+rows.map(r=>JSON.stringify(r)).join('\n'));
+  const returnChild=async delegation=>{
+    const child=`session-2026-10-13-00-00-01-${randomUUID().replaceAll('-','')}`,at=new Date().toISOString(),toolId=randomUUID();
+    append([
+      {timestamp:at,type:'model_msg',payload:{type:'tool_call',name:'run_subagent',tool_call_id:toolId,arguments:delegation}},
+      {timestamp:at,type:'event_msg',payload:{type:'subagent',session_id:child}},
+      {timestamp:at,type:'model_msg',payload:{type:'tool_call_output',tool_call_id:toolId,stop_reason:'completed',output:'Synthetic child returned'}}
+    ]);
+    const childDir=resolve(agentRoot,delegation.agent_id,'traces/2026-10-13');mkdirSync(childDir,{recursive:true});
+    writeFileSync(resolve(childDir,`${child}_001.jsonl`),[
+      {type:'session_meta',payload:{session_id:child,source:'subagent',agent_state:resolve(agentRoot,delegation.agent_id,'agent_state'),workspace:root}},
+      {type:'model_msg',payload:{type:'text',role:'user',text:delegation.prompt}},
+      {type:'model_msg',payload:{type:'text',role:'assistant',text:'Synthetic browser task return'}},
+      {type:'event_msg',payload:{type:'request_end',status:'completed'}}
+    ].map(r=>JSON.stringify({timestamp:at,...r})).join('\n'));
+    return child;
+  };
+  return {id,dir,parent,agentRoot,send,browser,dispatched,append,returnChild};
+}
+
+test('native login card resumes original worker and dispatch, requires snapshot and never replays actions',async t=>{
+  const server=createServer((req,res)=>{res.setHeader('content-type','text/html');res.end('<h1>Login fixture</h1><button id="once" onclick="this.textContent=String(Number(this.textContent)+1)">0</button>');});
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  const previousAgentRoot=process.env.PENGUIN_AGENT_ROOT;
+  process.env.PENGUIN_AGENT_ROOT=f.agentRoot;
+  t.after(()=>{if(previousAgentRoot===undefined)delete process.env.PENGUIN_AGENT_ROOT;else process.env.PENGUIN_AGENT_ROOT=previousAgentRoot;});
+  const before=await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic login card checks',headless:true});
+  const invocation=JSON.parse(readFileSync(resolve(f.dir,'execution/browser-state.json'))).invocation_id;
+  const child=await f.returnChild(f.dispatched.delegation),connection=JSON.parse(readFileSync(resolve(f.dir,'execution/browser-private.json')));
+  const manifest=JSON.parse(readFileSync(resolve(f.dir,'manifest.json'))),dispatch=manifest.orchestration.events.filter(e=>e.type==='dispatched').at(-1);
+  const raw=async(operation)=>{
+    const commandId=randomUUID(),base=resolve(f.dir,`audit/commands/${commandId}`);
+    mkdirSync(base,{recursive:true});
+    const record={script:'browser-task.mjs',run_id:f.id,status:'running',host_binding:{session_id:child}};
+    writeJson(resolve(base,'command.json'),record);
+    const response=await requestBrowserWorker(connection,{operation,command_id:commandId,dispatch_id:dispatch.dispatch_id});
+    const data=await response.json();writeJson(resolve(base,'command.log'),data);
+    writeJson(resolve(base,'command.json'),{...record,status:'completed',result:{termination_confirmed:true}});
+    return {data,commandId};
+  };
+  t.after(async()=>{
+    await raw({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1300);
+    if(existsSync(resolve(f.dir,'execution/browser-private.json'))) {
+      // Only this newly created synthetic worker, never a product session.
+      const current=JSON.parse(readFileSync(resolve(f.dir,'execution/browser-private.json')));
+      if(current.pid===connection.pid && current.token===connection.token) process.kill(connection.pid,'SIGTERM');
+    }
+    server.closeAllConnections();await new Promise(done=>server.close(done));
+  });
+  await raw({type:'click',request_id:'only-once',target:{by:'css',value:'#once'}});
+  const waiting=await raw({type:'pause',request_id:'login-card',kind:'access',question:'Please complete synthetic login'});
+  assert.equal(waiting.data.human_protocol,1);
+  assert.equal((await raw({type:'finish',request_id:'must-not-finish',summary:'Premature',limitations:[]})).data.status,'waiting_human');
+  assert.equal(listHumanActions(root,f.parent,f.agentRoot)[0].child_session,child);
+  const rejected=await f.send({action:'dispatch',stage:'execution',agent:'automation_execution_agent',skills:['playwright-execution'],mode:'resume_browser'});
+  assert.equal(rejected.status,'rejected');
+  const childFile=resolve(f.agentRoot,'automation_execution_agent/traces/2026-10-13',`${child}_001.jsonl`);
+  let sends=0;
+  const options={workspace:root,parent:f.parent,runId:f.id,actionId:waiting.commandId,decision:'continue',agentRoot:f.agentRoot,send:async(id,text)=>{
+    sends++;assert.equal(id,child);assert.equal(text,humanConfirmationText(waiting.commandId,'continue'));
+    writeFileSync(childFile,readFileSync(childFile,'utf8')+'\n'+JSON.stringify({timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',text}}));return 'started';
+  }};
+  await answerHumanAction(options);await answerHumanAction(options);assert.equal(sends,1);
+  assert.equal((await raw({type:'click',request_id:'cannot-click-before-snapshot',target:{by:'css',value:'#once'}})).data.status,'invalid_operation');
+  assert.equal((await raw({type:'snapshot',request_id:'resume-snapshot'})).data.status,'ready');
+  const check=await raw({type:'assert',request_id:'not-replayed',target:{by:'css',value:'#once'},condition:'text',value:'1',case_id:'NO-REPLAY',title:'Original action not replayed',expected:'1'});
+  assert.equal(check.data.assertion.status,'passed');
+  const after=JSON.parse(readFileSync(resolve(f.dir,'execution/browser-state.json')));
+  assert.equal(after.invocation_id,invocation);assert.equal(after.dispatch_id,dispatch.dispatch_id);
+  assert.equal(after.human_handoff_timing.intervals.length,1);
+  assert.equal(JSON.parse(readFileSync(resolve(f.dir,'manifest.json'))).orchestration.events.filter(e=>e.type==='dispatched').length,1);
+  const second=await raw({type:'pause',request_id:'second-login',kind:'mfa',question:'Synthetic second confirmation'});
+  assert.equal((await raw({type:'snapshot',request_id:'old-confirmation-cannot-resume-new-wait'})).data.status,'waiting_human');
+  await answerHumanAction({...options,actionId:second.commandId,decision:'cancel',send:async(id,text)=>{
+    assert.equal(id,child);assert.equal(text,humanConfirmationText(second.commandId,'cancel'));
+    writeFileSync(childFile,readFileSync(childFile,'utf8')+'\n'+JSON.stringify({timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',text}}));return 'started';
+  }});
+  assert.equal((await raw({type:'snapshot',request_id:'cancel-no-more-observation'})).data.status,'human_cancelled');
+  const cancelled=await raw({type:'finish',request_id:'cancel-finish',summary:'Cancelled synthetic task',limitations:[]});
+  assert.equal(cancelled.data.status,'closed');assert.equal(cancelled.data.partial,true);
+});
+
+test('observed sequence executes once, preserves step receipts and supports unchanged snapshots',async t=>{
+  const server=createServer((req,res)=>{res.setHeader('content-type','text/html');res.end('<h1>Batch fixture</h1><input id="sample" aria-label="Sample">');});
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  const started=await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic local input checks',headless:true});
+  const runtime=JSON.parse(readFileSync(resolve(f.dir,'execution/browser-state.json'))).browser_runtime;
+  assert.equal(runtime.platform,process.platform);assert.equal(runtime.launch_status,'ready');assert.equal(runtime.headless,true);
+  assert.deepEqual(started.browser_runtime,runtime);
+  const same=await f.browser({type:'snapshot',request_id:'same',if_sha256:started.snapshot.sha256});
+  assert.equal(same.snapshot.unchanged,true);assert.equal(same.screenshot_omitted,'unchanged_snapshot_requested');
+  const operation={type:'sequence',request_id:'batch',observed_request_id:'start',steps:[
+    {type:'fill',request_id:'batch-fill',target:{by:'css',value:'#sample'},value:'synthetic'},
+    {type:'assert',request_id:'batch-assert',target:{by:'css',value:'#sample'},condition:'value',value:'synthetic',case_id:'SEQ-1',title:'Filled value',expected:'synthetic'}
+  ]};
+  const result=await f.browser(operation);assert.equal(result.status,'sequence_completed',JSON.stringify(result));assert.equal(result.steps.length,2);
+  const before=readFileSync(resolve(f.dir,'execution/browser-evidence/batch-fill.json'));
+  assert.equal((await f.browser(operation)).status,'sequence_completed');assert.deepEqual(readFileSync(resolve(f.dir,'execution/browser-evidence/batch-fill.json')),before);
+  const finish=await f.browser({type:'finish',request_id:'finish',summary:'Synthetic batch',limitations:[]});assert.ok(finish);
+  const results=JSON.parse(readFileSync(resolve(f.dir,'execution/test_results.json')));assert.equal(results.cases.length,1);assert.equal(results.cases[0].status,'passed');
+  writeJson(resolve(f.dir,'execution/execution-task.json'),{run_id:f.id,stage:'execution',outcome:'completed',summary:'Synthetic sequence assertion',source_paths:['inputs/request.txt'],questions:[],limitations:[]});
+  assert.deepEqual(inspectIndependentArtifacts(root,f.id,'execution').errors,[]);
+});
+
+for(const recover of [false,true]) test(`lifecycle browser execution ${recover?'recovers after worker exit':'finishes normally'} and hands partial truthful results to defects and HTML reports`,async t=>{
+  const server=createServer((req,res)=>{res.setHeader('content-type','text/html');res.end('<h1>Lifecycle fixture</h1>');});
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  t.after(async()=>{server.closeAllConnections();await new Promise(done=>server.close(done));});
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url,{lifecycle:true});
+  const casePlan=JSON.parse(readFileSync(resolve(f.dir,'execution/browser-case-plan.json')));
+  assert.deepEqual(casePlan.cases.map(row=>row.case_id),['TC-1','TC-2']);
+  assert.deepEqual(casePlan.cases[0].steps,['Inspect heading']);
+  assert.match(readFileSync(resolve(root,'output/delegations',`${f.dispatched.data.event.dispatch_id}.prompt.txt`),'utf8'),/browser-case-plan\.json/);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1300);});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic local heading checks only',headless:true});
+  await f.browser({type:'pause',request_id:'login',kind:'access',question:'Synthetic login completed?'});
+  await f.returnChild(f.dispatched.delegation);
+  f.append([{timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',text:'已登录，继续'}}]);
+  const resumed=await f.send({action:'dispatch',stage:'execution',agent:'automation_execution_agent',skills:['playwright-execution'],mode:'resume_browser'});
+  assert.equal(resumed.exit_code,0,JSON.stringify(resumed));
+  assert.equal((await f.browser({type:'snapshot',request_id:'continue'})).status,'ready');
+  await f.browser({type:'assert',request_id:'passed',target:{by:'role',value:'heading'},condition:'text',value:'Lifecycle fixture',case_id:'CHECK-1',title:'Observed heading',expected:'Lifecycle fixture',case_ref:{source_path:'design/test_cases.json',case_id:'TC-1'}});
+  await f.browser({type:'assert',request_id:'failed',target:{by:'role',value:'heading'},condition:'text',value:'Intentionally wrong',case_id:'CHECK-2',title:'Synthetic failure',expected:'Intentionally wrong',case_ref:{source_path:'design/test_cases.json',case_id:'TC-1'}});
+  let finished;
+  if(recover) {
+    const connection=JSON.parse(readFileSync(resolve(f.dir,'execution/browser-private.json')));
+    assert.equal(compareProcessIdentity(connection.process_identity,readProcessIdentity(connection.pid)),'same');
+    const receiptBefore=readFileSync(resolve(f.dir,'execution/browser-evidence/failed.json'));
+    process.kill(connection.pid,'SIGKILL');await pause(300);
+    finished=await f.browser({type:'recover',request_id:'recover-partial'});
+    assert.equal(finished.status,'recovered_partial');
+    assert.deepEqual(readFileSync(resolve(f.dir,'execution/browser-evidence/failed.json')),receiptBefore);
+  } else finished=await f.browser({type:'finish',request_id:'finish',summary:'One mapped case, one untested',limitations:['Synthetic checks only'],case_reviews:[{case_id:'TC-1',completed_step_indices:[1],untested:[]}]});
+  assert.equal(finished.partial,true);
+  if(!recover) assert.deepEqual(JSON.parse(readFileSync(resolve(f.dir,'execution/browser-coverage.json'))).completed_case_ids,['TC-1']);
+  const task=(stage,source_paths)=>({run_id:f.id,stage,outcome:'partial',summary:'Synthetic lifecycle delivery',questions:[],limitations:['Not all designed cases were tested'],source_paths});
+  writeJson(resolve(f.dir,'execution/execution-task.json'),task('execution',['inputs/request.txt','design/test_cases.json']));
+  await f.returnChild(resumed.delegation);
+  const handed=await f.send(resumed.handoff_template);assert.equal(handed.exit_code,0,JSON.stringify(handed));
+  assert.equal(handed.data.stage_status,'completed');
+  assert.equal(existsSync(resolve(f.dir,'execution/execution-plan.json')),false);
+  assert.equal(existsSync(resolve(f.dir,'environment/test-env.json')),false);
+  const extended=await f.send({action:'extend_plan',stages:['defects','report'],reason:'Complete originally requested lifecycle'});assert.equal(extended.exit_code,0,JSON.stringify(extended));
+  const defects=await f.send(extended.dispatch_templates.find(r=>r.stage==='defects'));assert.equal(defects.exit_code,0,JSON.stringify(defects));
+  const actual=JSON.parse(readFileSync(resolve(f.dir,'execution/test_results.json'))),failure=actual.cases.find(r=>r.status==='failed');
+  const records=[{defect_id:'BUG-1',title:'Synthetic assertion failure',category:'needs_review',severity:'unknown',severity_standard_version:1,severity_reason:'Synthetic assertion alone does not establish product impact',severity_dimensions:{user_business_impact:'unknown',reach_frequency:'unknown',recoverability:'unknown',data_security_compliance:'unknown'},related_cases:[failure.case_id],evidence_refs:failure.evidence_paths}];
+  writeJson(resolve(f.dir,'defects/defect-records.json'),records);
+  writeFileSync(resolve(f.dir,'defects/bugs.md'),'# Synthetic failure classification\nNeeds review; not a confirmed product bug.');
+  const defectTaskPath=JSON.parse(readFileSync(resolve(root,'config/orchestration-workflow.json'))).stages.find(s=>s.id==='defects').task_result;
+  writeJson(resolve(f.dir,defectTaskPath),task('defects',['execution/test_results.json']));
+  await f.returnChild(defects.delegation);
+  const defectsHandoff=await f.send(defects.handoff_template);assert.equal(defectsHandoff.exit_code,0,JSON.stringify(defectsHandoff));
+  const report=await f.send(extended.dispatch_templates.find(r=>r.stage==='report'));assert.equal(report.exit_code,0,JSON.stringify(report));
+  const rows=actual.cases;
+  writeJson(resolve(f.dir,'report/reportable-results.json'),{run_id:f.id,cases:rows,summary:{total:rows.length,...Object.fromEntries(['passed','failed','blocked','skipped'].map(s=>[s,rows.filter(r=>r.status===s).length]))}});
+  writeJson(resolve(f.dir,'report/issues.json'),records);
+  writeFileSync(resolve(f.dir,'report/test_report.md'),'# Synthetic lifecycle report\nOne passing assertion, one failing assertion; TC-2 was not tested. Linked assertions do not prove completion of all case steps.');
+  writeJson(resolve(f.dir,'report/report-task.json'),task('report',['execution/test_results.json','execution/browser-coverage.json','defects/defect-records.json']));
+  const exported=await f.send({action:'export_report'});assert.equal(exported.exit_code,0,JSON.stringify(exported));
+  await f.returnChild(report.delegation);
+  const delivered=await f.send(report.handoff_template);assert.equal(delivered.exit_code,0,JSON.stringify(delivered));
+  assert.ok(statSync(resolve(f.dir,'report/test_report.html')).size>100);
+  if(recover) {
+    const reportResults=JSON.parse(readFileSync(resolve(f.dir,'report/reportable-results.json')));
+    assert.equal(reportResults.result_origin,'recovered');assert.equal(reportResults.status,'partial');assert.equal(reportResults.finished_at,null);
+    assert.equal(reportResults.statistics.linked_case_count,1);
+  }
+  assert.equal(existsSync(resolve(f.dir,'execution/execution-state.json')),false,'Browser evidence is not fabricated as a script invocation');
+  const forged=JSON.parse(readFileSync(resolve(f.dir,'report/reportable-results.json')));assert.equal(forged.summary.total,2);assert.equal(forged.design_coverage.untested_cases[0].case_id,'TC-2');delete forged.design_coverage;writeJson(resolve(f.dir,'report/reportable-results.json'),forged);
+  assert.match(inspectIndependentArtifacts(root,f.id,'report').errors.join(' '),/coverage/);
+});
+
+test('independent execution recovers directly into a partial HTML report without design prerequisites',async t=>{
+  const server=createServer((req,res)=>res.end('<h1>Independent recovery fixture</h1>'));
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1000);server.closeAllConnections();await new Promise(done=>server.close(done));});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic heading',headless:true});
+  await f.browser({type:'assert',request_id:'observed',target:{by:'role',value:'heading'},condition:'visible',case_id:'ONE',title:'Heading',expected:'Visible heading'});
+  const connection=JSON.parse(readFileSync(resolve(f.dir,'execution/browser-private.json')));
+  assert.equal(compareProcessIdentity(connection.process_identity,readProcessIdentity(connection.pid)),'same');
+  process.kill(connection.pid,'SIGKILL');await pause(300);
+  assert.equal((await f.browser({type:'recover',request_id:'recover-partial'})).status,'recovered_partial');
+  const task=(stage,source_paths)=>({run_id:f.id,stage,outcome:'partial',summary:'Interrupted synthetic execution',questions:[],limitations:['Only preserved assertions were recovered'],source_paths});
+  writeJson(resolve(f.dir,'execution/execution-task.json'),task('execution',['inputs/request.txt']));
+  await f.returnChild(f.dispatched.delegation);
+  const handed=await f.send(f.dispatched.handoff_template);assert.equal(handed.exit_code,0,JSON.stringify(handed));
+  const extended=await f.send({action:'extend_plan',stages:['report'],reason:'Deliver requested report'});
+  const report=await f.send(extended.dispatch_templates.find(r=>r.stage==='report'));assert.equal(report.exit_code,0,JSON.stringify(report));
+  const actual=JSON.parse(readFileSync(resolve(f.dir,'execution/test_results.json')));
+  writeJson(resolve(f.dir,'report/reportable-results.json'),{run_id:f.id,cases:actual.cases,summary:actual.summary});
+  writeJson(resolve(f.dir,'report/issues.json'),[]);
+  writeFileSync(resolve(f.dir,'report/test_report.md'),'# Partial synthetic report\nInterrupted; only preserved assertions available.');
+  writeJson(resolve(f.dir,'report/report-task.json'),task('report',['execution/test_results.json']));
+  const exported=await f.send({action:'export_report'});assert.equal(exported.exit_code,0,JSON.stringify(exported));
+  await f.returnChild(report.delegation);
+  const delivered=await f.send(report.handoff_template);assert.equal(delivered.exit_code,0,JSON.stringify(delivered));
+  assert.equal(existsSync(resolve(f.dir,'design/test_cases.json')),false);
+  const result=JSON.parse(readFileSync(resolve(f.dir,'report/reportable-results.json')));
+  assert.equal(result.result_origin,'recovered');assert.equal(result.status,'partial');assert.equal(result.finished_at,null);
+  assert.ok(readFileSync(resolve(f.dir,'report/test_report.html'),'utf8').includes('异常中断后的部分结果'));
+  for(const ext of ['docx','pdf'])assert.equal(existsSync(resolve(f.dir,'report/test_report.'+ext)),false);
+  assert.match(readFileSync(resolve(f.dir,'report/test_report.html'),'utf8'),/<!doctype html>/i);
+});
+
+test('guarded negative and readonly assertions remain deliverable as partial execution with snapshot limits',async t=>{
+  const server=createServer((req,res)=>{res.statusCode=req.url==='/error'?500:200;res.end('<h1>Orders</h1><input id="fixed" readonly><p class="many">A</p><p class="many">A</p>'+Array.from({length:101},()=>'<input>').join(''));});
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1000);server.closeAllConnections();await new Promise(done=>server.close(done));});
+  const started=await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic read-only checks',headless:true});
+  assert.equal(started.snapshot.truncated.fields,true);
+  assert.equal(started.snapshot.fields.find(field=>field.id==='fixed').readonly,true);
+  const check={type:'assert',target:{by:'css',value:'#missing'},condition:'hidden',title:'No error',expected:'No error'};
+  const unready=await f.browser({...check,request_id:'unready',case_id:'UNREADY'});
+  assert.equal(unready.assertion.status,'blocked');assert.equal(unready.assertion.verdict_reason,'readiness_required');
+  const ready=await f.browser({...check,request_id:'ready',case_id:'READY',ready:{target:{by:'css',value:'h1'},text:'Orders'}});
+  assert.equal(ready.assertion.status,'passed');
+  const readonly=await f.browser({type:'assert',request_id:'readonly',case_id:'READONLY',target:{by:'css',value:'#fixed'},condition:'readonly',title:'Readonly field',expected:'Readonly'});
+  assert.equal(readonly.assertion.status,'passed');
+  const ambiguous=await f.browser({type:'assert',request_id:'ambiguous',case_id:'AMBIGUOUS',target:{by:'css',value:'.many'},condition:'text',value:'A',title:'Ambiguous locator',expected:'A'});
+  assert.equal(ambiguous.assertion.status,'blocked');assert.equal(ambiguous.assertion.failure_category,'script_issue');
+  await f.send({action:'archive_input',name:'error-page.txt',text:`Observe synthetic error page ${url}error`});
+  await f.browser({type:'goto',request_id:'error-page',url:`${url}error`,source_path:'inputs/error-page.txt'});
+  const errorPage=await f.browser({...check,request_id:'error-negative',case_id:'ERROR-PAGE',ready:{target:{by:'css',value:'h1'},text:'Orders'}});
+  assert.equal(errorPage.assertion.status,'blocked');assert.equal(errorPage.assertion.verdict_reason,'error_document');
+  const finished=await f.browser({type:'finish',request_id:'finish',summary:'Partial assertions',limitations:['Unready and ambiguous checks preserved']});
+  assert.equal(finished.partial,true);assert.equal(finished.summary.blocked,3);
+  writeJson(resolve(f.dir,'execution/execution-task.json'),{run_id:f.id,stage:'execution',outcome:'partial',summary:'Synthetic partial checks',questions:[],limitations:['Engineering checks unresolved'],source_paths:['inputs/request.txt']});
+  assert.equal(inspectIndependentArtifacts(root,f.id,'execution').status,'passed');
+});
+
+test('preconditions prevent writes; business response checks distinguish HTTP success, delayed persistence and missing evidence',async t=>{
+  let writes=0,stored='';
+  const server=createServer(async(req,res)=>{
+    if(req.url==='/save') {
+      writes++;const payload=JSON.stringify(writes===1?{code:400,token:'DO_NOT_EXPORT_SECRET'}:writes===2?{code:0}:{});
+      if(writes===2) stored='Saved record';
+      await pause(150);res.writeHead(200,{'content-type':'application/json','content-length':Buffer.byteLength(payload)});res.end(payload);return;
+    }
+    res.setHeader('content-type','text/html');res.end(`<!doctype html><input id="title" value="ready"><button id="save">Save</button><p id="toast" hidden></p><p id="stored">${stored}</p><script>document.querySelector('#save').onclick=()=>{fetch('/save',{method:'POST'});let e=document.querySelector('#toast');e.hidden=false;e.textContent='UI accepted';}</script>`);
+  });
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  const quote='HTTP 200 and code 0 mean accepted; saved records appear after reload.';
+  assert.equal((await f.send({action:'archive_input',name:'contract.txt',text:`${url}save ${quote}`})).exit_code,0);
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic response checks',headless:true});
+  const target={by:'css',value:'#save'},field={by:'css',value:'#title'};
+  const response_check={url:`${url}save`,method:'POST',http_status:200,field:'code',equals:0,source_path:'inputs/contract.txt',quote,case_id:'API1',title:'API contract',expected:'Code 0'};
+  const missing=await f.browser({type:'click',request_id:'precondition',target,preconditions:[{target:field,condition:'value',value:''}],response_check});
+  assert.equal(missing.status,'precondition_not_met');assert.equal(writes,0);assert.equal(missing.operation_started,false);
+  const op={type:'click',request_id:'rejected',target,preconditions:[{target:field,condition:'value',value:'ready'}],response_check,
+    assertion:{target:{by:'css',value:'#toast'},condition:'text',value:'UI accepted',case_id:'UI1',title:'UI feedback',expected:'UI accepted'}};
+  const failed=await f.browser(op);assert.equal(failed.assertion.status,'passed');assert.equal(failed.response_assertion.status,'failed');assert.equal(writes,1);
+  assert.equal(failed.assertion.verification_scope.layer,'ui');
+  assert.deepEqual(await f.browser(op),failed);assert.equal(writes,1);
+  const passed=await f.browser({type:'click',request_id:'accepted',target,response_check:{...response_check,case_id:'API2'}});
+  assert.equal(passed.response_assertion.status,'passed');assert.equal(writes,2);
+  await f.browser({type:'goto',request_id:'reload',url,source_path:'inputs/request.txt'});
+  const persisted=await f.browser({type:'assert',request_id:'stored',target:{by:'css',value:'#stored'},condition:'text',value:'Saved record',case_id:'RELOAD1',title:'Reloaded view',expected:'Saved record'});
+  assert.equal(persisted.assertion.status,'passed');assert.equal(writes,2);
+  const absent=await f.browser({type:'click',request_id:'missing-code',target,response_check:{...response_check,case_id:'API3'}});
+  assert.equal(absent.response_assertion.status,'blocked');assert.equal(writes,3);
+  const finished=await f.browser({type:'finish',request_id:'finish',summary:'Separate UI, API and reloaded-view evidence',limitations:['One response missing code']});
+  assert.equal(finished.partial,true);assert.deepEqual(finished.summary,{total:5,passed:3,failed:1,blocked:1,skipped:0});
+  writeFileSync(resolve(f.dir,'execution/execution-task.json'),JSON.stringify({run_id:f.id,stage:'execution',outcome:'partial',summary:'Synthetic response checks',source_paths:['inputs/request.txt'],questions:[],limitations:['Missing response field']}));
+  assert.equal(inspectIndependentArtifacts(root,f.id,'execution').status,'passed');
+  for(const name of ['rejected.response.json','accepted.response.json','missing-code.response.json']) assert.ok(!readFileSync(resolve(f.dir,'execution/browser-evidence',name),'utf8').includes('DO_NOT_EXPORT_SECRET'));
+});
+
+test('owned data cleanup preserves pre-existing records, refuses unrelated controls and never replays uncertainty',async t=>{
+  let writes=0,deletes=0;
+  const server=createServer((req,res)=>{
+    if(req.url==='/created') {writes++;res.end('ok');return;}
+    if(req.url==='/deleted') {deletes++;res.end('ok');return;}
+    res.setHeader('content-type','text/html');
+    res.end(`<!doctype html><input id="title"><button id="add">Add</button><button id="unrelated">Delete all</button><button id="identity">Change identity</button><ul id="records"><li id="original">Existing user record</li></ul><script>
+      let count=0;
+      document.querySelector('#identity').onclick=()=>{let li=document.querySelector('#records').lastElementChild;li.dataset.id=li.dataset.id==='changed'?String(count):'changed';};
+      document.querySelector('#unrelated').onclick=()=>fetch('/deleted',{method:'POST'});
+      document.querySelector('#add').onclick=()=>{
+        count++;let marker=document.querySelector('#title').value,li=document.createElement('li');li.dataset.id=String(count);li.dataset.marker=marker;li.append(document.createTextNode(marker));
+        let button=document.createElement('button');button.textContent='Remove';const removable=count===1;
+        button.onclick=()=>{fetch('/deleted',{method:'POST'});if(removable)li.remove();};li.append(button);document.querySelector('#records').append(li);fetch('/created',{method:'POST'});
+      };</script>`);
+  });
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  await f.send({action:'archive_input',name:'cleanup-scope.txt',text:'Synthetic test scope includes creating and removing only records created in this task. Preserve existing records.'});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic create and cleanup checks',headless:true});
+  const input={by:'css',value:'#title'};
+  for(const key of ['one','two']) {
+    const prepared=await f.browser({type:'data_prepare',request_id:`prepare-${key}`,key});
+    const marker=prepared.data.marker,record_target={by:'css',value:`li[data-marker="${marker}"]`};
+    await f.browser({type:'fill',request_id:`fill-${key}`,target:input,value:marker});
+    if(key==='one') {
+      const absent=await f.browser({type:'click',request_id:'unowned',target:{by:'css',value:'#unrelated'},data_effect:{kind:'cleanup',key:'foreign',record_target:{by:'css',value:'#original'}}});
+      assert.equal(absent.status,'data_tracking_unavailable');assert.equal(deletes,0);
+      const unprepared=await f.browser({type:'click',request_id:'without-input-check',target:{by:'css',value:'#add'},data_effect:{kind:'create',key,record_target}});
+      assert.equal(unprepared.status,'correctable_error');assert.equal(writes,0);
+      const collision=await f.browser({type:'click',request_id:'existing-record',target:{by:'css',value:'#add'},preconditions:[{target:input,condition:'value',value:marker}],data_effect:{kind:'create',key,record_target:{by:'css',value:'#original'}}});
+      assert.equal(collision.status,'correctable_error');assert.equal(writes,0);
+    }
+    const created=await f.browser({type:'click',request_id:`create-${key}`,target:{by:'css',value:'#add'},preconditions:[{target:input,condition:'value',value:marker}],data_effect:{kind:'create',key,record_target}});
+    assert.equal(created.test_data.status,'created_observed');
+    const invalid=await f.browser({type:'click',request_id:`outside-${key}`,target:{by:'css',value:'#unrelated'},data_effect:{kind:'cleanup',key,record_target}});
+    assert.equal(invalid.status,'correctable_error');assert.equal(deletes,key==='one'?0:1);
+    const operation={type:'click',request_id:`remove-${key}`,target:{by:'css',value:`${record_target.value} button`},data_effect:{kind:'cleanup',key,record_target}};
+    if(key==='two') {
+      await f.browser({type:'click',request_id:'identity-change',target:{by:'css',value:'#identity'}});
+      const changed=await f.browser({...operation,request_id:'changed-record'});
+      assert.equal(changed.status,'correctable_error');assert.equal(deletes,1);
+      await f.browser({type:'click',request_id:'identity-restore',target:{by:'css',value:'#identity'}});
+    }
+    const removed=await f.browser(operation);
+    assert.equal(removed.test_data.status,key==='one'?'removed_from_view':'cleanup_uncertain');
+    assert.deepEqual(await f.browser(operation),removed);
+    const repeated=await f.browser({...operation,request_id:`retry-${key}`});
+    assert.equal(repeated.status,'data_tracking_unavailable');assert.equal(repeated.operation_started,false);
+  }
+  assert.equal(writes,2);assert.equal(deletes,2);
+  const original=await f.browser({type:'assert',request_id:'original',target:{by:'css',value:'#original'},condition:'text',value:'Existing user record',case_id:'KEEP',title:'Preserved existing record',expected:'Existing user record'});
+  assert.equal(original.assertion.status,'passed');
+  const finished=await f.browser({type:'finish',request_id:'finish',summary:'Preserve existing data and report uncertain cleanup',limitations:['Second synthetic removal did not change the page']});
+  assert.equal(finished.cleanup.tracked,2);assert.equal(finished.cleanup.possible_residuals,1);assert.equal(finished.cleanup.removed_from_view,1);
+  assert.equal(finished.summary.total,1);assert.equal(finished.partial,false);
+  writeFileSync(resolve(f.dir,'execution/execution-task.json'),JSON.stringify({run_id:f.id,stage:'execution',outcome:'completed',summary:'Synthetic cleanup evidence',source_paths:['inputs/request.txt','inputs/cleanup-scope.txt'],questions:[],limitations:['One tracked residual']}));
+  assert.equal(inspectIndependentArtifacts(root,f.id,'execution').status,'passed');
+  const ledgerPath=resolve(f.dir,'execution/browser-data-ledger.json'),ledger=JSON.parse(readFileSync(ledgerPath));
+  assert.equal(ledger.run_id,f.id);assert.equal(ledger.items[1].status,'cleanup_uncertain');
+  writeFileSync(ledgerPath,JSON.stringify({...ledger,items:[]}));
+  assert.equal(inspectIndependentArtifacts(root,f.id,'execution').status,'blocked');
+});
+
+test('case references and read-only rechecks preserve failures without inflating cases or replaying actions',async t=>{
+  const server=createServer((req,res)=>{res.setHeader('content-type','text/html');res.end('<!doctype html><input id="value" value="not ready"><input id="other" value="ready">');});
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  await f.send({action:'archive_input',name:'cases.json',text:JSON.stringify({cases:[{case_id:'DESIGN1',expected:'Field value is ready'}]})});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic read-only recheck statistics',headless:true});
+  const check={type:'assert',request_id:'first',target:{by:'css',value:'#value'},condition:'value',value:'ready',case_id:'A1',title:'Ready',expected:'Field value is ready',case_ref:{source_path:'inputs/cases.json',case_id:'DESIGN1'}};
+  const failed=await f.browser(check);assert.equal(failed.assertion.status,'failed');
+  const invalid=await f.browser({...check,request_id:'invalid',case_id:'A2',recheck_of:'A1',target:{by:'css',value:'#other'}});
+  assert.equal(invalid.status,'invalid_operation');assert.equal(invalid.operation_started,false);
+  await f.browser({type:'fill',request_id:'prepare',target:check.target,value:'ready'});
+  const second={...check,request_id:'second',case_id:'A2',recheck_of:'A1'};
+  const passed=await f.browser(second);assert.equal(passed.assertion.status,'passed');
+  assert.deepEqual(await f.browser(second),passed);
+  const finished=await f.browser({type:'finish',request_id:'finish',summary:'One design case with two observations',limitations:['Only the stated field assertion was observed, not whole-case completion']});
+  assert.equal(finished.summary.total,2);assert.equal(finished.summary.failed,1);assert.equal(finished.statistics.linked_case_count,1);
+  assert.equal(finished.statistics.read_only_rechecks,1);assert.equal(finished.statistics.rechecks_passed_after_failure,1);
+  writeFileSync(resolve(f.dir,'execution/execution-task.json'),JSON.stringify({run_id:f.id,stage:'execution',outcome:'completed',summary:'Synthetic statistics',source_paths:['inputs/request.txt','inputs/cases.json'],questions:[],limitations:['Original failure retained']}));
+  assert.equal(inspectIndependentArtifacts(root,f.id,'execution').status,'passed');
+});
+
+test('scoped API checks and one-shot GET faults retain real/simulated evidence and restore routing',async t=>{
+  let gets=0,heads=0,writes=0;
+  const server=createServer((req,res)=>{
+    if(!['GET','HEAD'].includes(req.method)) writes++;
+    if(req.url==='/data') {if(req.method==='HEAD') heads++;else gets++;res.setHeader('content-type','application/json');res.end(JSON.stringify({code:0,token:'SECRET_RESPONSE_MUST_NOT_BE_EXPORTED'}));return;}
+    if(req.url==='/redirect') {res.writeHead(302,{location:'/data'});res.end();return;}
+    if(req.url==='/oversized') {res.setHeader('content-type','application/json');res.end(JSON.stringify({code:0,large:'x'.repeat(70000)}));return;}
+    res.setHeader('content-type','text/html');res.end(`<!doctype html><button id="load">Load</button><button id="no-request">No request</button><p id="status">Idle</p><script>
+      document.querySelector('#load').onclick=async()=>{try{let r=await fetch('/data');document.querySelector('#status').textContent=r.ok?'Loaded':'Load failed';}catch{document.querySelector('#status').textContent='Load failed';}};
+      document.querySelector('#no-request').onclick=()=>{document.querySelector('#status').textContent='Load failed';};</script>`);
+  });
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  const quote='Authorize GET/HEAD checks and one-request read failure simulation. HTTP 200 and code 0 mean accepted. Show Load failed on read error.';
+  await f.send({action:'archive_input',name:'api.txt',text:`${url}data ${url}redirect ${url}oversized ${quote}`});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic read checks and explicitly requested fault simulation',headless:true});
+  const check={url:`${url}data`,method:'GET',http_status:200,field:'code',equals:0,source_path:'inputs/api.txt',quote,case_id:'API',title:'Data API',expected:'Contract matched'};
+  const missingSource=await f.browser({type:'api_check',request_id:'bad-source',check:{...check,quote:'not in current source'}});
+  assert.equal(missingSource.operation_started,false);assert.equal(gets,0);
+  const foreign=await f.browser({type:'api_check',request_id:'foreign',check:{...check,url:'http://outside.invalid/data'}});
+  assert.equal(foreign.operation_started,false);assert.equal(gets,0);
+  const op={type:'api_check',request_id:'api',check};const api=await f.browser(op);assert.equal(api.response_assertion.status,'passed');assert.equal(gets,1);
+  assert.deepEqual(await f.browser(op),api);assert.equal(gets,1);
+  const head=await f.browser({type:'api_check',request_id:'head',check:{...check,method:'HEAD',field:undefined,equals:undefined,case_id:'HEAD'}});assert.equal(head.response_assertion.status,'passed');assert.equal(heads,1);
+  const redirect=await f.browser({type:'api_check',request_id:'redirect',check:{...check,url:`${url}redirect`,case_id:'REDIRECT'}});assert.equal(redirect.response_assertion.status,'blocked');assert.equal(gets,1);
+  const large=await f.browser({type:'api_check',request_id:'large',check:{...check,url:`${url}oversized`,case_id:'LARGE'}});assert.equal(large.response_assertion.status,'blocked');
+  const fault={url:`${url}data`,method:'GET',mode:'http_error',http_status:503,source_path:'inputs/api.txt',quote};
+  const assertion={target:{by:'css',value:'#status'},condition:'text',value:'Load failed',case_id:'SIM',title:'Simulated read failure',expected:'Load failed'};
+  const simulated=await f.browser({type:'click',request_id:'simulate',target:{by:'css',value:'#load'},fault,assertion});
+  assert.equal(simulated.simulation.applied,true);assert.equal(simulated.simulation.disabled,true);assert.equal(simulated.assertion.evidence_mode,'simulated');assert.equal(gets,1);
+  const later=await f.browser({type:'assert',request_id:'later',...assertion,case_id:'LATER'});assert.equal(later.assertion.evidence_mode,'simulation_affected');
+  const real=await f.browser({type:'api_check',request_id:'real-after',check:{...check,case_id:'AFTER'}});assert.equal(real.response_assertion.status,'passed');assert.equal(gets,2);
+  await f.browser({type:'goto',request_id:'reload',url,source_path:'inputs/request.txt'});
+  const missed=await f.browser({type:'click',request_id:'missed',target:{by:'css',value:'#no-request'},fault,assertion:{...assertion,case_id:'MISSED'}});
+  assert.equal(missed.simulation.applied,false);assert.equal(missed.assertion.status,'blocked');assert.equal(missed.simulation.disabled,true);
+  await f.browser({type:'goto',request_id:'reload-abort',url,source_path:'inputs/request.txt'});
+  const aborted=await f.browser({type:'click',request_id:'abort',target:{by:'css',value:'#load'},fault:{...fault,mode:'abort',http_status:undefined},assertion:{...assertion,case_id:'ABORT'}});
+  assert.equal(aborted.simulation.applied,true);assert.equal(aborted.assertion.status,'passed');assert.equal(gets,2);assert.equal(writes,0);
+  const finished=await f.browser({type:'finish',request_id:'finish',summary:'Separate synthetic faults and real API checks',limitations:['Redirect and oversized response not evaluated']});
+  assert.equal(finished.partial,true);assert.equal(finished.statistics.evidence_modes.simulated,3);assert.equal(finished.statistics.evidence_modes.simulation_affected,1);
+  writeFileSync(resolve(f.dir,'execution/execution-task.json'),JSON.stringify({run_id:f.id,stage:'execution',outcome:'partial',summary:'Synthetic API controls',source_paths:['inputs/request.txt','inputs/api.txt'],questions:[],limitations:['Some checks inconclusive']}));
+  assert.equal(inspectIndependentArtifacts(root,f.id,'execution').status,'passed');
+  assert.ok(!readFileSync(resolve(f.dir,'execution/browser-evidence/api.api.json'),'utf8').includes('SECRET_RESPONSE_MUST_NOT_BE_EXPORTED'));
+});
+
+test('operation contract rejects arbitrary evaluation, ambiguous targets and unknown fields',()=>{
+  const finish={type:'finish',request_id:'finish',summary:'Observed',limitations:[]};
+  assert.doesNotThrow(()=>validateBrowserOperation(finish));
+  assert.doesNotThrow(()=>validateBrowserOperation({...finish,untested:['Create path not verified']}));
+  for(const untested of ['unknown',[null],[''],['x'.repeat(2001)]]) assert.throws(()=>validateBrowserOperation({...finish,untested}),/untested/);
+  assert.throws(()=>validateBrowserOperation({type:'eval',request_id:'x',code:'alert(1)'}));
+  assert.throws(()=>validateBrowserOperation({type:'fill',request_id:'../x',target:{by:'css',value:'#a'},value:'x'}));
+  assert.throws(()=>validateBrowserOperation({type:'click',request_id:'x',target:{by:'css',value:'#a'},approval:true}));
+  assert.throws(()=>validateBrowserOperation({type:'pause',request_id:'x',kind:'unlock',question:'Repair state'}));
+  assert.throws(()=>validateBrowserOperation({type:'assert',request_id:'x',case_id:'C1',title:'x',expected:'x',target:{by:'css',value:'#a'},condition:'count',value:-1}));
+  assert.throws(()=>validateBrowserOperation({type:'click',request_id:'x',target:{by:'css',value:'#a'},assertion:{type:'click'}}));
+  assert.throws(()=>validateBrowserOperation({type:'click',request_id:'x',target:{by:'css',value:'#a'},assertion:{target:{by:'css',value:'#b'},condition:'text'}}));
+  const base={type:'assert',request_id:'text-check',target:{by:'text',value:'Observed message'},condition:'text',case_id:'TEXT1',title:'Message',expected:'Observed message'};
+  assert.doesNotThrow(()=>validateBrowserOperation(base));
+  assert.throws(()=>validateBrowserOperation({...base,target:{by:'css',value:'#message'}}));
+  assert.throws(()=>validateBrowserOperation({...base,value:null}));
+  assert.throws(()=>validateBrowserOperation({...base,condition:'value'}));
+  assert.throws(()=>validateBrowserOperation({...base,request_id:undefined}),/No operation performed/);
+  assert.equal(browserErrorDiagnostic(new Error('Browser already started'),'start').category,'browser_already_started');
+  assert.match(browserRecoveryHint('browser_already_started').message,/not refresh/);
+  assert.match(browserRecoveryHint('stale_result').message,/Do not change click to press/);
+});
+
+test('action assertions capture transient feedback, reject stale results and never replay failed or successful clicks',async t=>{
+  let submissions=0;
+  const server=createServer((req,res)=>{
+    if(req.url==='/submit') {submissions++;res.end('ok');return;}
+    res.setHeader('content-type','text/html');
+    res.end(`<!doctype html><button id="submit">Submit</button><button id="silent">Silent</button><p id="old">Old feedback</p><p id="toast" hidden></p><script>
+      document.querySelector('#submit').onclick=()=>{fetch('/submit');const e=document.querySelector('#toast');e.hidden=false;e.textContent='Fresh feedback';setTimeout(()=>e.hidden=true,1200)};
+      document.querySelector('#silent').onclick=()=>fetch('/submit');
+    </script>`);
+  });
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{
+    if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Fixture cleanup',limitations:[]}).catch(()=>{});
+    await pause(1300);await new Promise(done=>server.close(done));
+  });
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic feedback checks',headless:true});
+  const mixed=await f.send({action:'explore_url',url,source_path:'inputs/request.txt'});
+  assert.equal(mixed.classification,'input_rejected');
+  assert.match(mixed.error,/interactive browser/);
+  assert.equal(existsSync(resolve(f.dir,'execution/exploration.json')),false);
+  const repeatStart=await f.browser({type:'start',request_id:'start-again',url,source_path:'inputs/request.txt',scope:'Synthetic feedback checks',headless:true});
+  assert.equal(repeatStart.status,'correctable_error');
+  assert.equal(repeatStart.diagnostic.category,'browser_already_started');
+  assert.equal(repeatStart.next_action,'snapshot_existing_browser_or_goto_for_new_page_state');
+  assert.equal(repeatStart.action_completed,false);
+  const check=(case_id,selector,value)=>({case_id,title:case_id,expected:value,target:{by:'css',value:selector},condition:'text',value});
+  const stale=await f.browser({type:'click',request_id:'stale',target:{by:'css',value:'#submit'},assertion:check('OLD','#old','Old feedback')});
+  assert.equal(stale.status,'correctable_error');assert.equal(stale.diagnostic.category,'stale_result');assert.equal(submissions,0);
+  const click={type:'click',request_id:'submit-once',target:{by:'css',value:'#submit'},assertion:{case_id:'FRESH',title:'Fresh feedback',expected:'Fresh feedback',target:{by:'text',value:'Fresh feedback'},condition:'text'}};
+  const result=await f.browser(click);assert.equal(result.assertion.status,'passed');
+  assert.equal(result.assertion.timing.mode,'same_operation');
+  assert.equal(result.assertion.timing.preceding_action.request_id,click.request_id);
+  assert.equal(result.network_summary.recent_errors_scope,'session_history_not_causal');
+  assert.ok(Array.isArray(result.network_summary.operation_events));
+  await pause(1500);
+  assert.deepEqual(await f.browser(click),result);assert.equal(submissions,1);
+  const duplicate=await f.browser({...click,request_id:'duplicate-case'});
+  assert.equal(duplicate.status,'invalid_operation');assert.equal(duplicate.operation_started,false);
+  assert.equal(duplicate.diagnostic.category,'duplicate_case_id');assert.equal(submissions,1);
+  assert.equal(existsSync(resolve(f.dir,'execution/browser-evidence/duplicate-case.json')),false);
+  const late=await f.browser({type:'assert',request_id:'late-observation',...check('LATE','#toast','Fresh feedback')});
+  assert.equal(late.assertion.status,'failed');assert.equal(late.assertion.timing.mode,'standalone_observation');
+  assert.ok(late.assertion.timing.delay_after_action_ms>=1500);
+  assert.equal(late.assertion.timing.preceding_action.request_id,click.request_id);
+  assert.equal(submissions,1);
+  const failure={type:'click',request_id:'failed-once',target:{by:'css',value:'#silent'},assertion:check('ABSENT','#toast','Never appears')};
+  const failed=await f.browser(failure);assert.equal(failed.assertion.status,'failed');
+  assert.deepEqual(await f.browser(failure),failed);assert.equal(submissions,2);
+  await f.browser({type:'goto',request_id:'new-page',url,source_path:'inputs/request.txt'});
+  const navigated=await f.browser({type:'assert',request_id:'new-page-check',...check('NEWPAGE','#old','Old feedback')});
+  assert.equal(navigated.assertion.status,'passed');
+  assert.equal(navigated.assertion.timing.preceding_action,undefined,'Navigation must discard the previous page action association');
+  const finish=await f.browser({type:'finish',request_id:'finish',summary:'One matched, one unmatched',limitations:[]});
+  assert.deepEqual(finish.summary,{total:4,passed:2,failed:2,blocked:0,skipped:0});
+  writeJson(resolve(f.dir,'execution/execution-task.json'),{run_id:f.id,stage:'execution',outcome:'completed',summary:'Actual action assertions',source_paths:['inputs/request.txt'],questions:[],limitations:[]});
+  const checked=inspectIndependentArtifacts(root,f.id,'execution');
+  assert.equal(checked.status,'passed',JSON.stringify(checked));
+  assert.equal(checked.execution_outcome.status,'failed','Delivery validation must preserve a failed business assertion');
+  const observationPath=resolve(f.dir,'execution/exploration.json');
+  const observation=JSON.parse(readFileSync(observationPath,'utf8'));
+  writeJson(observationPath,{...observation,mode:'read_only_navigation'});
+  assert.match(inspectIndependentArtifacts(root,f.id,'execution').errors.join(' '),/cannot replace an interactive browser run/);
+});
+
+test('interactive task persists login/form state across human handoff, never replays submit, and delivers real assertions',{skip: DPAPI_REQUIRED},async t=>{
+  let records=0,manual=false,crossOrigin=0,logins=0,captchaReads=0;
+  const other=createServer((req,res)=>{res.setHeader('Access-Control-Allow-Origin','*');res.setHeader('Access-Control-Allow-Headers','content-type');res.setHeader('Access-Control-Allow-Methods','GET, POST, OPTIONS');if(req.method==='OPTIONS') {res.end();return;}if(req.method==='POST') crossOrigin++;else captchaReads++;res.end(req.method==='GET'?'Captcha dependency loaded':'Application API available');});
+  await new Promise(done=>other.listen(0,'127.0.0.1',done));
+  const server=createServer((req,res)=>{
+    if(req.url==='/manual') {res.end(manual?'verified':'pending');return;}
+    if(req.url==='/login' && req.method==='POST') {logins++;res.setHeader('set-cookie','fixture=logged-in; Path=/');res.end('Authenticated');return;}
+    if(req.url==='/add' && req.method==='POST') {
+      if(!req.headers.cookie?.includes('fixture=logged-in')) {res.statusCode=401;res.end('Login required');return;}
+      records++;res.end(`Created ${records}`);return;
+    }
+    res.setHeader('content-type','text/html');
+    res.end(`<!doctype html><html><body><h1>Interactive fixture</h1><label>User<input id="user"></label><label>Password<input id="password" type="password"></label><button id="login">Login</button><p id="auth">Not logged in</p><label>Name<input id="name"></label><button id="add">Add</button><button id="external">External</button><p id="status">Not submitted</p><p id="manual">pending</p><script>
+      fetch('http://127.0.0.1:${other.address().port}/captcha?token=never-log-this-token').then(r=>r.text()).then(text=>{const e=document.createElement('p');e.id='captcha';e.textContent=text;document.body.append(e)});
+      setInterval(async()=>document.querySelector('#manual').textContent=await(await fetch('/manual')).text(),100);
+      document.querySelector('#login').onclick=async()=>document.querySelector('#auth').textContent=await(await fetch('/login',{method:'POST',body:JSON.stringify({user:document.querySelector('#user').value,password:document.querySelector('#password').value})})).text();
+      document.querySelector('#add').onclick=async()=>document.querySelector('#status').textContent=await(await fetch('/add',{method:'POST'})).text();
+      document.querySelector('#external').onclick=async()=>document.querySelector('#manual').textContent=await(await fetch('http://127.0.0.1:${other.address().port}/outside?token=never-log-this-token',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).text();
+      </script></body></html>`);
+  });
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{
+    if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Fixture cleanup',limitations:[]}).catch(()=>{});
+    await pause(1300);await new Promise(done=>server.close(done));await new Promise(done=>other.close(done));
+  });
+  const target=id=>({by:'css',value:`#${id}`});
+  assert.equal((await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Add a synthetic fixture record',headless:true})).status,'ready');
+  assert.equal((await f.browser({type:'fill',request_id:'fill-name',target:target('name'),value:'Synthetic'})).status,'ready');
+  const secret='synthetic-secret-not-for-logs';
+  await f.browser({type:'fill',request_id:'fill-user',target:target('user'),value:'synthetic-user'});
+  const privateFill=await f.browser({type:'fill',request_id:'fill-password',target:target('password'),value:secret,secret:true});
+  assert.ok(privateFill.secret_ref?.id);assert.ok(!JSON.stringify(privateFill).includes(secret));
+  assert.deepEqual(await f.browser({type:'fill',request_id:'fill-password',target:target('password'),value:secret,secret:true}),privateFill);
+  assert.notEqual(JSON.parse(readFileSync(resolve(f.dir,'execution/browser-evidence/fill-password.json'),'utf8')).request_sha256,createHash('sha256').update(JSON.stringify({type:'fill',request_id:'fill-password',target:target('password'),value:secret,secret:true})).digest('hex'));
+  const wrongTarget=await f.browser({type:'fill',request_id:'wrong-private-target',target:target('name'),secret_ref:privateFill.secret_ref});
+  assert.equal(wrongTarget.status,'secret_reference_unavailable');assert.equal(wrongTarget.operation_started,false);
+  assert.equal(readControllerSession(root,f.parent).status,'ready');
+  const reusedFill={type:'fill',request_id:'reference-password',target:target('password'),secret_ref:privateFill.secret_ref};
+  const reused=await f.browser(reusedFill);assert.equal(reused.status,'ready');assert.deepEqual(reused.secret_ref,privateFill.secret_ref);
+  assert.deepEqual(await f.browser(reusedFill),reused);
+  assert.ok(!readFileSync(resolve(f.dir,'execution/browser-evidence/reference-password.json'),'utf8').includes(secret));
+  await f.browser({type:'click',request_id:'login-once',target:target('login')});
+  assert.equal((await f.browser({type:'assert',request_id:'logged-in',target:target('auth'),condition:'text',value:'Authenticated',case_id:'LOGIN-1',title:'Login',expected:'Authenticated'})).assertion.status,'passed');
+  const bad=await f.browser({type:'click',request_id:'wrong-selector',target:target('missing')});assert.equal(bad.status,'correctable_error');
+  assert.equal(readControllerSession(root,f.parent).status,'ready');
+  const waiting=await f.browser({type:'pause',request_id:'captcha-wait',kind:'captcha',question:'Complete the synthetic manual verification in this browser.'});
+  assert.equal(waiting.status,'waiting_human');
+  assert.equal(waiting.human_handoff_timing.open.request_id,'captcha-wait');
+  assert.equal(waiting.human_handoff_timing.intervals.length,0);
+  assert.deepEqual(await f.browser({type:'pause',request_id:'captcha-wait',kind:'captcha',question:'Complete the synthetic manual verification in this browser.'}),waiting,'Pause replay keeps the original evidence and does not restart the clock');
+  const status=await f.send({action:'run_status'});
+  assert.equal(status.data.next_action,'wait_for_human_intervention');
+  assert.equal(status.data.human_intervention.browser_retained,true);
+  await f.returnChild(f.dispatched.delegation);
+  const resume={action:'dispatch',stage:'execution',agent:'automation_execution_agent',skills:['playwright-execution'],mode:'resume_browser'};
+  assert.equal((await f.send(resume)).status,'rejected','No automatic invented human response');
+  f.append([{timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',sender:'harness',text:'Synthetic manual step completed; continue.'}}]);
+  assert.equal((await f.send(resume)).status,'rejected','Harness notices cannot confirm human intervention');
+  f.append([{timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',text:'Not yet done; wait.'}}]);
+  assert.equal((await f.send(resume)).status,'rejected','A native user pause cannot resume the browser');
+  assert.equal((await f.send(resume)).classification,'correction_stalled','Unchanged failed continuation exhausts its correction budget');
+  f.append([{timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',sender:'harness',text:'Done; continue.'}}]);
+  assert.equal((await f.send(resume)).classification,'correction_stalled','Harness trace churn does not replenish the budget');
+  f.append([{timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',text:'Not yet done; wait.'}}]);
+  assert.equal((await f.send(resume)).classification,'correction_stalled','Another negative native reply does not replenish the budget');
+  manual=true;await pause(15);
+  f.append([{timestamp:new Date().toISOString(),type:'model_msg',payload:{type:'text',role:'user',text:'Synthetic manual step completed; continue.'}}]);
+  const resumed=await f.send(resume);assert.equal(resumed.exit_code,0,JSON.stringify(resumed));
+  assert.ok(resumed.data.event.resumes_dispatch_id);
+  assert.ok(resumed.delegation.prompt.includes('人工操作完成后的续接'));
+  assert.ok(readFileSync(resumed.delegation_contract_path,'utf8').includes('HUMAN CONTINUATION'));
+  const snapshot=await f.browser({type:'snapshot',request_id:'after-human'});assert.equal(snapshot.status,'ready',JSON.stringify(snapshot));
+  assert.equal(snapshot.human_handoff_timing.open,null);
+  assert.equal(snapshot.human_handoff_timing.intervals.length,1);
+  assert.equal(snapshot.human_handoff_timing.intervals[0].reason,'resumed');
+  assert.ok(snapshot.human_handoff_timing.closed_window_ms>=waiting.human_handoff_timing.open.elapsed_ms);
+  assert.equal(captchaReads,1);assert.ok(snapshot.snapshot.text.includes('Captcha dependency loaded'));
+  assert.equal(snapshot.snapshot.fields.find(field=>field.id==='name').selector,'#name');
+  assert.ok(!JSON.stringify(snapshot).includes(secret));
+  await f.browser({type:'assert',request_id:'kept-form',target:target('name'),condition:'value',value:'Synthetic',case_id:'KEEP-1',title:'Form persists',expected:'Original form value retained'});
+  const verified=await f.browser({type:'assert',request_id:'manual-done',target:target('manual'),condition:'text',value:'verified',case_id:'MANUAL-1',title:'Human continuation',expected:'Manual verification state retained'});
+  assert.equal(verified.assertion.status,'passed');
+  const submission={type:'click',request_id:'submit-once',target:target('add')};
+  await f.browser(submission);await f.browser(submission);
+  const changed=await f.browser({...submission,target:target('external')});assert.equal(changed.status,'invalid_request');
+  assert.equal(readControllerSession(root,f.parent).status,'ready');
+  const checked=await f.browser({type:'assert',request_id:'created',target:target('status'),condition:'text',value:'Created 1',case_id:'ADD-1',title:'Add one record',expected:'Exactly one record created'});
+  assert.equal(checked.assertion.status,'passed');assert.equal(records,1);assert.equal(logins,1);
+  await f.browser({type:'click',request_id:'application-api',target:target('external')});
+  await pause(100);assert.equal(crossOrigin,1,'Application API dependencies must not be blocked');
+  const network=readFileSync(resolve(f.dir,'execution/browser-network.json'),'utf8');
+  assert.ok(network.includes('application_api'));assert.ok(!network.includes('never-log-this-token'));
+  const mismatch=await f.browser({type:'assert',request_id:'failure-is-real',target:target('status'),condition:'text',value:'Not the actual value',case_id:'FAIL-1',title:'Intentional negative assertion',expected:'Known impossible fixture expectation'});
+  assert.equal(mismatch.assertion?.status,'failed',JSON.stringify(mismatch));
+  const finish={type:'finish',request_id:'finish',summary:'Synthetic browser integration completed',limitations:[]};
+  const done=await f.browser(finish);assert.equal(done.status,'closed');assert.equal(done.summary.total,5);assert.equal(done.summary.failed,1);
+  assert.equal(done.human_handoff_timing.closed_window_ms,snapshot.human_handoff_timing.closed_window_ms);
+  assert.deepEqual(JSON.parse(readFileSync(resolve(f.dir,'execution/exploration.json'))).human_handoff_timing.intervals,done.human_handoff_timing.intervals);
+  await pause(1300);assert.deepEqual(await f.browser(finish),done,'Finish receipt remains available after worker exits');
+  writeFileSync(resolve(f.dir,'execution/execution-task.json'),JSON.stringify({run_id:f.id,stage:'execution',outcome:'completed',summary:'Synthetic interactive assertions',source_paths:['inputs/request.txt'],questions:[],limitations:[]}));
+  const contract=inspectIndependentArtifacts(root,f.id,'execution');assert.equal(contract.status,'passed',JSON.stringify(contract.errors));
+  await f.returnChild(resumed.delegation);
+  const handoff=await f.send(resumed.handoff_template);assert.equal(handoff.exit_code,0,JSON.stringify(handoff));
+  assert.equal(handoff.data.stage_status,'completed');
+  const raw=readFileSync(resolve(f.dir,'execution/test_results.json'),'utf8');
+  const forged=JSON.parse(raw);forged.cases[0].status='failed';writeFileSync(resolve(f.dir,'execution/test_results.json'),JSON.stringify(forged));
+  assert.equal(inspectIndependentArtifacts(root,f.id,'execution').status,'blocked');
+  assert.equal(existsSync(resolve(f.dir,'execution/browser-private.json')),false);
+  const evidence=readFileSync(resolve(f.dir,'execution/browser-evidence/fill-password.json'),'utf8');assert.ok(!evidence.includes(secret));
+});
+
+test('snapshot observes nonsemantic controls and checked state without repeating an already satisfied check',async t=>{
+  const server=createServer((req,res)=>{res.setHeader('content-type','text/html');res.end('<html><body><input id="agreement" type="checkbox" checked hidden onchange="document.querySelector(\'#events\').textContent=\'changed\'"><p id="events">untouched</p><div style="cursor:pointer" onclick="document.querySelector(\'#result\').textContent=\'clicked\'"><span id="custom">Custom action</span></div><div hidden style="cursor:pointer">Hidden action</div><p id="result">waiting</p></body></html>');});
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Fixture cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  const start=await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Inspect synthetic controls',headless:true});
+  const field=start.snapshot.fields.find(item=>item.id==='agreement');
+  assert.equal(field.checked,true);assert.equal(field.visible,false);
+  assert.ok(start.snapshot.controls.some(item=>item.selector==='#custom' && item.text==='Custom action'));
+  assert.ok(!start.snapshot.controls.some(item=>item.text==='Hidden action'));
+  const same=await f.browser({type:'check',request_id:'same',target:{by:'css',value:'#agreement'},checked:true});
+  assert.equal(same.status,'ready');assert.equal(same.unchanged,true);
+  const different=await f.browser({type:'check',request_id:'different',target:{by:'css',value:'#agreement'},checked:false});
+  assert.equal(different.status,'correctable_error');
+  const unmodified=await f.browser({type:'assert',request_id:'not-toggled',target:{by:'css',value:'#events'},condition:'text',value:'untouched',case_id:'CHECK-1',title:'No checkbox side effect',expected:'untouched'});
+  assert.equal(unmodified.assertion.status,'passed');
+  await f.browser({type:'click',request_id:'custom-click',target:{by:'css',value:'#custom'}});
+  assert.equal((await f.browser({type:'assert',request_id:'custom-result',target:{by:'css',value:'#result'},condition:'text',value:'clicked',case_id:'CLICK-1',title:'Custom control',expected:'clicked'})).assertion.status,'passed');
+});
+
+test('network policy permits scoped application APIs but not new documents or untrusted frames',()=>{
+  const input={url:'https://api.example.net/captcha?token=secret',origin:'https://app.example.org',frameOrigin:'https://app.example.org',resourceType:'fetch',method:'POST'};
+  assert.equal(browserRequestPolicy(input),'application_api');
+  assert.equal(browserRequestPolicy({...input,resourceType:'xhr',method:'GET'}),'application_api');
+  assert.equal(browserRequestPolicy({...input,resourceType:'document'}),'blocked_new_target');
+  assert.equal(browserRequestPolicy({...input,frameOrigin:'https://unrelated.example.org'}),'blocked_new_target');
+  assert.equal(browserRequestPolicy({...input,url:'file:///private'}),'blocked_protocol');
+  assert.equal(browserRequestPolicy({...input,resourceType:'image',method:'GET'}),'static_dependency');
+});
+
+test('content wait is bounded and paint observations never mutate or assert business success',async()=>{
+  let disposed=false;
+  const ready=await waitForBrowserContent({waitForFunction:async(fn,arg,options)=>{assert.equal(options.timeout,1500);return {dispose:async()=>{disposed=true;}};}});
+  assert.equal(ready.content_observed,true);assert.equal(disposed,true);
+  const timeout=new Error('private text');timeout.name='TimeoutError';
+  assert.equal((await waitForBrowserContent({waitForFunction:async()=>{throw timeout;}})).content_observed,false);
+  await assert.rejects(()=>waitForBrowserContent({waitForFunction:async()=>{throw new Error('closed');}}),/closed/);
+  assert.equal((await observeFeedbackPaint({count:async()=>0})).status,'not_unique_or_absent');
+  const hidden={count:async()=>1,evaluate:async()=>({visible:false,opacity:0})};
+  assert.equal((await observeFeedbackPaint(hidden)).status,'not_settled');
+  const clipped={count:async()=>1,evaluate:async()=>({visible:true,opacity:1,within_viewport:false,x:0,y:-10,width:10,height:10})};
+  const result=await observeFeedbackPaint(clipped);
+  assert.equal(result.status,'not_settled');assert.ok(result.wait_ms<1000);
+});
+
+test('delayed initial rendering returns usable snapshot and animated feedback is captured without a second submission',async t=>{
+  let navigations=0,submissions=0;
+  const server=createServer((req,res)=>{
+    if(req.url==='/submit'){submissions++;res.end('ok');return;}
+    if(req.url!=='/'){res.end('');return;}
+    navigations++;res.setHeader('content-type','text/html');
+    res.end(`<!doctype html><html><head><style>#feedback{position:fixed;top:20px;left:30px;padding:12px;background:white;color:black;opacity:0;transform:translateY(-12px);transition:opacity 120ms linear,transform 120ms linear}</style></head><body><script>
+      setTimeout(()=>{document.body.insertAdjacentHTML('beforeend','<input value="private input"><button id="submit">Submit</button>');document.querySelector('#submit').onclick=()=>{
+        fetch('/submit');const e=document.createElement('div');e.id='feedback';e.textContent='Observed feedback';document.body.append(e);e.getBoundingClientRect();requestAnimationFrame(()=>{e.style.opacity='1';e.style.transform='translateY(0)'});setTimeout(()=>e.remove(),1500);
+      };},300);
+    </script></body></html>`);
+  });
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  const start=await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic delayed render and animation',headless:true});
+  assert.equal(start.navigation_observation.content_observed,true);
+  assert.ok(start.snapshot.controls.some(c=>c.selector==='#submit'));
+  assert.equal(navigations,1);
+  const operation={type:'click',request_id:'submit',target:{by:'css',value:'#submit'},assertion:{target:{by:'text',value:'Observed feedback'},condition:'text',case_id:'ANIMATION',title:'Animated feedback',expected:'Observed feedback'}};
+  const result=await f.browser(operation);
+  assert.equal(result.assertion.status,'passed');
+  assert.equal(result.capture_timing.feedback_paint.status,'settled');
+  assert.ok(result.capture_timing.feedback_paint.sample.opacity>=0.95);
+  assert.ok(Date.parse(result.capture_timing.started_at)>=Date.parse(result.assertion.timing.matched_at));
+  assert.ok(statSync(resolve(f.dir,result.screenshot)).size>0);
+  const observation=JSON.parse(readFileSync(resolve(f.dir,'execution/browser-evidence/submit.observation.json')));
+  assert.deepEqual(observation.capture_timing,result.capture_timing);
+  assert.deepEqual(await f.browser(operation),result);
+  assert.equal(submissions,1);assert.equal(navigations,1);
+  console.log(JSON.stringify({browser_paint_preview:resolve(f.dir,result.screenshot)}));
+  await f.browser({type:'finish',request_id:'finish',summary:'Synthetic check completed',limitations:[]});
+});
+
+test('read-only credential output is redacted in worker receipts before truncation and timing is durable',async t=>{
+  const secret='synthetic-readonly-'+ 'z'.repeat(15000);
+  const server=createServer((req,res)=>{res.setHeader('content-type','text/html');res.end(`<dl><dt>API Key</dt><dd>${secret}</dd></dl><button id="button">Observe</button>`);});
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{try {await f.browser({type:'finish',request_id:'cleanup',summary:'Synthetic privacy test',limitations:[]});} finally {await pause(1300);await new Promise(done=>server.close(done));}});
+  const operation={type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic privacy fixture',headless:true};
+  const started=await f.browser(operation);
+  assert.equal(started.status,'ready');assert.equal(started.snapshot.privacy.status,'observed');
+  assert.ok(!JSON.stringify(started).includes('synthetic-readonly-'));assert.ok(!JSON.stringify(started).includes('z'.repeat(50)));
+  assert.ok(started.performance.spans.some(s=>s.phase==='privacy_scan'));
+  assert.equal(started.performance.model_round_trip_ms,null);
+  assert.deepEqual(await f.browser(operation),started,'Replay retains original measurements');
+  const checked=await f.browser({type:'assert',request_id:'read',target:{by:'css',value:'dd'},condition:'visible',case_id:'READ',title:'Credential field visible',expected:'Field visible'});
+  assert.equal(checked.assertion.status,'passed');
+  assert.ok(checked.performance.spans.some(s=>s.phase==='assertion_wait'));
+  assert.ok(checked.screenshot,'Protected screenshot should remain available');
+  for(const path of ['execution/browser-evidence/start.json','execution/browser-evidence/read.json','execution/browser-evidence/read.observation.json']) {
+    const content=readFileSync(resolve(f.dir,path),'utf8');
+    assert.ok(!content.includes('synthetic-readonly-'),path);assert.ok(!content.includes('z'.repeat(50)),path);
+  }
+});
+
+test('screenshot failure is nonfatal and diagnostics never include raw secrets or selectors',async()=>{
+  let calls=0;
+  const privacy=async()=>({values:[],mask_selectors:[],truncated:false});
+  const page={evaluate:privacy,locator:()=>({}),getByText:()=>({}),screenshot:async()=>{calls++;throw new Error('Timeout: selector password=secret-value https://user:pass@example.org/?token=secret');}};
+  const result=await captureBrowserEvidence(page,'unused.png',new Set(['secret-value']));
+  assert.deepEqual(result,{captured:false,warning:{phase:'screenshot',category:'timeout'}});
+  assert.equal(calls,1,'Never retry without privacy masks');
+  let options;
+  const masks=[{input:true},{secret:true}];
+  const captured=await captureBrowserEvidence({evaluate:async()=>({values:['secret-value'],mask_selectors:['#sensitive'],truncated:false}),locator:selector=>selector==='#sensitive'?masks[1]:masks[0],screenshot:async value=>{options=value;}},'masked.png',new Set(['secret-value']));
+  assert.equal(captured.captured,true);assert.deepEqual(options.mask,masks);
+  assert.equal(options.animations,undefined,'Do not fast-forward page animations or trigger application events');
+  assert.deepEqual(browserErrorDiagnostic(new Error('Target page, context or browser has been closed secret'),'snapshot'),{phase:'snapshot',category:'browser_unavailable'});
+  assert.deepEqual(browserErrorDiagnostic(new Error('net::ERR_PROXY_CONNECTION_FAILED https://secret'),'network'),{phase:'network',category:'browser_operation_error',network_code:'net::ERR_PROXY_CONNECTION_FAILED'});
+});
+
+test('dynamic feedback caps candidates, retains actual stop time and tolerates document replacement',async()=>{
+  const browser=await chromium.launch({headless:true,...(!existsSync(chromium.executablePath())?{channel:'chrome'}:{})});
+  try {
+    const page=await browser.newPage();await page.setContent('<p>Existing static text</p>');
+    const handle=await beginDynamicFeedback(page);
+    await page.evaluate(()=>{for(let i=0;i<30;i++){const e=document.createElement('p');e.textContent=`Update ${i}`;document.body.append(e);}});
+    await pause(1700);
+    const first=await handle.evaluate(s=>s.stop());
+    await pause(50);
+    const result=await endDynamicFeedback(handle);
+    assert.equal(result.finished_at,first.finished_at);
+    assert.equal(result.candidates.length,20);assert.equal(result.truncated,true);
+    assert.ok(!result.candidates.some(x=>x.text==='Existing static text'));
+    const abandoned=await beginDynamicFeedback(page);
+    await page.goto('data:text/html,<p>Replacement</p>');
+    const unavailable=await endDynamicFeedback(abandoned);
+    assert.equal(unavailable.status,'unavailable');assert.deepEqual(unavailable.candidates,[]);
+  } finally {await browser.close();}
+});
+
+test('unknown dynamic feedback is observed once, redacted and never promoted to a passing assertion',{skip: DPAPI_REQUIRED},async t=>{
+  let submissions=0;
+  const server=createServer((req,res)=>{
+    if(req.url==='/submit'){submissions++;res.end('ok');return;}
+    res.setHeader('content-type','text/html');
+    res.end(`<!doctype html><input id="secret"><button id="submit">Submit</button><div role="alert">Old static message</div><div id="hidden" style="display:none">Hidden feedback</div><p id="updated">Old status</p><script>
+      document.querySelector('#submit').onclick=()=>{
+        fetch('/submit');const e=document.createElement('div');e.textContent='Brief unknown feedback';document.body.append(e);setTimeout(()=>e.remove(),100);
+        document.querySelector('#hidden').style.display='block';document.querySelector('#updated').textContent='Changed status';
+        const privateNode=document.createElement('span');privateNode.textContent=document.querySelector('#secret').value;document.body.append(privateNode);
+      };
+    </script>`);
+  });
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Observe synthetic unknown feedback',headless:true});
+  await f.browser({type:'fill',request_id:'secret',target:{by:'css',value:'#secret'},value:'private-"quoted"-value',secret:true});
+  const operation={type:'click',request_id:'observe-once',target:{by:'css',value:'#submit'}};
+  const result=await f.browser(operation),feedback=result.dynamic_feedback;
+  assert.equal(feedback.status,'observed');assert.equal(feedback.action_completed,true);
+  assert.equal(result.assertion,undefined);
+  assert.ok(feedback.candidates.some(x=>x.text==='Brief unknown feedback' && x.selector && x.observed_at));
+  assert.ok(feedback.candidates.some(x=>x.text==='Hidden feedback' && x.change==='became_visible'));
+  assert.ok(feedback.candidates.some(x=>x.text==='Changed status' && x.change==='text_changed'));
+  assert.ok(!feedback.candidates.some(x=>x.text==='Old static message'));
+  assert.ok(feedback.candidates.some(x=>x.text==='[REDACTED]'));
+  const bytes=readFileSync(resolve(f.dir,feedback.evidence_path),'utf8');
+  assert.ok(!bytes.includes('private-'));assert.deepEqual(JSON.parse(bytes),feedback);
+  assert.deepEqual(await f.browser(operation),result);assert.equal(submissions,1);
+  const finished=await f.browser({type:'finish',request_id:'finish',summary:'Observed feedback only',limitations:['No business assertions performed']});
+  assert.equal(finished.summary.total,0);assert.equal(finished.partial,true);
+  const exploration=JSON.parse(readFileSync(resolve(f.dir,'execution/exploration.json')));
+  assert.ok(exploration.evidence.some(x=>x.path===feedback.evidence_path));
+});
+
+test('readonly fill timeout preserves inspection and partial finish without replay',async t=>{
+  const server=createServer((req,res)=>res.end('<html><body><h1>Readonly fixture</h1><input id="locked" readonly value="unchanged"></body></html>'));
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  const extended=await f.send({action:'extend_plan',stages:['report'],reason:'Deliver execution results and limitations'});
+  assert.equal(extended.exit_code,0,JSON.stringify(extended));
+  t.after(async()=>{await f.browser({type:'finish',request_id:'cleanup',summary:'Cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic readonly field',headless:true});
+  const started=Date.now();
+  const running=f.send({action:'browser_task',operation:{type:'fill',request_id:'readonly-fill',target:{by:'css',value:'#locked'},value:'changed'}});
+  let health,observed=false;
+  // Command startup can be delayed while the rest of the suite is still releasing browser workers.
+  // Wait for the worker to publish the started operation, while keeping the fixture below its
+  // existing 25 second evidence bound.
+  for(let i=0;i<200;i++) {
+    await pause(100);
+    health=await (await requestBrowserWorker(JSON.parse(readFileSync(resolve(f.dir,'execution/browser-private.json'))),{operation:{type:'health'}})).json();
+    if(health.active_operation?.request_id==='readonly-fill') {observed=true;break;}
+  }
+  const result=await running;
+  assert.equal(observed,true,'readonly fill must be observable while the bounded operation is active');
+  assert.equal(health.busy,true);assert.equal(health.active_operation.request_id,'readonly-fill');
+  assert.equal(result.exit_code,0,JSON.stringify(result));
+  assert.equal(result.data.status,'needs_inspection');
+  assert.ok(Date.now()-started<25000,'A bounded browser failure must not wait for the outer 65 second watchdog');
+  assert.equal(readControllerSession(root,f.parent).status,'ready');
+  const rejected=await f.browser({type:'fill',request_id:'new-id',target:{by:'css',value:'#locked'},value:'changed'});
+  assert.equal(rejected.status,'needs_inspection');
+  assert.equal(existsSync(resolve(f.dir,'execution/browser-evidence/new-id.json')),false);
+  const exited=spawnSync(process.execPath,['-e',''],{windowsHide:true});assert.equal(exited.status,0);
+  const faultDir=resolve(f.dir,'audit/commands',randomUUID());mkdirSync(faultDir,{recursive:true});
+  writeJson(resolve(faultDir,'command.json'),{script:'browser-task.mjs',run_id:f.id,child_pid:exited.pid,result:{termination:'timeout'}});
+  await withControllerSession(root,f.parent,async()=>({status:'timeout',exit_code:124,evidence_dir:faultDir}),{agentRoot:f.agentRoot});
+  assert.equal((await f.browser({type:'health',request_id:'post-timeout-health'})).status,'worker_health');
+  assert.equal(readControllerSession(root,f.parent).status,'stopped');
+  const originalFailure=readControllerSession(root,f.parent).failure;
+  const check=await f.browser({type:'assert',request_id:'inspect',target:{by:'css',value:'#locked'},condition:'value',value:'unchanged',case_id:'CHECK',title:'Preserved field',expected:'unchanged'});
+  assert.equal(check.assertion.status,'passed');
+  const done=await f.browser({type:'finish',request_id:'finish',summary:'Stopped uncertain fill',limitations:['No retry']});
+  assert.equal(done.partial,true);assert.equal(done.summary.total,1);
+  assert.equal(readControllerSession(root,f.parent).status,'stopped');
+  assert.deepEqual(readControllerSession(root,f.parent).failure,originalFailure);
+  const replay=await f.send({action:'browser_task',operation:{type:'fill',request_id:'forbidden-retry',target:{by:'css',value:'#locked'},value:'changed'}});
+  assert.equal(replay.classification,'session_stopped');
+  assert.equal(existsSync(resolve(f.dir,'execution/browser-evidence/forbidden-retry.json')),false);
+  const task=(stage,source_paths)=>({run_id:f.id,stage,outcome:'partial',summary:'Stopped uncertain fill',questions:[],limitations:['No retry; only preserved assertions'],source_paths});
+  writeJson(resolve(f.dir,'execution/execution-task.json'),task('execution',['inputs/request.txt']));
+  await f.returnChild(f.dispatched.delegation);
+  const handed=await f.send(f.dispatched.handoff_template);assert.equal(handed.exit_code,0,JSON.stringify(handed));
+  const report=await f.send(extended.dispatch_templates.find(r=>r.stage==='report'));assert.equal(report.exit_code,0,JSON.stringify(report));
+  const actual=JSON.parse(readFileSync(resolve(f.dir,'execution/test_results.json')));
+  writeJson(resolve(f.dir,'report/reportable-results.json'),{run_id:f.id,cases:actual.cases,summary:actual.summary});
+  writeJson(resolve(f.dir,'report/issues.json'),[]);
+  writeFileSync(resolve(f.dir,'report/test_report.md'),'# Partial synthetic report\nReadonly fill timed out; preserved inspection only.');
+  writeJson(resolve(f.dir,'report/report-task.json'),task('report',['execution/test_results.json']));
+  const exported=await f.send({action:'export_report'});assert.equal(exported.exit_code,0,JSON.stringify(exported));
+  await f.returnChild(report.delegation);
+  const delivered=await f.send(report.handoff_template);assert.equal(delivered.exit_code,0,JSON.stringify(delivered));
+  assert.equal(JSON.parse(readFileSync(resolve(f.dir,'manifest.json'))).stages.report.status,'completed');
+  assert.equal(JSON.parse(readFileSync(resolve(f.dir,'report/reportable-results.json'))).status,'partial');
+  assert.match(readFileSync(resolve(f.dir,'report/test_report.html'),'utf8'),/<!doctype html>/i);
+  for(const ext of ['docx','pdf'])assert.equal(existsSync(resolve(f.dir,'report/test_report.'+ext)),false);
+  assert.equal(readControllerSession(root,f.parent).status,'stopped');
+  assert.deepEqual(readControllerSession(root,f.parent).failure,originalFailure);
+});
+
+test('lost acknowledgement fences new mutations until the original receipt is read',async t=>{
+  const server=createServer((req,res)=>res.end('<html><body><input id="field"></body></html>'));
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{await f.browser({type:'finish',request_id:'cleanup',summary:'Cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Synthetic transport fault',headless:true});
+  const op={type:'fill',request_id:'original',target:{by:'css',value:'#field'},value:'one'};
+  await f.browser(op);
+  writeFileSync(resolve(f.dir,'execution/browser-pending-operation.json'),JSON.stringify({request_id:'original'}));
+  const rejected=await f.browser({...op,request_id:'replacement'});
+  assert.equal(rejected.status,'transport_uncertain');assert.equal(rejected.operation_started,false);
+  assert.equal(existsSync(resolve(f.dir,'execution/browser-evidence/replacement.json')),false);
+  assert.equal((await f.browser({type:'health',request_id:'health'})).status,'worker_health');
+  await f.browser(op);
+  assert.equal(existsSync(resolve(f.dir,'execution/browser-pending-operation.json')),false);
+  assert.equal((await f.browser({...op,request_id:'different-intent',value:'two'})).status,'ready');
+  writeFileSync(resolve(f.dir,'execution/browser-pending-operation.json'),JSON.stringify({request_id:'different-intent'}));
+  await f.browser({type:'assert',request_id:'observe',target:{by:'css',value:'#field'},condition:'value',value:'two',case_id:'OBS',title:'Read only',expected:'two'});
+  const done=await f.browser({type:'finish',request_id:'finish',summary:'Unacknowledged action',limitations:[]});
+  assert.equal(done.partial,true);assert.equal(done.summary.passed,1);
+  assert.match(readFileSync(resolve(f.dir,'execution/exploration.json'),'utf8'),/acknowledgement remains unresolved/);
+});
+
+test('sample references and expectation basis preserve execution inputs, receipts and partial delivery',async t=>{
+  const server=createServer((req,res)=>res.end(`<html><body><h1>Samples</h1><input id="field"><input id="short" maxlength="127"><output id="out">idle</output><button id="copy" onclick="document.querySelector('#out').textContent=document.querySelector('#field').value">Copy</button><button id="hidden" style="display:none">Hidden sample</button><button id="below" style="position:absolute;top:3000px">Below viewport</button></body></html>`));
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  const expected='Field retains supplied sample',basis={expected,kind:'requirement',source_path:'inputs/basis.txt',quote:'Preserve the exact supplied value.'};
+  const cases=[{case_id:'BOUND',title:'Boundary',expected,test_data:{boundary:'x'.repeat(128),private_sample:'synthetic-sensitive-boundary-'.repeat(100)},expected_basis:[basis]}];
+  writeJson(resolve(f.dir,'inputs/samples.json'),cases);writeFileSync(resolve(f.dir,'inputs/basis.txt'),basis.quote);
+  const ref={source_path:'inputs/samples.json',case_id:'BOUND',key:'boundary'},case_ref={source_path:ref.source_path,case_id:ref.case_id};
+  const start=await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Exact boundary synthetic fixture',headless:true});
+  assert.equal(start.snapshot.scope,'document');assert.equal(start.snapshot.buttons.find(b=>b.selector==='#below').in_viewport,false);assert.equal(start.snapshot.buttons.find(b=>b.selector==='#hidden').visible,false);
+  const viewport=await f.browser({type:'snapshot',request_id:'viewport',scope:'viewport'});
+  assert.equal(viewport.snapshot.scope,'viewport');assert.ok(viewport.snapshot.buttons.some(b=>b.selector==='#copy'));
+  assert.ok(!viewport.snapshot.buttons.some(b=>['#below','#hidden'].includes(b.selector)));assert.ok(!viewport.snapshot.text.includes('Below viewport'));
+  const fill={type:'fill',request_id:'boundary',target:{by:'css',value:'#field'},value_ref:ref};
+  const entered=await f.browser(fill);assert.equal(entered.status,'ready');assert.equal(entered.input_provenance.samples[0].lengths.code_points,128);assert.equal(entered.input_provenance.input_observation.matches_sample,true);
+  writeJson(resolve(f.dir,'inputs/samples.json'),[{...cases[0],test_data:{boundary:'changed'}}]);
+  assert.deepEqual(await f.browser(fill),entered,'Receipt retrieval must not re-resolve changed data or re-fill');
+  writeJson(resolve(f.dir,'inputs/samples.json'),cases);
+  const check={type:'assert',request_id:'verify',target:fill.target,condition:'value',value_ref:ref,case_ref,case_id:'BOUNDARY',title:'Exact value',expected};
+  const checked=await f.browser(check);assert.equal(checked.assertion.status,'passed');assert.equal(checked.assertion.expectation_provenance.origin,'design_basis');assert.equal(checked.assertion.expectation_provenance.status,'source_located');assert.equal(checked.assertion.expectation_provenance.semantic_verified,false);
+  const copied=await f.browser({type:'click',request_id:'copy',target:{by:'css',value:'#copy'},preconditions:[{target:fill.target,condition:'value',value_ref:ref}],assertion:{target:{by:'css',value:'#out'},condition:'text',value_ref:ref,case_id:'COPIED',title:'Exact copied sample',expected:'Output reflects sample'}});
+  assert.equal(copied.assertion.status,'passed');assert.equal(copied.assertion.comparison,'exact_text');assert.equal(copied.assertion.expectation_provenance.status,'not_recorded');
+  const limited=await f.browser({...fill,request_id:'limited',target:{by:'css',value:'#short'}});
+  assert.equal(limited.input_provenance.input_observation.matches_sample,false);assert.equal(limited.input_provenance.input_observation.actual_lengths.code_points,127);
+  const prevented=await f.browser({type:'click',request_id:'prevent-short-submit',target:{by:'css',value:'#copy'},preconditions:[{target:{by:'css',value:'#short'},condition:'value',value_ref:ref}]});
+  assert.equal(prevented.status,'precondition_not_met');assert.equal(prevented.operation_started,false);
+  const invalid=await f.browser({...check,request_id:'bad-basis',case_id:'BADBASIS',expected_basis:[{...basis,quote:'Unsupported claim'}]});
+  assert.equal(invalid.status,'ready');assert.equal(invalid.assertion.status,'blocked');assert.equal(invalid.assertion.verdict_reason,'expectation_basis_unverified');
+  const observation=await f.browser({type:'assert',request_id:'legacy',target:fill.target,condition:'visible',case_id:'OBSERVED',title:'Field visible',expected:'Visible'});
+  assert.equal(observation.assertion.status,'passed');assert.equal(observation.assertion.expectation_provenance.status,'not_recorded');
+  const privateRef={...ref,key:'private_sample'};
+  const privateFill=await f.browser({...fill,request_id:'private-sample',value_ref:privateRef,secret:true});
+  assert.equal(privateFill.input_provenance.samples[0].lengths,null);
+  const privateCheck=await f.browser({...check,request_id:'private-check',case_id:'PRIVATE',value_ref:privateRef});
+  assert.equal(privateCheck.assertion.status,'passed');assert.ok(!JSON.stringify(privateCheck).includes('synthetic-sensitive-boundary-'));
+  assert.equal(JSON.parse(readFileSync(resolve(f.dir,'execution/browser-evidence/private-check.observation.json'))).observed,'[REDACTED]');
+  const done=await f.browser({type:'finish',request_id:'finish',summary:'Exact inputs and provenance',limitations:[]});assert.equal(done.partial,true);assert.equal(done.summary.passed,4);assert.equal(done.summary.blocked,1);
+  writeJson(resolve(f.dir,'execution/execution-task.json'),{run_id:f.id,stage:'execution',outcome:'partial',summary:'Sample fidelity',source_paths:['inputs/request.txt'],questions:[],limitations:['One unsupported expectation, one truncated input']});
+  const contract=inspectIndependentArtifacts(root,f.id,'execution');assert.equal(contract.errors.length,0,JSON.stringify(contract.errors));
+});
+
+test('native dialog policy receipts preserve partial delivery and do not require an unlock or replay',async t=>{
+  const server=createServer((req,res)=>res.end(`<html><body><h1>Dialog fixture</h1><output id="status">idle</output>
+    <button id="confirm" onclick="document.querySelector('#status').textContent=confirm('Proceed with synthetic record?')?'accepted':'cancelled'">Confirm</button>
+    <button id="quiet" onclick="document.querySelector('#status').textContent='quiet'">Quiet</button></body></html>`));
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{if(existsSync(resolve(f.dir,'execution/browser-private.json'))) await f.browser({type:'finish',request_id:'cleanup',summary:'Cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Native dialog synthetic checks',headless:true});
+  const assertion=(id,value)=>({target:{by:'css',value:'#status'},condition:'text',value,case_id:id,title:id,expected:value});
+  const operation={type:'click',request_id:'unexpected',target:{by:'css',value:'#confirm'},assertion:assertion('UNEXPECTED','cancelled')};
+  const unexpected=await f.browser(operation);
+  assert.equal(unexpected.status,'ready');assert.equal(unexpected.dialogs.reason,'unexpected_dialog');
+  assert.equal(unexpected.assertion.status,'blocked');assert.equal(unexpected.assertion.verdict_reason,'unexpected_dialog');
+  assert.deepEqual(await f.browser(operation),unexpected);
+  const evidence=JSON.parse(readFileSync(resolve(f.dir,'execution/browser-evidence/unexpected.observation.json')));
+  assert.equal(evidence.condition_verdict.status,'passed');assert.equal(evidence.verdict.status,'blocked');assert.equal(evidence.matched,false);
+  const policy={type:'confirm',message:'Proceed with synthetic record?',action:'accept'};
+  const notStarted=await f.browser({type:'click',request_id:'unready',target:operation.target,dialog_policy:policy,preconditions:[{target:{by:'css',value:'#status'},condition:'text',value:'not present'}]});
+  assert.equal(notStarted.status,'precondition_not_met');assert.equal(notStarted.operation_started,false);assert.equal(notStarted.dialogs,undefined);
+  const accepted=await f.browser({type:'click',request_id:'accept',target:operation.target,dialog_policy:policy,assertion:assertion('ACCEPT','accepted')});
+  assert.equal(accepted.assertion.status,'passed');assert.equal(accepted.dialogs.reason,null);assert.equal(accepted.dialogs.events[0].action,'accept');
+  const cancelled=await f.browser({type:'click',request_id:'dismiss',target:operation.target,dialog_policy:{...policy,action:'dismiss'},assertion:assertion('DISMISS','cancelled')});
+  assert.equal(cancelled.assertion.status,'passed');assert.equal(cancelled.dialogs.events[0].action,'dismiss');
+  const missing=await f.browser({type:'click',request_id:'missing',target:{by:'css',value:'#quiet'},dialog_policy:policy,assertion:assertion('MISSING','quiet')});
+  assert.equal(missing.status,'ready');assert.equal(missing.assertion.status,'blocked');assert.equal(missing.dialogs.reason,'expected_dialog_not_observed');
+  const mismatched=await f.browser({type:'click',request_id:'mismatch',target:operation.target,dialog_policy:{...policy,message:'Wrong message'},assertion:assertion('MISMATCH','cancelled')});
+  assert.equal(mismatched.assertion.status,'blocked');assert.equal(mismatched.dialogs.events[0].action,'dismiss');
+  const done=await f.browser({type:'finish',request_id:'finish',summary:'Dialog observations',limitations:[]});
+  assert.equal(done.partial,true);assert.equal(done.summary.passed,2);assert.equal(done.summary.blocked,3);
+  const exploration=JSON.parse(readFileSync(resolve(f.dir,'execution/exploration.json')));
+  assert.ok(exploration.evidence.some(e=>e.path==='execution/browser-evidence/unexpected.dialogs.json'));
+  assert.ok(exploration.limitations.some(s=>s.includes('Native dialog')));
+  assert.ok(!readFileSync(resolve(f.dir,'execution/browser-dialogs.json'),'utf8').includes('Proceed with synthetic'));
+  writeJson(resolve(f.dir,'execution/execution-task.json'),{run_id:f.id,stage:'execution',outcome:'partial',summary:'Dialog checks with unknowns',source_paths:['inputs/request.txt'],questions:[],limitations:['Unexpected and missing dialogs remain unverified']});
+  const contract=inspectIndependentArtifacts(root,f.id,'execution');assert.equal(contract.errors.length,0,JSON.stringify(contract.errors));
+});
+
+test('independent finish retains actual assertion scope and explicitly untested business paths',async t=>{
+  const server=createServer((req,res)=>res.end('<html><body><h1 id="title">Sample</h1></body></html>'));
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{await f.browser({type:'finish',request_id:'cleanup',summary:'Cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Inspect fixture',headless:true});
+  const observed=await f.browser({type:'assert',request_id:'title',case_id:'TITLE',title:'Title only',expected:'Title, budget and state match',target:{by:'css',value:'#title'},condition:'visible'});
+  assert.equal(observed.assertion.status,'passed');
+  assert.deepEqual(observed.assertion.checked_condition,{target:{by:'css',value:'#title'},condition:'visible',comparison:'visible',value:null});
+  const done=await f.browser({type:'finish',request_id:'finish',summary:'Title observed',limitations:[],untested:['Budget, state and create success path were not verified']});
+  assert.equal(done.partial,true);assert.equal(done.summary.passed,1);assert.equal(done.coverage.status,'partial');
+  const result=JSON.parse(readFileSync(resolve(f.dir,'execution/test_results.json'),'utf8'));
+  assert.equal(result.status,'partial');assert.deepEqual(result.coverage,done.coverage);
+  writeJson(resolve(f.dir,'execution/execution-task.json'),{run_id:f.id,stage:'execution',outcome:'partial',summary:'Title observed only',source_paths:['inputs/request.txt'],questions:[],limitations:done.coverage.untested});
+  assert.deepEqual(inspectIndependentArtifacts(root,f.id,'execution').errors,[]);
+  await f.returnChild(f.dispatched.delegation);
+  const handed=await f.send(f.dispatched.handoff_template);assert.equal(handed.exit_code,0,JSON.stringify(handed));
+  const extended=await f.send({action:'extend_plan',stages:['report'],reason:'Deliver partial observations'});
+  const report=await f.send(extended.dispatch_templates.find(r=>r.stage==='report'));assert.equal(report.exit_code,0,JSON.stringify(report));
+  writeJson(resolve(f.dir,'report/reportable-results.json'),{run_id:f.id,status:'completed',cases:result.cases,summary:result.summary});
+  writeJson(resolve(f.dir,'report/issues.json'),[]);
+  writeFileSync(resolve(f.dir,'report/test_report.md'),'# Partial report\nOnly title visibility was checked.');
+  writeJson(resolve(f.dir,'report/report-task.json'),{run_id:f.id,stage:'report',outcome:'completed',summary:'Report produced',questions:[],limitations:[],source_paths:['execution/test_results.json']});
+  const exported=await f.send({action:'export_report'});assert.equal(exported.exit_code,0,JSON.stringify(exported));
+  const projected=JSON.parse(readFileSync(resolve(f.dir,'report/reportable-results.json')));
+  assert.equal(projected.status,'partial');assert.deepEqual(projected.coverage,result.coverage);
+  const task=JSON.parse(readFileSync(resolve(f.dir,'report/report-task.json')));
+  assert.equal(task.outcome,'partial');assert.deepEqual(task.limitations,done.coverage.untested);
+  await f.returnChild(report.delegation);
+  const delivered=await f.send(report.handoff_template);assert.equal(delivered.exit_code,0,JSON.stringify(delivered));
+  const doc=readFileSync(resolve(f.dir,'report/test_report.html'),'utf8');
+  assert.ok(doc.includes('Budget, state and create success path'));assert.ok(doc.includes('预期（非验证结论）'));
+});
+
+test('finishing without assertions is partial, not a fabricated passing functional test',async t=>{
+  const server=createServer((req,res)=>res.end('<html><body>Empty fixture</body></html>'));
+  await new Promise(done=>server.listen(0,'127.0.0.1',done));
+  const url=`http://127.0.0.1:${server.address().port}/`,f=await fixture(url);
+  t.after(async()=>{await f.browser({type:'finish',request_id:'cleanup',summary:'Cleanup',limitations:[]}).catch(()=>{});await pause(1300);await new Promise(done=>server.close(done));});
+  await f.browser({type:'start',request_id:'start',url,source_path:'inputs/request.txt',scope:'Inspect fixture',headless:true});
+  await f.browser({type:'pause',request_id:'access-wait',kind:'access',question:'Synthetic manual access needed'});
+  const done=await f.browser({type:'finish',request_id:'finish',summary:'No assertions executed',limitations:['No functional checks']});
+  assert.equal(done.partial,true);assert.equal(done.summary.passed,0);
+  assert.equal(done.human_handoff_timing.open,null);
+  assert.equal(done.human_handoff_timing.intervals.length,1);
+  assert.equal(done.human_handoff_timing.intervals[0].reason,'finished_without_resume');
+  assert.ok(done.human_handoff_timing.closed_window_ms>=0);
+  writeFileSync(resolve(f.dir,'execution/execution-task.json'),JSON.stringify({run_id:f.id,stage:'execution',outcome:'completed',summary:'Not a valid complete result',source_paths:['inputs/request.txt'],questions:[],limitations:[]}));
+  assert.match(inspectIndependentArtifacts(root,f.id,'execution').errors.join(' '),/partial/);
+});

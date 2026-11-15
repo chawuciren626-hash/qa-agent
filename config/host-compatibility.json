@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "product": "AITestHarness",
+  "adapter_version": "1.0.0",
+  "upstream": "Prism-Shadow/penguin-harness",
+  "release_api": "https://api.github.com/repos/Prism-Shadow/penguin-harness/releases/latest",
+  "hosts": {
+    "0.2.16": {
+      "status": "supported",
+      "platforms": ["win32-x64"],
+      "desktop_sha256": "b3ae02d2c39ec5b1a5bd5611ee6407c8f1d90e72d03a43191062b87872d45769",
+      "tag": "v0.2.16",
+      "evidence": "docs/penguinharness-upgrade-2026-10-20.md",
+      "validation_scope": "Exact patch checks, host hook/route tests and focused UI checks; not full product acceptance",
+      "distribution_ready": false
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "scope": "固定执行资产回归；不替代 Agent 自主设计能力评测",
+  "scenarios": {
+    "healthy": {"total": 6, "passed": 6, "failed_ids": [], "purpose": "正常基线"},
+    "defect": {"total": 6, "passed": 5, "failed_ids": ["TC-BASE-05"], "purpose": "预设缺陷：保存负预算"},
+    "unavailable": {"total": 6, "passed": 1, "failed_ids": ["TC-BASE-02", "TC-BASE-03", "TC-BASE-04", "TC-BASE-05", "TC-BASE-06"], "purpose": "写接口统一503；失败需要分类为环境问题，不自动算产品缺陷"}
+  },
+  "quality_scenarios": ["missing_results", "missing_evidence_assessment", "missing_defect_records", "duplicate_evidence", "missing_evidence_files"]
+}

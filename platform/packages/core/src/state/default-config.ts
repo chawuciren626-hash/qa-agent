@@ -1,0 +1,976 @@
+/**
+ * Default system configuration for Agent State (written to `system_config.yaml`) and the
+ * default `AGENTS.md` (empty).
+ *
+ * Runtime Prompt and tool configuration should come from editable files;
+ * code only supplies the initial defaults. `system_config.yaml` holds the relatively stable
+ * system-level Prompt, built-in tools, and MCP Server configuration; `AGENTS.md` is injected
+ * via a system Prompt placeholder.
+ *
+ * The system Prompt is sectioned and trimmed as needed (Role/Personality/Success
+ * criteria/Constraints/Output/Stop rules/Tool use/System markers/File system/Suggested
+ * workflows); it does not describe specific tools (that comes from the tool schema). AGENTS.md
+ * and the Vault/Skills/Memory/Schedules section placeholders go at the end, before Environment.
+ *
+ * Placeholders (`{{...}}`) appear only in the trailing injection zones (AGENTS.md / Vault /
+ * Skills / Memory / Schedules / Environment); elsewhere the body uses angle-bracket notation
+ * such as \`<app_data_dir>\`, \`<agent_id>\`, \`<session_id>\` — these are **not substituted**;
+ * the model fills in the actual values from the Environment section itself.
+ */
+import { SUBAGENT_THINKING_LEVELS } from "../interfaces/index.js";
+import type {
+  MCPServerConfig,
+  ThinkingLevelName,
+  ToolDefinitionConfig,
+} from "../interfaces/index.js";
+import type { CompactionMode } from "@prismshadow/amsp/records";
+// The seeded compaction threshold is declared beside the derivation that caps it, so the
+// default and the cap cannot drift apart.
+import { DEFAULT_MAX_CONTEXT_LENGTH } from "../llm/context-limits.js";
+import { KERNEL_VERSION } from "./kernel-history.js";
+
+/** Docs: /docs/configuration § "System prompt placeholders". */
+export const AGENTS_MD_PLACEHOLDER = "{{AGENTS_MD}}";
+/**
+ * Inside `vault.prompt`: the vault key-name list, one `- KEY` per line — names only, never
+ * values. Also still substituted when written directly in the template body, for templates
+ * from before the `{{VAULT}}` section placeholder (see assembleSystemPrompt's legacy inline
+ * compatibility), where it honors `vault.enabled` the same way.
+ */
+export const VAULT_KEYS_PLACEHOLDER = "{{VAULT_KEYS}}";
+/**
+ * Inside `skills.prompt`: the installed Skills' metadata lines. Also still substituted when
+ * written directly in the template body, for templates from before the `{{SKILLS}}` section
+ * placeholder (see assembleSystemPrompt's legacy inline compatibility), where it honors
+ * `skills.enabled` the same way.
+ */
+export const SKILL_METADATA_PLACEHOLDER = "{{SKILL_METADATA}}";
+export const SESSION_ID_PLACEHOLDER = "{{SESSION_ID}}";
+export const CWD_PLACEHOLDER = "{{CWD}}";
+export const AGENT_ID_PLACEHOLDER = "{{AGENT_ID}}";
+/** The Project directory — PenguinHarness's app data root, exposed in the default prompt as the "App Data Dir" Environment line (deliberately not called a project/task directory there). */
+export const PROJECT_DIR_PLACEHOLDER = "{{PROJECT_DIR}}";
+export const PROVIDER_PLACEHOLDER = "{{PROVIDER}}";
+export const MODEL_ID_PLACEHOLDER = "{{MODEL_ID}}";
+export const PLATFORM_PLACEHOLDER = "{{PLATFORM}}";
+export const OS_VERSION_PLACEHOLDER = "{{OS_VERSION}}";
+/** The shell exec_command runs (`bash` on POSIX; on Windows whatever shell.ts resolved), so the model knows which command syntax to write. */
+export const SHELL_PLACEHOLDER = "{{SHELL}}";
+export const DATE_PLACEHOLDER = "{{DATE}}";
+/**
+ * Expands to the rendered `memory.prompt` block, plus `memory.workspace_prompt` when the
+ * Session runs in a persistent Workspace; an empty string when Memory is off. A template
+ * without this placeholder injects no Memory at all — the Web App's Memory tab offers
+ * inserting it as an explicit action, nothing is spliced in automatically.
+ */
+export const MEMORY_PLACEHOLDER = "{{MEMORY}}";
+/**
+ * Inside `memory.workspace_prompt` only: the absolute path of the current Workspace's Memory
+ * directory (`…/memory/<workspace_memory_key>`). The key half is a hash the model could never
+ * derive itself, so the resolved directory is rendered right where the prompt names it —
+ * the User section's directory stays a literal `<app_data_dir>/…` pattern, resolvable from
+ * the Environment section.
+ */
+export const WORKSPACE_MEMORY_DIR_PLACEHOLDER = "{{WORKSPACE_MEMORY_DIR}}";
+/** Inside `memory.workspace_prompt` only: the content of the current Workspace scope's `MEMORY.md` index (capped, see MEMORY_INDEX_MAX_LINES / MEMORY_INDEX_MAX_CHARS). */
+export const WORKSPACE_MEMORY_INDEX_PLACEHOLDER = "{{WORKSPACE_MEMORY_INDEX}}";
+/** Inside either Memory prompt: the content of the User scope's `MEMORY.md` index (capped, see MEMORY_INDEX_MAX_LINES / MEMORY_INDEX_MAX_CHARS). */
+export const USER_MEMORY_INDEX_PLACEHOLDER = "{{USER_MEMORY_INDEX}}";
+/**
+ * Expands to the rendered `vault.prompt` block (the # Vault section statement plus the
+ * `{{VAULT_KEYS}}` key-name list); an empty string when the Vault section is off. A template
+ * without this placeholder injects no Vault section at all — the Web App's Vault tab offers
+ * inserting it (or migrating a legacy hardcoded section) as an explicit action, nothing is
+ * spliced in automatically.
+ */
+export const VAULT_PLACEHOLDER = "{{VAULT}}";
+/**
+ * Expands to the rendered `skills.prompt` block (the # Skills section statement plus the
+ * `{{SKILL_METADATA}}` metadata lines); an empty string when the Skills section is off. A
+ * template without this placeholder injects no Skills section at all — the Web App's Skills
+ * tab offers inserting it (or migrating a legacy hardcoded section) as an explicit action,
+ * nothing is spliced in automatically.
+ */
+export const SKILLS_PLACEHOLDER = "{{SKILLS}}";
+/**
+ * Expands to the rendered `schedules.prompt` block (the # Scheduled Tasks section teaching
+ * file-based task management, plus the `{{SCHEDULE_LIST}}` task roster); an empty string when
+ * the Schedules section is off. A template without this placeholder injects no Schedules
+ * section at all — the Web App's Schedules tab offers inserting it as an explicit action,
+ * nothing is spliced in automatically.
+ */
+export const SCHEDULES_PLACEHOLDER = "{{SCHEDULES}}";
+/** Inside `schedules.prompt` only: the current schedule-file names, one `- name` per line (SCHEDULE_LIST_EMPTY_NOTE when none exist). */
+export const SCHEDULE_LIST_PLACEHOLDER = "{{SCHEDULE_LIST}}";
+
+/**
+ * Context compaction config (the `compaction` section of `system_config.yaml`).
+ * Docs: /docs/configuration § "Agent config".
+ */
+export interface CompactionConfig {
+  /** Context Token threshold (taken from the most recent token_usage's request.total); defaults to {@link DEFAULT_MAX_CONTEXT_LENGTH}, <=0 disables. */
+  max_context_length?: number;
+  /** Session cumulative turn threshold (counted in LLM Requests, across Tasks); defaults to -1, <=0 means no limit. */
+  max_session_turns?: number;
+  /** Compaction mode; defaults to summarize. */
+  mode?: CompactionMode;
+  /** Prompt template for summarize compaction; defaults to the built-in value (editable config, not hardcoded). */
+  prompt?: string;
+}
+
+/**
+ * Memory config (the `memory` section of `system_config.yaml`). Both prompts are editable on
+ * the Web App's Memory tab and rendered into the template's `{{MEMORY}}` placeholder.
+ * Docs: /docs/configuration § "Memory".
+ */
+export interface MemoryConfig {
+  /** Whether Memory enters the model context and its directories are prepared; defaults to true. */
+  enabled?: boolean;
+  /**
+   * The always-injected half of the `{{MEMORY}}` block: what Memory is for, the save mechanics,
+   * and the User scope with its index — carrying the `{{USER_MEMORY_INDEX}}` injection point
+   * (the User directory is literal text, not a placeholder). Defaults to the built-in value.
+   */
+  prompt?: string;
+  /**
+   * Appended to `prompt` only when the Session runs in a persistent Workspace: the Workspace
+   * scope, its index and the rule for choosing between the two — carrying
+   * `{{WORKSPACE_MEMORY_INDEX}}` and the `{{WORKSPACE_MEMORY_DIR}}` directory. A separate key
+   * rather than a conditional inside `prompt` because substitution has no conditionals — a
+   * temporary Workspace would otherwise be told about a scope it does not have.
+   */
+  workspace_prompt?: string;
+}
+
+/**
+ * Vault prompt-injection config (the `vault` section of `system_config.yaml`). The prompt is
+ * editable on the Web App's Vault tab and rendered into the template's `{{VAULT}}` placeholder.
+ * The toggle governs prompt injection only: with it off, vault values are still injected into
+ * shell subprocess environments — the model is just not shown the key-name roster.
+ * Docs: /docs/configuration § "Vault".
+ */
+export interface VaultConfig {
+  /** Whether the Vault section enters the model context; defaults to true. */
+  enabled?: boolean;
+  /** The `{{VAULT}}` block: the section statement carrying the `{{VAULT_KEYS}}` key-name injection point. Defaults to the built-in value. */
+  prompt?: string;
+}
+
+/**
+ * Skills prompt-injection config (the `skills` section of `system_config.yaml`). The prompt is
+ * editable on the Web App's Skills tab and rendered into the template's `{{SKILLS}}`
+ * placeholder. The toggle governs prompt injection only: with it off, installed Skills stay on
+ * disk and can still be invoked explicitly (e.g. via a [use_skills] block naming them) — the
+ * model is just not shown the roster.
+ * Docs: /docs/skills.
+ */
+export interface SkillsConfig {
+  /** Whether the Skills section enters the model context; defaults to true. */
+  enabled?: boolean;
+  /** The `{{SKILLS}}` block: the section statement carrying the `{{SKILL_METADATA}}` metadata-line injection point. Defaults to the built-in value. */
+  prompt?: string;
+}
+
+/**
+ * Schedules prompt-injection config (the `schedules` section of `system_config.yaml`). The
+ * prompt is editable on the Web App's Schedules tab and rendered into the template's
+ * `{{SCHEDULES}}` placeholder. The toggle governs prompt injection only: with it off, the
+ * server still fires configured tasks on time — the model is just not taught the file-based
+ * task system.
+ * Docs: /docs/configuration § "Schedules".
+ */
+export interface SchedulesConfig {
+  /** Whether the Scheduled Tasks section enters the model context; defaults to true. */
+  enabled?: boolean;
+  /** The `{{SCHEDULES}}` block: the file-based task-management guidance carrying the `{{SCHEDULE_LIST}}` roster injection point. Defaults to the built-in value. */
+  prompt?: string;
+}
+
+/**
+ * Hook config (the `hooks` section of `system_config.yaml`). One Agent-level switch, toggled
+ * on the Web App's Hooks tab. No prompt: a hook package is scripts run at the loop's hook
+ * points, not text injected into the context. With it off the packages stay installed — listed
+ * and exportable — and a Session created from then on assembles no hooks at all.
+ * Docs: /docs/skills § "Hook packages".
+ */
+export interface HooksConfig {
+  /** Whether a new Session consults the installed hook packages; defaults to true. */
+  enabled?: boolean;
+}
+
+/** Stands in for an index placeholder when the `MEMORY.md` does not exist yet or is blank — the model is told the store is empty rather than being handed nothing. */
+export const MEMORY_INDEX_EMPTY_NOTE = "(the index is empty — nothing has been saved yet)";
+
+/** Stands in for `{{SCHEDULE_LIST}}` when no schedule files exist yet — the model is told the roster is empty rather than being handed nothing (mirrors MEMORY_INDEX_EMPTY_NOTE). */
+export const SCHEDULE_LIST_EMPTY_NOTE = "(no scheduled tasks defined yet)";
+
+/**
+ * Cap on injected index lines per scope (one memory per line by convention), so a runaway
+ * `MEMORY.md` cannot flood the context. Only the injection is capped — the file on disk is
+ * never touched — and a truncation note tells the model to open the full index itself.
+ */
+export const MEMORY_INDEX_MAX_LINES = 200;
+
+/**
+ * Character backstop on an injected index, applied after the line cap: catches the long-line
+ * index the line cap alone misses (a file under 200 lines can still be arbitrarily large).
+ * Deliberately code-only — the default prompt teaches per-line brevity (~150 characters)
+ * instead of quoting this number; when the backstop does fire, the truncation note says so.
+ */
+export const MEMORY_INDEX_MAX_CHARS = 25_000;
+
+/**
+ * Built-in default Memory Prompt: the always-injected half of the `{{MEMORY}}` block, in
+ * template-example form — a fenced frontmatter example, what is worth saving, the index
+ * contract (the line cap and a per-line length hint, so the model keeps the index short
+ * before ever hitting the code-side caps) and the hygiene rules, then the User scope section
+ * with its index. Stored
+ * per-Agent in `system_config.yaml` and editable on the Web App's Memory tab. The User
+ * directory is literal text in the template's angle-bracket convention (resolved from the
+ * Environment section by the model, like the Skills paths) — the only injection point is the
+ * index itself.
+ */
+export const DEFAULT_MEMORY_PROMPT = `# Memory
+Your long-term record across sessions: Markdown files you maintain with the file tools, in the directories below (they exist). One file per fact, with frontmatter:
+
+\`\`\`markdown
+---
+name: <kebab-case-slug, matching the file name>
+description: <one line — used to decide relevance during recall>
+updated_at: <YYYY-MM-DD>
+---
+
+<the fact; for corrections and decisions add **Why:** and **How to apply:** lines. Link with [[their-name]] — a name that doesn't exist yet is fine. Dates absolute.>
+\`\`\`
+
+**Save** who the user is and how they want you to work, with the why; goals and constraints not derivable from the code; pointers to external resources.
+
+**When:** a request repeated, a correction that outlives the task (with what they wanted instead), a habit or convention stated more than once, a reusable working detail you would otherwise ask for again. One clear statement is enough; a repeat only makes it obvious. Unsure? Ask.
+
+**Never** what code, config or git history states, unconfirmed guesses, transcript excerpts — asked anyway, save the non-obvious part. Anything else is savable if the user wants it; anyone who reaches this agent reads it all.
+
+**Index:** each \`MEMORY.md\` lists its memories one line each (\`- [Title](file.md) — hook\`, ~150 chars, no content), updated with the file — deletions included. Only the first ${MEMORY_INDEX_MAX_LINES} lines are injected: merge overlaps, drop stale entries. Before saving, check the index and extend the file that covers the subject; delete memories that prove wrong.
+
+## User memory
+What holds wherever you work; every one of your sessions reads it.
+
+User Memory Dir: \`<app_data_dir>/agents/<agent_id>/agent_state/memory/user\`
+
+Index:
+{{USER_MEMORY_INDEX}}`;
+
+/**
+ * Built-in default for the Workspace half of the `{{MEMORY}}` block, appended to
+ * `memory.prompt` only when the Session runs in a persistent Workspace. The rule for choosing
+ * between the two scopes lives here on purpose: a Session in a temporary Workspace has one
+ * scope and no choice to make, so it never sees the rule at all. The directory is rendered in
+ * place via `{{WORKSPACE_MEMORY_DIR}}` — its final segment is a path hash the model could not
+ * compose from Environment values the way it can the User directory.
+ */
+export const DEFAULT_MEMORY_WORKSPACE_PROMPT = `## Workspace memory
+Facts about the workspace you are working in now. What would still hold in a different project goes in user memory; when unsure, write here.
+
+Workspace Memory Dir: \`{{WORKSPACE_MEMORY_DIR}}\`
+
+Index:
+{{WORKSPACE_MEMORY_INDEX}}`;
+
+/**
+ * The pre-`{{VAULT}}` default template's hardcoded # Vault section, frozen verbatim (its
+ * trailing inline `{{VAULT_KEYS}}` included) so `insertVaultPlaceholder` can migrate a stored
+ * legacy template by exact replacement — `system_config.yaml` is materialized at Agent
+ * creation and never auto-upgraded, so existing templates carry this text until that explicit
+ * action. Never edit this constant: it must keep matching what old yaml files actually
+ * contain, even after `DEFAULT_VAULT_PROMPT` evolves away from it.
+ *
+ * Retirement condition: remove together with `insertVaultPlaceholder`'s migration branch once
+ * pre-`{{VAULT}}` templates (Agents created before the section placeholder shipped) are no
+ * longer expected in the wild.
+ */
+export const LEGACY_VAULT_SECTION = `# Vault
+The vault holds this agent's per-agent secrets (agent_state/.vault.toml). Each entry is injected into your shell subprocesses as an environment variable — values never appear in your context. Use the variable names below in commands when a task needs them.
+${VAULT_KEYS_PLACEHOLDER}`;
+
+/**
+ * The pre-`{{SKILLS}}` default template's hardcoded # Skills section, frozen verbatim (its
+ * trailing inline `{{SKILL_METADATA}}` included) for `insertSkillsPlaceholder`'s migration
+ * branch. Same freeze rule and retirement condition as `LEGACY_VAULT_SECTION`.
+ */
+export const LEGACY_SKILLS_SECTION = `# Skills
+Skills are reusable instruction packages at \`<app_data_dir>/agents/<agent_id>/agent_state/skills/<skill_name>/SKILL.md\`. When a task matches one below, or the user asks for one (the message may start with a [use_skills] block naming them), read that SKILL.md in full with read_file, then follow it. If a request names a skill without a concrete task, ask the user what they need first.
+${SKILL_METADATA_PLACEHOLDER}`;
+
+/**
+ * Built-in default Vault Prompt: what `{{VAULT}}` expands to — currently word-for-word the
+ * section the pre-toggle default template hardcoded (the toggle refactor moved the text into
+ * editable config without changing a word), ending in the `{{VAULT_KEYS}}` key-name list.
+ * Stored per-Agent in `system_config.yaml` and editable on the Web App's Vault tab. A future
+ * wording change goes here (as a new literal); the legacy constant stays frozen.
+ */
+export const DEFAULT_VAULT_PROMPT = LEGACY_VAULT_SECTION;
+
+/**
+ * Built-in default Skills Prompt: what `{{SKILLS}}` expands to — currently word-for-word the
+ * legacy hardcoded section (same move-not-reword relationship as `DEFAULT_VAULT_PROMPT`),
+ * ending in the `{{SKILL_METADATA}}` metadata lines. Stored per-Agent in `system_config.yaml`
+ * and editable on the Web App's Skills tab.
+ */
+export const DEFAULT_SKILLS_PROMPT = LEGACY_SKILLS_SECTION;
+
+/**
+ * Built-in default Schedules Prompt: what `{{SCHEDULES}}` expands to — teaches the model to
+ * manage scheduled tasks as TOML files with its ordinary file tools (there is no dedicated
+ * tool), in template-example form like DEFAULT_MEMORY_PROMPT: the directory and the target
+ * Session as literal angle-bracket patterns resolvable from the Environment section, a fenced
+ * example, the field rules schedule-file.ts enforces, the hygiene rules, then the current
+ * roster via `{{SCHEDULE_LIST}}`. Stored per-Agent in `system_config.yaml` and editable on the
+ * Web App's Schedules tab.
+ *
+ * The target guidance is deliberate: `session_id` set to the Environment section's Session ID
+ * makes a task the user arranged in conversation report back into that same conversation
+ * rather than into a fresh Session nobody is watching. It is guidance only — schedule-file.ts
+ * still opens a new Session for a file carrying no `session_id`, so the format's own default
+ * is untouched. It does make the self-directed loop the ordinary shape, which is what the
+ * `end_at` / one-shot / small-work hygiene line pays for: a periodic task firing into its own
+ * Session grows that Session's context on every trigger and ends only when someone ends it.
+ * The `end_at` half of that line is conditional on purpose: an open-ended reminder bounded by
+ * an invented date stops on that date with no event and no error record, so the section asks
+ * for a bound only when the request has a horizon, and for the reply to say so otherwise.
+ *
+ * The section also spells out where this Session is the wrong target. A Session is not the
+ * durable identity of a conversation — switching model or agent opens a new one, and deleting
+ * the conversation stops a task bound to it (the next fire records a missing-session error and
+ * marks the task invalid) — so work meant to outlive the conversation belongs in the
+ * new-Session form. And a subagent renders this same section against its own short-lived
+ * Session, so it is told to omit the field (the `run_subagent` self-test the system prompt
+ * already uses).
+ */
+export const DEFAULT_SCHEDULES_PROMPT = `# Scheduled Tasks
+Prompts delivered to this agent on a timer: TOML files you manage with the file tools, in \`<app_data_dir>/agents/<agent_id>/agent_state/schedule/\` (create the directory if it does not exist). One task per file; the file name minus \`.toml\` is the task's name (letters, digits, \`_\` and \`-\` only). The server re-reads the directory within about 30 seconds — creating, editing or deleting a file is all it takes, there is nothing to register.
+
+\`\`\`toml
+prompt = "Check yesterday's build results and summarize the failures"
+enabled = true
+start_at = 2026-08-01T09:00:00Z
+period = "12h"
+end_at = 2026-09-01T09:00:00Z
+session_id = "<session_id>"
+\`\`\`
+
+Field rules: \`prompt\` (required) is the message sent when the task fires. \`enabled\` defaults to false — set it to true explicitly or the task never runs. \`start_at\` (required) is the first trigger time, an ISO 8601 instant. \`period\` is a fixed interval like \`30m\` / \`12h\` / \`7d\` (5 minutes minimum); omit it for a one-shot task. \`end_at\` (optional) must be later than start_at; a periodic task stops after it. \`session_id\` picks where the prompt is delivered, and by default it is this Session: write the id from the Environment section's Session ID line, so every trigger arrives in the conversation you are in now, with its context intact. If \`run_subagent\` is not in your tool list, you are the subagent: nobody is watching your Session, so omit \`session_id\` unless your caller gave you an id to target. Omit it when the user asks for a separate Session, or when the task is better off starting clean — a nightly report that should not inherit this conversation's history. Omit it as well for anything that has to outlive this conversation: this Session is not permanent — switching the model or the agent opens a new one, and deleting the conversation strands a task bound to it, which then stops firing. Each trigger then opens a new Session, in which \`workspace\` (optional) picks the working directory and \`provider\` + \`model_id\` pick the model — always both or neither; omit both to use the Project's default model. \`session_id\` cannot be combined with workspace / provider / model_id.
+
+A repeating task aimed at this Session grows its context on every trigger and nothing ends it on its own: give it an \`end_at\` when the request has a natural horizon; when the user wants it open-ended, leave \`end_at\` off and say in your reply that it will run until they remove it. Use a one-shot task for a one-time reminder, and keep the work each trigger asks for small.
+
+Check the current tasks below before creating one so you never duplicate an existing task; change a task by editing its file in place; delete the file when a task is obsolete.
+
+Current tasks:
+${SCHEDULE_LIST_PLACEHOLDER}`;
+
+/**
+ * System-level config for Agent State, serialized as `system_config.yaml`.
+ * Docs: /docs/configuration § "Agent config".
+ */
+export interface SystemConfig {
+  /** Agent display name (display name is separate from id; falls back to id when unset). */
+  name?: string;
+  /** Agent description. */
+  description?: string;
+  /** Agent State version number: a natural number, 1 on creation, incremented on successful optimization; a missing field is treated as 1. */
+  version?: number;
+  /**
+   * Kernel version: which generation of the built-in defaults this config is based on, as a
+   * date string (`KERNEL_VERSION` at materialization time — creation, restore-defaults, or a
+   * kernel update). Unrelated to `version` (the optimization counter): user edits change
+   * neither the defaults generation nor this stamp — only the three materialization paths
+   * write it. A missing field means the config predates the kernel-version mechanism and is
+   * treated as outdated. See kernel-history.ts / kernel-update.ts.
+   */
+  kernel_version?: string;
+  /** System-level Prompt (relatively stable; should not be modified frequently). */
+  system_prompt: string;
+  /**
+   * Max LLM turns per Task (a runtime parameter that belongs to Agent config, not specified
+   * when creating a Session). A positive integer caps the Task; -1 (the default) removes the
+   * cap so long runs are never cut off mid-task. Valid values are > 0 or exactly -1.
+   */
+  max_turns?: number;
+  model?: {
+    max_tokens?: number;
+    thinking_level?: ThinkingLevelName;
+    timeoutMs?: number;
+  };
+  /** Context compaction (enabled by default, max_context_length 256k, mode summarize). */
+  compaction?: CompactionConfig;
+  /** Memory (enabled by default; only reaches the prompt through the template's `{{MEMORY}}` placeholder). */
+  memory?: MemoryConfig;
+  /** Vault section injection (enabled by default; reaches the prompt through `{{VAULT}}`, or a legacy template's inline `{{VAULT_KEYS}}`). */
+  vault?: VaultConfig;
+  /** Skills section injection (enabled by default; reaches the prompt through `{{SKILLS}}`, or a legacy template's inline `{{SKILL_METADATA}}`). */
+  skills?: SkillsConfig;
+  /** Scheduled-tasks section injection (enabled by default; only reaches the prompt through `{{SCHEDULES}}`). */
+  schedules?: SchedulesConfig;
+  /** Whether new Sessions run the installed hook packages (enabled by default; nothing prompt-side). */
+  hooks?: HooksConfig;
+  tools?: {
+    /** Built-in system tool configuration (per-entry fields incl. the `call_description` toggle live on ToolDefinitionConfig). */
+    builtin?: ToolDefinitionConfig[];
+    /** MCP Server configuration. */
+    mcpServers?: MCPServerConfig[];
+  };
+}
+
+const DEFAULT_SYSTEM_PROMPT = `# Role
+You are PenguinHarness, an agent that completes the user's requests on their machine with the tools available to you.
+
+# Personality
+Communicate with the user precisely and concisely, yet with warmth, and always reply in the user's language — code, identifiers and commit messages keep their own conventions.
+
+# Success criteria
+- Before delivering the result, check that every problem in the request has been solved.
+- Verify your work through every available means — the project's own test, lint, typecheck and build commands, found in its README or manifest rather than assumed; never claim a result you did not observe.
+
+# Constraints
+- Make the smallest change that satisfies the request; do not modify unrelated files.
+- Destructive operations are forbidden.
+- Never kill a process you did not start, PenguinHarness's own services included, unless the user asks; never take a PenguinHarness service port, and when a port you want is busy, pick another free port.
+- If a tool call fails, read the error, adjust, and retry; never repeat the same failing input.
+
+# Output
+- Lead with the answer or the outcome; skip filler openers, narration of the tool call you are about to make (its description is already shown) and closing recaps unless asked.
+- Describe what you are doing in plain words, never by tool name, and do not restate tool output the user can already see.
+- Name created or updated files by workspace-relative path in backticks (e.g. \`src/app.py\`); do not repeat their code unless asked.
+- Write links as plain URLs or Markdown links, never inside backticks or a code block — a link in code formatting is not clickable.
+- The final answer stands on its own: what was done, which files it lives in and how to run or verify it, and anything left undone or unverified.
+- When you cannot or will not do something, say so in a sentence and offer the nearest alternative.
+
+# Stop rules
+- Stop and give the final answer once the success criteria are met.
+- If the request is still ambiguous after you have checked what the files and environment can tell you, stop and ask the user — one specific question, with the options you see — instead of guessing their intent.
+- If you hit an error you cannot resolve — the same error still there after three different fixes — stop and report the blocker to the user, with what you tried; do not keep trying variants. An API auth/key error (401/403, missing or invalid key) is one of them: retry at most once, then stop calling tools and ask the user to update the key in the agent's vault or the model settings outside the chat — the secret must never be pasted into the conversation, and a new key only takes effect in the next conversation.
+
+# Tool use
+- Work from evidence, not memory: inspect the real files and environment and run real commands. Run a command or edit a file yourself rather than pasting it for the user to apply, unless they ask to see it.
+- Never guess a name. A path, command flag, package, API or URL you have not seen in this environment is looked up before you use it.
+- Send independent tool calls together in one turn — several file reads, unrelated checks — they run concurrently; a call that needs an earlier result, or writes the same file as another, waits for the next turn.
+- Run commands non-interactively (\`-y\`/\`--yes\` for installers and scaffolders; no editors, pagers or REPLs): a command waiting for input is stuck, not slow — feed it the input or kill it instead of polling.
+- For anything on the internet, browse with your shell tool: prefer Playwright when it is installed — it handles dynamic sites — otherwise \`curl\` for pages and APIs.
+
+# System markers
+Some messages carry system-synthesized \`[tag]...[/tag]\` blocks — not user text to answer:
+- \`[turn_aborted]\`: the previous round was interrupted; inside are the request, your partial output, and the tool calls already run with their results. Continue from there, and do not re-run them.
+- \`[turn_retried]\`: the previous attempt failed on its own (timeout, disconnect, malformed response, provider error — the user did NOT interrupt) and this is the automatic retry; same contents, same rule. Either block may end with a \`[request_error]\` line quoting the error the failed request got: read it before carrying on, and change course if it names something you can fix rather than repeat the same request.
+- \`[context_summary]\`: earlier conversation was compacted. The summary is its only record — treat it as established context and continue from it.
+- \`[user_steering]\`: a user message sent mid-run, delivered between turns. Not a new task: incorporate it immediately and adjust course within the current one.
+
+# File system
+- Angle-bracket names such as \`<app_data_dir>\` and \`<session_id>\` are placeholders — substitute the values from the Environment section.
+- You work inside the user's folder (\`CWD\`).
+- Search from \`CWD\` down; walking the user's home or the whole filesystem is rarely worth its cost. When a path does not resolve, prefer narrowing — reason about the project's layout — over widening the search root.
+- The App Data Dir is PenguinHarness's data root — every agent's files and the project-level data, none of it supplied by the user, so never treat it as task input. \`CWD\` may itself be a temporary Workspace inside it: that one folder is the task's, the rest is not.
+- Your Agent State is \`<app_data_dir>/agents/<agent_id>/agent_state/\`; it holds \`skills/\`, and its \`AGENTS.md\` is already in your context. Another agent's is the same path under its id — reach it directly.
+- Keep intermediates in this Session's scratchpad, \`<app_data_dir>/agents/<agent_id>/scratchpad/<session_id>/\`, but always place final deliverables in the workspace (under \`CWD\`) — what stays in the scratchpad is not part of your output.
+- Install into the project's own environment when it has one. Otherwise keep reusable ones — Python virtualenvs, model and package caches — under \`<app_data_dir>/agents/<agent_id>/shared_env/<name>/\` and reuse them across Sessions. For Node, prefer pnpm in the project itself: its shared store keeps repeated installs from duplicating on disk.
+- Never read, copy or print \`.project_config.toml\` or any agent's \`agent_state/.vault.toml\` — they hold the user's secrets. Configuration is CLI-only (\`penguin config ...\`); if a task seems to need them, say so and ask the user instead.
+
+# Suggested workflows
+Recommendations, not requirements — adapt them to the task.
+- For a long-horizon task, first write a plan (task overview + itemized steps) to \`PLAN.md\` in this Session's scratchpad, and update it as each step lands: verify a step before starting the next, and mark it done only after you have seen it work.
+- Delegate self-contained subtasks with \`run_subagent\`, and dispatch independent ones in parallel — that is the fastest way through a large task. Open each prompt with your own agent id (e.g. "Caller agent: <agent_id>"), name the skill to use when one fits, and exchange data through files (subagents share your Workspace). If \`run_subagent\` is not in your tool list, you are the subagent: do the work yourself.
+- Use established frameworks and their scaffolding CLIs instead of building your own.
+- Prefer React for web frontends; start the app and fetch a page before delivery.
+
+[developer_instructions]
+Custom instructions from the developer-editable AGENTS.md.
+
+{{AGENTS_MD}}
+[/developer_instructions]
+
+{{VAULT}}
+
+{{SKILLS}}
+
+{{MEMORY}}
+
+{{SCHEDULES}}
+
+# Environment
+- Platform: {{PLATFORM}}
+- OS Version: {{OS_VERSION}}
+- Shell: {{SHELL}}
+- Date: {{DATE}}
+- App Data Dir: {{PROJECT_DIR}}
+- Agent ID: {{AGENT_ID}}
+- CWD: {{CWD}}
+- Provider: {{PROVIDER}}
+- Model ID: {{MODEL_ID}}
+- Session ID: {{SESSION_ID}}`;
+
+/** Whether a template carries the `{{MEMORY}}` placeholder — without it no Memory is injected. */
+export function hasMemoryPlaceholder(template: string): boolean {
+  return template.includes(MEMORY_PLACEHOLDER);
+}
+
+/**
+ * Shared insertion for the section placeholders: before the `# Environment` heading (the
+ * position the default template gives them), else appended at the end. Idempotent — a
+ * template already carrying the placeholder is returned unchanged.
+ */
+function insertSectionPlaceholder(template: string, placeholder: string): string {
+  if (template.includes(placeholder)) return template;
+  const heading = /^#+ Environment[ \t]*$/m.exec(template);
+  return heading
+    ? `${template.slice(0, heading.index)}${placeholder}\n\n${template.slice(heading.index)}`
+    : `${template.trimEnd()}\n\n${placeholder}\n`;
+}
+
+/**
+ * Inserts the `{{MEMORY}}` placeholder into a template: before the `# Environment` heading
+ * (the position the default template gives it), else appended at the end. Idempotent — a
+ * template already carrying it is returned unchanged. This is the explicit adoption path for
+ * Agents created before Memory shipped (the Web App's Memory tab offers it); nothing ever
+ * inserts automatically.
+ */
+export function insertMemoryPlaceholder(template: string): string {
+  return insertSectionPlaceholder(template, MEMORY_PLACEHOLDER);
+}
+
+/** Whether a template carries the `{{VAULT}}` placeholder (a legacy inline `{{VAULT_KEYS}}` still injects the key list, but no section prompt). */
+export function hasVaultPlaceholder(template: string): boolean {
+  return template.includes(VAULT_PLACEHOLDER);
+}
+
+/** Whether a template carries the `{{SKILLS}}` placeholder (a legacy inline `{{SKILL_METADATA}}` still injects the metadata lines, but no section prompt). */
+export function hasSkillsPlaceholder(template: string): boolean {
+  return template.includes(SKILLS_PLACEHOLDER);
+}
+
+/** Whether a template carries the `{{SCHEDULES}}` placeholder — without it no Scheduled Tasks section is injected. */
+export function hasSchedulesPlaceholder(template: string): boolean {
+  return template.includes(SCHEDULES_PLACEHOLDER);
+}
+
+/**
+ * Inserts the `{{VAULT}}` placeholder into a template, migration-first: a template still
+ * carrying the legacy hardcoded # Vault section verbatim gets that text replaced in place by
+ * the placeholder (the section's wording lives on as `vault.prompt`'s default, so the
+ * assembled prompt is unchanged); otherwise the placeholder is inserted before
+ * `# Environment` / appended, like `insertMemoryPlaceholder`. Idempotent, and the explicit
+ * adoption path offered by the Web App's Vault tab — nothing ever migrates automatically.
+ *
+ * Retirement condition: drop the migration branch together with `LEGACY_VAULT_SECTION` once
+ * pre-`{{VAULT}}` templates are no longer expected in the wild.
+ */
+export function insertVaultPlaceholder(template: string): string {
+  if (template.includes(VAULT_PLACEHOLDER)) return template;
+  if (template.includes(LEGACY_VAULT_SECTION)) {
+    return template.split(LEGACY_VAULT_SECTION).join(VAULT_PLACEHOLDER);
+  }
+  return insertSectionPlaceholder(template, VAULT_PLACEHOLDER);
+}
+
+/**
+ * Inserts the `{{SKILLS}}` placeholder into a template, migration-first over
+ * `LEGACY_SKILLS_SECTION` — same semantics and retirement condition as
+ * `insertVaultPlaceholder`.
+ */
+export function insertSkillsPlaceholder(template: string): string {
+  if (template.includes(SKILLS_PLACEHOLDER)) return template;
+  if (template.includes(LEGACY_SKILLS_SECTION)) {
+    return template.split(LEGACY_SKILLS_SECTION).join(SKILLS_PLACEHOLDER);
+  }
+  return insertSectionPlaceholder(template, SKILLS_PLACEHOLDER);
+}
+
+/**
+ * Inserts the `{{SCHEDULES}}` placeholder into a template: before `# Environment`, else
+ * appended (no legacy form exists — Schedules never had a hardcoded template section).
+ * Idempotent; the explicit adoption path offered by the Web App's Schedules tab.
+ */
+export function insertSchedulesPlaceholder(template: string): string {
+  return insertSectionPlaceholder(template, SCHEDULES_PLACEHOLDER);
+}
+
+/**
+ * Built-in default compaction Prompt (summarize mode): tells the model the summary will
+ * replace the transcript as its only record (so it must include everything needed to
+ * continue the task) and that no tools may be called. The format is shown as a concrete
+ * example rather than described in prose — some models treat the tags as a "title" and
+ * write the body after the closing tag (issue #170); extraction salvages that shape, but
+ * generating it right beats repairing it. Persisted per-agent in system_config.yaml —
+ * existing agents keep their stored prompt.
+ */
+export const DEFAULT_COMPACTION_PROMPT =
+  "Summarize the task transcript above. The summary will replace the transcript as its " +
+  "only record, so include everything needed to continue the task — the original request, " +
+  "current state, next steps, and any learnings. Do not call any tools; reply with text " +
+  "only, in exactly this format and nothing after it:\n\n" +
+  "[summary]put the summary text here...[/summary]";
+
+/**
+ * Default built-in system tools: file reading/editing/writing first, then bash execution
+ * and subagent spawning. No entry carries a `forModel` annotation: `read_file` serves vision
+ * and text-only models alike (it reads images too, deciding at runtime whether to return
+ * image content or a vision model's description), so the per-model-class filter stays a
+ * config feature for entries that need it. Its `prompt` argument reaches only text-only
+ * models: assembly drops it for a model that views images (see selectBuiltinToolsForModel),
+ * which is why the tool description leaves the argument to its own schema entry.
+ * Docs: /docs/tools § "Built-in tools".
+ */
+function defaultBuiltinTools(): ToolDefinitionConfig[] {
+  return [
+    {
+      name: "read_file",
+      description:
+        "Read a file — the preferred way to inspect one. A text file comes back with line numbers " +
+        "(cat -n style), up to 2000 lines starting at offset; for a longer file call again with " +
+        "offset to continue. An image (png/jpeg/gif/webp up to 5MB; file_path may also be an " +
+        "http(s) URL) is returned as image content for you to view, or — when the current model " +
+        "cannot view images — described in text by the project's vision model. Other binary " +
+        "files are rejected: use the shell tool for those.",
+      parameters: {
+        type: "object",
+        properties: {
+          file_path: {
+            type: "string",
+            description:
+              "Path to the file to read; absolute, or relative to the workspace. For an image, an http(s) URL is accepted too.",
+          },
+          offset: {
+            type: "number",
+            description:
+              "1-based line number to start reading from; defaults to 1. Ignored for images.",
+          },
+          limit: {
+            type: "number",
+            description: "Max lines to read; defaults to 2000. Ignored for images.",
+          },
+          prompt: {
+            type: "string",
+            description:
+              "A question about an image (e.g. transcribe the text, describe the chart, locate a UI element), answered by the vision model when the current model cannot view images; defaults to a detailed description. Ignored for text files.",
+          },
+        },
+        required: ["file_path"],
+      },
+      permission: "r",
+      // Wide enough for an image read through the vision model: one download or file read plus
+      // one one-shot vision request.
+      timeoutMs: 60000,
+      // Wider than the other tools' cap: a 2000-line window of code rarely fits in 16k characters.
+      maxOutputLength: 64000,
+    },
+    {
+      name: "edit_file",
+      description:
+        "Edit a file by exact string replacement — the preferred way to make a precise change. " +
+        "old_string must match the file content exactly (including whitespace) and be unique " +
+        "unless replace_all is set; read the file first to copy the text verbatim. The result " +
+        "echoes a line-numbered snippet around the change for verification.",
+      parameters: {
+        type: "object",
+        properties: {
+          file_path: {
+            type: "string",
+            description: "Path to the file to edit; absolute, or relative to the workspace.",
+          },
+          old_string: {
+            type: "string",
+            description: "Exact text to replace, including whitespace/indentation.",
+          },
+          new_string: {
+            type: "string",
+            description: "Replacement text; must differ from old_string.",
+          },
+          replace_all: {
+            type: "boolean",
+            description: "Replace every occurrence of old_string; defaults to false.",
+          },
+        },
+        required: ["file_path", "old_string", "new_string"],
+      },
+      permission: "rw",
+      timeoutMs: 30000,
+      maxOutputLength: 16000,
+    },
+    {
+      name: "write_file",
+      description:
+        "Create or overwrite a file with the given content, creating parent directories as " +
+        "needed. Use it for new files or full rewrites; for precise changes to an existing file " +
+        "prefer edit_file.",
+      parameters: {
+        type: "object",
+        properties: {
+          file_path: {
+            type: "string",
+            description: "Path to the file to write; absolute, or relative to the workspace.",
+          },
+          content: {
+            type: "string",
+            description: "Full file content to write; an empty string creates an empty file.",
+          },
+        },
+        required: ["file_path", "content"],
+      },
+      permission: "rw",
+      timeoutMs: 30000,
+      maxOutputLength: 16000,
+    },
+    {
+      name: "exec_command",
+      description:
+        "Run a shell command in the workspace to run programs, search, install dependencies, and " +
+        "everything the file tools don't cover. " +
+        "Run long-lived commands (servers, watchers, builds) in the foreground: past yield_time_ms " +
+        "they keep running in the background with a process_id. Do not background them with `&` — " +
+        "the whole process group is cleaned up when the foreground command exits.",
+      parameters: {
+        type: "object",
+        properties: {
+          description: {
+            type: "string",
+            description:
+              "Required, and emit it first, before the other arguments: it is shown to the user while the call runs. One short sentence describing what this call is doing and why, written in the user's language.",
+          },
+          cmd: {
+            type: "string",
+            description: "Shell command to execute.",
+          },
+          qa_request: {
+            type: "object",
+            description:
+              "AITestHarness structured action object. The QA pre-tool hook saves this exact request before project-action.mjs execute. Omit for ordinary shell commands.",
+          },
+          workdir: {
+            type: "string",
+            description:
+              "Working directory; omit to use the session workspace. Never use CWD as a placeholder.",
+          },
+          yield_time_ms: {
+            type: "number",
+            description:
+              "How long to wait for the command before yielding. If it is still running when this elapses, the tool returns the output so far plus a process_id, and the command keeps running in the background (drive it with input_command). Defaults to 60000; minimum 250, capped below the tool timeout.",
+          },
+          run_in_background: {
+            type: "boolean",
+            description:
+              "Run the command in the background: return a process_id immediately without waiting. When it exits, its result arrives as an automatic user message — no polling needed. Use for long builds or work you want to continue past; interact via input_command (kill: true terminates it). Defaults to false.",
+          },
+        },
+        required: ["description", "cmd"],
+      },
+      permission: "rw",
+      call_description: true,
+      timeoutMs: 120000,
+      maxOutputLength: 16000,
+    },
+    {
+      name: "input_command",
+      description:
+        "Interact with a running command session started by exec_command: write to its stdin, send Ctrl-C, poll for new output, or terminate it with kill: true. Identify the session with its process_id.",
+      parameters: {
+        type: "object",
+        properties: {
+          description: {
+            type: "string",
+            description:
+              "Required, and emit it first, before the other arguments: it is shown to the user while the call runs. One short sentence describing what this call is doing and why, written in the user's language.",
+          },
+          process_id: {
+            type: "string",
+            description: "The process_id returned by exec_command for the running command session.",
+          },
+          chars: {
+            type: "string",
+            description:
+              'Characters to write to the command\'s stdin. Send "\\u0003" alone to deliver Ctrl-C (SIGINT); mixing it with other characters is an error. Empty (the default) writes nothing and only polls for new output and exit status.',
+          },
+          kill: {
+            type: "boolean",
+            description:
+              "Terminate the command session: kills the whole process group (SIGTERM, then SIGKILL), returns any output not yet delivered, and removes the session — an already-exited session is just removed with its recorded exit status. Defaults to false.",
+          },
+          yield_time_ms: {
+            type: "number",
+            description:
+              "How long to wait for new output or exit before returning. Non-empty writes default to 250; empty polls default to 110000 so one poll waits out most builds (output still streams as it arrives, and the wait ends early on exit — pass a smaller value to peek at a long-lived process). Minimum 250, capped below the tool timeout.",
+          },
+        },
+        required: ["description", "process_id"],
+      },
+      permission: "rw",
+      call_description: true,
+      // Same tier as exec_command; an empty poll's default wait (110000) sits under it (the yield ceiling is derived from timeoutMs, clamped inside the tool).
+      timeoutMs: 120000,
+      maxOutputLength: 16000,
+    },
+    {
+      name: "run_subagent",
+      description:
+        "Delegate a self-contained subtask to a subagent that runs autonomously in the same workspace and returns its final answer. Use it for focused sub-tasks you can fully specify in one prompt. Optionally choose a specific agent via `agent_id`, a model via `model_id`, and a thinking level via `thinking_level`. " +
+        'Begin the prompt by identifying yourself with your own agent id (from the Environment section), e.g. "Caller agent: default_agent" — the subagent cannot otherwise tell who invoked it.',
+      parameters: {
+        type: "object",
+        properties: {
+          description: {
+            type: "string",
+            description:
+              "Required, and emit it first, before the other arguments: it is shown to the user while the call runs. One short sentence describing what this call is doing and why, written in the user's language.",
+          },
+          prompt: {
+            type: "string",
+            description:
+              "The complete task for the subagent: include all context it needs and the exact final output you expect back.",
+          },
+          agent_id: {
+            type: "string",
+            description:
+              "Which agent to run as the subagent; defaults to the current agent when omitted.",
+          },
+          model_id: {
+            type: "string",
+            description:
+              "Which model the subagent should use, as the upstream model id. Must be given together with provider — a model is always referenced by the pair. Omit both to inherit the parent session's model.",
+          },
+          provider: {
+            type: "string",
+            description:
+              "The provider group that model_id belongs to (see the Environment section's Provider). Required whenever model_id is given.",
+          },
+          thinking_level: {
+            type: "string",
+            enum: [...SUBAGENT_THINKING_LEVELS],
+            description:
+              "Thinking level for the subagent. Omit to inherit the current session's level. Lower it for cheap mechanical subtasks; raise it for hard analysis or design subtasks.",
+          },
+          yield_time_ms: {
+            type: "number",
+            description:
+              "How long to wait for the subagent before yielding. If it is still working when this elapses, the tool returns the output so far plus a subagent_id, and the subagent keeps running in the background (drive it with input_subagent). Defaults to 300000; minimum 250, capped below the tool timeout.",
+          },
+          run_in_background: {
+            type: "boolean",
+            description:
+              "Start the subagent in the background: return a subagent_id immediately without waiting. When it finishes, its answer arrives as an automatic user message — no polling needed. Good for dispatching parallel subtasks; message or steer it mid-run (and abort its current run) via input_subagent. Defaults to false.",
+          },
+        },
+        required: ["description", "prompt"],
+      },
+      permission: "rw",
+      call_description: true,
+      // Subagent tasks typically run far longer than a single command, so the timeout ceiling is raised accordingly.
+      timeoutMs: 600000,
+      maxOutputLength: 16000,
+    },
+    {
+      name: "input_subagent",
+      description:
+        "Talk to a subagent started by run_subagent, exactly like a user talking to an agent: a prompt sent while it is RUNNING is delivered mid-run as a steering message (use it to correct course without waiting); sent while it is idle, the prompt continues the same session as a follow-up task. Set abort=true to stop the current run (the session survives; combine with a prompt to interrupt and redirect). The output is the subagent's most recent complete reply. A subagent session is never destroyed: a subagent_id whose session was released resumes automatically when you message it. Pending tool approvals of the subagent are surfaced while this tool is waiting.",
+      parameters: {
+        type: "object",
+        properties: {
+          description: {
+            type: "string",
+            description:
+              "Required, and emit it first, before the other arguments: it is shown to the user while the call runs. One short sentence describing what this call is doing and why, written in the user's language.",
+          },
+          subagent_id: {
+            type: "string",
+            description: "The subagent_id returned by run_subagent for the background subagent.",
+          },
+          prompt: {
+            type: "string",
+            description:
+              "A message for the subagent. While it is running, it is injected mid-run as a steering interjection the subagent absorbs at its next step (course corrections, extra context, an early stop request). While it is idle, it starts a follow-up task on the same session. Empty (the default) sends nothing and only polls for new output and status.",
+          },
+          abort: {
+            type: "boolean",
+            description:
+              "Abort the subagent's CURRENT run, like a user pressing stop: the run ends but the session stays available for steering and follow-up prompts. With a non-empty prompt, the aborted run settles first and the prompt then starts a fresh run — interrupt and redirect. Defaults to false; a no-op when the subagent is already idle.",
+          },
+          yield_time_ms: {
+            type: "number",
+            description:
+              "How long to wait for new output or completion before returning. Follow-up prompts default to 300000; empty polls default to 10000. Minimum 250, capped below the tool timeout.",
+          },
+        },
+        required: ["description", "subagent_id"],
+      },
+      permission: "rw",
+      call_description: true,
+      // Same generous timeout tier as run_subagent: an empty poll can wait a long time for the subagent to wrap up.
+      timeoutMs: 600000,
+      maxOutputLength: 16000,
+    },
+  ];
+}
+
+/** Agent State version number: an invalid or missing field is always treated as 1. */
+export function agentStateVersion(config: Pick<SystemConfig, "version">): number {
+  const v = config.version;
+  return typeof v === "number" && Number.isInteger(v) && v >= 1 ? v : 1;
+}
+
+/** Returns the default system configuration for Agent State. */
+export function defaultSystemConfig(): SystemConfig {
+  return {
+    version: 1,
+    // Newly materialized configs are stamped with the current defaults generation; the stamp
+    // rides along in resetSystemConfigToDefaults too (it spreads this object), so a restore
+    // also re-stamps.
+    kernel_version: KERNEL_VERSION,
+    system_prompt: DEFAULT_SYSTEM_PROMPT,
+    // -1 = unlimited (same sentinel as compaction.max_session_turns): an agent run is never
+    // cut off by a turn cap unless the user configures a positive limit themselves.
+    max_turns: -1,
+    model: {
+      max_tokens: 32000,
+      thinking_level: "medium",
+      // Idle budget between two upstream events, not a cap on how long a response may take
+      // (see GenerativeModelConfig.requestTimeoutMs). It has to cover the wait for the FIRST
+      // event, which is where a model that keeps its reasoning off the wire spends its whole
+      // thinking phase: requests ask for thought summaries so most models stream something,
+      // but the ones that accept the flag and return nothing still go silent, and so does a
+      // model behind a relay that consumes the thinking stream upstream and sends nothing until
+      // the answer starts. 120s, and later 300s, cut such requests off mid-thought.
+      timeoutMs: 600000,
+    },
+    compaction: {
+      max_context_length: DEFAULT_MAX_CONTEXT_LENGTH,
+      max_session_turns: -1,
+      mode: "summarize",
+      prompt: DEFAULT_COMPACTION_PROMPT,
+    },
+    memory: {
+      enabled: true,
+      prompt: DEFAULT_MEMORY_PROMPT,
+      workspace_prompt: DEFAULT_MEMORY_WORKSPACE_PROMPT,
+    },
+    vault: {
+      enabled: true,
+      prompt: DEFAULT_VAULT_PROMPT,
+    },
+    skills: {
+      enabled: true,
+      prompt: DEFAULT_SKILLS_PROMPT,
+    },
+    schedules: {
+      enabled: true,
+      prompt: DEFAULT_SCHEDULES_PROMPT,
+    },
+    tools: {
+      builtin: defaultBuiltinTools(),
+      mcpServers: [],
+    },
+  };
+}
+
+/**
+ * Returns the default editable `AGENTS.md` content: an empty string — no guidance is
+ * preprovisioned by default; Subagent delegation conventions and general task practices
+ * live in the default template's Suggested workflows section as a soft convention.
+ * Kept so initialization can still write an empty AGENTS.md file.
+ */
+export function defaultAgentsMd(): string {
+  return "";
+}

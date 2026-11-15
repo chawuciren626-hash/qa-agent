@@ -1,0 +1,188 @@
+import { readFileSync, statSync } from "node:fs";
+import { resolve, relative, isAbsolute, dirname } from "node:path";
+import { assertStageReady, assertStageHistory, assertDispatchScheduling, getRunContext, recomputeRunStatus, writeJson, withRunLock } from "./orchestration-state.mjs";
+import { verifyStageEvidence, assertParentSession, partialBrowserDelivery, draftHandoffReconciliation } from './stage-evidence.mjs';
+import { randomUUID } from 'node:crypto';
+import { childCommandPolicy } from './child-command-policy.mjs';
+import { assertExecutionAuthorized } from './execution-authorization.mjs';
+import { assertArtifactContract, assertDependencyArtifacts } from './artifact-contracts.mjs';
+import { upstreamDraftRevision } from './recovery-policy.mjs';
+import { assertBrowserResume } from './browser-task-resume.mjs';
+import { browserLifecycle, browserAuthorization, currentBrowserAuthorization } from './browser-lifecycle.mjs';
+import { createHash } from 'node:crypto';
+import { assertTrackStage, assertSiblingResources } from './test-tracks.mjs';
+import { assertExecutionDesignReady, readRunFile, runDirectory } from './design-quality.mjs';
+import { mobileAuthorization } from './mobile-stage.mjs';
+import { writeStageReviewDocument } from './stage-review-documents.mjs';
+import { verifyInterruptedReportRecovery } from './interrupted-report-recovery.mjs';
+
+const root = resolve(import.meta.dirname, "..");
+const project = JSON.parse(readFileSync(resolve(root, "config/project.json"), "utf8"));
+const [runId, eventType, ...args] = process.argv.slice(2);
+if (!runId || !eventType) throw new Error("用法: node scripts/record-orchestration-event.mjs <run_id> <event_type> [--key=value...]");
+const options = Object.fromEntries(args.filter((arg) => arg.startsWith("--") && arg.includes("=")).map((arg) => {
+  const [key, value] = arg.slice(2).split(/=(.*)/s);
+  return [key, value];
+}));
+const allowedEvents = new Set(['dispatched', 'completed', 'failed', 'blocked']);
+if (!allowedEvents.has(eventType)) throw new Error('Unsupported stage event; use confirmation scripts for approval and revision.');
+if (!options.stage) throw new Error('Stage is required.');
+const allowedOptions = new Set(['stage', 'agent', 'skills', 'artifacts', 'reason', 'session-id', 'parent-session-id', 'mode', 'dispatch-id', 'resource-keys', 'recovery']);
+for (const key of Object.keys(options)) {
+  if (!allowedOptions.has(key)) throw new Error(`Unsupported event option: ${key}`);
+}
+if (options.mode && eventType !== 'dispatched') throw new Error('Mode can only be set when dispatching');
+if (options.recovery && (eventType!=='completed' || options.stage!=='report' || options.recovery!=='interrupted_report')) throw new Error('Unsupported completion recovery');
+withRunLock(root, project, runId, () => {
+const { manifestPath, manifest } = getRunContext(root, project, runId);
+assertStageHistory(manifest, options.stage);
+for (const artifact of (options.artifacts ?? '').split(',').filter(Boolean)) {
+  const runDir = dirname(manifestPath);
+  const target = resolve(runDir, artifact);
+  const rel = relative(runDir, target);
+  if (isAbsolute(artifact) || rel === '..' || rel.startsWith('..\\') || rel.startsWith('../') || isAbsolute(rel)) {
+    throw new Error(`Artifact must be a run-relative file: ${artifact}`);
+  }
+  if (!statSync(target).isFile()) throw new Error(`Artifact is not a file: ${artifact}`);
+}
+manifest.manifest_version ??= 3;
+manifest.orchestration ??= { events: [], resume_from: null, plan: null };
+manifest.orchestration.events ??= [];
+manifest.stages ??= {};
+manifest.selected_agents ??= [];
+manifest.selected_skills ??= [];
+const timestamp = new Date().toISOString();
+const inferredStatus = {
+  dispatched: "in_progress",
+  completed: "completed",
+  failed: "failed",
+  blocked: "blocked"
+}[eventType];
+
+let browserResume;
+let browserGrant;
+let mobileGrant;
+if (eventType === "dispatched" && options.stage) {
+  if(options.stage==='execution' && ['android','miniprogram'].includes(manifest.orchestration?.plan?.execution_platform)) {
+    if(options.mode) throw new Error('Mobile execution does not use browser or script preparation mode');
+    const grant=JSON.parse(process.env.QA_MOBILE_AUTHORIZATION_JSON ?? 'null');
+    const rows=assertParentSession(root,runId,options['parent-session-id']);
+    const source=rows.filter(r=>r.payload?.role==='user' && typeof r.payload.text==='string' && createHash('sha256').update(r.payload.text).digest('hex')===grant?.sha256).at(-1);
+    mobileGrant=mobileAuthorization(root,runId,options['parent-session-id'],rows,source?.payload.text,manifest.orchestration.plan.execution_platform);
+    if(JSON.stringify(mobileGrant)!==JSON.stringify(grant)) throw new Error('Mobile authorization changed before dispatch');
+  }
+  assertTrackStage(manifest,options.stage);
+  assertSiblingResources(root,manifest,options.stage,options['resource-keys']?.split(',')??[]);
+  if (options['dispatch-id']) throw new Error('Dispatch ID is generated by the controller');
+  const parentRows=assertParentSession(root, runId, options['parent-session-id']);
+  if(options.mode==='browser') {
+    if(manifest.orchestration?.plan?.workflow_mode!=='lifecycle') throw new Error('Browser strategy mode is for lifecycle runs; task mode already supports browser execution');
+    const grant=JSON.parse(process.env.QA_BROWSER_AUTHORIZATION_JSON ?? 'null');
+    const source=parentRows.find(r=>r.payload?.role==='user' && typeof r.payload.text==='string' && createHash('sha256').update(r.payload.text).digest('hex')===grant?.sha256);
+    browserGrant=browserAuthorization(root,runId,options['parent-session-id'],parentRows,source?.payload.text);
+    if(JSON.stringify(browserGrant)!==JSON.stringify(grant)) throw new Error('Browser authorization changed before dispatch');
+  }
+  if(options.mode==='resume_browser' && options.stage==='execution') browserResume=assertBrowserResume(root,runId,manifest,options['parent-session-id']);
+  assertDispatchScheduling(manifest,options.stage,{resumeBrowser:Boolean(browserResume),resourceKeys:(options['resource-keys']??'').split(',').filter(Boolean)});
+  if (options.mode && (!['prepare','browser','resume_browser'].includes(options.mode) || options.stage !== 'execution')) throw new Error('Unsupported execution mode');
+  if(options.stage==='execution' && browserLifecycle(manifest) && options.mode!=='resume_browser') throw new Error('Existing browser execution must be continued, not switched or replayed');
+  if(manifest.orchestration?.plan?.workflow_mode==='task' && options.mode==='prepare') throw new Error('Independent tasks do not use lifecycle preparation');
+  const readiness = structuredClone(manifest);
+  if (options.mode === 'prepare' || browserGrant || mobileGrant) readiness.orchestration.plan.stages.find(s => s.id === 'execution').confirmation = 'none';
+  const plannedStage = browserResume ? manifest.orchestration.plan.stages.find(s=>s.id==='execution' && s.selected) : assertStageReady(readiness, options.stage);
+  assertDependencyArtifacts(root, runId, manifest, options.stage);
+  if(['execution','api_execution'].includes(options.stage) && options.mode!=='prepare' && options.mode!=='resume_browser') assertExecutionDesignReady(runDirectory(root,runId),options.stage);
+  if (options.stage === 'execution' && options.mode !== 'prepare' && !browserGrant && !mobileGrant && !browserLifecycle(manifest) && manifest.orchestration?.plan?.workflow_mode!=='task') assertExecutionAuthorized(root, runId);
+  if (options.agent !== plannedStage.agent) {
+    throw new Error(`阶段 ${options.stage} 必须派发给 ${plannedStage.agent}，实际为 ${options.agent ?? "未指定"}。`);
+  }
+  const actualSkills = (options.skills ?? "").split(",").filter(Boolean).sort();
+  const plannedSkills = [...plannedStage.skills].sort();
+  if (actualSkills.join(",") !== plannedSkills.join(",")) {
+    throw new Error(`阶段 ${options.stage} 必须使用 Skill: ${plannedSkills.join(",")}。`);
+  }
+}
+if (["completed", "failed", "blocked"].includes(eventType) && options.stage) {
+  const current = manifest.stages[options.stage]?.status;
+  const partialReconciliation=eventType==='completed' && options.stage==='execution' && ['blocked','failed'].includes(current);
+  const draftReconciliation=eventType==='completed' && options.stage!=='execution' && ['blocked','failed'].includes(current);
+  if(draftReconciliation) draftHandoffReconciliation(root,runId,manifest,options.stage,options['parent-session-id']);
+  if(partialReconciliation) partialBrowserDelivery(root,runId,manifest);
+  if (current !== "in_progress" && !partialReconciliation && !draftReconciliation) throw new Error(`阶段 ${options.stage} 当前状态为 ${current ?? "未计划"}，不能记录 ${eventType}。`);
+  const dispatch = manifest.orchestration.events.filter(event => event.type === 'dispatched' && event.stage === options.stage).at(-1);
+  if (dispatch?.dispatch_id && (options['dispatch-id'] !== dispatch.dispatch_id || options['parent-session-id'] !== dispatch['parent-session-id'])) throw new Error('Current dispatch ID and owning parent session required');
+  if (eventType !== 'completed' && !options.reason?.trim()) throw new Error('Failure or blocking reason required');
+}
+const event = { type: eventType, at: timestamp, ...options };
+if(browserResume) Object.assign(event,browserResume);
+if(browserGrant) {
+  event.browser_authorization=browserGrant;
+  manifest.orchestration.execution_strategy='browser';
+}
+if(mobileGrant) event.mobile_authorization=mobileGrant;
+if(browserResume && browserLifecycle(manifest)) event.browser_authorization=currentBrowserAuthorization(manifest);
+if (eventType === 'dispatched') {
+  event.dispatch_id = randomUUID();
+  if(manifest.orchestration.plan.workflow_mode==='task') event.available_sources=manifest.orchestration.events.filter(e=>e.type==='completed' && manifest.stages[e.stage]?.status==='completed').flatMap(e=>e.evidence?.artifact_contract?.files ?? []);
+  event.child_command_policy = childCommandPolicy(event.dispatch_id);
+  const prior = manifest.stages[options.stage];
+  const upstream = upstreamDraftRevision(manifest,options.stage);
+  const revisionArchive = upstream?.archive ?? prior.revision_archive;
+  if ((['analysis','test_points','test_cases','defects','report'].includes(options.stage) || (options.stage==='execution' && options.mode==='prepare')) && prior.status === 'revision_requested' && revisionArchive) {
+    event.revision_context = { revision_id: upstream?.revision_id ?? prior.revision_id, archive: revisionArchive, reason: prior.reason, approval_granted: false, ...(prior.feedback_input?{feedback_input:prior.feedback_input}:{}) };
+  }
+}
+if (eventType === 'completed') {
+  assertDependencyArtifacts(root, runId, manifest, options.stage);
+  event.evidence = options.recovery ? {
+    verified_at:new Date().toISOString(),parent_session_id:options['parent-session-id'],session_id:options['session-id'],
+    artifacts:(options.artifacts??'').split(',').filter(Boolean).map(path=>{const file=readRunFile(runDirectory(root,runId),path);return {path:file.path,sha256:file.sha256};}),
+    recovery:verifyInterruptedReportRecovery(root,runId,manifest,options['parent-session-id'],(options.artifacts??'').split(',').filter(Boolean),process.env.PENGUIN_AGENT_ROOT)
+  } : verifyStageEvidence(root, runId, manifest, options);
+  if(options.recovery && event.evidence.session_id!==event.evidence.recovery.child_session_id) throw new Error('Recovery child identity mismatch');
+  event.evidence.artifact_contract = assertArtifactContract(root, runId, options.stage, { mode: manifest.stages[options.stage].mode, artifacts: (options.artifacts ?? '').split(',').filter(Boolean) });
+  const reviewDocument = writeStageReviewDocument(dirname(manifestPath), options.stage, event.evidence.artifact_contract);
+  if (reviewDocument) {
+    options.artifacts = [...new Set([...(options.artifacts ?? '').split(',').filter(Boolean), reviewDocument])].join(',');
+    event.artifacts = options.artifacts;
+  }
+  if(['blocked','failed'].includes(manifest.stages[options.stage].status) && options.stage!=='execution') {
+    event.draft_delivery_reconciliation=draftHandoffReconciliation(root,runId,manifest,options.stage,options['parent-session-id']);
+  }
+  if(['blocked','failed'].includes(manifest.stages[options.stage].status) && options.stage==='execution') {
+    if(!event.evidence.partial_browser_failures?.some(f=>['failed','timeout'].includes(f.status))) throw new Error('Blocked execution requires verified browser failure evidence for partial delivery');
+    event.partial_delivery_reconciliation={previous_stage:structuredClone(manifest.stages[options.stage]),product_actions_replayed:false,meaning:'Partial evidence delivered; product execution remains blocked, not passed'};
+  }
+}
+const prepared = eventType === 'completed' && options.stage === 'execution' && manifest.stages.execution.mode === 'prepare';
+if (prepared) event.type = 'preparation_completed';
+manifest.orchestration.events.push(event);
+if (options.agent && !manifest.selected_agents.includes(options.agent)) manifest.selected_agents.push(options.agent);
+for (const skill of (options.skills ?? "").split(",").filter(Boolean)) if (!manifest.selected_skills.includes(skill)) manifest.selected_skills.push(skill);
+for (const artifact of (options.artifacts ?? "").split(",").filter(Boolean)) {
+  if (!manifest.artifacts.includes(artifact)) manifest.artifacts.push(artifact);
+}
+if (options.stage) {
+  const stage = manifest.stages[options.stage] ?? {};
+  stage.status = inferredStatus;
+  if (eventType === 'dispatched') stage.mode = options.mode ?? 'execute';
+  if (eventType === 'dispatched') stage.resource_keys=(options['resource-keys']??'').split(',').filter(Boolean);
+  if (eventType === 'dispatched') stage.dispatch_id = event.dispatch_id;
+  if (event.revision_context) {
+    stage.revision_id = event.revision_context.revision_id;
+    stage.revision_archive = event.revision_context.archive;
+  }
+  if (prepared) { stage.status = 'planned'; stage.mode = 'prepared'; }
+  stage.updated_at = timestamp;
+  if (options.agent) stage.agent = options.agent;
+  if (options.reason) stage.reason = options.reason;
+  manifest.stages[options.stage] = stage;
+  if (["failed", "blocked", "awaiting_confirmation"].includes(stage.status)) manifest.orchestration.resume_from = options.stage;
+  if (stage.status === "completed") manifest.orchestration.resume_from = "next_stage";
+  if (['execution','api_execution'].includes(options.stage) && event.evidence?.artifact_contract?.execution_outcome) stage.execution_outcome = event.evidence.artifact_contract.execution_outcome;
+}
+manifest.status = recomputeRunStatus(manifest);
+manifest.updated_at = timestamp;
+writeJson(manifestPath, manifest);
+console.log(JSON.stringify({ run_id: runId, event, manifest: manifestPath }));
+});

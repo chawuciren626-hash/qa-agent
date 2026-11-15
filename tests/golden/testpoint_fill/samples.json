@@ -1,0 +1,113 @@
+[
+  {
+    "id": "TP-01",
+    "input": { "text": "需求：预算必须是非负整数，空值、小数、负数都不得保存。维度：数值边界。" },
+    "expect": {
+      "required": ["points"],
+      "items_path": "points",
+      "expected_count": 3,
+      "count_tolerance": 0.7,
+      "must_include": ["边界", "负数"],
+      "must_not_include": ["并发", "性能压测"]
+    },
+    "recorded_output": {
+      "points": [
+        { "id": "T-01", "dimension": "边界", "point": "预算为 0 时可保存", "basis": { "quote": "预算必须是非负整数" } },
+        { "id": "T-02", "dimension": "异常", "point": "预算为负数时拒绝保存并提示", "basis": { "quote": "负数都不得保存" } },
+        { "id": "T-03", "dimension": "边界", "point": "预算为小数时拒绝保存", "basis": { "quote": "小数" } }
+      ]
+    }
+  },
+  {
+    "id": "TP-02",
+    "input": { "text": "需求：普通用户不得删除他人草稿。维度：权限。" },
+    "expect": {
+      "required": ["points"],
+      "items_path": "points",
+      "expected_count": 2,
+      "count_tolerance": 0.7,
+      "must_include": ["越权", "他人"],
+      "must_not_include": ["管理员可删除"]
+    },
+    "recorded_output": {
+      "points": [
+        { "id": "T-11", "dimension": "权限", "point": "普通用户尝试删除他人草稿应被拒绝（越权）", "basis": { "quote": "普通用户不得删除他人草稿" } },
+        { "id": "T-12", "dimension": "权限", "point": "仅本人草稿可删除，他人草稿不可见删除入口", "basis": { "quote": "他人草稿" } }
+      ]
+    }
+  },
+  {
+    "id": "TP-03",
+    "input": { "text": "需求：标题去首尾空格后长度为 1-40。维度：功能、边界。" },
+    "expect": {
+      "required": ["points"],
+      "items_path": "points",
+      "expected_count": 4,
+      "count_tolerance": 0.7,
+      "must_include": ["40", "首尾空格"],
+      "must_not_include": ["长度 80"]
+    },
+    "recorded_output": {
+      "points": [
+        { "id": "T-21", "dimension": "功能", "point": "正常标题保存成功", "basis": { "quote": "长度为 1-40" } },
+        { "id": "T-22", "dimension": "边界", "point": "标题为 1 个字符时可保存", "basis": { "quote": "长度为 1-40" } },
+        { "id": "T-23", "dimension": "边界", "point": "标题为 40 个字符时可保存，41 个字符被拒", "basis": { "quote": "长度为 1-40" } },
+        { "id": "T-24", "dimension": "异常", "point": "标题仅含首尾空格时按去空格后长度判定", "basis": { "quote": "标题去首尾空格后长度" } }
+      ]
+    }
+  },
+  {
+    "id": "TP-04",
+    "input": { "text": "需求：调用第三方短信服务失败时不得阻断创建。维度：异常。" },
+    "expect": {
+      "required": ["points"],
+      "items_path": "points",
+      "expected_count": 2,
+      "count_tolerance": 0.7,
+      "must_include": ["短信", "不阻断"],
+      "must_not_include": ["邮件服务"]
+    },
+    "recorded_output": {
+      "points": [
+        { "id": "T-31", "dimension": "异常", "point": "短信服务超时时创建仍成功，仅记录失败", "basis": { "quote": "调用第三方短信服务失败时不得阻断创建" } },
+        { "id": "T-32", "dimension": "异常", "point": "短信服务返回 5xx 时不阻断，页面提示不影响主流程", "basis": { "quote": "不得阻断创建" } }
+      ]
+    }
+  },
+  {
+    "id": "TP-05",
+    "input": { "text": "需求：删除草稿时需二次确认，取消确认不执行删除。维度：功能、交互。" },
+    "expect": {
+      "required": ["points"],
+      "items_path": "points",
+      "expected_count": 3,
+      "count_tolerance": 0.7,
+      "must_include": ["二次确认", "取消"],
+      "must_not_include": ["静默删除"]
+    },
+    "recorded_output": {
+      "points": [
+        { "id": "T-41", "dimension": "功能", "point": "点击删除弹出二次确认", "basis": { "quote": "删除草稿时需二次确认" } },
+        { "id": "T-42", "dimension": "交互", "point": "取消二次确认后草稿仍在列表中", "basis": { "quote": "取消确认不执行删除" } },
+        { "id": "T-43", "dimension": "功能", "point": "确认后草稿从列表消失", "basis": { "quote": "删除成功后返回列表页" } }
+      ]
+    }
+  },
+  {
+    "id": "TP-06",
+    "input": { "text": "需求：列表展示标题、预算、状态。维度：功能。" },
+    "expect": {
+      "required": ["points"],
+      "items_path": "points",
+      "expected_count": 1,
+      "count_tolerance": 0.7,
+      "must_include": ["预算"],
+      "must_not_include": ["排序", "分页"]
+    },
+    "recorded_output": {
+      "points": [
+        { "id": "T-51", "dimension": "功能", "point": "列表每行展示标题、预算、状态三项", "basis": { "quote": "列表展示标题、预算、状态" } }
+      ]
+    }
+  }
+]

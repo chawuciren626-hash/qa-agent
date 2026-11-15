@@ -1,0 +1,299 @@
+/**
+ * The first-login link: the claim route's proof for a server nobody has signed in to yet
+ * (auth/service.ts, routes/auth.ts). The desktop shell's token, the route's other proof, is
+ * covered in desktop.test.ts.
+ *
+ * The link CARRIES a session rather than a secret redeemed for one. That buys simplicity and
+ * costs a hazard the desktop token does not have: an endpoint that made a cookie out of any
+ * valid token would let one person sign another into their own account. So the printed value
+ * is compared, not merely verified, and it stops working the moment a password exists.
+ *
+ * - Given an unclaimed server, the printed link signs the browser in with a `setup` session
+ *   that may set a password without an old one; once one is set, the link is refused.
+ * - Any token but the printed one is refused exactly as a spent link is.
+ * - The link is not single-use before the claim: opening it twice lands in one session.
+ * - A password set through the ordinary change-password door (a pinned seed) ends the link.
+ * - Claiming hands the claimer a working password session back, and the link's own cookie dies.
+ * - A setup session left over from an earlier boot dies with the claim too.
+ * - A rejected password keeps the link alive.
+ * - The claimer is signed in even while a guessing spree has the login throttled.
+ * - A link older than the session lifetime is re-minted rather than handed out dead.
+ * - A claimed server mints no link, so a restart offers none.
+ */
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { SESSION_COOKIE } from "../src/auth/middleware.js";
+import { apiClient, cookieFrom, createTestApp, loginAdmin, makeTempRoot } from "./helpers.js";
+import type { TestApp } from "./helpers.js";
+
+describe("the first-login link", () => {
+  let t: TestApp;
+  /** The session the server would print — read from it, not injected, as a browser would get it. */
+  let link: string;
+
+  beforeEach(async () => {
+    t = await createTestApp();
+    link = t.deps.authService.mintFirstLogin()!;
+  });
+  afterEach(async () => {
+    await t.cleanup();
+  });
+
+  const redeem = (token: string) =>
+    t.app.request(`/api/auth/claim?token=${encodeURIComponent(token)}`, {
+      redirect: "manual",
+    });
+
+  /**
+   * What a browser gets for a link that no longer works: back to the login page, carrying the
+   * advice this deployment can give (no shell here, so a new link comes from whoever runs the
+   * server), and no session.
+   */
+  function expectRefusal(res: Response): void {
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/login?claimFailed=server");
+    expect(res.headers.get("set-cookie")).toBeNull();
+  }
+
+  it("claims an unclaimed server, with a session that may set a password but is not desktop", async () => {
+    const res = await redeem(link);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/");
+    const cookie = cookieFrom(res);
+
+    const me = (await (await apiClient(t.app, cookie).get("/api/me")).json()) as {
+      user: { userId: string };
+      sessionVia: string;
+    };
+    expect(me.user.userId).toBe("admin");
+    // "setup", never "desktop": reading a link proves someone read a link, not that they own
+    // the machine the shell runs on.
+    expect(me.sessionVia).toBe("setup");
+
+    // The one allowance it carries — and the account's password is a random value nobody has
+    // seen, so there is nothing to put in an old-password field.
+    const set = await apiClient(t.app, cookie).put("/api/me/password", {
+      newPassword: "claimed-password-1",
+    });
+    expect(set.status).toBe(204);
+    expect(t.deps.authService.adminPasswordIsInitial()).toBe(false);
+
+    // Claimed: a console scrollback is not a way in.
+    expectRefusal(await redeem(link));
+  });
+
+  it("refuses any token but the printed one, and says nothing about which it got", async () => {
+    // Otherwise this endpoint would make a cookie out of ANY valid token, and a link could
+    // sign its recipient into the SENDER's account. The two refusals are byte-identical, so
+    // a caller cannot tell "wrong token" from "already claimed".
+    const someoneElse = (await loginAdmin(t.app)).cookie.split("=").slice(1).join("=");
+    const other = await redeem(someoneElse);
+    const wrong = await redeem("not-the-token");
+    expectRefusal(other);
+    expectRefusal(wrong);
+    expect(other.headers.get("location")).toBe(wrong.headers.get("location"));
+  });
+
+  /**
+   * Not single-use, deliberately: a mail client or a browser that prefetches the link would
+   * spend a one-shot token before its reader ever clicked, and the window it stays open is
+   * exactly the window in which the account protects nothing yet. Opening it twice yields the
+   * same session rather than two, since the link IS the session.
+   */
+  it("can be opened more than once, and both pages land in one session", async () => {
+    const a = await redeem(link);
+    const b = await redeem(link);
+    expect([a.status, b.status]).toEqual([302, 302]);
+    const cookieOf = (r: Response) => cookieFrom(r);
+    expect(cookieOf(a)).toBe(cookieOf(b));
+    expect(cookieOf(a)).not.toBe("");
+    // Still the same link afterwards: redemption spends nothing.
+    expect(t.deps.authService.mintFirstLogin()).toBe(link);
+  });
+
+  /**
+   * The one reachable way to set a password WITHOUT going through setInitialPassword's
+   * revocation: a pinned seed (PENGUIN_SEED_ADMIN_PASSWORD, which every test app has) makes
+   * the current password knowable, so the ordinary change-password door opens. The link must
+   * die there too — the invariant is "any password set on the admin ends the link", not "the
+   * door we expected ends it".
+   */
+  it("dies when the admin sets a password through the ordinary door (pinned seed)", async () => {
+    const { cookie } = await loginAdmin(t.app);
+    await apiClient(t.app, cookie).put("/api/me/password", {
+      oldPassword: t.adminPassword,
+      newPassword: "chosen-password-1",
+    });
+    expect(t.deps.authService.redeemFirstLogin(link)).toBeNull();
+    expectRefusal(await redeem(link));
+  });
+
+  /**
+   * Claiming deletes the very session making the request, so the response has to carry a
+   * replacement or the browser's next call 401s and a brand-new user lands back on a login
+   * screen seconds after choosing their password. The replacement is an ordinary login with
+   * the password just set — the old cookie is still dead.
+   */
+  it("hands the claimer a working session back, while the link's own cookie dies", async () => {
+    const res = await redeem(link);
+    const claimCookie = cookieFrom(res);
+    const set = await apiClient(t.app, claimCookie).put("/api/me/password", {
+      newPassword: "claimed-password-1",
+    });
+    expect(set.status).toBe(204);
+    const replacement = cookieFrom(set);
+    expect(replacement).toMatch(new RegExp(`^${SESSION_COOKIE}=.+`));
+    expect(replacement).not.toBe(claimCookie);
+    // The replacement works…
+    const me = await apiClient(t.app, replacement).get("/api/me");
+    expect(me.status).toBe(200);
+    // …as an ordinary password session, not a setup one that could re-set the password.
+    expect(((await me.json()) as { sessionVia: string }).sessionVia).toBe("password");
+    // …and the claimed link is dead.
+    expect((await apiClient(t.app, claimCookie).get("/api/me")).status).toBe(401);
+  });
+
+  /**
+   * Setting a password must end EVERY first-login session for the account, not just the link
+   * the current process printed. An earlier boot's link stays live in a terminal scrollback,
+   * and a `setup` session may change the password without knowing the old one — so one left
+   * behind is an account takeover, not merely an extra session.
+   */
+  it("kills a setup session left over from an earlier boot", async () => {
+    const root = await makeTempRoot();
+    const config = { root, dbPath: path.join(root, "web.db"), seedAdminPassword: null };
+    const boot1 = await createTestApp({ config });
+    const linkA = boot1.deps.authService.mintFirstLogin()!;
+    await boot1.cleanup();
+
+    // Still unclaimed, so this boot prints its OWN link; both rows are live setup sessions.
+    const boot2 = await createTestApp({ config });
+    try {
+      const linkB = boot2.deps.authService.mintFirstLogin()!;
+      expect(linkB).not.toBe(linkA);
+      const set = await apiClient(boot2.app, `${SESSION_COOKIE}=${linkB}`).put("/api/me/password", {
+        newPassword: "claimed-password-1",
+      });
+      expect(set.status).toBe(204);
+      // The older link is dead too — not merely unable to set a password, but unauthenticated.
+      expect((await apiClient(boot2.app, `${SESSION_COOKIE}=${linkA}`).get("/api/me")).status).toBe(
+        401,
+      );
+    } finally {
+      await boot2.cleanup();
+    }
+  });
+
+  /**
+   * The revocation fires only after the password actually updates: a rejected attempt must
+   * leave the link alive, or a typo (or anyone poking the endpoint with a bad value) burns
+   * the only way in until a restart.
+   */
+  it("keeps the link alive when the chosen password is rejected", async () => {
+    const res = await redeem(link);
+    const cookie = cookieFrom(res);
+    const short = await apiClient(t.app, cookie).put("/api/me/password", {
+      newPassword: "short",
+    });
+    expect(short.status).toBe(400);
+    // The same printed link still redeems — nothing was spent on the failure.
+    expect((await redeem(link)).status).toBe(302);
+    expect(t.deps.authService.mintFirstLogin()).toBe(link);
+  });
+
+  /**
+   * The claim ends with its own sign-in (routes/me.ts hands the claimer a replacement
+   * session), and that sign-in must not be blockable from outside: anyone who can reach the
+   * port can spam POST /api/auth/login with wrong guesses and hold the per-user backoff
+   * window open. A successful password set resets the counter — it proves at least what the
+   * successful login that already resets it proves — so the claimer lands signed in instead
+   * of 429ing AFTER the password committed, with the setup session already deleted.
+   */
+  it("signs the claimer in even while a guessing spree has the login throttled", async () => {
+    const nowMs = Date.now();
+    const clocked = await createTestApp({ now: () => new Date(nowMs) });
+    try {
+      const clockedLink = clocked.deps.authService.mintFirstLogin()!;
+      const guess = () =>
+        clocked.app.request("/api/auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ userId: "admin", password: "not-the-password" }),
+        });
+      // Six wrong guesses arm the backoff; the frozen clock keeps its window open.
+      for (let i = 0; i < 6; i++) expect((await guess()).status).toBe(401);
+      expect((await guess()).status).toBe(429);
+
+      const res = await clocked.app.request(
+        `/api/auth/claim?token=${encodeURIComponent(clockedLink)}`,
+        { redirect: "manual" },
+      );
+      const set = await apiClient(clocked.app, cookieFrom(res)).put("/api/me/password", {
+        newPassword: "claimed-password-1",
+      });
+      expect(set.status).toBe(204);
+      // The replacement session works: the claim was not spent on somebody else's 429.
+      expect((await apiClient(clocked.app, cookieFrom(set)).get("/api/me")).status).toBe(200);
+    } finally {
+      await clocked.cleanup();
+    }
+  });
+
+  /**
+   * An unclaimed server outliving the session TTL (30 days without anyone setting a
+   * password) must not keep handing out the same dead link: the cached token no longer
+   * authenticates, so minting re-rolls it.
+   */
+  it("re-mints the link once the cached one has aged out", async () => {
+    let nowMs = Date.now();
+    const clocked = await createTestApp({
+      config: { seedAdminPassword: null },
+      now: () => new Date(nowMs),
+    });
+    try {
+      const first = clocked.deps.authService.mintFirstLogin()!;
+      nowMs += 31 * 24 * 60 * 60 * 1000;
+      const second = clocked.deps.authService.mintFirstLogin();
+      expect(second).not.toBeNull();
+      expect(second).not.toBe(first);
+      expect(clocked.deps.authService.redeemFirstLogin(second!)).toBe(second);
+    } finally {
+      await clocked.cleanup();
+    }
+  });
+
+  /**
+   * A claimed server that restarts must not end up holding a usable setup session. Revocation
+   * cannot be what prevents that — a restart's token is new, and nothing revoked a token that
+   * did not exist yet — so the server declines to mint one at all.
+   */
+  it("mints nothing once the server has been claimed, so a restart has no link", async () => {
+    const root = await makeTempRoot();
+    const dbPath = path.join(root, "web.db");
+
+    const first = await createTestApp({ config: { dbPath, seedAdminPassword: null } });
+    const claim = await first.app.request(
+      `/api/auth/claim?token=${encodeURIComponent(first.deps.authService.mintFirstLogin()!)}`,
+      { redirect: "manual" },
+    );
+    const cookie = cookieFrom(claim);
+    await apiClient(first.app, cookie).put("/api/me/password", {
+      newPassword: "claimed-password-1",
+    });
+    await first.cleanup();
+
+    // Same database, new process: a new signing key, and a new setup session with it.
+    const second = await createTestApp({ config: { dbPath, seedAdminPassword: null } });
+    try {
+      expect(second.deps.authService.adminPasswordIsInitial()).toBe(false);
+      expect(second.deps.authService.mintFirstLogin()).toBeNull();
+      // Nothing to match, so the endpoint refuses whatever is presented.
+      const res = await second.app.request("/api/auth/claim?token=anything", {
+        redirect: "manual",
+      });
+      expectRefusal(res);
+    } finally {
+      await second.cleanup();
+    }
+  });
+});

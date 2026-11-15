@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TestSelection",
+  "type": "object",
+  "required": ["run_id", "profile", "criteria", "selected", "excluded", "summary"],
+  "properties": {
+    "run_id": { "type": "string" },
+    "profile": { "type": "string" },
+    "criteria": { "type": "object" },
+    "selected": { "type": "array" },
+    "excluded": { "type": "array" },
+    "summary": { "type": "object" }
+  }
+}

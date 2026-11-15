@@ -1,0 +1,411 @@
+/**
+ * The live update flow: the store behind the App info dialog (whether it is open, and its
+ * update section), the account-menu row and the version-line badge, and the actions they
+ * call. `update-flow.ts` holds the pure state machine; this file feeds it from the shared
+ * caches (`use-version-info.ts` for the server release, `use-desktop-update.ts` for the
+ * shell's snapshot) and runs the requests. Opening the dialog runs no check of its own: the
+ * update section shows what is already known — the check the app layout runs on load, or the
+ * last manual one — and its "check for updates" button forces a fresh one.
+ *
+ * Everything the flow adds of its own is module level (a zustand vanilla store): the dialog
+ * may be closed mid-download and reopened from another surface, and the outcome of a
+ * request has to reach the user wherever they are — in the dialog when it is open, as a
+ * toast otherwise. One owner drives the polling and the toasts: `useUpdateFlowOwner`,
+ * mounted once by the dialog in the app layout. Every other consumer is passive
+ * (`useUpdateFlow`), reading the same stores through subscriptions.
+ */
+import { useEffect, useRef } from "react";
+import { createStore, useStore } from "zustand";
+import type { UpdateJobStatus } from "@prismshadow/penguin-server/api";
+import { toastError, toastInfo, toastSuccess } from "@prismshadow/penguin-ui";
+import * as api from "../api/endpoints";
+import { S } from "./strings";
+import { apiErrorText } from "./api-error";
+import {
+  clientFlow,
+  releaseFlow,
+  updateModeFor,
+  type FlowLocal,
+  type UpdateFlow,
+  type UpdateMode,
+} from "./update-flow";
+import {
+  forceUpdateCheck,
+  getVersionInfo,
+  updateCheckOutcome,
+  useVersionInfo,
+} from "./use-version-info";
+import {
+  getDesktopUpdateStatus,
+  isClientCheckPending,
+  onClientCheckSettle,
+  refreshDesktopUpdate,
+  requestClientCheck,
+  requestClientDownload,
+  requestClientInstall,
+  useDesktopUpdate,
+} from "./use-desktop-update";
+import { useAuth } from "../state/auth";
+
+/** How often the running self-update job is asked where it is. */
+const JOB_POLL_MS = 1_000;
+/** How often the page asks whether the restarted server is back. */
+const RESTART_POLL_MS = 1_000;
+/**
+ * A restart that has not come back by then is reported; the page stops waiting. In the shell's
+ * window the same deadline catches the restart that never starts: the window is meant to go away
+ * with the app, so a page still here this long after asking means the shell did not quit.
+ */
+const RESTART_TIMEOUT_MS = 90_000;
+
+interface FlowState extends FlowLocal {
+  /** Set by the owner from the session; actions read it to pick the backend. */
+  mode: UpdateMode;
+  isAdmin: boolean;
+  /** The App info dialog is open: outcomes render in its update section instead of toasting. */
+  modalOpen: boolean;
+  /** The server's self-update job as last polled (release mode). */
+  job: UpdateJobStatus | null;
+  /** Snapshot at a client install click; identity also fences late HTTP failures. */
+  clientInstallRequest: { seq: number | null } | null;
+}
+
+const store = createStore<FlowState>(() => ({
+  mode: "none",
+  isAdmin: false,
+  modalOpen: false,
+  checking: false,
+  downloadRequested: false,
+  restart: "none",
+  job: null,
+  clientInstallRequest: null,
+}));
+
+/** The flow for the current caches and local state — the one computation every surface renders. */
+function currentFlow(): UpdateFlow {
+  const s = store.getState();
+  // Nothing this session can act on (a browser signed into a desktop-mode server, and the
+  // beat before the owner has read the session): the flow stays `unknown`, so the row
+  // announces nothing, the badge stays down and the dialog has no update section to show it
+  // in. It must not fall through to the release flow — the avatar's dot reads this without a
+  // mode gate of its own, and a dot leading to a row with nothing to act on is exactly the
+  // dead end update-badges.ts forbids.
+  if (s.mode === "none") return { kind: "unknown" };
+  // The armed client check is the shell store's own flag: it spins the flow until the
+  // shell's `checking` frame lands, exactly as `checking` does for the release lookup.
+  if (s.mode === "client") {
+    return clientFlow(getDesktopUpdateStatus(), { ...s, checking: isClientCheckPending() });
+  }
+  const { version, update } = getVersionInfo();
+  return releaseFlow({ version, update, job: s.job, isAdmin: s.isAdmin }, s);
+}
+
+/** Outcomes that land while the dialog is closed are toasted; open, the dialog shows them. */
+function quiet(): boolean {
+  return store.getState().modalOpen;
+}
+
+/** Opens the App info dialog. No check starts: the update section shows what is already known. */
+export function openAppInfo(): void {
+  store.setState({ modalOpen: true });
+}
+
+/** Closing never cancels anything: a download in flight keeps going and reports through the row. */
+export function closeAppInfo(): void {
+  store.setState({ modalOpen: false });
+}
+
+export async function checkForUpdates(): Promise<void> {
+  const s = store.getState();
+  if (s.checking) return;
+  if (s.mode === "client") {
+    await requestClientCheck();
+    return;
+  }
+  store.setState({ checking: true });
+  try {
+    const outcome = updateCheckOutcome(await forceUpdateCheck());
+    if (quiet()) return;
+    if (outcome.kind === "disabled") toastInfo(S.update.checkDisabled);
+    else if (outcome.kind === "failed") toastError(S.update.checkFailed);
+    else if (outcome.kind === "found") toastSuccess(S.update.foundNew(outcome.latestVersion));
+    else toastSuccess(S.update.upToDate);
+  } catch (e) {
+    if (!quiet()) toastError(apiErrorText(e));
+  } finally {
+    store.setState({ checking: false });
+  }
+}
+
+/** The user's confirmation: fetch (and, on a server, install) the offered release. */
+export async function downloadUpdate(): Promise<void> {
+  const s = store.getState();
+  if (s.downloadRequested) return;
+  store.setState({ downloadRequested: true, restart: "none", clientInstallRequest: null });
+  try {
+    if (s.mode === "client") {
+      await requestClientDownload();
+      // The snapshot takes over from here (see the owner effect); the local flag only bridges
+      // the gap until the shell's `downloading` frame lands.
+      return;
+    }
+    // The status the POST answers with is the whole truth from here on — including a run
+    // that is already over (no CLI to run answers `done`/`unsupported` at once). Keeping
+    // the local flag past it would render `downloading` forever: releaseFlow reads the
+    // flag before the finished job, and only a RUNNING job is ever polled.
+    const job = await api.startUpdateJob();
+    store.setState({ job, downloadRequested: false });
+  } catch (e) {
+    toastError(S.update.requestFailed(apiErrorText(e)));
+    store.setState({ downloadRequested: false });
+  }
+}
+
+/** The user's "restart and update". */
+export async function installUpdate(): Promise<void> {
+  const s = store.getState();
+  if (s.mode === "client") {
+    if (s.clientInstallRequest !== null) return;
+    const request = { seq: getDesktopUpdateStatus()?.seq ?? null };
+    // Arm before POST: a verification error can arrive before its acknowledgement.
+    store.setState({ restart: "requested", clientInstallRequest: request });
+    try {
+      await requestClientInstall();
+    } catch (e) {
+      if (store.getState().clientInstallRequest !== request) return;
+      store.setState({ restart: "none", clientInstallRequest: null });
+      toastError(S.update.requestFailed(apiErrorText(e)));
+    }
+    return;
+  }
+  try {
+    const res = await api.restartServer();
+    store.setState({ restart: res.restarting ? "requested" : "manual" });
+  } catch (e) {
+    toastError(S.update.requestFailed(apiErrorText(e)));
+  }
+}
+
+/** Passive read of the flow, for the row, the badge and the dialog's rendering. */
+export function useUpdateFlow(): {
+  mode: UpdateMode;
+  flow: UpdateFlow;
+  modalOpen: boolean;
+  isAdmin: boolean;
+  /**
+   * The running version, for the dialog's identity block and the row's chip: the shell's own in
+   * its window, the server's otherwise — including a session that can update nothing, which
+   * still reads its version.
+   */
+  currentVersion: string | null;
+} {
+  const state = useStore(store);
+  const { version } = useVersionInfo(false);
+  useDesktopUpdate(false, false);
+  return {
+    mode: state.mode,
+    flow: currentFlow(),
+    modalOpen: state.modalOpen,
+    isAdmin: state.isAdmin,
+    currentVersion:
+      state.mode === "client"
+        ? (getDesktopUpdateStatus()?.appVersion ?? version?.version ?? null)
+        : (version?.version ?? null),
+  };
+}
+
+/**
+ * The one owner: sets the mode from the session, drives the shell polling while the dialog is
+ * open or something moves, polls the running job, waits out a restart, and toasts the
+ * outcomes that land while the dialog is closed. Mounted once, by the App info dialog.
+ */
+export function useUpdateFlowOwner(): void {
+  const { user, desktopMode, sessionVia } = useAuth();
+  const mode = updateModeFor({ desktopMode, sessionVia });
+  const isAdmin = user?.isAdmin === true;
+  useEffect(() => {
+    store.setState({ mode, isAdmin });
+  }, [mode, isAdmin]);
+
+  const state = useStore(store);
+  // A run still in flight from before this page load (or from another tab): "continue in
+  // background" has to survive a reload, and only the server knows what is running. A
+  // FINISHED run is deliberately not adopted — its outcome was already reported where it
+  // was started, and resurrecting it here would answer every later page load with a stale
+  // failure instead of the release still on offer. Admin-only (so is the endpoint), once
+  // per mount; a failure leaves the flow on the check, which it would have shown anyway.
+  useEffect(() => {
+    if (mode !== "release" || !isAdmin) return;
+    void api
+      .getUpdateJob()
+      .then((job) => {
+        if (job.state === "running" && store.getState().job === null) store.setState({ job });
+      })
+      .catch(() => undefined);
+  }, [mode, isAdmin]);
+
+  // The shell's snapshot: polled while the dialog is open, and on its own while a check or
+  // download moves (use-desktop-update's own rule), so a download that outlives the dialog
+  // still reports through the row. One passive refresh on load raises a badge for a release
+  // offered or downloaded before this page opened.
+  const { status } = useDesktopUpdate(
+    mode === "client",
+    state.modalOpen || state.clientInstallRequest !== null,
+  );
+  useEffect(() => {
+    if (mode === "client") refreshDesktopUpdate();
+  }, [mode]);
+
+  // An acknowledged install can still fail its final trust check. A fresh failure
+  // ends the restart wait; stale snapshots from before the click do not.
+  useEffect(() => {
+    const request = state.clientInstallRequest;
+    if (mode !== "client" || request === null || status?.state !== "error") return;
+    if (request.seq !== null && status.seq !== undefined && status.seq <= request.seq) return;
+    if (store.getState().clientInstallRequest !== request) return;
+    store.setState({ restart: "none", clientInstallRequest: null });
+    if (!quiet()) {
+      toastError(
+        status.message ? S.update.clientUpdateFailed(status.message) : S.update.checkFailed,
+      );
+    }
+  }, [mode, state.clientInstallRequest, status]);
+
+  // A settled client check reports in the dialog when it is open, as a toast otherwise.
+  useEffect(() => {
+    onClientCheckSettle((settle) => {
+      if (quiet()) return;
+      switch (settle.kind) {
+        case "up-to-date":
+          toastSuccess(S.update.upToDate);
+          break;
+        case "found":
+          toastSuccess(
+            settle.version !== null ? S.update.foundNew(settle.version) : S.update.foundNewUnnamed,
+          );
+          break;
+        case "ready":
+          toastSuccess(S.update.readyToast(settle.version));
+          break;
+        case "unsupported":
+          toastInfo(
+            settle.reason === "managed" ? "AITestHarness 当前由本地开发同步更新。" : settle.reason === "linux-not-appimage"
+              ? S.update.unsupportedNonAppImage
+              : S.update.unsupportedDev,
+          );
+          break;
+        default:
+          toastError(
+            settle.message !== null
+              ? S.update.clientUpdateFailed(settle.message)
+              : S.update.checkFailed,
+          );
+      }
+    });
+  }, []);
+
+  // The download request's bridge: once the shell reports the download (or anything else —
+  // a stale frame answers with a re-announce), the local flag has done its job.
+  const requestSeq = useRef<number | null>(null);
+  useEffect(() => {
+    if (mode !== "client") return;
+    if (state.downloadRequested) {
+      // -1 stands in for a snapshot without a seq (only the shell's very first frame): any
+      // later frame carries one, so it still reads as movement.
+      const seq = status?.seq ?? -1;
+      if (requestSeq.current === null) requestSeq.current = seq;
+      else if (seq !== requestSeq.current || status?.state === "downloading") {
+        requestSeq.current = null;
+        store.setState({ downloadRequested: false });
+      }
+    } else {
+      requestSeq.current = null;
+    }
+  }, [mode, state.downloadRequested, status]);
+
+  // A client download that lands while the dialog is closed is announced; open, the dialog
+  // shows the restart step itself.
+  const lastClientState = useRef<string | null>(null);
+  useEffect(() => {
+    if (mode !== "client") return;
+    const now = status?.state ?? null;
+    if (now === "downloaded" && lastClientState.current === "downloading" && !quiet()) {
+      toastSuccess(S.update.readyToast(status?.version ?? null));
+    }
+    lastClientState.current = now;
+  }, [mode, status]);
+
+  // The running self-update job (release mode): polled until it ends, then announced when
+  // the dialog is closed.
+  const running = mode === "release" && state.job?.state === "running";
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => {
+      void api
+        .getUpdateJob()
+        .then((job) => {
+          // Only the tick that sees the run end announces it: a slow earlier tick landing
+          // afterwards must not toast a second time.
+          const wasRunning = store.getState().job?.state === "running";
+          store.setState({ job, downloadRequested: false });
+          if (!wasRunning || job.state !== "done" || job.result === undefined || quiet()) return;
+          if (job.result.status === "updated") toastSuccess(S.update.readyToast(job.targetVersion));
+          else if (job.result.status === "failed") toastError(S.update.failedToast);
+          else toastInfo(S.update.unsupportedToast);
+        })
+        .catch(() => {
+          // Transient: the next tick asks again (the job keeps running on the server).
+        });
+    }, JOB_POLL_MS);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  // The restart (release mode): the server goes down and comes back on the new release;
+  // the page reloads once it answers again — after having seen it gone, or with another
+  // version — and gives up after a while with a hint.
+  const restarting = mode === "release" && state.restart === "requested";
+  useEffect(() => {
+    if (!restarting) return;
+    const before = getVersionInfo().version?.version ?? null;
+    const startedAt = Date.now();
+    let sawDown = false;
+    const giveUp = (): void => {
+      store.setState({ restart: "manual" });
+      toastError(S.update.restartTimedOut);
+    };
+    const timer = setInterval(() => {
+      // The deadline is checked on every tick, not only on a failed one. A poll that keeps
+      // SUCCEEDING is the case that hangs: the restart window fell between two ticks and
+      // the relaunched server reports the same version (the update was already installed,
+      // so `penguin update` only reinstalled it), or the restart never happened at all —
+      // `sawDown` then stays false and nothing here would ever end the wait.
+      if (Date.now() - startedAt > RESTART_TIMEOUT_MS) {
+        giveUp();
+        return;
+      }
+      void api
+        .getVersion()
+        .then((res) => {
+          if (sawDown || (before !== null && res.version !== before)) window.location.reload();
+        })
+        .catch(() => {
+          sawDown = true;
+        });
+    }, RESTART_POLL_MS);
+    return () => clearInterval(timer);
+  }, [restarting]);
+
+  // The restart (client mode): the shell quits into the new build and this window goes with
+  // it, so nothing here ever sees the restart finish — only the one that never happens. Left
+  // alone, that one spins for as long as the window stays open; after the deadline the flow
+  // goes back to the restart step, which says so and can ask again.
+  const clientRestarting = mode === "client" && state.restart === "requested";
+  useEffect(() => {
+    if (!clientRestarting) return;
+    const timer = setTimeout(() => {
+      store.setState({ restart: "manual", clientInstallRequest: null });
+      toastError(S.update.restartTimedOutClient);
+    }, RESTART_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [clientRestarting]);
+}

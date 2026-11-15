@@ -1,0 +1,2439 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { parse as parseToml } from "smol-toml";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { clampYield } from "../src/environment/tools/background/index.js";
+import { DEFAULT_EMPTY_POLL_YIELD_MS } from "../src/environment/tools/command/index.js";
+import {
+  AGENT_ID_PLACEHOLDER,
+  AGENTS_MD_PLACEHOLDER,
+  DEFAULT_CHAT_THINKING_LEVELS,
+  VAULT_KEYS_PLACEHOLDER,
+  SKILL_METADATA_PLACEHOLDER,
+  VAULT_PLACEHOLDER,
+  SKILLS_PLACEHOLDER,
+  SCHEDULES_PLACEHOLDER,
+  MEMORY_PLACEHOLDER,
+  DEFAULT_VAULT_PROMPT,
+  DEFAULT_SKILLS_PROMPT,
+  DEFAULT_SCHEDULES_PROMPT,
+  CWD_PLACEHOLDER,
+  DATE_PLACEHOLDER,
+  DEFAULT_AGENT_ID,
+  DEFAULT_PROJECT_ID,
+  OS_VERSION_PLACEHOLDER,
+  PLATFORM_PLACEHOLDER,
+  PROJECT_DIR_PLACEHOLDER,
+  SESSION_ID_PLACEHOLDER,
+  SHELL_PLACEHOLDER,
+  addModel,
+  removeModel,
+  setVisionModel,
+  agentsMdPath,
+  agentStateDir,
+  agentVaultPath,
+  loadAgentVault,
+  assembleSystemPrompt,
+  buildToolConfig,
+  selectBuiltinToolsForModel,
+  defaultProjectConfig,
+  effectiveConnection,
+  effectivePluginTable,
+  parsePluginTables,
+  defaultSystemConfig,
+  resetSystemConfigToDefaults,
+  getModel,
+  isValidVaultKey,
+  loadAgentState,
+  loadProjectConfig,
+  memoryDir,
+  scratchpadDir,
+  projectConfigFromTable,
+  projectConfigPath,
+  providerConnectionShape,
+  removeVaultEntry,
+  renderProjectConfigToml,
+  resolveEntryCredential,
+  resolveModelRef,
+  resolveRoot,
+  saveProjectConfig,
+  setDefaultModel,
+  setProviderConnection,
+  setVaultEntry,
+  skillsDir,
+  systemConfigPath,
+  toolsDir,
+  type ModelRef,
+  type ProjectConfig,
+  type SystemConfig,
+} from "../src/state/index.js";
+import { SUBAGENT_THINKING_LEVELS } from "../src/interfaces/index.js";
+import { DEFAULT_COMMAND_POLICY_RULES } from "../src/state/command-policy-defaults.js";
+import { seedProject, seededProjectConfig } from "./seeded-project.js";
+import { sessionEnvironment } from "../src/internal/session-support.js";
+
+let tmpRoot: string;
+let prevHome: string | undefined;
+
+beforeEach(async () => {
+  prevHome = process.env.PENGUIN_HOME;
+  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "penguin-state-"));
+  process.env.PENGUIN_HOME = tmpRoot;
+});
+
+afterEach(async () => {
+  if (prevHome === undefined) {
+    delete process.env.PENGUIN_HOME;
+  } else {
+    process.env.PENGUIN_HOME = prevHome;
+  }
+  // Retries: when a test times out, vitest runs this cleanup while the test's un-cancelled
+  // init may still be writing files, so an immediate recursive rm can hit ENOTEMPTY on
+  // Windows (fs.rm retries ENOTEMPTY/EBUSY/EPERM); a no-op when removal succeeds first try.
+  await fs.rm(tmpRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+});
+
+async function exists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe("paths / resolveRoot", () => {
+  it("honors PENGUIN_HOME", () => {
+    expect(resolveRoot()).toBe(tmpRoot);
+  });
+});
+
+describe("loadAgentState", () => {
+  // Timeout: initialization writes the full layout — 15 library skills plus the example
+  // benchmark, dozens of small files — and this first init test also pays the cold-I/O cost
+  // (first-touch reads of the skills package, Defender scans) on Windows runners, where a
+  // slow-disk moment has pushed it past the 5s default. Purely a failure deadline: passing
+  // runs stay as fast as before on every platform.
+  it(
+    "initializes an empty agent directory with the full state layout",
+    { timeout: 20_000 },
+    async () => {
+      const state = await loadAgentState({ init: {} });
+      expect(state.root).toBe(tmpRoot);
+      expect(state.projectId).toBe(DEFAULT_PROJECT_ID);
+      expect(state.agentId).toBe(DEFAULT_AGENT_ID);
+
+      const root = tmpRoot;
+      expect(await exists(systemConfigPath(root, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID))).toBe(true);
+      expect(await exists(agentsMdPath(root, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID))).toBe(true);
+      expect(await exists(toolsDir(root, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID))).toBe(true);
+      expect(await exists(memoryDir(root, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID))).toBe(true);
+      expect(await exists(skillsDir(root, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID))).toBe(true);
+      // The scratchpad/ directory alongside agent_state (model temp files get a subdirectory per Session id).
+      expect(await exists(scratchpadDir(root, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID))).toBe(true);
+
+      expect(state.stateDir).toBe(agentStateDir(root, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID));
+
+      // The default system Prompt states the Agent's identity, without repeating tool details
+      // already in the tool schema (Suggested workflows only points to the run_subagent
+      // delegation entry point).
+      expect(state.systemConfig.system_prompt).toContain("PenguinHarness");
+      expect(state.systemConfig.system_prompt).not.toContain("exec_command");
+      // Personality pins the reply language to the user's own (the tool schema asks the same of
+      // every call description, so the two can't disagree).
+      expect(state.systemConfig.system_prompt).toContain("in the user's language");
+      // Suggested workflows absorbs Subagent delegation and task conventions (self-reported
+      // identity as a soft convention, parallelism, file exchange).
+      expect(state.systemConfig.system_prompt).toContain("# Suggested workflows");
+      expect(state.systemConfig.system_prompt).toContain("run_subagent");
+      expect(state.systemConfig.system_prompt).toContain("Caller agent");
+      // The default AGENTS.md is empty: it carries no preset guidance.
+      expect(state.agentsMd).toBe("");
+      // The default turn cap is the -1 sentinel: a new agent has no per-Task turn limit, so
+      // long runs are never cut off unless the user configures a positive cap. Existing
+      // agents keep their stored max_turns verbatim (config is never auto-merged).
+      expect(state.systemConfig.max_turns).toBe(-1);
+      expect(state.systemConfig.system_prompt).toContain(AGENTS_MD_PLACEHOLDER);
+      expect(state.systemConfig.system_prompt).toContain(SESSION_ID_PLACEHOLDER);
+      expect(state.systemConfig.system_prompt).toContain(CWD_PLACEHOLDER);
+      expect(state.systemConfig.system_prompt).toContain(PLATFORM_PLACEHOLDER);
+      expect(state.systemConfig.system_prompt).toContain(OS_VERSION_PLACEHOLDER);
+      expect(state.systemConfig.system_prompt).toContain(DATE_PLACEHOLDER);
+      // AGENTS.md and the Environment injection sit at the end of the template, with AGENTS.md
+      // before Environment; the [developer_instructions] wrapper text is written directly into
+      // the template (the Prompt is transparent about the config).
+      expect(state.systemConfig.system_prompt).toContain("[developer_instructions]");
+      expect(state.systemConfig.system_prompt).toContain("[/developer_instructions]");
+      // The default template explains the semantics of system-synthesized markers to the model,
+      // and recommends preferring tool use.
+      expect(state.systemConfig.system_prompt).toContain("[turn_aborted]");
+      expect(state.systemConfig.system_prompt).toContain("[turn_retried]");
+      expect(state.systemConfig.system_prompt).toContain("[context_summary]");
+      expect(state.systemConfig.system_prompt).toContain("[user_steering]");
+      expect(state.systemConfig.system_prompt).toContain("# Tool use");
+      // Privacy hardening: explicitly forbids reading .project_config.toml (the sole config file,
+      // which holds API keys) and each Agent's .vault.toml, and states that config can only be
+      // changed via the CLI (penguin config ...).
+      expect(state.systemConfig.system_prompt).toContain("Never read");
+      expect(state.systemConfig.system_prompt).toContain(".project_config.toml");
+      expect(state.systemConfig.system_prompt).toContain("agent_state/.vault.toml");
+      expect(state.systemConfig.system_prompt).toContain("CLI-only");
+      expect(state.systemConfig.system_prompt).toContain("penguin config");
+      expect(state.systemConfig.system_prompt).not.toContain(".credentials.toml");
+      expect(state.systemConfig.system_prompt.indexOf(AGENTS_MD_PLACEHOLDER)).toBeLessThan(
+        state.systemConfig.system_prompt.indexOf("# Environment"),
+      );
+      // The Vault / Skills / Memory / Schedules section placeholders: the default template
+      // places them after [/developer_instructions] and before # Environment, in that order.
+      // The section statement texts (# Vault, # Skills, [use_skills] …) moved into the
+      // editable default prompts, each carrying its inner injection point — the template body
+      // holds no inline {{VAULT_KEYS}}/{{SKILL_METADATA}} anymore (those are the legacy
+      // template form).
+      const tpl = state.systemConfig.system_prompt;
+      expect(tpl).toContain(VAULT_PLACEHOLDER);
+      expect(tpl).toContain(SKILLS_PLACEHOLDER);
+      expect(tpl).toContain(SCHEDULES_PLACEHOLDER);
+      expect(tpl).not.toContain("# Vault");
+      expect(tpl).not.toContain("# Skills");
+      expect(tpl).not.toContain(VAULT_KEYS_PLACEHOLDER);
+      expect(tpl).not.toContain(SKILL_METADATA_PLACEHOLDER);
+      expect(DEFAULT_VAULT_PROMPT).toContain("# Vault");
+      expect(DEFAULT_VAULT_PROMPT).toContain(VAULT_KEYS_PLACEHOLDER);
+      expect(DEFAULT_SKILLS_PROMPT).toContain("# Skills");
+      expect(DEFAULT_SKILLS_PROMPT).toContain(SKILL_METADATA_PLACEHOLDER);
+      expect(DEFAULT_SKILLS_PROMPT).toContain("[use_skills]");
+      expect(DEFAULT_SCHEDULES_PROMPT).toContain("# Scheduled Tasks");
+      // The per-feature injection config ships enabled with the default prompts materialized.
+      expect(state.systemConfig.vault).toEqual({ enabled: true, prompt: DEFAULT_VAULT_PROMPT });
+      expect(state.systemConfig.skills).toEqual({ enabled: true, prompt: DEFAULT_SKILLS_PROMPT });
+      expect(state.systemConfig.schedules).toEqual({
+        enabled: true,
+        prompt: DEFAULT_SCHEDULES_PROMPT,
+      });
+      // Tooling installs once into a shared per-Agent directory rather than per task, so a
+      // Session's scratchpad never becomes the home of a virtualenv. It governs every task, not
+      // just skill runs, so it belongs to # File system — pinned by position, since the rule
+      // reads as skills-only the moment it drifts back under # Skills (now the {{SKILLS}}
+      // block).
+      expect(tpl).toContain("<app_data_dir>/agents/<agent_id>/shared_env/");
+      expect(tpl.indexOf("# File system")).toBeLessThan(tpl.indexOf("shared_env/"));
+      expect(tpl.indexOf("shared_env/")).toBeLessThan(tpl.indexOf(SKILLS_PLACEHOLDER));
+      expect(tpl.indexOf("[/developer_instructions]")).toBeLessThan(tpl.indexOf(VAULT_PLACEHOLDER));
+      expect(tpl.indexOf(VAULT_PLACEHOLDER)).toBeLessThan(tpl.indexOf(SKILLS_PLACEHOLDER));
+      expect(tpl.indexOf(SKILLS_PLACEHOLDER)).toBeLessThan(tpl.indexOf(MEMORY_PLACEHOLDER));
+      expect(tpl.indexOf(MEMORY_PLACEHOLDER)).toBeLessThan(tpl.indexOf(SCHEDULES_PLACEHOLDER));
+      expect(tpl.indexOf(SCHEDULES_PLACEHOLDER)).toBeLessThan(tpl.indexOf("# Environment"));
+      expect(state.systemConfig.model?.max_tokens).toBe(32000);
+      expect(state.systemConfig.model?.thinking_level).toBe("medium");
+      expect(state.systemConfig.model?.timeoutMs).toBe(600000);
+      expect(state.systemConfig.tools?.mcpServers).toEqual([]);
+      expect(Object.hasOwn(state.systemConfig, "description")).toBe(false);
+      expect(Object.hasOwn(state.systemConfig, "subagents")).toBe(false);
+    },
+  );
+
+  it("loads an existing agent directory and returns the same system prompt", async () => {
+    const first = await loadAgentState({ init: {} });
+    const second = await loadAgentState({ init: {} });
+    expect(second.systemConfig.system_prompt).toBe(first.systemConfig.system_prompt);
+    expect(second.systemConfig.system_prompt).toContain("PenguinHarness");
+    expect(second.agentsMd).toBe(first.agentsMd);
+    // The tool config is fully preserved on the load path.
+    expect(second.systemConfig.tools?.builtin?.[0]?.name).toBe("read_file");
+  });
+
+  it("respects custom agentId / projectId", async () => {
+    const state = await loadAgentState({ init: {}, agentId: "agent_x", projectId: "proj_y" });
+    expect(state.agentId).toBe("agent_x");
+    expect(state.projectId).toBe("proj_y");
+    expect(await exists(systemConfigPath(tmpRoot, "proj_y", "agent_x"))).toBe(true);
+  });
+});
+
+describe("buildToolConfig", () => {
+  it("exposes the command, file (read_file also reads images) and subagent tools with their default contracts", async () => {
+    const state = await loadAgentState({ init: {} });
+    const cfg = buildToolConfig(state);
+    expect(cfg.mcpServers).toEqual([]);
+    expect(cfg.customTools.map((t) => t.name)).toEqual([
+      "read_file",
+      "edit_file",
+      "write_file",
+      "exec_command",
+      "input_command",
+      "run_subagent",
+      "input_subagent",
+    ]);
+    const exec = cfg.customTools.find((t) => t.name === "exec_command")!;
+    expect(exec.permission).toBe("rw");
+    expect(exec.timeoutMs).toBe(120000);
+    expect(exec.maxOutputLength).toBe(16000);
+    expect((exec.parameters as { required?: string[] }).required).toEqual(["description", "cmd"]);
+    // The command/subagent tools declare the description call argument in config,
+    // toggled by the per-entry call_description field (default true).
+    expect(exec.call_description).toBe(true);
+    expect(
+      Object.keys((exec.parameters as { properties: Record<string, unknown> }).properties),
+    ).toEqual(["description", "cmd", "workdir", "yield_time_ms", "run_in_background"]);
+    const write = cfg.customTools.find((t) => t.name === "input_command")!;
+    expect(write.permission).toBe("rw");
+    expect(write.call_description).toBe(true);
+    // Same timeout tier as exec_command; the empty-poll default has to fit under it, so a
+    // default-length poll returns on its own before the Environment's timeout fires.
+    expect(write.timeoutMs).toBe(120000);
+    expect(clampYield(undefined, DEFAULT_EMPTY_POLL_YIELD_MS, write.timeoutMs)).toBe(
+      DEFAULT_EMPTY_POLL_YIELD_MS,
+    );
+    expect((write.parameters as { required?: string[] }).required).toEqual([
+      "description",
+      "process_id",
+    ]);
+    // File tools: read_file is read-only with a wider output cap and the image-reading
+    // timeout (one vision request may sit inside a call); edit/write are rw.
+    const readFile = cfg.customTools.find((t) => t.name === "read_file")!;
+    expect(readFile.permission).toBe("r");
+    expect(readFile.timeoutMs).toBe(60000);
+    expect(readFile.maxOutputLength).toBe(64000);
+    expect((readFile.parameters as { required?: string[] }).required).toEqual(["file_path"]);
+    expect(Object.keys((readFile.parameters as { properties: object }).properties)).toEqual([
+      "file_path",
+      "offset",
+      "limit",
+      "prompt",
+    ]);
+    expect(readFile.description).toContain("image");
+    const editFile = cfg.customTools.find((t) => t.name === "edit_file")!;
+    expect(editFile.permission).toBe("rw");
+    expect(editFile.timeoutMs).toBe(30000);
+    expect(editFile.maxOutputLength).toBe(16000);
+    expect((editFile.parameters as { required?: string[] }).required).toEqual([
+      "file_path",
+      "old_string",
+      "new_string",
+    ]);
+    const writeFile = cfg.customTools.find((t) => t.name === "write_file")!;
+    expect(writeFile.permission).toBe("rw");
+    expect((writeFile.parameters as { required?: string[] }).required).toEqual([
+      "file_path",
+      "content",
+    ]);
+    const sub = cfg.customTools.find((t) => t.name === "run_subagent")!;
+    expect(sub.permission).toBe("rw");
+    expect((sub.parameters as { required?: string[] }).required).toEqual(["description", "prompt"]);
+    const writeSub = cfg.customTools.find((t) => t.name === "input_subagent")!;
+    expect(writeSub.permission).toBe("rw");
+    expect((writeSub.parameters as { required?: string[] }).required).toEqual([
+      "description",
+      "subagent_id",
+    ]);
+    // No built-in entry is pinned to a model class: read_file serves both at runtime.
+    expect(cfg.customTools.every((t) => t.forModel === undefined)).toBe(true);
+  });
+
+  it("selectBuiltinToolsForModel keeps an entry annotated for the session model's class and every unannotated one", () => {
+    const entries = [
+      { name: "for_vision", description: "v", forModel: "vision" as const },
+      { name: "for_text", description: "t", forModel: "text-only" as const },
+      { name: "read_file", description: "any" },
+    ];
+    expect(selectBuiltinToolsForModel(entries, true).map((t) => t.name)).toEqual([
+      "for_vision",
+      "read_file",
+    ]);
+    expect(selectBuiltinToolsForModel(entries, false).map((t) => t.name)).toEqual([
+      "for_text",
+      "read_file",
+    ]);
+  });
+
+  it("selectBuiltinToolsForModel hands read_file's prompt argument to a text-only model only", () => {
+    const stored = defaultSystemConfig().tools!.builtin!;
+    const props = (tools: typeof stored) =>
+      Object.keys(
+        (
+          tools.find((t) => t.name === "read_file")!.parameters as {
+            properties: Record<string, unknown>;
+          }
+        ).properties,
+      );
+    expect(props(selectBuiltinToolsForModel(stored, true))).toEqual([
+      "file_path",
+      "offset",
+      "limit",
+    ]);
+    expect(props(selectBuiltinToolsForModel(stored, false))).toContain("prompt");
+    // The trim works on a clone: the stored entry keeps its argument.
+    expect(props(stored)).toContain("prompt");
+  });
+
+  it("loads MCP Server config from system_config.yaml", () => {
+    const state = {
+      root: tmpRoot,
+      projectId: DEFAULT_PROJECT_ID,
+      agentId: DEFAULT_AGENT_ID,
+      stateDir: agentStateDir(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID),
+      systemConfig: {
+        system_prompt: "x",
+        tools: {
+          builtin: [],
+          mcpServers: [{ name: "fs", config: { command: "mcp-fs" } }],
+        },
+      },
+      agentsMd: "y",
+    };
+
+    const cfg = buildToolConfig(state);
+    expect(cfg.customTools).toEqual([]);
+    expect(cfg.mcpServers).toEqual([{ name: "fs", config: { command: "mcp-fs" } }]);
+  });
+
+  it("falls back to default builtin tools when config omits them", () => {
+    const state = {
+      root: tmpRoot,
+      projectId: DEFAULT_PROJECT_ID,
+      agentId: DEFAULT_AGENT_ID,
+      stateDir: agentStateDir(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID),
+      systemConfig: { system_prompt: "x" },
+      agentsMd: "y",
+    };
+    const cfg = buildToolConfig(state);
+    expect(cfg.customTools.map((t) => t.name)).toEqual([
+      "read_file",
+      "edit_file",
+      "write_file",
+      "exec_command",
+      "input_command",
+      "run_subagent",
+      "input_subagent",
+    ]);
+  });
+});
+
+describe("buildToolConfig — per-tool call_description filter", () => {
+  const makeState = (tools: NonNullable<SystemConfig["tools"]>) => ({
+    root: tmpRoot,
+    projectId: DEFAULT_PROJECT_ID,
+    agentId: DEFAULT_AGENT_ID,
+    stateDir: agentStateDir(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID),
+    systemConfig: { system_prompt: "x", tools },
+    agentsMd: "y",
+  });
+  const properties = (t: { parameters?: Record<string, unknown> }) =>
+    (t.parameters as { properties: Record<string, unknown> }).properties;
+  const required = (t: { parameters?: Record<string, unknown> }) =>
+    (t.parameters as { required?: string[] }).required;
+
+  it("keeps the config-declared description property when call_description is missing or true (defaults)", async () => {
+    const state = await loadAgentState({ init: {} });
+    const cfg = buildToolConfig(state);
+    for (const name of ["exec_command", "input_command", "run_subagent", "input_subagent"]) {
+      const tool = cfg.customTools.find((t) => t.name === name)!;
+      const desc = properties(tool)["description"] as { type?: string; description?: string };
+      expect(desc.type).toBe("string");
+      expect(desc.description).toContain("shown to the user");
+      // Required whenever the tool offers it, so a call always carries one: the frontends
+      // pick the call's display form from the schema instead of guessing mid-stream.
+      expect(required(tool)).toContain("description");
+    }
+    // The file tools' path argument is self-describing: no description parameter in config.
+    for (const name of ["read_file", "edit_file", "write_file"]) {
+      const tool = cfg.customTools.find((t) => t.name === name)!;
+      expect(properties(tool)["description"]).toBeUndefined();
+    }
+  });
+
+  it("filters the description property out when call_description is false, without mutating the stored config", () => {
+    const builtin = [
+      {
+        name: "exec_command",
+        description: "shell",
+        call_description: false,
+        parameters: {
+          type: "object",
+          properties: { description: { type: "string" }, cmd: { type: "string" } },
+          required: ["description", "cmd"],
+        },
+      },
+    ];
+    const state = makeState({ builtin });
+    const cfg = buildToolConfig(state);
+    const assembled = cfg.customTools[0]!;
+    expect(properties(assembled)["description"]).toBeUndefined();
+    expect(properties(assembled)["cmd"]).toBeDefined();
+    // The property and its `required` entry go together: a filtered-out argument must not
+    // stay mandatory.
+    expect(required(assembled)).toEqual(["cmd"]);
+    expect((builtin[0]!.parameters.required as string[]).includes("description")).toBe(true);
+    // In-memory clone only: the stored entry still declares the property.
+    expect(properties(builtin[0]!)["description"]).toBeDefined();
+  });
+
+  it("is a no-op for entries without the property, a schema, or with the toggle on", () => {
+    const builtin = [
+      {
+        name: "exec_command",
+        description: "shell",
+        call_description: false,
+        parameters: {
+          type: "object",
+          properties: { description: { type: "string" }, cmd: { type: "string" } },
+          required: ["cmd"],
+        },
+      },
+      // call_description without a matching property (old config shape): no-op.
+      {
+        name: "input_command",
+        description: "no description property",
+        call_description: false,
+        parameters: { type: "object", properties: { process_id: { type: "string" } } },
+      },
+      // No parameter schema at all: no-op.
+      { name: "run_subagent", description: "no schema", call_description: false },
+      // call_description true keeps the declared property.
+      {
+        name: "input_subagent",
+        description: "kept",
+        call_description: true,
+        parameters: {
+          type: "object",
+          properties: { description: { type: "string" }, subagent_id: { type: "string" } },
+        },
+      },
+    ];
+    const cfg = buildToolConfig(makeState({ builtin }));
+    expect(properties(cfg.customTools[0]!)["description"]).toBeUndefined();
+    expect(properties(cfg.customTools[1]!)["process_id"]).toBeDefined();
+    expect(cfg.customTools[2]!.parameters).toBeUndefined();
+    expect(properties(cfg.customTools[3]!)["description"]).toBeDefined();
+  });
+});
+
+describe("assembleSystemPrompt", () => {
+  it("renders default system prompt placeholders", async () => {
+    const state = await loadAgentState({ init: {} });
+    const prompt = assembleSystemPrompt(
+      state,
+      sessionEnvironment("/tmp/penguin-ws", "session-test-1", {
+        agentId: DEFAULT_AGENT_ID,
+        projectDir: "/tmp/proj",
+        provider: "deepseek",
+        modelId: "deepseek-v4-pro",
+      }),
+    );
+    expect(prompt).toContain("AGENTS.md");
+    expect(prompt).toContain("PenguinHarness");
+    // The default template wraps AGENTS.md in a [developer_instructions] block.
+    expect(prompt).toContain("[developer_instructions]");
+    expect(prompt).toContain("[/developer_instructions]");
+    expect(prompt.indexOf("[developer_instructions]")).toBeLessThan(
+      prompt.indexOf("# Environment"),
+    );
+    expect(prompt).not.toContain(AGENTS_MD_PLACEHOLDER);
+    expect(prompt).not.toContain(SESSION_ID_PLACEHOLDER);
+    expect(prompt).not.toContain(CWD_PLACEHOLDER);
+    expect(prompt).not.toContain(PLATFORM_PLACEHOLDER);
+    expect(prompt).not.toContain(OS_VERSION_PLACEHOLDER);
+    expect(prompt).not.toContain(DATE_PLACEHOLDER);
+    expect(prompt).not.toContain(PROJECT_DIR_PLACEHOLDER);
+    // The project dir is labeled "App Data Dir" (the app data root, not the task's
+    // directory) — the raw "Project Dir" label must never reach the model.
+    expect(prompt).toContain("App Data Dir: /tmp/proj");
+    expect(prompt).not.toContain("Project Dir:");
+    expect(prompt).not.toContain("<project_dir>");
+  });
+
+  it("default prompt carries the port and API-key guardrails", async () => {
+    const state = await loadAgentState({ init: {} });
+    const prompt = assembleSystemPrompt(state);
+    // The wording of these rules is tuned freely; what must not drift is what they never say.
+    // Ports: the service numbers are deliberately not listed, so a model cannot read one out
+    // of the prompt and go looking for it.
+    expect(prompt).not.toContain("7364");
+    // Auth/key failures live entirely in Stop rules, as a special case of the
+    // unresolvable-error rule: retry once, then stop and ask the user to update the key
+    // outside the chat — never through a command that would put the secret on a command line.
+    expect(prompt).not.toContain("penguin config vault set");
+    // Position, not presence: `# Stop rules` exists either way, so only the ordering pins that
+    // the retry rule sits inside that section instead of back up in Constraints.
+    expect(prompt.indexOf("# Stop rules")).toBeLessThan(prompt.indexOf("retry at most once"));
+    expect(prompt.indexOf("retry at most once")).toBeLessThan(prompt.indexOf("# Tool use"));
+  });
+
+  it("replaces AGENTS.md and specific Session environment fields at template locations", () => {
+    const state = {
+      root: tmpRoot,
+      projectId: DEFAULT_PROJECT_ID,
+      agentId: DEFAULT_AGENT_ID,
+      stateDir: agentStateDir(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID),
+      systemConfig: {
+        system_prompt: [
+          "before",
+          `sid=${SESSION_ID_PLACEHOLDER}`,
+          `cwd=${CWD_PLACEHOLDER}`,
+          `aid=${AGENT_ID_PLACEHOLDER}`,
+          `pdir=${PROJECT_DIR_PLACEHOLDER}`,
+          `platform=${PLATFORM_PLACEHOLDER}`,
+          `os=${OS_VERSION_PLACEHOLDER}`,
+          `shell=${SHELL_PLACEHOLDER}`,
+          `date=${DATE_PLACEHOLDER}`,
+          "middle",
+          AGENTS_MD_PLACEHOLDER,
+          "after",
+        ].join("\n"),
+      },
+      agentsMd: "# Agent Rules\nFollow local rules.",
+    };
+
+    const prompt = assembleSystemPrompt(state, {
+      sessionId: "session-1",
+      cwd: "/tmp/ws",
+      agentId: "agent-x",
+      projectDir: "/tmp/proj",
+      provider: "deepseek",
+      modelId: "deepseek-v4-pro",
+      platform: "darwin",
+      osVersion: "Darwin 25.0.0",
+      shell: "zsh",
+      date: "2026-06-30",
+    });
+    expect(prompt).toBe(
+      [
+        "before",
+        "sid=session-1",
+        "cwd=/tmp/ws",
+        "aid=agent-x",
+        "pdir=/tmp/proj",
+        "platform=darwin",
+        "os=Darwin 25.0.0",
+        "shell=zsh",
+        "date=2026-06-30",
+        "middle",
+        "# Agent Rules\nFollow local rules.",
+        "after",
+      ].join("\n"),
+    );
+  });
+
+  it("replaces the placeholder with an empty string when AGENTS.md is blank", () => {
+    const state = {
+      root: tmpRoot,
+      projectId: DEFAULT_PROJECT_ID,
+      agentId: DEFAULT_AGENT_ID,
+      stateDir: agentStateDir(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID),
+      systemConfig: {
+        system_prompt: ["before", AGENTS_MD_PLACEHOLDER, "after"].join("\n"),
+      },
+      agentsMd: "  \n",
+    };
+
+    const prompt = assembleSystemPrompt(state);
+    expect(prompt).toBe("before\n\nafter");
+  });
+
+  it("does not append AGENTS.md or Session environment without placeholders", () => {
+    const state = {
+      root: tmpRoot,
+      projectId: DEFAULT_PROJECT_ID,
+      agentId: DEFAULT_AGENT_ID,
+      stateDir: agentStateDir(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID),
+      systemConfig: { system_prompt: "base prompt" },
+      agentsMd: "# Agent Rules\nShould not appear.",
+    };
+
+    const prompt = assembleSystemPrompt(state, {
+      sessionId: "session-1",
+      cwd: "/tmp/ws",
+      agentId: "agent-x",
+      projectDir: "/tmp/proj",
+      provider: "deepseek",
+      modelId: "deepseek-v4-pro",
+      platform: "darwin",
+      osVersion: "Darwin 25.0.0",
+      // The shell a pre-{{SHELL}} template already implies, so the compatibility fallback
+      // stays out of this assertion; its own cases live in their describe block below.
+      shell: "bash",
+      date: "2026-06-30",
+    });
+    expect(prompt).toBe("base prompt");
+  });
+
+  it("renders vault key names (never values) via the {{VAULT_KEYS}} placeholder", () => {
+    const state = {
+      root: tmpRoot,
+      projectId: DEFAULT_PROJECT_ID,
+      agentId: DEFAULT_AGENT_ID,
+      stateDir: agentStateDir(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID),
+      systemConfig: {
+        system_prompt: ["before", AGENTS_MD_PLACEHOLDER, VAULT_KEYS_PLACEHOLDER, "after"].join(
+          "\n",
+        ),
+      },
+      agentsMd: "# Agent Rules",
+    };
+
+    const prompt = assembleSystemPrompt(state, undefined, ["KEY_A", "KEY_B"]);
+    // The placeholder is replaced with a list of key names (one `- KEY` per line); the vault's
+    // purpose statement is part of the template body, not carried by the replacement value.
+    expect(prompt).toBe(["before", "# Agent Rules", "- KEY_A", "- KEY_B", "after"].join("\n"));
+  });
+
+  it("replaces {{VAULT_KEYS}} with an empty string when there are no keys", () => {
+    const state = {
+      root: tmpRoot,
+      projectId: DEFAULT_PROJECT_ID,
+      agentId: DEFAULT_AGENT_ID,
+      stateDir: agentStateDir(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID),
+      systemConfig: {
+        system_prompt: ["before", AGENTS_MD_PLACEHOLDER, VAULT_KEYS_PLACEHOLDER, "after"].join(
+          "\n",
+        ),
+      },
+      agentsMd: "# Agent Rules",
+    };
+    // No keys: the placeholder is replaced with an empty string (the template body's vault
+    // statement is kept, though this test's template does not include one); the placeholder
+    // leaves no residue.
+    const empty = assembleSystemPrompt(state, undefined, []);
+    expect(empty).toBe(["before", "# Agent Rules", "", "after"].join("\n"));
+    expect(assembleSystemPrompt(state)).not.toContain(VAULT_KEYS_PLACEHOLDER);
+  });
+
+  it("does not auto-inject other Agent State files", async () => {
+    const state = await loadAgentState({ init: {} });
+    await fs.writeFile(
+      path.join(memoryDir(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID), "note.md"),
+      "MEMORY_SHOULD_NOT_BE_IN_PROMPT",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(skillsDir(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID), "SKILL.md"),
+      "SKILL_SHOULD_NOT_BE_IN_PROMPT",
+      "utf8",
+    );
+
+    const reloaded = await loadAgentState({ init: {} });
+    const prompt = assembleSystemPrompt(reloaded);
+
+    expect(prompt).not.toContain("MEMORY_SHOULD_NOT_BE_IN_PROMPT");
+    expect(prompt).not.toContain("SKILL_SHOULD_NOT_BE_IN_PROMPT");
+  });
+
+  it("replaces generated Session environment field placeholders when provided", async () => {
+    const state = await loadAgentState({ init: {} });
+    const env = sessionEnvironment(
+      "/tmp/penguin-ws",
+      "session-test-1",
+      { agentId: "agent-x", projectDir: "/tmp/proj", provider: "openai", modelId: "gpt-5.5" },
+      new Date("2026-06-30T00:00:00"),
+    );
+    const prompt = assembleSystemPrompt(state, env);
+
+    expect(prompt).toContain("# Environment");
+    expect(prompt).toContain("Session ID: session-test-1");
+    expect(prompt).toContain("CWD: /tmp/penguin-ws");
+    expect(prompt).toContain("Agent ID: agent-x");
+    expect(prompt).toContain("App Data Dir: /tmp/proj");
+    expect(prompt).toContain("Provider: openai");
+    expect(prompt).toContain("Model ID: gpt-5.5");
+    expect(prompt).toContain("Platform:");
+    expect(prompt).toContain("OS Version:");
+    expect(prompt).toContain("Shell:");
+    expect(prompt).toContain("Date: 2026-06-30");
+    expect(prompt.indexOf("Platform:")).toBeLessThan(prompt.indexOf("OS Version:"));
+    expect(prompt.indexOf("OS Version:")).toBeLessThan(prompt.indexOf("Shell:"));
+    expect(prompt.indexOf("Shell:")).toBeLessThan(prompt.indexOf("Date:"));
+    expect(prompt.indexOf("Date:")).toBeLessThan(prompt.indexOf("App Data Dir:"));
+    expect(prompt.indexOf("App Data Dir:")).toBeLessThan(prompt.indexOf("Agent ID:"));
+    expect(prompt.indexOf("Agent ID:")).toBeLessThan(prompt.indexOf("CWD:"));
+    expect(prompt.indexOf("CWD:")).toBeLessThan(prompt.indexOf("Provider:"));
+    expect(prompt.indexOf("Provider:")).toBeLessThan(prompt.indexOf("Model ID:"));
+    expect(prompt.indexOf("Model ID:")).toBeLessThan(prompt.indexOf("Session ID:"));
+  });
+
+  // The Shell-line fallback for pre-{{SHELL}} templates (system_config.yaml is baked at Agent
+  // creation and never auto-upgraded), gated on the resolved shell rather than the platform.
+  // Removable together with `withShellLineFallback` once pre-{{SHELL}} Agent configs are no
+  // longer expected in the wild.
+  describe("Shell line fallback for templates without {{SHELL}}", () => {
+    const stateWithPrompt = (system_prompt: string) => ({
+      root: tmpRoot,
+      projectId: DEFAULT_PROJECT_ID,
+      agentId: DEFAULT_AGENT_ID,
+      stateDir: agentStateDir(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID),
+      systemConfig: { system_prompt },
+      agentsMd: "",
+    });
+    const envFor = (platform: string) => ({
+      sessionId: "session-1",
+      cwd: "C:\\ws",
+      agentId: "agent-x",
+      projectDir: "C:\\proj",
+      provider: "deepseek",
+      modelId: "deepseek-v4-pro",
+      platform,
+      osVersion: "Windows 11 Pro 10.0.26100",
+      shell: "pwsh",
+      date: "2026-07-27",
+    });
+    // A pre-{{SHELL}} default-template Environment section (Platform/OS Version/Date, no Shell).
+    const preShellTemplate = [
+      "intro",
+      "# Environment",
+      `- Platform: ${PLATFORM_PLACEHOLDER}`,
+      `- OS Version: ${OS_VERSION_PLACEHOLDER}`,
+      `- Date: ${DATE_PLACEHOLDER}`,
+      "",
+      "# Tail section",
+      "tail",
+    ].join("\n");
+
+    it("injects the line exactly once into the Environment section on win32", () => {
+      const prompt = assembleSystemPrompt(stateWithPrompt(preShellTemplate), envFor("win32"));
+      expect(prompt).toBe(
+        [
+          "intro",
+          "# Environment",
+          "- Shell: pwsh",
+          "- Platform: win32",
+          "- OS Version: Windows 11 Pro 10.0.26100",
+          "- Date: 2026-07-27",
+          "",
+          "# Tail section",
+          "tail",
+        ].join("\n"),
+      );
+      expect(prompt.split("- Shell: pwsh").length - 1).toBe(1);
+    });
+
+    // Bash is what a pre-{{SHELL}} template already implies, so a resolved bash needs no line
+    // — on every platform, Windows included.
+    it("keeps the prompt byte-identical wherever bash resolved (no injected line)", () => {
+      for (const platform of ["linux", "darwin", "win32"]) {
+        const prompt = assembleSystemPrompt(stateWithPrompt(preShellTemplate), {
+          ...envFor(platform),
+          shell: "bash",
+          osVersion: "OS 1.0",
+        });
+        expect(prompt).toBe(
+          [
+            "intro",
+            "# Environment",
+            `- Platform: ${platform}`,
+            "- OS Version: OS 1.0",
+            "- Date: 2026-07-27",
+            "",
+            "# Tail section",
+            "tail",
+          ].join("\n"),
+        );
+        expect(prompt).not.toContain("Shell:");
+      }
+    });
+
+    // Shell resolution falls back to zsh / dash / sh on a POSIX box without bash, and a
+    // pre-{{SHELL}} template would otherwise leave the model writing bash syntax into it.
+    it("injects the line on POSIX when the resolved shell is not bash", () => {
+      for (const { platform, shell } of [
+        { platform: "linux", shell: "dash" },
+        { platform: "darwin", shell: "zsh" },
+      ]) {
+        const prompt = assembleSystemPrompt(stateWithPrompt(preShellTemplate), {
+          ...envFor(platform),
+          shell,
+          osVersion: "OS 1.0",
+        });
+        expect(prompt).toBe(
+          [
+            "intro",
+            "# Environment",
+            `- Shell: ${shell}`,
+            `- Platform: ${platform}`,
+            "- OS Version: OS 1.0",
+            "- Date: 2026-07-27",
+            "",
+            "# Tail section",
+            "tail",
+          ].join("\n"),
+        );
+        expect(prompt.split(`- Shell: ${shell}`).length - 1).toBe(1);
+      }
+    });
+
+    it("does not duplicate the line when the template has {{SHELL}}", () => {
+      const template = [
+        "# Environment",
+        `- Platform: ${PLATFORM_PLACEHOLDER}`,
+        `- Shell: ${SHELL_PLACEHOLDER}`,
+      ].join("\n");
+      const prompt = assembleSystemPrompt(stateWithPrompt(template), envFor("win32"));
+      expect(prompt).toBe(["# Environment", "- Platform: win32", "- Shell: pwsh"].join("\n"));
+      expect(prompt.split("- Shell:").length - 1).toBe(1);
+    });
+
+    it("does not duplicate a hardcoded line and appends a minimal line without an Environment section", () => {
+      // A custom template that hardcodes the exact line: left untouched (idempotent).
+      const hardcoded = assembleSystemPrompt(
+        stateWithPrompt("base prompt\n- Shell: pwsh"),
+        envFor("win32"),
+      );
+      expect(hardcoded).toBe("base prompt\n- Shell: pwsh");
+      // A hardcoded line with a different value is a deliberate template choice:
+      // never add a second, contradicting Shell line.
+      const pinned = assembleSystemPrompt(
+        stateWithPrompt("base prompt\n- Shell: bash"),
+        envFor("win32"),
+      );
+      expect(pinned).toBe("base prompt\n- Shell: bash");
+      // No Environment section at all: the line is appended at the end.
+      const appended = assembleSystemPrompt(stateWithPrompt("base prompt"), envFor("win32"));
+      expect(appended).toBe("base prompt\n- Shell: pwsh");
+    });
+  });
+});
+
+describe("resetSystemConfigToDefaults", () => {
+  it("replaces everything with the current defaults, keeping only name/description/version", async () => {
+    await loadAgentState({ init: {} });
+    const configPath = systemConfigPath(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID);
+    // An old on-disk config: custom prompt/runtime/tools plus a key outside the schema.
+    await fs.writeFile(
+      configPath,
+      [
+        "name: Custom Name",
+        "description: Custom description",
+        "version: 7",
+        "system_prompt: Custom prompt with {{PROJECT_DIR}}",
+        "max_turns: 5",
+        "model:",
+        "  max_tokens: 1234",
+        "compaction:",
+        "  mode: discard",
+        "tools:",
+        "  builtin: []",
+        "  mcpServers:",
+        "    - name: custom-mcp",
+        "      config: {}",
+        "custom_extra_key: should-be-dropped",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const written = await resetSystemConfigToDefaults(
+      tmpRoot,
+      DEFAULT_PROJECT_ID,
+      DEFAULT_AGENT_ID,
+    );
+    // Identity fields survive; everything else is the current default.
+    expect(written.name).toBe("Custom Name");
+    expect(written.description).toBe("Custom description");
+    expect(written.version).toBe(7);
+    const defaults = defaultSystemConfig();
+    expect(written.system_prompt).toBe(defaults.system_prompt);
+    expect(written.max_turns).toBe(defaults.max_turns);
+    expect(written.model).toEqual(defaults.model);
+    expect(written.compaction).toEqual(defaults.compaction);
+    expect(written.tools).toEqual(defaults.tools);
+
+    // The file on disk round-trips to the same object; out-of-schema keys are gone.
+    const reloaded = await loadAgentState({ init: {} });
+    expect(reloaded.systemConfig).toEqual(written);
+    expect("custom_extra_key" in reloaded.systemConfig).toBe(false);
+    expect(reloaded.systemConfig.system_prompt).toContain("App Data Dir: {{PROJECT_DIR}}");
+  });
+
+  it("normalizes an invalid version to 1 and keeps a missing name/description absent", async () => {
+    await loadAgentState({ init: {} });
+    const configPath = systemConfigPath(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID);
+    await fs.writeFile(configPath, "system_prompt: old\nversion: nonsense\n", "utf8");
+    const written = await resetSystemConfigToDefaults(
+      tmpRoot,
+      DEFAULT_PROJECT_ID,
+      DEFAULT_AGENT_ID,
+    );
+    expect(written.version).toBe(1);
+    expect("name" in written).toBe(false);
+    expect("description" in written).toBe(false);
+  });
+
+  it("throws for a nonexistent Agent instead of initializing one", async () => {
+    await expect(
+      resetSystemConfigToDefaults(tmpRoot, DEFAULT_PROJECT_ID, "ghost_agent"),
+    ).rejects.toThrow(/not found/);
+    // No directory is created as a side effect.
+    await expect(
+      fs.access(agentStateDir(tmpRoot, DEFAULT_PROJECT_ID, "ghost_agent")),
+    ).rejects.toThrow();
+  });
+});
+
+describe("project-config round trip", () => {
+  it("returns default config when file is absent (without writing): no providers, models or default model", async () => {
+    const cfg = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(cfg).toEqual(defaultProjectConfig());
+    // Core carries no model knowledge: the server seeds a new Project's models from its catalog.
+    expect(cfg.models).toEqual([]);
+    expect(cfg.providers).toBeUndefined();
+    expect(cfg.default_model).toBeUndefined();
+    // loadProjectConfig must not write to disk.
+    expect(await exists(projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID))).toBe(false);
+  });
+
+  it("persists addModel with inline credential and default, then reads back", async () => {
+    const saved = await addModel(
+      tmpRoot,
+      DEFAULT_PROJECT_ID,
+      {
+        provider: "custom",
+        model_id: "gpt-test",
+        context_window: 128000,
+        max_tokens: 8192,
+        api_key: "sk-abc",
+        base_url: "https://example.com/v1",
+      },
+      { setDefault: true },
+    );
+    // default_model is a pair reference (no string concatenation involved).
+    expect(saved.default_model).toEqual({ provider: "custom", model_id: "gpt-test" });
+
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(loaded.default_model).toEqual({ provider: "custom", model_id: "gpt-test" });
+
+    // The credential is inlined in the entry; the two independent fields provider and
+    // model_id together form the unique key.
+    const entry = getModel(loaded, { provider: "custom", model_id: "gpt-test" });
+    expect(entry).toEqual({
+      provider: "custom",
+      model_id: "gpt-test",
+      context_window: 128000,
+      max_tokens: 8192,
+      api_key: "sk-abc",
+      base_url: "https://example.com/v1",
+    });
+
+    // getModel matches the exact pair: a different provider means no match.
+    expect(getModel(loaded, { provider: "openai", model_id: "gpt-test" })).toBeUndefined();
+    expect(getModel(loaded, { provider: "custom", model_id: "unknown-model" })).toBeUndefined();
+  });
+
+  it('normalizes the pre-0.4.2 client_type = "openai" alias to openai-chat on read and write', async () => {
+    // A config saved before the generic Chat Completions client was renamed (AgentHub 0.4.2) must
+    // keep working: the stored bare "openai" spelling reads back as the canonical
+    // "openai-chat" (normalize-on-read, no error and no disk rewrite required).
+    const file = projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      [
+        "[[models]]",
+        'provider = "custom"',
+        'model_id = "legacy-model"',
+        'client_type = "openai"',
+        'base_url = "https://example.com/v1"',
+      ].join("\n"),
+      "utf8",
+    );
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(getModel(loaded, { provider: "custom", model_id: "legacy-model" })?.client_type).toBe(
+      "openai-chat",
+    );
+    // Writes normalize too: an addModel caller passing the deprecated alias persists the
+    // canonical spelling.
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "another-model",
+      client_type: "openai",
+    });
+    const reloaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(getModel(reloaded, { provider: "custom", model_id: "another-model" })?.client_type).toBe(
+      "openai-chat",
+    );
+    expect(await fs.readFile(file, "utf8")).toContain('client_type = "openai-chat"');
+    // Non-alias client types pass through untouched (openai-responses is a different protocol).
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "responses-model",
+      client_type: "openai-responses",
+    });
+    const third = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(getModel(third, { provider: "custom", model_id: "responses-model" })?.client_type).toBe(
+      "openai-responses",
+    );
+  });
+
+  it('keeps a stored client_type = "gemini-official" as written, and it still reaches Google\'s official client', async () => {
+    // MMSP 0.5.2 named the official Gemini client google-official and kept its earlier name
+    // as an alias. A Project that stores the earlier name is neither migrated nor rewritten:
+    // it loads as written and is used exactly as google-official would be — the same
+    // variables, the same Interactions path, the same fast tier.
+    const file = projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const text = [
+      "[providers.google]",
+      'client_type = "gemini-official"',
+      "",
+      "[[models]]",
+      'provider = "google"',
+      'model_id = "gemini-3.8-flash"',
+      "",
+      "[[models]]",
+      'provider = "custom"',
+      'model_id = "gemini-direct"',
+      'client_type = "gemini-official"',
+      'base_url = "https://generativelanguage.googleapis.com"',
+      'api_key = "sk-row"',
+      "",
+    ].join("\n");
+    await fs.writeFile(file, text, "utf8");
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(await fs.readFile(file, "utf8")).toBe(text);
+
+    // The group's protocol reaches its keyless row, which the client then serves from the
+    // GEMINI_* pair it reads itself.
+    const grouped = getModel(loaded, { provider: "google", model_id: "gemini-3.8-flash" })!;
+    expect(
+      resolveEntryCredential(grouped, providerConnectionShape(loaded.providers?.google)),
+    ).toEqual({ clientType: "gemini-official" });
+    // A row naming Google's own endpoint with its own key goes there on the alias, as written.
+    const pinned = getModel(loaded, { provider: "custom", model_id: "gemini-direct" })!;
+    expect(resolveEntryCredential(pinned, undefined)).toEqual({
+      apiKey: "sk-row",
+      baseUrl: "https://generativelanguage.googleapis.com",
+      clientType: "gemini-official",
+    });
+    // Which client the stored alias reaches, and with what variable, is MMSP's to say (the
+    // server catalog's tests hold the previews and the fast tier for it).
+  });
+
+  it("rewrites the client types of AgentHub 0.4 to MMSP's once, on load, keeping the rest of the file", async () => {
+    // A Project written before MMSP 0.5.0 holds the per-generation names the old router
+    // accepted; MMSP refuses them at client construction, so the loader maps each to the
+    // client that speaks the same wire protocol and writes the file back — every other key
+    // (a display name, the default chat block) intact.
+    const file = projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      [
+        'name = "Legacy"',
+        'default_model = { provider = "deepseek", model_id = "deepseek-flash" }',
+        "",
+        "[default_chat]",
+        'thinking_level = "high"',
+        "",
+        "[[models]]",
+        'provider = "deepseek"',
+        'model_id = "deepseek-flash"',
+        'client_type = "deepseek-v4"',
+        'base_url = "https://api.deepseek.com"',
+        "",
+        "[[models]]",
+        'provider = "penguin-go"',
+        'model_id = "gemini-3.8-flash"',
+        'client_type = "gemini-3.8"',
+        'base_url = "https://go.example/api"',
+        "",
+        "[[models]]",
+        'provider = "minimax"',
+        'model_id = "MiniMax-M3"',
+        'client_type = "minimax-m3"',
+        "",
+        "[[models]]",
+        'provider = "custom"',
+        'model_id = "my-claude"',
+        'client_type = "Claude-5"',
+        'base_url = "https://proxy.example"',
+        'api_key = "sk-keep"',
+        "",
+        "[[models]]",
+        'provider = "custom"',
+        'model_id = "kept"',
+        'client_type = "openai-responses"',
+        'base_url = "https://proxy.example/v1"',
+      ].join("\n"),
+      "utf8",
+    );
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    // What each model speaks now, wherever the file keeps it: the group hoist runs after the
+    // rename, so a group whose one row was renamed holds the new name on its table.
+    const typeOf = (provider: string, modelId: string): string | undefined => {
+      const entry = getModel(loaded, { provider, model_id: modelId })!;
+      return effectiveConnection(
+        { provider, modelId, clientType: entry.client_type, baseUrl: entry.base_url },
+        providerConnectionShape(loaded.providers?.[provider]),
+      ).clientType;
+    };
+    expect(typeOf("deepseek", "deepseek-flash")).toBe("deepseek-official");
+    expect(typeOf("penguin-go", "gemini-3.8-flash")).toBe("google-genai");
+    expect(typeOf("minimax", "MiniMax-M3")).toBe("minimax-official");
+    expect(typeOf("custom", "my-claude")).toBe("anthropic-official"); // matched case-insensitively
+    expect(typeOf("custom", "kept")).toBe("openai-responses"); // a 0.5.0 name passes through
+    expect(loaded.name).toBe("Legacy");
+    expect(loaded.default_chat?.thinking_level).toBe("high");
+    expect(loaded.default_model).toEqual({ provider: "deepseek", model_id: "deepseek-flash" });
+    // The file was rewritten with the new names and nothing else lost.
+    const rewritten = await fs.readFile(file, "utf8");
+    expect(rewritten).toContain('client_type = "deepseek-official"');
+    expect(rewritten).toContain('client_type = "minimax-official"');
+    expect(rewritten).toContain('client_type = "anthropic-official"');
+    expect(rewritten).not.toMatch(/deepseek-v4|gemini-3\.8"|minimax-m3|Claude-5/);
+    expect(rewritten).toContain('api_key = "sk-keep"');
+    expect(rewritten).toContain('base_url = "https://go.example/api"');
+    expect(rewritten).toContain('thinking_level = "high"');
+    expect(rewritten).toContain('name = "Legacy"');
+    // Once: a second load finds nothing to migrate and leaves the file untouched.
+    const { mtimeMs } = await fs.stat(file);
+    await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect((await fs.stat(file)).mtimeMs).toBe(mtimeMs);
+    expect(await fs.readFile(file, "utf8")).toBe(rewritten);
+  });
+
+  it("addModel files the entry under the provider it was given, never one of its own choosing", async () => {
+    // provider is a required field: nothing is inferred from the builtin catalog, so a model
+    // outside the known groups is filed under custom only because the caller said so. glm-5.2
+    // is sold by both the Qwen Token Plan gateway and Zhipu — the caller names which one, and
+    // the entry (with its api_key) lands in exactly that group.
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "anthropic",
+      model_id: "claude-sonnet-4-6",
+    });
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, { provider: "custom", model_id: "my-own-model" });
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "zhipu",
+      model_id: "glm-5.2",
+      api_key: "sk-zhipu",
+    });
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(
+      getModel(loaded, { provider: "anthropic", model_id: "claude-sonnet-4-6" }),
+    ).toBeDefined();
+    expect(getModel(loaded, { provider: "custom", model_id: "my-own-model" })).toBeDefined();
+    expect(getModel(loaded, { provider: "zhipu", model_id: "glm-5.2" })?.api_key).toBe("sk-zhipu");
+    // The key never leaks into the other group that resells the same bare id.
+    expect(
+      getModel(loaded, { provider: "qwen-token-plan", model_id: "glm-5.2" })?.api_key,
+    ).toBeUndefined();
+  });
+
+  it("addModel requires an explicit provider: a bare model_id does not type-check", () => {
+    // Compile-time contract (asserted by `pnpm typecheck`, which includes this file): with the
+    // catalog inference gone there is nothing to fall back to, so the entry's provider field is
+    // required rather than optional. vitest only checks that the call expression exists.
+    const bare = { model_id: "glm-5.2" };
+    // @ts-expect-error provider is required: a model reference is always a (provider, model_id) pair.
+    const call = (): Promise<ProjectConfig> => addModel(tmpRoot, DEFAULT_PROJECT_ID, bare);
+    expect(call).toBeTypeOf("function");
+  });
+
+  it("upserts by the (provider, model_id) pair; same model_id under two providers co-exists", async () => {
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "pa",
+      model_id: "m1",
+      context_window: 1000,
+    });
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "pa",
+      model_id: "m1",
+      context_window: 2000,
+    });
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "pb",
+      model_id: "m1",
+      context_window: 3000,
+    });
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    const matches = loaded.models.filter((m) => m.model_id === "m1");
+    expect(matches).toHaveLength(2);
+    expect(getModel(loaded, { provider: "pa", model_id: "m1" })?.context_window).toBe(2000);
+    expect(getModel(loaded, { provider: "pb", model_id: "m1" })?.context_window).toBe(3000);
+  });
+
+  it("addModel persists vision flag and upsert preserves it when not re-specified", async () => {
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "ds",
+      vision: false,
+    });
+    // Only supplements context_window, without vision: the original annotation is kept.
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "ds",
+      context_window: 64000,
+    });
+    const dsRef = { provider: "custom", model_id: "ds" };
+    let m = getModel(await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID), dsRef);
+    expect(m?.vision).toBe(false);
+    expect(m?.context_window).toBe(64000);
+    // Explicitly switches it back to supported.
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "ds",
+      vision: true,
+    });
+    m = getModel(await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID), dsRef);
+    expect(m?.vision).toBe(true);
+  });
+
+  it("addModel persists max_tokens and upsert preserves it when not re-specified", async () => {
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "small-window",
+      max_tokens: 4096,
+    });
+    // Only supplements context_window, without max_tokens: the original annotation is kept.
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "small-window",
+      context_window: 32768,
+    });
+    const ref = { provider: "custom", model_id: "small-window" };
+    let m = getModel(await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID), ref);
+    expect(m?.max_tokens).toBe(4096);
+    expect(m?.context_window).toBe(32768);
+    // Explicitly re-pins the cap.
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "small-window",
+      max_tokens: 2048,
+    });
+    m = getModel(await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID), ref);
+    expect(m?.max_tokens).toBe(2048);
+  });
+
+  it("setVisionModel persists and validates the target", async () => {
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "vis",
+      vision: true,
+    });
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "blind",
+      vision: false,
+    });
+    const visRef = { provider: "custom", model_id: "vis" };
+    await setVisionModel(tmpRoot, DEFAULT_PROJECT_ID, visRef);
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(loaded.vision_model).toEqual(visRef);
+    // A subsequent addModel save/reload round trip does not lose vision_model (loadProjectConfig
+    // passes it through explicitly).
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "vis",
+      context_window: 1000,
+    });
+    expect((await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).vision_model).toEqual(visRef);
+    // A target that does not exist or is annotated as not supporting images: throws
+    // (the error includes the pair reference).
+    await expect(
+      setVisionModel(tmpRoot, DEFAULT_PROJECT_ID, { provider: "custom", model_id: "nope" }),
+    ).rejects.toThrow(/model_id=nope/);
+    await expect(
+      setVisionModel(tmpRoot, DEFAULT_PROJECT_ID, { provider: "custom", model_id: "blind" }),
+    ).rejects.toThrow(/not supporting images/);
+  });
+
+  it("removeModel drops the exact pair and leaves a same-id entry in another group alone", async () => {
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, { provider: "pa", model_id: "m1" });
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, { provider: "pb", model_id: "m1" });
+    const removed = await removeModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "pa",
+      model_id: "m1",
+    });
+    expect(getModel(removed, { provider: "pa", model_id: "m1" })).toBeUndefined();
+    expect(getModel(removed, { provider: "pb", model_id: "m1" })).toBeDefined();
+    // Persisted, not just returned.
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(getModel(loaded, { provider: "pa", model_id: "m1" })).toBeUndefined();
+    expect(getModel(loaded, { provider: "pb", model_id: "m1" })).toBeDefined();
+  });
+
+  it("removeModel clears the default / vision pointers that named the removed entry", async () => {
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "both",
+      vision: true,
+    });
+    const bothRef = { provider: "custom", model_id: "both" };
+    await setDefaultModel(tmpRoot, DEFAULT_PROJECT_ID, bothRef);
+    await setVisionModel(tmpRoot, DEFAULT_PROJECT_ID, bothRef);
+
+    await removeModel(tmpRoot, DEFAULT_PROJECT_ID, bothRef);
+    // A pointer left behind would name a model that is no longer configured, which
+    // resolveModelRef rejects on the next createSession.
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(loaded.default_model).toBeUndefined();
+    expect(loaded.vision_model).toBeUndefined();
+  });
+
+  it("removeModel leaves pointers aimed at other entries untouched", async () => {
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "keeper",
+      vision: true,
+    });
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, { provider: "custom", model_id: "spare" });
+    const keeperRef = { provider: "custom", model_id: "keeper" };
+    await setDefaultModel(tmpRoot, DEFAULT_PROJECT_ID, keeperRef);
+    await setVisionModel(tmpRoot, DEFAULT_PROJECT_ID, keeperRef);
+
+    await removeModel(tmpRoot, DEFAULT_PROJECT_ID, { provider: "custom", model_id: "spare" });
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(loaded.default_model).toEqual(keeperRef);
+    expect(loaded.vision_model).toEqual(keeperRef);
+  });
+
+  it("removeModel is idempotent: an absent pair is not an error and changes nothing", async () => {
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, { provider: "custom", model_id: "only" });
+    const before = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    const after = await removeModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "never-added",
+    });
+    expect(after.models).toEqual(before.models);
+    expect(getModel(after, { provider: "custom", model_id: "only" })).toBeDefined();
+  });
+
+  it("upsert preserves existing context_window and inline credential when not re-specified", async () => {
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "m1",
+      context_window: 200000,
+      base_url: "https://gw.example",
+    });
+    // Only supplements an api_key, without context_window/base_url.
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "m1",
+      api_key: "sk-xyz",
+    });
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    const m = getModel(loaded, { provider: "custom", model_id: "m1" });
+    expect(m?.context_window).toBe(200000); // Not cleared
+    expect(m?.api_key).toBe("sk-xyz");
+    expect(m?.base_url).toBe("https://gw.example"); // The original base_url is kept
+  });
+
+  it("upsert preserves display_name / created_at written by the interface layer", async () => {
+    // The interface layer (server) writes display_name / created_at onto an entry; the CLI-side
+    // addModel must not clear them when supplementing other fields (with a single config file,
+    // these fields now live in the same entry as the credential).
+    const file = projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      [
+        "[[models]]",
+        'provider = "custom"',
+        'model_id = "m-keep"',
+        'display_name = "My Model"',
+        'api_key = "sk-old"',
+        'created_at = "2026-07-01T00:00:00Z"',
+      ].join("\n"),
+      "utf8",
+    );
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "m-keep",
+      api_key: "sk-new",
+    });
+    const m = getModel(await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID), {
+      provider: "custom",
+      model_id: "m-keep",
+    });
+    expect(m?.api_key).toBe("sk-new");
+    expect(m?.display_name).toBe("My Model");
+    expect(m?.created_at).toBe("2026-07-01T00:00:00Z");
+  });
+
+  it("addModel clears a row's own key, endpoint or protocol given null or blank, keeps the ones it is not given, and the key's write time goes with the key", async () => {
+    // A row with all three of its own, as the interface layer wrote it (created_at included).
+    const file = projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      [
+        "[providers.openrouter]",
+        'base_url = "https://openrouter.ai/api/v1"',
+        'client_type = "openai-responses"',
+        'api_key = "or-group"',
+        "[[models]]",
+        'provider = "openrouter"',
+        'model_id = "openai/gpt-5.5"',
+        'client_type = "openai-chat"',
+        'base_url = "https://proxy.example/v1"',
+        'api_key = "or-own"',
+        'created_at = "2026-09-01T00:00:00Z"',
+      ].join("\n"),
+      "utf8",
+    );
+    const ref = { provider: "openrouter", model_id: "openai/gpt-5.5" };
+    const stored = async () => getModel(await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID), ref)!;
+    // Clearing the endpoint alone: the protocol and the key stay.
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, { ...ref, base_url: null });
+    expect(await stored()).toMatchObject({
+      client_type: "openai-chat",
+      api_key: "or-own",
+      created_at: "2026-09-01T00:00:00Z",
+    });
+    expect((await stored()).base_url).toBeUndefined();
+    // A blank protocol clears it as null does; the key's write time leaves with the key.
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, { ...ref, client_type: " ", api_key: null });
+    const bare = await stored();
+    expect([bare.client_type, bare.base_url, bare.api_key, bare.created_at]).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    // With nothing of its own left, the row runs on its group's table.
+    const cfg = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(
+      resolveEntryCredential(bare, providerConnectionShape(cfg.providers?.openrouter)),
+    ).toEqual({
+      apiKey: "or-group",
+      baseUrl: "https://openrouter.ai/api/v1",
+      clientType: "openai-responses",
+    });
+  });
+
+  it("persists pricing and field-merges buckets on upsert", async () => {
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "p1",
+      pricing: { cache_read: 0.3, cache_write: 3.75, output: 15 },
+    });
+    // Only output is updated, the other two buckets are kept.
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "p1",
+      pricing: { output: 20 },
+    });
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(getModel(loaded, { provider: "custom", model_id: "p1" })?.pricing).toEqual({
+      unit: "usd_per_mtok",
+      cache_read: 0.3,
+      cache_write: 3.75,
+      output: 20,
+    });
+  });
+
+  it("setDefaultModel updates and persists a pair reference", async () => {
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "m2",
+      context_window: 4096,
+    });
+    const m2Ref = { provider: "custom", model_id: "m2" };
+    const updated = await setDefaultModel(tmpRoot, DEFAULT_PROJECT_ID, m2Ref);
+    expect(updated.default_model).toEqual(m2Ref);
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(loaded.default_model).toEqual(m2Ref);
+    // A target not in models: throws (the same validation as setVisionModel, with the error
+    // including the pair reference and a model-list hint), and the original default model is
+    // unaffected. A mismatched provider likewise fails (exact pair match, no fuzzy resolution).
+    await expect(
+      setDefaultModel(tmpRoot, DEFAULT_PROJECT_ID, { provider: "custom", model_id: "nope" }),
+    ).rejects.toThrow(/\(provider=custom, model_id=nope\).*model list/);
+    await expect(
+      setDefaultModel(tmpRoot, DEFAULT_PROJECT_ID, { provider: "openai", model_id: "m2" }),
+    ).rejects.toThrow(/is not in models/);
+    expect((await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).default_model).toEqual(m2Ref);
+  });
+
+  it("loadProjectConfig tolerates an empty config file (returns defaults, no throw)", async () => {
+    const file = projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, "", "utf8"); // Empty file -> parseToml may return null
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(loaded.models).toEqual([]);
+  });
+
+  it("rejects old-format config files with a clear error (no migration)", async () => {
+    const file = projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    // Old format 1: default_model is a concatenated storage id string.
+    await fs.writeFile(file, 'default_model = "deepseek/deepseek-v4-pro"\n', "utf8");
+    await expect(loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).rejects.toThrow(
+      /legacy|paired reference/,
+    );
+    // Old format 2: a model entry missing provider (from the era of composite model_id +
+    // request_model_id).
+    await fs.writeFile(
+      file,
+      [
+        "[[models]]",
+        'model_id = "anthropic/claude-sonnet-4-6"',
+        'request_model_id = "claude-sonnet-4-6"',
+      ].join("\n"),
+      "utf8",
+    );
+    await expect(loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).rejects.toThrow(
+      /legacy|separate fields/,
+    );
+  });
+});
+
+describe("command_policy (sandbox command policy block)", () => {
+  it("the default config seeds the factory rules (model-presets philosophy)", () => {
+    const cfg = defaultProjectConfig();
+    expect(cfg.command_policy?.rules).toEqual(DEFAULT_COMMAND_POLICY_RULES);
+    // Seeding copies the list: mutating a seeded config must not touch the constant.
+    cfg.command_policy!.rules!.pop();
+    expect(defaultProjectConfig().command_policy?.rules).toEqual(DEFAULT_COMMAND_POLICY_RULES);
+  });
+
+  it("round-trips through save/load — a known key the CLI's literal rebuild keeps", async () => {
+    const block = {
+      enabled: false,
+      rules: [
+        {
+          name: "no-force-push",
+          pattern: "git push [^;|&]*--force",
+          description: "no force pushes",
+          enabled: false,
+        },
+        { name: "no-curl", pattern: "\\bcurl\\b" },
+      ],
+    };
+    const cfg = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    cfg.command_policy = structuredClone(block);
+    await saveProjectConfig(tmpRoot, DEFAULT_PROJECT_ID, cfg);
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(loaded.command_policy).toEqual(block);
+    await saveProjectConfig(tmpRoot, DEFAULT_PROJECT_ID, loaded);
+    expect((await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).command_policy).toEqual(block);
+  });
+
+  it("a stored empty rules list survives the round trip (no rules ≠ factory rules)", async () => {
+    const cfg = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    cfg.command_policy = { rules: [] };
+    await saveProjectConfig(tmpRoot, DEFAULT_PROJECT_ID, cfg);
+    expect((await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).command_policy).toEqual({
+      rules: [],
+    });
+  });
+
+  it("loads tolerantly: bad keys drop, a non-array rules value reads as absent (factory set)", async () => {
+    const file = projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      [
+        "[command_policy]",
+        'enabled = "off"', // wrong type -> dropped -> defaults to enabled
+        "[[command_policy.rules]]",
+        'name = "ok-rule"',
+        'pattern = "\\\\bcurl\\\\b"',
+        "description = 3", // wrong type -> field dropped, entry kept
+        "[[command_policy.rules]]",
+        'name = ""', // empty name -> entry dropped
+        'pattern = "x"',
+        "[[command_policy.rules]]",
+        'name = "no-pattern"', // missing pattern -> entry dropped
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(loaded.command_policy).toEqual({
+      rules: [{ name: "ok-rule", pattern: "\\bcurl\\b" }],
+    });
+
+    await fs.writeFile(file, '[command_policy]\nrules = "strict"\n', "utf8");
+    expect((await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).command_policy).toBeUndefined();
+  });
+
+  it("drops the block entirely when it is not a table or nothing valid remains", async () => {
+    const file = projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, 'command_policy = "strict"\n', "utf8");
+    expect((await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).command_policy).toBeUndefined();
+    await fs.writeFile(file, '[command_policy]\nenabled = "banana"\n', "utf8");
+    expect((await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).command_policy).toBeUndefined();
+  });
+});
+
+describe("plugins (shared and per-machine tables)", () => {
+  it("a machine table survives a load → save round trip, and its entry wins on that machine", async () => {
+    const cfg = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    cfg.plugins = {
+      all: { "@acme/shared": {}, "@acme/pinned": { version: "1.0.0" } },
+      machines: {
+        Xk3v9Qa_bT2mLp0z: { "@acme/only-there": {}, "@acme/pinned": { version: "2.0.0" } },
+      },
+    };
+    await saveProjectConfig(tmpRoot, DEFAULT_PROJECT_ID, cfg);
+    const text = await fs.readFile(projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID), "utf8");
+    expect(text).toContain('[plugins.Xk3v9Qa_bT2mLp0z]\n"@acme/only-there" = "*"');
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(loaded.plugins).toEqual(cfg.plugins);
+    expect(effectivePluginTable(loaded.plugins!, "Xk3v9Qa_bT2mLp0z")).toEqual({
+      "@acme/shared": {},
+      "@acme/pinned": { version: "2.0.0" },
+      "@acme/only-there": {},
+    });
+    expect(effectivePluginTable(loaded.plugins!, "Other00000000000")).toEqual(cfg.plugins.all);
+  });
+
+  it("a requirement table on an id-shaped package name is still a requirement", () => {
+    expect(parsePluginTables({ abcdefghijklmnop: { version: "1" } })).toEqual({
+      all: { abcdefghijklmnop: { version: "1" } },
+      machines: {},
+    });
+  });
+});
+
+/**
+ * Group-level connections (`[providers.<id>]`) and the one-time move of a file written before
+ * them.
+ *
+ * - A group's table round-trips through save/load, sits between the top-level lines and
+ *   [[models]], and is read leniently (a non-table value or member drops, blank fields drop,
+ *   the deprecated "openai" spelling converges).
+ * - setProviderConnection sets and clears per field and stamps the key's write time, and never
+ *   touches a model's own key; a group table cleared leaves its rows on the client's defaults —
+ *   the catalog does not fill them back in.
+ * - Any group takes a protocol, Penguin Go and OpenCode Go included; their rows keep the
+ *   protocols they store.
+ * - Loading a file from before group tables, per group (custom aside, whose rows keep
+ *   everything): a base URL every row carries moves by strict plurality, a protocol by
+ *   unanimity, and a key every keyed row shares when the group could lend it back to each of
+ *   them; nothing is read from the catalog, and every model keeps running on what it ran on (a
+ *   keyless model the group key reaches now has it). Old OpenCode Go and Penguin Go files land
+ *   on the current group/row shape, retaining models retired from new Project presets.
+ * - What does not move: a tie for the most common base URL; any base URL in a group with a
+ *   bare row; a shared key the group could not lend back to every row holding it.
+ * - The move is one-time and quiet: a second load writes nothing, a file with nothing to move
+ *   is never rewritten, and a key typed on one model afterwards — or a group key cleared while
+ *   models keep their own — stays where it was put.
+ * - A file this release wrote (it has a providers table) is never migrated: a base URL or
+ *   protocol the user set on a model stays even when it equals the group's.
+ */
+describe("providers (group-level connections)", () => {
+  const TD = "https://tokendance.space/gateway/v1";
+  const OR = "https://openrouter.ai/api/v1";
+  const file = (): string => projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID);
+  async function writeRaw(lines: string[]): Promise<void> {
+    await fs.mkdir(path.dirname(file()), { recursive: true });
+    await fs.writeFile(file(), lines.join("\n") + "\n", "utf8");
+  }
+  /** A file's lines read as they are, without the load-time migration. */
+  const projectConfigFromLines = (lines: string[]): ProjectConfig =>
+    projectConfigFromTable(file(), parseToml(lines.join("\n")) as Record<string, unknown>);
+  /** The credential and protocol each row's client is built with, the way a Session builds it. */
+  const connections = (cfg: Pick<ProjectConfig, "models" | "providers">) =>
+    Object.fromEntries(
+      cfg.models.map((m) => [
+        `${m.provider}/${m.model_id}`,
+        resolveEntryCredential(m, providerConnectionShape(cfg.providers?.[m.provider])),
+      ]),
+    );
+  /** One `[[models]]` row of an old file. */
+  const row = (fields: Record<string, string>): string[] => [
+    "[[models]]",
+    ...Object.entries(fields).map(([k, v]) => `${k} = ${JSON.stringify(v)}`),
+  ];
+  /** Writes an old file and loads it once: what each model ran on before, and the result. */
+  async function migrate(lines: string[]) {
+    await writeRaw(lines);
+    const before = connections(projectConfigFromLines(lines));
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    const stored = (provider: string, modelId: string) =>
+      getModel(loaded, { provider, model_id: modelId })!;
+    return { before, loaded, after: connections(loaded), stored };
+  }
+
+  it("a group's table round-trips, sits above [[models]], and reads leniently", async () => {
+    await seedProject(tmpRoot);
+    await setProviderConnection(tmpRoot, DEFAULT_PROJECT_ID, "tokendance", {
+      base_url: "https://proxy.example/td/v1",
+      client_type: "openai",
+      api_key: "td-key",
+    });
+    const text = await fs.readFile(file(), "utf8");
+    expect(text.indexOf("[providers.tokendance]")).toBeGreaterThan(-1);
+    expect(text.indexOf("[providers.tokendance]")).toBeLessThan(text.indexOf("[[models]]"));
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    // The seeded tables, TokenDance's as the patch left it.
+    expect(loaded.providers).toEqual({
+      ...seededProjectConfig().providers,
+      tokendance: {
+        base_url: "https://proxy.example/td/v1",
+        client_type: "openai-chat",
+        api_key: "td-key",
+        created_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) as unknown,
+      },
+    });
+    // The CLI's load -> save path keeps it.
+    await saveProjectConfig(tmpRoot, DEFAULT_PROJECT_ID, loaded);
+    expect((await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).providers).toEqual(
+      loaded.providers,
+    );
+
+    await writeRaw([
+      "[providers]",
+      'odd = "not a table"',
+      "[providers.blank]",
+      'base_url = "  "',
+      "api_key = 3",
+      "[providers.legacy]",
+      'client_type = "openai"',
+      "[providers.empty]",
+    ]);
+    expect((await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).providers).toEqual({
+      legacy: { client_type: "openai-chat" },
+    });
+    await writeRaw(['providers = "nope"']);
+    expect((await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).providers).toBeUndefined();
+  });
+
+  it("setProviderConnection sets and clears per field and never touches a model's own key; a cleared table leaves its rows on the client's defaults", async () => {
+    await seedProject(tmpRoot);
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "tokendance",
+      model_id: "kimi-k3",
+      api_key: "td-own",
+    });
+    await setProviderConnection(tmpRoot, DEFAULT_PROJECT_ID, "tokendance", {
+      api_key: "td-group",
+      base_url: "https://proxy.example/v1",
+    });
+    let cfg = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(getModel(cfg, { provider: "tokendance", model_id: "kimi-k3" })?.api_key).toBe("td-own");
+    expect(connections(cfg)["tokendance/glm-5.3"]).toEqual({
+      apiKey: "td-group",
+      baseUrl: "https://proxy.example/v1",
+      clientType: "openai-chat",
+    });
+    expect(connections(cfg)["tokendance/kimi-k3"]).toMatchObject({ apiKey: "td-own" });
+    // Omitted fields are kept; null and blank clear, the key's write time with the key.
+    await setProviderConnection(tmpRoot, DEFAULT_PROJECT_ID, "tokendance", { api_key: null });
+    cfg = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(cfg.providers?.tokendance).toEqual({
+      base_url: "https://proxy.example/v1",
+      client_type: "openai-chat",
+    });
+    await setProviderConnection(tmpRoot, DEFAULT_PROJECT_ID, "tokendance", {
+      base_url: " ",
+      client_type: null,
+    });
+    cfg = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(cfg.providers?.tokendance).toBeUndefined();
+    // The file now holds nothing for the row, so it has nothing: the gateway's endpoint and
+    // protocol, which the catalog still knows, are not filled back in.
+    const glm = getModel(cfg, { provider: "tokendance", model_id: "glm-5.3" })!;
+    expect(
+      effectiveConnection(
+        {
+          provider: glm.provider,
+          modelId: glm.model_id,
+          clientType: glm.client_type,
+          baseUrl: glm.base_url,
+        },
+        providerConnectionShape(cfg.providers?.tokendance),
+      ),
+    ).toEqual({ baseUrlSource: "none", clientTypeSource: "none", apiKeySource: "none" });
+  });
+
+  it("a file from before group tables moves what every row of a group shares onto the group, once, and every model runs on what it ran on", async () => {
+    const lines = [
+      'default_model = { provider = "tokendance", model_id = "glm-5.3" }',
+      // Enter key wrote one key across TokenDance; a model synced in later has none.
+      ...["glm-5.3", "kimi-k3"].flatMap((id, i) =>
+        row({
+          provider: "tokendance",
+          model_id: id,
+          // The pre-0.4.2 spelling is the same protocol.
+          client_type: i === 0 ? "openai-chat" : "openai",
+          base_url: TD,
+          api_key: "td-aaaa",
+          // The group's key takes the LATEST write time, wherever that row sits.
+          created_at: `2026-09-${30 - i}T10:00:00.000Z`,
+        }),
+      ),
+      ...row({
+        provider: "tokendance",
+        model_id: "seed-2.1-pro",
+        client_type: "openai-chat",
+        base_url: TD,
+      }),
+      // OpenRouter: a different key on each model.
+      ...["openai/gpt-5.5", "xiaomi/mimo-v2.5"].flatMap((id, i) =>
+        row({
+          provider: "openrouter",
+          model_id: id,
+          client_type: "openai-responses",
+          base_url: OR,
+          api_key: `or-${i}`,
+        }),
+      ),
+      // custom: one key, one protocol and one endpoint on both rows, which still keep all three.
+      ...["a", "b"].flatMap((id) =>
+        row({
+          provider: "custom",
+          model_id: id,
+          client_type: "openai-chat",
+          base_url: "https://shared.example/v1",
+          api_key: "sk-custom",
+        }),
+      ),
+      // A user-defined group the import filled.
+      ...row({
+        provider: "my-ollama",
+        model_id: "qwen-local",
+        client_type: "openai-chat",
+        base_url: "http://127.0.0.1:11434/v1",
+        api_key: "ol-key",
+      }),
+    ];
+    const { before, loaded, after, stored } = await migrate(lines);
+    expect(loaded.providers).toEqual({
+      tokendance: {
+        base_url: TD,
+        client_type: "openai-chat",
+        api_key: "td-aaaa",
+        created_at: "2026-09-30T10:00:00.000Z",
+      },
+      openrouter: { base_url: OR, client_type: "openai-responses" },
+      "my-ollama": {
+        base_url: "http://127.0.0.1:11434/v1",
+        client_type: "openai-chat",
+        api_key: "ol-key",
+      },
+    });
+    // What moved left the rows; what a row does not share with its group stays on it.
+    for (const id of ["glm-5.3", "kimi-k3", "seed-2.1-pro"]) {
+      const { client_type, base_url, api_key, created_at } = stored("tokendance", id);
+      expect([client_type, base_url, api_key, created_at], id).toEqual([
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      ]);
+    }
+    expect(stored("openrouter", "openai/gpt-5.5")).toEqual({
+      provider: "openrouter",
+      model_id: "openai/gpt-5.5",
+      api_key: "or-0",
+    });
+    expect(stored("custom", "a")).toMatchObject({
+      client_type: "openai-chat",
+      api_key: "sk-custom",
+      base_url: "https://shared.example/v1",
+    });
+    expect(stored("my-ollama", "qwen-local")).toEqual({
+      provider: "my-ollama",
+      model_id: "qwen-local",
+    });
+    // Every model runs on what it ran on; the keyless TokenDance model now has the group key.
+    expect(before["tokendance/seed-2.1-pro"]).not.toHaveProperty("apiKey");
+    expect(after["tokendance/seed-2.1-pro"]).toEqual(after["tokendance/glm-5.3"]);
+    expect({ ...after, "tokendance/seed-2.1-pro": "-" }).toEqual({
+      ...before,
+      "tokendance/seed-2.1-pro": "-",
+    });
+    expect(loaded.default_model).toEqual({ provider: "tokendance", model_id: "glm-5.3" });
+
+    // Written to disk once: the second load reads the same, finds nothing and writes nothing.
+    const text = await fs.readFile(file(), "utf8");
+    const { mtimeMs } = await fs.stat(file());
+    const reloaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(reloaded.providers).toEqual(loaded.providers);
+    expect(reloaded.models).toEqual(loaded.models);
+    expect((await fs.stat(file())).mtimeMs).toBe(mtimeMs);
+    expect(await fs.readFile(file(), "utf8")).toBe(text);
+  });
+
+  it("old OpenCode Go and Penguin Go files move shared connections onto the group and retain each row's overrides, including retired models", async () => {
+    // As an older release wrote them: every row a copy of its catalog entry, one key across
+    // each group. OpenCode Go's rows sit on two bases (four on the Chat Completions one, two
+    // on the Messages one) and three protocols; Penguin Go's share one MMSP connection.
+    const go = [
+      "glm-5.3",
+      "kimi-k3",
+      "deepseek-v4-pro",
+      "gpt-5.6-luna",
+      "minimax-m3",
+      "qwen3.8-max",
+    ];
+    const relay = ["gemini-3.8-flash", "deepseek-flash"];
+    // Each row's catalog connection as those releases copied it.
+    const GO_CHAT = "https://opencode.ai/zen/go/v1";
+    const GO_MESSAGES = "https://opencode.ai/zen/go";
+    const RELAY = "https://go.penguin.ooo/api/v1";
+    const copied: Record<string, readonly [clientType: string, baseUrl: string]> = {
+      "opencode-go/glm-5.3": ["openai-chat", GO_CHAT],
+      "opencode-go/kimi-k3": ["openai-chat", GO_CHAT],
+      "opencode-go/deepseek-v4-pro": ["openai-chat", GO_CHAT],
+      "opencode-go/gpt-5.6-luna": ["openai-responses", GO_CHAT],
+      "opencode-go/minimax-m3": ["ant-messages", GO_MESSAGES],
+      "opencode-go/qwen3.8-max": ["ant-messages", GO_MESSAGES],
+      "penguin-go/gemini-3.8-flash": ["mmsp", RELAY],
+      "penguin-go/deepseek-flash": ["mmsp", RELAY],
+    };
+    const oldRow = (provider: string, modelId: string, key: string): string[] => {
+      const [clientType, baseUrl] = copied[`${provider}/${modelId}`]!;
+      return row({
+        provider,
+        model_id: modelId,
+        client_type: clientType,
+        base_url: baseUrl,
+        api_key: key,
+        created_at: "2026-09-20T00:00:00.000Z",
+      });
+    };
+    const { before, loaded, after, stored } = await migrate([
+      ...go.flatMap((id) => oldRow("opencode-go", id, "go-key")),
+      ...relay.flatMap((id) => oldRow("penguin-go", id, "pg-key")),
+    ]);
+    expect(loaded.providers).toEqual({
+      "opencode-go": {
+        base_url: GO_CHAT,
+        api_key: "go-key",
+        created_at: "2026-09-20T00:00:00.000Z",
+      },
+      "penguin-go": {
+        base_url: RELAY,
+        client_type: "mmsp",
+        api_key: "pg-key",
+        created_at: "2026-09-20T00:00:00.000Z",
+      },
+    });
+    // Each row keeps exactly what differs from its group: OpenCode Go's protocols (three of
+    // them, so none moved) and its Messages rows' base; Penguin Go's rows keep nothing.
+    for (const [provider, ids] of [
+      ["opencode-go", go],
+      ["penguin-go", relay],
+    ] as const) {
+      for (const id of ids) {
+        const own = stored(provider, id);
+        const [clientType, baseUrl] = copied[`${provider}/${id}`]!;
+        expect([own.client_type, own.base_url], id).toEqual([
+          provider === "opencode-go" ? clientType : undefined,
+          baseUrl === GO_MESSAGES ? baseUrl : undefined,
+        ]);
+        expect(own.api_key, id).toBeUndefined();
+      }
+    }
+    // The Messages rows keep their own base on the group's host, so the group key reaches
+    // them, and every model runs on what it ran on.
+    expect(stored("opencode-go", "minimax-m3").base_url).toBe("https://opencode.ai/zen/go");
+    expect(after).toEqual(before);
+  });
+
+  it("a tie for the most common base URL moves no base URL", async () => {
+    const lines = [
+      "https://a.example/v1",
+      "https://a.example/v1",
+      "https://b.example/v1",
+      "https://b.example/v1",
+    ].flatMap((url, i) =>
+      row({ provider: "split", model_id: `m${i}`, client_type: "openai-chat", base_url: url }),
+    );
+    const { loaded, stored } = await migrate(lines);
+    // The protocol every row shares still moves; each row keeps its base URL.
+    expect(loaded.providers).toEqual({ split: { client_type: "openai-chat" } });
+    expect([0, 1, 2, 3].map((i) => stored("split", `m${i}`).base_url)).toEqual([
+      "https://a.example/v1",
+      "https://a.example/v1",
+      "https://b.example/v1",
+      "https://b.example/v1",
+    ]);
+  });
+
+  it("a shared key the group could not lend back to every row holding it stays on every row", async () => {
+    // Three rows on one host and one on another, all with the same key: the common base URL
+    // moves, but a group key would not reach the fourth row, so no row gives its key up.
+    const lines = [
+      "https://a.example/v1",
+      "https://a.example/v1",
+      "https://a.example/v1",
+      "https://elsewhere.example/v1",
+    ].flatMap((url, i) =>
+      row({
+        provider: "mostly",
+        model_id: `m${i}`,
+        client_type: "openai-chat",
+        base_url: url,
+        api_key: "k",
+      }),
+    );
+    const { before, loaded, after, stored } = await migrate(lines);
+    expect(loaded.providers).toEqual({
+      mostly: { base_url: "https://a.example/v1", client_type: "openai-chat" },
+    });
+    expect([0, 1, 2, 3].map((i) => stored("mostly", `m${i}`).api_key)).toEqual([
+      "k",
+      "k",
+      "k",
+      "k",
+    ]);
+    expect(stored("mostly", "m3").base_url).toBe("https://elsewhere.example/v1");
+    expect(after).toEqual(before);
+  });
+
+  it("a bare row blocks its group's base URL, and a file with nothing to move is never rewritten", async () => {
+    // DeepSeek: one row on the official endpoint, one with none (the client's default); both
+    // hold the same key, which a group with no base URL could not lend the first row back.
+    const lines = [
+      ...row({
+        provider: "deepseek",
+        model_id: "deepseek-flash",
+        base_url: "https://api.deepseek.com",
+        api_key: "sk-ds",
+      }),
+      ...row({ provider: "deepseek", model_id: "deepseek-v4-pro", api_key: "sk-ds" }),
+      ...row({ provider: "custom", model_id: "mine", api_key: "sk-mine" }),
+    ];
+    await writeRaw(lines);
+    const before = await fs.readFile(file(), "utf8");
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(await fs.readFile(file(), "utf8")).toBe(before);
+    expect(loaded.providers).toBeUndefined();
+    expect(connections(loaded)).toEqual(connections(projectConfigFromLines(lines)));
+  });
+
+  it("the move is one-time: a key typed on one model later, or a group key cleared while models keep theirs, stays put", async () => {
+    // A Project this release created: the model's own key is an override, not a group write.
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "deepseek",
+      model_id: "deepseek-v4-pro",
+      api_key: "sk-own",
+    });
+    let cfg = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(cfg.providers?.deepseek).toBeUndefined();
+    expect(getModel(cfg, { provider: "deepseek", model_id: "deepseek-v4-pro" })?.api_key).toBe(
+      "sk-own",
+    );
+    // A cleared group key does not come back from the models that keep their own.
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "deepseek",
+      model_id: "deepseek-flash",
+      api_key: "sk-own",
+    });
+    await setProviderConnection(tmpRoot, DEFAULT_PROJECT_ID, "deepseek", { api_key: "sk-group" });
+    await setProviderConnection(tmpRoot, DEFAULT_PROJECT_ID, "deepseek", { api_key: null });
+    cfg = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(cfg.providers?.deepseek).toBeUndefined();
+    expect(getModel(cfg, { provider: "deepseek", model_id: "deepseek-flash" })?.api_key).toBe(
+      "sk-own",
+    );
+  });
+
+  it("a file this release wrote keeps a model's own base URL and protocol, even ones an old file would have moved", async () => {
+    await writeRaw([
+      "[providers.openrouter]",
+      'base_url = "https://proxy.example/openrouter/v1"',
+      ...row({
+        provider: "openrouter",
+        model_id: "openai/gpt-5.5",
+        client_type: "openai-responses",
+        base_url: OR,
+        api_key: "or-key",
+      }),
+    ]);
+    const before = await fs.readFile(file(), "utf8");
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    const entry = getModel(loaded, { provider: "openrouter", model_id: "openai/gpt-5.5" })!;
+    // Pinned to OpenRouter itself while the group goes through a proxy: kept, and still used.
+    expect(entry.base_url).toBe(OR);
+    expect(entry.client_type).toBe("openai-responses");
+    expect(entry.api_key).toBe("or-key");
+    expect(connections(loaded)["openrouter/openai/gpt-5.5"]).toMatchObject({ baseUrl: OR });
+    expect(await fs.readFile(file(), "utf8")).toBe(before);
+  });
+});
+
+describe("default_chat (new-chat defaults block)", () => {
+  const block = {
+    agent_id: "default_agent",
+    workspace: "/tmp/some-ws",
+    approval_mode: "always-ask",
+    thinking_level: "high",
+  } as const;
+
+  it("is absent from the default config (absent = the pre-existing behavior)", () => {
+    expect("default_chat" in defaultProjectConfig()).toBe(false);
+  });
+
+  it("round-trips through save/load — a known key the CLI's literal rebuild keeps", async () => {
+    const cfg = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    cfg.default_chat = { ...block };
+    await saveProjectConfig(tmpRoot, DEFAULT_PROJECT_ID, cfg);
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(loaded.default_chat).toEqual(block);
+    // A second unrelated save/load round trip (the load→save path that only keeps known
+    // keys) must not drop the block: it is echoed in loadProjectConfig's return literal.
+    await saveProjectConfig(tmpRoot, DEFAULT_PROJECT_ID, loaded);
+    expect((await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).default_chat).toEqual(block);
+  });
+
+  it("loads tolerantly: an invalid value drops that key, never the load", async () => {
+    const file = projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      [
+        "[default_chat]",
+        'agent_id = "default_agent"',
+        "workspace = 3", // wrong type -> dropped
+        'approval_mode = "yolo"', // unknown enum -> dropped
+        'thinking_level = "none"', // "none" is never a project default -> dropped
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const loaded = await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID);
+    expect(loaded.default_chat).toEqual({ agent_id: "default_agent" });
+  });
+
+  it("drops the block entirely when it is not a table or nothing valid remains", async () => {
+    const file = projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, 'default_chat = "high"\n', "utf8");
+    expect((await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).default_chat).toBeUndefined();
+    await fs.writeFile(file, '[default_chat]\nthinking_level = "extreme"\n', "utf8");
+    expect((await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID)).default_chat).toBeUndefined();
+  });
+
+  it("renderProjectConfigToml emits the [default_chat] table after every top-level line", () => {
+    // Pathological insertion order (a read-modify-write can append scalars after the block):
+    // if default_chat rendered first, the scalars below it would be parsed back as ITS
+    // members. The renderer defers table blocks below all top-level `key = value` lines.
+    const text = renderProjectConfigToml({
+      default_chat: { thinking_level: "low" },
+      name: "after-table",
+      default_model: { provider: "p", model_id: "m" },
+      models: [{ provider: "p", model_id: "m" }],
+    });
+    const parsed = parseToml(text) as Record<string, unknown>;
+    expect(parsed.name).toBe("after-table");
+    expect(parsed.default_model).toEqual({ provider: "p", model_id: "m" });
+    expect(parsed.default_chat).toEqual({ thinking_level: "low" });
+    expect(parsed.models).toEqual([{ provider: "p", model_id: "m" }]);
+  });
+});
+
+describe("selectable thinking tiers (the parallel lists must agree)", () => {
+  it("run_subagent's enum is exactly the project-default tiers, and never offers none", () => {
+    // The same rule is spelled out in three places — this constant, the web picker's
+    // SELECTABLE_THINKING_LEVELS (pinned by its own test), and run_subagent's schema — while
+    // nothing checked the two core lists against each other. `"none"` stays a legal stored and
+    // wire value (a legacy config may carry it, and it is inherited verbatim by a subagent),
+    // it is simply never *offered*, because many models cannot disable thinking.
+    expect(SUBAGENT_THINKING_LEVELS).toEqual(DEFAULT_CHAT_THINKING_LEVELS);
+    expect(SUBAGENT_THINKING_LEVELS).not.toContain("none");
+    const entry = defaultSystemConfig().tools?.builtin?.find((t) => t.name === "run_subagent");
+    const properties = (entry?.parameters as { properties?: Record<string, { enum?: unknown }> })
+      ?.properties;
+    expect(properties?.thinking_level?.enum).toEqual([...SUBAGENT_THINKING_LEVELS]);
+  });
+});
+
+describe("resolveModelRef (validates a (provider, model_id) pair against the config)", () => {
+  const cfg: ProjectConfig = {
+    models: [
+      { provider: "deepseek", model_id: "deepseek-v4-pro" },
+      { provider: "siliconflow", model_id: "shared-id" },
+      { provider: "openrouter", model_id: "shared-id" },
+    ],
+  };
+
+  it("returns the pair when it names a configured entry", () => {
+    expect(resolveModelRef(cfg, "deepseek-v4-pro", "deepseek")).toEqual({
+      provider: "deepseek",
+      model_id: "deepseek-v4-pro",
+    });
+    // The same bare model_id under two groups is never ambiguous: each pair names its own entry.
+    expect(resolveModelRef(cfg, "shared-id", "siliconflow")).toEqual({
+      provider: "siliconflow",
+      model_id: "shared-id",
+    });
+    expect(resolveModelRef(cfg, "shared-id", "openrouter")).toEqual({
+      provider: "openrouter",
+      model_id: "shared-id",
+    });
+  });
+
+  it("throws when the pair is not configured; the error carries the pair reference", () => {
+    // Wrong group for a configured model_id: no fallback to "the entry that happens to have
+    // this id" — a pair the config doesn't have simply isn't a model.
+    expect(() => resolveModelRef(cfg, "shared-id", "openai")).toThrow(
+      /is not in the Project config.*\(provider=openai, model_id=shared-id\)/,
+    );
+    // Unknown model_id, and exact matching only (no fuzzy/prefix matching).
+    expect(() => resolveModelRef(cfg, "no-such-model", "deepseek")).toThrow(
+      /\(provider=deepseek, model_id=no-such-model\)/,
+    );
+    expect(() => resolveModelRef(cfg, "deepseek-v4", "deepseek")).toThrow(
+      /is not in the Project config/,
+    );
+  });
+
+  it("requires provider: a bare model_id does not type-check (no resolution path left)", () => {
+    // The pair is enforced by the type checker — asserted by `pnpm typecheck`, which includes
+    // this file; the unused-directive error is the failure mode if the parameter ever goes
+    // optional again. vitest only checks that the call expression exists.
+    // @ts-expect-error provider is required: a model reference is always a (provider, model_id) pair.
+    const call = (): ModelRef => resolveModelRef(cfg, "deepseek-v4-pro");
+    expect(call).toBeTypeOf("function");
+  });
+});
+
+describe("single hidden config file (.project_config.toml, credentials inlined)", () => {
+  it("addModel writes one hidden file with 0600 permission; api_key lives inline", async () => {
+    await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "custom",
+      model_id: "m-split",
+      api_key: "sk-split-1",
+    });
+    const file = projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID);
+    // The sole config file is hidden (not shown by ls by default) and has 0600 permission
+    // (owner read/write only).
+    expect(path.basename(file)).toBe(".project_config.toml");
+    // POSIX-only: Windows has no owner-only mode bits (chmod maps to the read-only attribute).
+    if (process.platform !== "win32") {
+      expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+    }
+    expect(await fs.readFile(file, "utf8")).toContain("sk-split-1");
+    // The old two-file layout is no longer produced.
+    expect(await exists(path.join(tmpRoot, DEFAULT_PROJECT_ID, "project_config.toml"))).toBe(false);
+    expect(await exists(path.join(tmpRoot, DEFAULT_PROJECT_ID, ".credentials.toml"))).toBe(false);
+  });
+
+  // POSIX-only: Windows has no owner-only mode bits to converge.
+  it.skipIf(process.platform === "win32")(
+    "chmod converges an existing file back to 0600 on save",
+    async () => {
+      await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+        provider: "custom",
+        model_id: "m-perm",
+        api_key: "sk-1",
+      });
+      const file = projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID);
+      await fs.chmod(file, 0o644);
+      await addModel(tmpRoot, DEFAULT_PROJECT_ID, {
+        provider: "custom",
+        model_id: "m-perm",
+        api_key: "sk-2",
+      });
+      expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  it("writes provider and model_id as separate fields; refs are TOML inline tables", async () => {
+    await seedProject(tmpRoot);
+    await addModel(
+      tmpRoot,
+      DEFAULT_PROJECT_ID,
+      { provider: "openrouter", model_id: "xiaomi/mimo-v2.5" },
+      { setDefault: true },
+    );
+    await setVisionModel(tmpRoot, DEFAULT_PROJECT_ID, {
+      provider: "anthropic",
+      model_id: "claude-sonnet-4-6",
+    });
+    const raw = await fs.readFile(projectConfigPath(tmpRoot, DEFAULT_PROJECT_ID), "utf8");
+    // A reference pair is persisted as an inline table; entries have
+    // provider / model_id as separate columns, with no concatenated storage id or
+    // request_model_id appearing anywhere.
+    expect(raw).toContain(
+      'default_model = { provider = "openrouter", model_id = "xiaomi/mimo-v2.5" }',
+    );
+    expect(raw).toContain(
+      'vision_model = { provider = "anthropic", model_id = "claude-sonnet-4-6" }',
+    );
+    expect(raw).toContain('provider = "openrouter"');
+    expect(raw).toContain('model_id = "xiaomi/mimo-v2.5"');
+    expect(raw).not.toContain("request_model_id");
+    expect(raw).not.toContain('"openrouter/xiaomi/mimo-v2.5"');
+  });
+});
+
+describe("agent vault (agent_state/.vault.toml)", () => {
+  it("set/remove roundtrip persists to the agent's .vault.toml", async () => {
+    await setVaultEntry(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID, "MY_API_KEY", "sk-secret-1");
+    await setVaultEntry(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID, "OTHER_KEY", "v2");
+    // A same-named key overwrites, producing no duplicate.
+    await setVaultEntry(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID, "MY_API_KEY", "sk-secret-2");
+    let vault = await loadAgentVault(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID);
+    expect(vault).toEqual({ MY_API_KEY: "sk-secret-2", OTHER_KEY: "v2" });
+    // Persisted in plaintext to this Agent's agent_state/.vault.toml (an accepted tradeoff:
+    // masking happens at the interface layer) -- a hidden file (not shown by ls by default)
+    // with 0600 permission (owner read/write only).
+    const file = agentVaultPath(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID);
+    expect(path.basename(file)).toBe(".vault.toml");
+    // POSIX-only: Windows has no owner-only mode bits (chmod maps to the read-only attribute).
+    if (process.platform !== "win32") {
+      expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+    }
+    const raw = await fs.readFile(file, "utf8");
+    expect(raw).toContain("sk-secret-2");
+    // The Project config no longer carries the vault.
+    expect(JSON.stringify(await loadProjectConfig(tmpRoot, DEFAULT_PROJECT_ID))).not.toContain(
+      "sk-secret-2",
+    );
+
+    vault = await removeVaultEntry(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID, "MY_API_KEY");
+    expect(vault).toEqual({ OTHER_KEY: "v2" });
+    // Once emptied, the whole .vault.toml is removed; removing a non-existent key is
+    // idempotent and does not throw.
+    vault = await removeVaultEntry(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID, "OTHER_KEY");
+    expect(vault).toEqual({});
+    await expect(fs.access(file)).rejects.toThrow();
+    vault = await removeVaultEntry(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID, "GHOST");
+    expect(vault).toEqual({});
+  });
+
+  it("keeps vaults independent between agents", async () => {
+    await setVaultEntry(tmpRoot, DEFAULT_PROJECT_ID, "agent-a", "KEY_A", "va");
+    await setVaultEntry(tmpRoot, DEFAULT_PROJECT_ID, "agent-b", "KEY_B", "vb");
+    expect(await loadAgentVault(tmpRoot, DEFAULT_PROJECT_ID, "agent-a")).toEqual({ KEY_A: "va" });
+    expect(await loadAgentVault(tmpRoot, DEFAULT_PROJECT_ID, "agent-b")).toEqual({ KEY_B: "vb" });
+  });
+
+  it("rejects invalid keys and keeps shell-safe names only", async () => {
+    const set = (key: string) =>
+      setVaultEntry(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID, key, "v");
+    await expect(set("1BAD")).rejects.toThrow(/vault key/);
+    await expect(set("BAD-DASH")).rejects.toThrow();
+    await expect(set("BAD KEY")).rejects.toThrow();
+    await expect(set("")).rejects.toThrow();
+    // Starting with an underscore is valid (shell environment variable naming rule).
+    await set("_OK_1");
+    expect(isValidVaultKey("_OK_1")).toBe(true);
+    expect(isValidVaultKey("9NOPE")).toBe(false);
+    // A value that is too long (>8192) is rejected: since it gets injected into the child
+    // process environment, an oversized value would make exec spawn fail (E2BIG).
+    await expect(
+      setVaultEntry(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID, "OK_BIG", "x".repeat(8193)),
+    ).rejects.toThrow(/too long/);
+  });
+
+  it("ignores non-string values and invalid key names from a hand-edited TOML; missing file is an empty vault", async () => {
+    const file = agentVaultPath(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    // Non-string values and invalid key names (starting with a dash / digit) are always
+    // ignored -- the same rule as the write side (review gemini #1: if an invalid key were
+    // loaded, it would get injected into the Prompt/env, and after a GET brought it out, a PUT
+    // of the whole table back would 400, bricking the vault page).
+    await fs.writeFile(file, 'GOOD = "ok"\nBAD = 123\n"BAD-DASH" = "x"\n"9NUM" = "y"\n', "utf8");
+    expect(await loadAgentVault(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID)).toEqual({
+      GOOD: "ok",
+    });
+    expect(await loadAgentVault(tmpRoot, DEFAULT_PROJECT_ID, "no-such-agent")).toEqual({});
+  });
+});
+
+describe("defensive config parsing", () => {
+  it("throws a clear error when system_config.yaml is empty or corrupt", async () => {
+    // First initialize normally, then empty out system_config.yaml; reloading should throw a
+    // clear error rather than producing an undefined-laden message.
+    await loadAgentState({ init: {} });
+    const cfgPath = systemConfigPath(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID);
+    await fs.writeFile(cfgPath, "", "utf8");
+    await expect(loadAgentState({ init: {} })).rejects.toThrow(/system_prompt|Invalid|corrupted/);
+
+    await fs.writeFile(cfgPath, "just a string, not a mapping", "utf8");
+    await expect(loadAgentState({ init: {} })).rejects.toThrow(/system_prompt|Invalid|corrupted/);
+  });
+});

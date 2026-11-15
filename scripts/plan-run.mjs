@@ -1,0 +1,82 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { getRunContext, recomputeRunStatus, writeJson, withRunLock } from "./orchestration-state.mjs";
+import { workflowDefinition } from './stage-registry.mjs';
+import { assertTrackStage } from './test-tracks.mjs';
+
+const root = resolve(import.meta.dirname, "..");
+const project = JSON.parse(readFileSync(resolve(root, "config/project.json"), "utf8"));
+const workflow = workflowDefinition();
+const runId = process.argv.find((arg) => arg.startsWith("--run-id="))?.slice(9);
+const requested = process.argv.find((arg) => arg.startsWith("--stages="))?.slice(9)?.split(",").filter(Boolean)
+  ?? workflow.stages.filter(stage=>stage.id!=='api_execution').map((stage) => stage.id);
+const reviewMode = process.argv.find((arg) => arg.startsWith('--review-mode='))?.slice(14) ?? 'staged';
+// The legacy CLI keeps its saved lifecycle behavior; the structured user entry defaults to task.
+const workflowMode = process.argv.find(arg=>arg.startsWith('--workflow-mode='))?.slice(16) ?? 'lifecycle';
+const sourceMode = process.argv.find(arg=>arg.startsWith('--source-mode='))?.slice(14) ?? 'provided_materials';
+const executionPlatform = process.argv.find(arg=>arg.startsWith('--execution-platform='))?.slice(21) ?? 'web';
+if (!['web','android','miniprogram'].includes(executionPlatform)) throw new Error('execution-platform must be web, android or miniprogram');
+if (!['provided_materials','live_product'].includes(sourceMode) || (sourceMode==='live_product' && workflowMode!=='task')) throw new Error('Invalid source mode for this workflow');
+if (!['task','lifecycle'].includes(workflowMode)) throw new Error('workflow-mode must be task or lifecycle');
+if (!['auto','staged'].includes(reviewMode)) throw new Error('review-mode must be auto or staged');
+if (workflowMode === 'lifecycle' && reviewMode !== 'staged') throw new Error('Full lifecycle requires staged human review');
+if (!runId) throw new Error("用法: node scripts/plan-run.mjs --run-id=<run_id> [--stages=analysis,test_points,...]");
+const branches=requested.includes('api_execution') ? requested.filter(id=>['execution','api_execution'].includes(id)) : ['execution'];
+for(const stage of workflow.stages) if(stage.id==='defects') stage.depends_on=[...branches];
+const definitions = new Map(workflow.stages.map((stage) => [stage.id, stage]));
+const selected = new Set();
+function selectWithDependencies(stageId) {
+  const stage = definitions.get(stageId);
+  if (!stage) throw new Error(`未知阶段: ${stageId}`);
+  if (selected.has(stageId)) return;
+  if (workflowMode === 'lifecycle') for (const dependency of stage.depends_on) selectWithDependencies(dependency);
+  selected.add(stageId);
+}
+requested.forEach(selectWithDependencies);
+if (sourceMode==='live_product') branches.forEach(id=>selected.add(id));
+if (executionPlatform!=='web' && (!selected.has('execution') || selected.has('api_execution'))) throw new Error('Mobile execution requires the execution stage without api_execution in this run');
+
+withRunLock(root, project, runId, () => {
+const { manifestPath, manifest } = getRunContext(root, project, runId);
+assertTrackStage(manifest,undefined);
+if (manifest.orchestration?.plan?.stages?.length) throw new Error("运行计划已存在，不能覆盖。同一任务继续后续阶段请使用 extend_plan；不要重建运行或重置已完成阶段。");
+const now = new Date().toISOString();
+const planStages = workflow.stages.map((definition) => ({ ...definition, depends_on: workflowMode==='task'?[]:definition.depends_on, confirmation: workflowMode==='task'?(reviewMode==='staged'?'after':'none'):reviewMode === 'auto' && definition.confirmation === 'after' ? 'none' : definition.confirmation, result_confirmation: workflowMode==='lifecycle' && reviewMode==='staged' ? definition.result_confirmation : undefined, selected: selected.has(definition.id) }));
+if (executionPlatform!=='web') {
+  const execution = planStages.find(stage=>stage.id==='execution');
+  execution.agent = executionPlatform==='android'?'android_test_agent':'miniprogram_test_agent';
+  execution.skills = [executionPlatform==='android'?'android-execution':'miniprogram-execution'];
+}
+if (sourceMode==='live_product') {
+  for (const stage of planStages) if (!branches.includes(stage.id)) stage.depends_on=[...branches];
+  planStages.sort((a,b)=>Number(branches.includes(b.id))-Number(branches.includes(a.id)));
+}
+manifest.manifest_version = 3;
+manifest.orchestration ??= { events: [] };
+manifest.orchestration.plan = {
+  workflow_id: workflow.workflow_id,
+  workflow_version: workflow.workflow_version,
+  workflow_mode: workflowMode,
+  source_mode: sourceMode,
+  execution_platform: executionPlatform,
+  execution_branches: branches.filter(id=>selected.has(id)),
+  review_mode: reviewMode,
+  planned_at: now,
+  stages: planStages
+};
+manifest.stages ??= {};
+for (const stage of planStages) {
+  manifest.stages[stage.id] = {
+    status: stage.selected ? "planned" : "skipped",
+    updated_at: now,
+    reason: stage.selected ? undefined : "未纳入本次任务计划"
+  };
+}
+manifest.orchestration.resume_from = planStages.find((stage) => stage.selected)?.id ?? "completed";
+manifest.orchestration.events ??= [];
+manifest.orchestration.events.push({ type: "plan_created", at: now, stages: [...selected] });
+manifest.status = recomputeRunStatus(manifest);
+manifest.updated_at = now;
+writeJson(manifestPath, manifest);
+console.log(JSON.stringify({ run_id: runId, workflow: workflow.workflow_id, selected_stages: [...selected], status: manifest.status }, null, 2));
+});

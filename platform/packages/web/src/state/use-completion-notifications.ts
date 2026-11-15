@@ -1,0 +1,81 @@
+/**
+ * Task-completion notifications, renderer-side only (standard Web Notification API — no
+ * preload, no private IPC: the desktop window stays a plain browser environment).
+ *
+ * Watches the tracked Session list for active→idle transitions (lib/completion-notify)
+ * and, when the window is hidden or unfocused, shows a system notification with the
+ * Session's title; clicking focuses the window and opens that Session. Only the sidebar's own
+ * conversations notify (observedSessions): an archived Session — one a program opened and
+ * nobody kept, or one the user filed away — a subagent and an organization's Session never do.
+ *
+ * Two gates, both from lib/notification-pref: the user turned the preference on, and the
+ * platform grants permission at this moment. The permission is checked every time rather
+ * than trusted from the moment it was granted — an OS can take it back while the app runs,
+ * and a revoked permission must not be read as "show it anyway". There is no gate on the
+ * desktop shell: the switch that opens this feature is the same in a browser, and the
+ * permission prompt it triggers is one the user just asked for.
+ */
+import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useNavigate } from "react-router";
+import { PENGUIN_LOGO_URL } from "../lib/brand-logo";
+import { S } from "../lib/strings";
+import { createCompletionTracker, observedSessions } from "../lib/completion-notify";
+import {
+  notificationPermission,
+  notificationsEnabledVersion,
+  readNotificationsEnabled,
+  subscribeNotificationsEnabled,
+} from "../lib/notification-pref";
+import { useProject } from "./project";
+import { useSessions } from "./sessions";
+
+export function useCompletionNotifications(): void {
+  const { sessions } = useSessions();
+  const { setCurrentAgentId } = useProject();
+  const navigate = useNavigate();
+
+  const trackerRef = useRef(createCompletionTracker());
+  // Click handlers fire long after the effect ran: read the latest helpers via refs.
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
+  const setCurrentAgentIdRef = useRef(setCurrentAgentId);
+  setCurrentAgentIdRef.current = setCurrentAgentId;
+
+  // The settings switch writes the preference; this follows it without a reload.
+  useSyncExternalStore(subscribeNotificationsEnabled, notificationsEnabledVersion);
+  const enabled = readNotificationsEnabled();
+  useEffect(() => {
+    // The tracker must see every snapshot — also while focused, and also while the
+    // preference is off: completions the user watched happen, or that happened while
+    // notifications were switched off, are consumed silently here instead of surfacing on
+    // a later blur or replaying the moment the preference is switched back on.
+    const completed = trackerRef.current.observe(observedSessions(sessions));
+    if (!enabled) return;
+    if (completed.length === 0) return;
+    if (!document.hidden && document.hasFocus()) return;
+    if (notificationPermission() !== "granted") return;
+    for (const sessionId of completed) {
+      const session = sessions.find((s) => s.sessionId === sessionId);
+      const title = session?.title ?? S.chat.defaultSessionTitle;
+      const agentId = session?.agentId ?? null;
+      try {
+        const notification = new Notification(S.notify.taskCompleteTitle, {
+          body: S.notify.taskCompleteBody(title),
+          // One notification per Session: a newer completion replaces the stale one.
+          tag: `penguin-task-${sessionId}`,
+          icon: PENGUIN_LOGO_URL,
+        });
+        notification.onclick = () => {
+          notification.close();
+          window.focus();
+          // Mirrors the sidebar's openSession: the current agent follows the Session.
+          if (agentId !== null) setCurrentAgentIdRef.current(agentId);
+          navigateRef.current(`/chat/${sessionId}`);
+        };
+      } catch {
+        // Notification construction is best-effort; a platform refusing it must not
+        // break the app.
+      }
+    }
+  }, [enabled, sessions]);
+}

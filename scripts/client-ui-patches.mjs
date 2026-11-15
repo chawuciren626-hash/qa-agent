@@ -1,0 +1,125 @@
+import { readFileSync } from 'node:fs';
+import { patchClientBundle216 } from './penguin-ui-0.2.16.mjs';
+// Exact anchors deliberately reject unknown host builds before writing installation files.
+const factory = `let qaClientInstance;function qaClient(){return qaClientInstance??=createWorkspaceUI({React:f,useProject:rn,useSessions:jo,useAuth:vn,useNavigate:Yn,useLocation:Xa,FolderPicker:b0,Modal:Kt,AccountMenu:eL,LegacySidebar:QaLegacySidebar,notify:ft,reportError:ze,request:je,Markdown:pl})}function c9(props){return r.jsx(qaClient().Sidebar,props)}function QaHero(props){return r.jsx(qaClient().Hero,props)}function QaSessionContext(props){return r.jsx(qaClient().SessionContext,props)}function upe(){const view=new URLSearchParams(Xa().search).get("view");return view==="schedules"||view==="library"?r.jsx(qaClient().SectionPage,{view}):r.jsx(QaNativeChat,{})}`;
+export const clientPatchPairs = [
+  [
+    'className:"flex h-full flex-col items-center gap-1 py-2.5",children:[r.jsx(Pa,{label:c.nav.expandSidebar',
+    'className:"flex h-full flex-col items-center gap-1 py-2.5",children:[r.jsx(PO,{className:"qa-sidebar-logo"}),r.jsx(Pa,{label:c.nav.expandSidebar',
+  ],
+  [
+    'function PO({className:e}){return r.jsx("img",{src:"/penguin-logo.svg",alt:"","aria-hidden":!0,draggable:!1,className:`select-none ${e??"h-9 w-9 rounded-lg"}`})}',
+    'function PO({className:e}){return r.jsx(qaClient().BrandLogo,{className:e??"h-9 w-9 rounded-lg"})}',
+  ],
+  [
+    'r.jsx("span",{className:"text-sm font-semibold",children:c.appName})',
+    'r.jsxs("span",{className:"qa-mobile-brand text-sm font-semibold",children:[r.jsx(PO,{className:"qa-sidebar-logo"}),c.appName]})',
+  ],
+  ['icon:"/penguin-logo.svg"', 'icon:qaBrandLogo'],
+  // A new task always enters the controller. Native defaults/draft callbacks
+  // retain their other settings but cannot select a child agent.
+  [
+    'const[v,b]=f.useState(x.agentId??l?.agentId??null),[k,S]=f.useState(x.workspace??"");',
+    'const v=o.some(Be=>Be.agentId==="test_agent")?"test_agent":null,b=()=>{},[k,S]=f.useState(x.workspace??"");',
+  ],
+  [
+    'ct=f.useCallback(async(Be,tt=null)=>{if(!v||me.current)return!1;',
+    'ct=f.useCallback(async(Be,tt=null)=>{if(!v){ze("软件测试智能体尚未就绪，请刷新后重试");return!1}if(me.current)return!1;',
+  ],
+  [
+    'r.jsxs("div",{className:"mt-2 flex flex-wrap items-center gap-2",children:[r.jsx(Hde,{agents:o,selected:Xe,onSelect:Ee}),r.jsx(b0,{projectId:e,workspace:k,onChange:pe})]})',
+    'null',
+  ],
+  ["function upe(){", "function QaNativeChat(){"],
+  [
+    "function c9({onNavigate:e,onCollapse:t}){",
+    "function QaLegacySidebar({onNavigate:e,onCollapse:t}){",
+  ],
+  [
+    "function Pde({projectId:e,models:t,draftId:n}){",
+    factory + "function Pde({projectId:e,models:t,draftId:n}){",
+  ],
+  [
+    'f.useEffect(()=>{g&&a("/chat/new",{replace:!0})},[g,a]);',
+    'const[qaScene,setQaScene]=f.useState(x.qaScene??0),qaProjectId=s.state?.qaProjectId===undefined?x.qaProjectId:s.state.qaProjectId;f.useEffect(()=>{g&&a("/chat/new",{replace:!0})},[g,a]);',
+  ],
+  [
+    "const Be={text:L.current,workspace:k,approvalMode:j};",
+    "const Be={text:L.current,workspace:k,approvalMode:j,qaProjectId,qaScene};",
+  ],
+  [
+    "[Me,p,e,n,v,k,j,T,x.source]),Ve=f.useRef(_e)",
+    "[Me,p,e,n,v,k,j,T,x.source,qaProjectId,qaScene]),Ve=f.useRef(_e)",
+  ],
+  [
+    'typeof t.workspace=="string"&&(n.workspace=t.workspace);',
+    'typeof t.workspace=="string"&&(n.workspace=t.workspace);(t.qaProjectId===null||typeof t.qaProjectId=="string")&&(n.qaProjectId=t.qaProjectId);Number.isInteger(t.qaScene)&&t.qaScene>=0&&t.qaScene<3&&(n.qaScene=t.qaScene);',
+  ],
+  [
+    "await Rm(J,{input:Be,...tt?{goal:tt}:{}})",
+    'await Rm(J,{input:qaScenesEnabled?[{type:"text",text:"测试场景："+qaScenes[qaScene].name},...Be]:Be,...tt?{goal:tt}:{}})',
+  ],
+  [
+    "m(wt?.session??Ae.session),Ze(),GO(Ke.sessionId)",
+    'm(wt?.session??Ae.session),qaCompleteFirstRun(e,p),(()=>{try{qaBindProject(e,p,qaProjectId,Ke.sessionId)}catch{ze("任务已发起，但项目归属保存失败；可在任务列表中继续")}})(),Ze(),GO(Ke.sessionId)',
+  ],
+  [
+    "[e,v,j,T,k,x.source,m,Ze,a]),rt=f.useRef(null)",
+    "[e,v,j,T,k,x.source,m,Ze,a,qaProjectId,qaScene,p]),rt=f.useRef(null)",
+  ],
+  [
+    'className:"anim-fade flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-6 md:px-4"',
+    'className:"qa-welcome anim-fade flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-6 md:px-4"',
+  ],
+  [
+    'r.jsxs("div",{className:"mb-10 text-center",children:[r.jsx(PO,{className:"mx-auto mb-1 h-36 w-36 rounded-3xl"}),r.jsx("h1",{className:"text-3xl font-semibold tracking-tight text-gray-900 dark:text-gray-100",children:c.appName}),r.jsx("p",{className:"mt-2 text-base text-gray-400 dark:text-gray-500",children:c.chat.draftSubtitle}),r.jsx(Ude,{})]})',
+    "r.jsx(QaHero,{controlRef:rt,scene:qaScene,onSceneChange:setQaScene,groupId:qaProjectId,workspace:k,onWorkspaceChange:pe,onProjectChange:group=>{const workspace=group?.folders[0]??'';pe(workspace);a(s.pathname+s.search,{replace:!0,state:{...s.state,qaProjectId:group?.id??null,workspace}})}})",
+  ],
+  [
+    'className:"mt-6 space-y-1",children:[d4.map',
+    'className:"qa-old-examples mt-6 space-y-1",children:[d4.map',
+  ],
+  [
+    'className:"relative",ref:Ae,children:[Ve===',
+    'className:"qa-composer relative",ref:Ae,children:[Ve===',
+  ],
+  [
+    'return r.jsxs("div",{className:"flex h-full",children:[r.jsx("aside"',
+    'return r.jsxs("div",{className:"qa-shell flex h-full",children:[r.jsx("aside"',
+  ],
+  [
+    'className:"flex shrink-0 items-center gap-2.5 border-b border-gray-200 px-3 py-2 md:px-4 dark:border-gray-800",children:[r.jsxs("div",',
+    'className:"qa-session-topbar flex shrink-0 items-center gap-2.5 border-b border-gray-200 px-3 py-2 md:px-4 dark:border-gray-800",children:[r.jsx(QaSessionContext,{session:pe,status:me.taskState,pending:me.pendingApprovals.size,error:me.error,items:Xe,onBack:aa}),r.jsxs("div",',
+  ],
+  [
+    "max-w-[88%] rounded-lg bg-gray-100 px-4 py-2.5 md:max-w-[75%] dark:bg-gray-800",
+    "qa-user-bubble max-w-[88%] rounded-lg bg-gray-100 px-4 py-2.5 md:max-w-[75%] dark:bg-gray-800",
+  ],
+  [
+    'appName:"PenguinHarness",nav:{chat:"对话",newChat:"新对话"',
+    'appName:"AITestHarness",nav:{chat:"任务",newChat:"新建任务"',
+  ],
+];
+export function patchClientBundle(source) {
+  if(source.includes('function MFe({projectId:e,models:t,draftId:n,composerRef:r,onWorkspaceChange:a,onAgentChange:o}){')) return patchClientBundle216(source);
+  let result = source;
+  for (const [before, after] of clientPatchPairs) {
+    if (result.split(before).length !== 2)
+      throw new Error(
+        `Unsupported client build: UI anchor not unique (${before.slice(0, 90)})`,
+      );
+    result = result.replace(before, after);
+  }
+  return (
+    'import { createWorkspaceUI, qaBindProject, qaCompleteFirstRun, qaScenes, qaScenesEnabled, qaBrandLogo } from "./qa-delivery-ui.js";\n' +
+    result
+  );
+}
+export function brandDataUrl(svg) {
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+export function clientModule(delivery, workspace, css,
+  logo = readFileSync(new URL('../penguin/ui/aith-logo.svg', import.meta.url), 'utf8'),
+  light = readFileSync(new URL('../penguin/ui/aith-logo-light.svg', import.meta.url), 'utf8')) {
+  return `export const qaBrandLogo = ${JSON.stringify(brandDataUrl(logo))};\nconst qaBrandLogoLight = ${JSON.stringify(brandDataUrl(light))};\n${delivery}\n${workspace}\nconst qaClientStyles = ${JSON.stringify(css)};\n`;
+}

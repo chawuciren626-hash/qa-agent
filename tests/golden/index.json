@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "updated_at": "2026-11-15",
+  "note": "8 个 LLM 调用点的 golden set 登记表。status=ready 才有样本且能跑；pending 表示尚未录制基线，**不代表已覆盖**。方案要求每点 20 条，当前 ready 点各 6 条，属最小可用集。 2026-11-15 复核：历史 1616 个 run 的产物全部标注为 synthetic engineering fixture（非真实授权内容），不能作为录制基线——用合成数据录 golden 等于用假数据当基准。录制必须等真实环境（真实需求输入 + 真实 LLM 产出），操作步骤见 docs/golden-set.md「录制新样本」。",
+  "points": [
+    {
+      "task": "requirement_extract",
+      "label": "需求项抽取",
+      "status": "ready",
+      "samples": 6,
+      "target": 20
+    },
+    {
+      "task": "testpoint_fill",
+      "label": "测试点补齐",
+      "status": "ready",
+      "samples": 6,
+      "target": 20
+    },
+    {
+      "task": "analysis_clarify",
+      "label": "需求澄清与歧义识别",
+      "status": "pending",
+      "samples": 0,
+      "target": 20
+    },
+    {
+      "task": "case_step_fill",
+      "label": "用例步骤补全",
+      "status": "pending",
+      "samples": 0,
+      "target": 20
+    },
+    {
+      "task": "assertion_generate",
+      "label": "断言生成",
+      "status": "pending",
+      "samples": 0,
+      "target": 20
+    },
+    {
+      "task": "defect_attribution",
+      "label": "缺陷归因",
+      "status": "pending",
+      "samples": 0,
+      "target": 20
+    },
+    {
+      "task": "report_review",
+      "label": "报告审阅",
+      "status": "pending",
+      "samples": 0,
+      "target": 20
+    },
+    {
+      "task": "expected_suggest",
+      "label": "预期变更建议",
+      "status": "pending",
+      "samples": 0,
+      "target": 20
+    }
+  ]
+}

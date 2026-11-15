@@ -1,0 +1,145 @@
+/**
+ * SQLite connection & initialization (node:sqlite DatabaseSync).
+ *
+ * Single process, single writer: a synchronous API is sufficient and avoids a connection
+ * pool; WAL mode and foreign key constraints are enabled. Table-creation SQL runs on open
+ * (idempotent), with no migration branches (product not yet released).
+ */
+import { mkdirSync } from "node:fs";
+import path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
+import { migrate } from "./migrations/index.js";
+import { SCHEMA_SQL } from "./schema.js";
+
+// Fetch the runtime module via process.getBuiltinModule (node >=22.3): avoids static
+// resolution of `node:sqlite` by bundlers/vite (some tools' builtin lists don't yet
+// recognize this experimental module).
+const sqlite = process.getBuiltinModule("node:sqlite");
+
+/**
+ * Opens an EXISTING database for a narrow write, without running any schema work.
+ *
+ * `openDatabase` migrates — CREATE TABLE, several ensureColumn calls, a DROP INDEX and a backfill.
+ * That is right for the process that owns the database and wrong for a short-lived CLI writing
+ * one row (`penguin auth token`): after `penguin update` the CLI on disk can be NEWER than the
+ * running server, and migrating under a live server's prepared statements is not something a
+ * token mint should do. The caller has already established that the file exists.
+ */
+export function openExistingDatabase(dbPath: string): DatabaseSync {
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec("PRAGMA foreign_keys = ON;");
+  // Wait for the live server's write lock instead of failing SQLITE_BUSY at once.
+  db.exec("PRAGMA busy_timeout = 5000;");
+  return db;
+}
+
+/**
+ * Opens an EXISTING database for reading only — SQLite refuses every write on the connection,
+ * so a reader cannot change the file even by mistake. For a question asked of a database some
+ * other process owns (`penguin server status`, run over ssh by a controller): the answer must
+ * not reshape that server's schema, and must not be able to. The caller has established that
+ * the file exists; a read-only open of a missing file is an error, not a creation.
+ */
+export function openDatabaseReadOnly(dbPath: string): DatabaseSync {
+  const db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+  db.exec("PRAGMA busy_timeout = 5000;");
+  return db;
+}
+
+/** Open (creating if necessary) the database: ensure the parent directory exists, set PRAGMAs, run table creation. */
+export function openDatabase(dbPath: string): DatabaseSync {
+  if (dbPath !== ":memory:") {
+    mkdirSync(path.dirname(dbPath), { recursive: true });
+  }
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec("PRAGMA journal_mode = WAL;");
+  // A second connection (the CLI minting a token while the server runs) waits for the write
+  // lock rather than failing SQLITE_BUSY at once.
+  db.exec("PRAGMA busy_timeout = 5000;");
+  db.exec("PRAGMA foreign_keys = ON;");
+  db.exec(SCHEMA_SQL);
+  // Columns added to the schema after a web.db was formed: CREATE TABLE IF NOT EXISTS never
+  // touches an existing table, so they are ALTERed in here. Keep the list in sync with
+  // schema.ts; drop entries only in a release allowed to break existing web.db files.
+  ensureColumn(db, "sessions", "client", "TEXT");
+  ensureColumn(db, "sessions", "has_trace", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "sessions", "fork_count", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "sessions", "thinking_level", "TEXT");
+  ensureColumn(db, "sessions", "sandbox", "TEXT");
+  // A v0.2.0 web.db has auth_sessions without `via`; CREATE TABLE IF NOT EXISTS never adds a
+  // column, so every INSERT would fail "no column named via" until this runs.
+  ensureColumn(db, "auth_sessions", "via", "TEXT");
+  ensureColumn(db, "trace_files", "page_stats", "TEXT");
+  ensureColumn(db, "messaging_bindings", "line_per_message", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "messaging_bindings", "final_reply_only", "INTEGER NOT NULL DEFAULT 0");
+  // DEFAULT 1, unlike every other added flag here: this one's default is the CORRECTED
+  // behaviour, not the previous one. Sending the model's Markdown as characters was the
+  // defect, so an existing binding starts rendering it — a visible change to every relayed
+  // message, recorded in the release's backward-compatibility entry.
+  ensureColumn(db, "messaging_bindings", "render_markdown", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn(db, "messaging_bindings", "last_inbound_message_id", "TEXT");
+  // Superseded by idx_usage_session_ts (session_id, ts), which SCHEMA_SQL just created on
+  // this database: the old index is a strict prefix of it, so every query it served is
+  // served identically. Dropping is safe — an index is derived, never data.
+  db.exec("DROP INDEX IF EXISTS idx_usage_session");
+  // The uniqueness index of the old binding model, where a bot account belonged to one
+  // Session forever and a second Session could not even SAVE its credentials. Enabling a
+  // connection is the binding now, so exclusivity is checked per enable (the state route's
+  // 409 account_enabled_elsewhere) and the same account may sit saved on many Sessions —
+  // which this index would reject. SCHEMA_SQL has just created idx_messaging_by_account
+  // over the same columns, so the by-account lookup stays indexed. Dropping is safe: an
+  // index is derived, never data. It is however ONE-WAY — an older build recreates the
+  // unique index on open, which fails outright once duplicate (channel, account_id) rows
+  // exist, so a downgrade after two Sessions saved the same bot needs those rows removed.
+  db.exec("DROP INDEX IF EXISTS idx_messaging_account");
+  upgradeLastActiveAt(db);
+  // The runtime's own open is the ONLY place a contract migration is applied: it owns the
+  // process, so there is no boot to roll back out from under it.
+  migrate(db);
+  return db;
+}
+
+/**
+ * One-time `sessions.last_active_at` upgrade, ALTER + backfill in a single transaction.
+ *
+ * The backfill runs **only in the open that actually adds the column** (SQLite's ALTER
+ * TABLE ADD COLUMN is transactional, so a crash mid-upgrade rolls back to "no column" and
+ * the next open redoes both halves — never a half-migrated table, and never a full
+ * `sessions` scan on the millions of opens that follow). Legacy rows take the session's
+ * most recent request timestamp — usage_records, covered by idx_usage_session_ts, the
+ * closest persisted proxy for "last Trace activity" — else their own created_at.
+ */
+function upgradeLastActiveAt(db: DatabaseSync): void {
+  db.exec("BEGIN");
+  try {
+    if (ensureColumn(db, "sessions", "last_active_at", "TEXT")) {
+      db.exec(
+        `UPDATE sessions SET last_active_at = COALESCE(
+           (SELECT MAX(ts) FROM usage_records WHERE usage_records.session_id = sessions.session_id),
+           created_at
+         )`,
+      );
+    }
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/**
+ * Idempotent per-column upgrade for databases formed before the column existed.
+ * Returns whether this call actually ALTERed the table (false = the column was already
+ * there), so a caller can gate one-time backfill work on it.
+ */
+export function ensureColumn(
+  db: DatabaseSync,
+  table: string,
+  column: string,
+  ddl: string,
+): boolean {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (cols.some((c) => c.name === column)) return false;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  return true;
+}

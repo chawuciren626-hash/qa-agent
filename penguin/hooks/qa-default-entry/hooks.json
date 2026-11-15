@@ -1,0 +1,7 @@
+{
+  "name": "qa-default-entry",
+  "description": "Keep QA work in its dedicated controller conversation without changing unrelated default-agent work.",
+  "pre_tool_use": [{"command":"guard.mjs","timeout":10}],
+  "stop": [],
+  "user_prompt": []
+}

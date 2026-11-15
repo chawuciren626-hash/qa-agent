@@ -1,0 +1,111 @@
+/**
+ * Path-parameter id validation (FD-4, path traversal): Hono decodes a URL-encoded `%2F` into a
+ * single path parameter, so a traversal-style agentId (`../<victim>/...`) passed through to
+ * path construction unchanged would let an attacker read or write another user's Agent config
+ * and Traces across Projects.
+ *
+ * Given an attacker with a Project of their own and a victim with another:
+ * - Reading the victim's Agent config through a traversal agentId is a 404 that leaks nothing,
+ *   while the attacker's own Agent config still reads.
+ * - Writing it the same way is a 404 that leaves the victim's file untouched.
+ * - The traces and sessions routes answer a traversal agentId with 404.
+ * - The Trace detail routes answer a traversal sessionId or agentId with 404.
+ * - A traversal or invalid-character projectId is a 404 on every Project route.
+ *
+ * Every case is a refused request, so one app serves them all.
+ */
+import fs from "node:fs/promises";
+import path from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { ProjectCreateResponse } from "../src/api/types.js";
+import { apiClient, createTestApp, provisionUser } from "./helpers.js";
+import type { TestApp } from "./helpers.js";
+
+describe("id-validation", () => {
+  let t: TestApp;
+  let attacker: ReturnType<typeof apiClient>;
+  let attackerProject: string;
+  let victimProject: string;
+
+  /** Traversal-style agentId pointing at the victim Project's default_agent (URL-encoded so it all lands in :agentId). */
+  const traversal = () => `..%2F${victimProject}%2Fdefault_agent`;
+  const agentBase = () => `/api/projects/${attackerProject}/agents`;
+
+  beforeAll(async () => {
+    t = await createTestApp();
+    const a = await provisionUser(t.app, "attacker");
+    const v = await provisionUser(t.app, "victim");
+    attacker = apiClient(t.app, a.cookie);
+    const victim = apiClient(t.app, v.cookie);
+    const created = (await (
+      await attacker.post("/api/projects", { projectId: "attacker-proj", name: "Attacker project" })
+    ).json()) as ProjectCreateResponse;
+    attackerProject = created.project.projectId;
+    const victimCreated = (await (
+      await victim.post("/api/projects", { projectId: "victim-proj", name: "Victim project" })
+    ).json()) as ProjectCreateResponse;
+    victimProject = victimCreated.project.projectId;
+  });
+  afterAll(async () => {
+    await t.cleanup();
+  });
+
+  it("GET config: traversal agentId → 404, no leak of system_config.yaml", async () => {
+    // The victim Agent's config does exist (readable by the victim via the legitimate path).
+    const victimConfigPath = path.join(
+      t.root,
+      victimProject,
+      "agents",
+      "default_agent",
+      "agent_state",
+      "system_config.yaml",
+    );
+    await expect(fs.access(victimConfigPath)).resolves.toBeUndefined();
+
+    const res = await attacker.get(`${agentBase()}/${traversal()}/config`);
+    expect(res.status).toBe(404);
+    // Legitimate access to one's own Agent is unaffected.
+    const own = await attacker.get(`${agentBase()}/default_agent/config`);
+    expect(own.status).toBe(200);
+  });
+
+  it("PUT config: traversal agentId → 404, victim file not overwritten", async () => {
+    const victimConfigPath = path.join(
+      t.root,
+      victimProject,
+      "agents",
+      "default_agent",
+      "agent_state",
+      "system_config.yaml",
+    );
+    const before = await fs.readFile(victimConfigPath, "utf8");
+    const res = await attacker.put(`${agentBase()}/${traversal()}/config`, {
+      config: { systemPrompt: "pwned" },
+    });
+    expect(res.status).toBe(404);
+    expect(await fs.readFile(victimConfigPath, "utf8")).toBe(before);
+  });
+
+  it("GET traces / GET|POST sessions: traversal agentId → 404", async () => {
+    expect((await attacker.get(`${agentBase()}/${traversal()}/traces`)).status).toBe(404);
+    expect((await attacker.get(`${agentBase()}/${traversal()}/sessions`)).status).toBe(404);
+    expect((await attacker.post(`${agentBase()}/${traversal()}/sessions`, {})).status).toBe(404);
+  });
+
+  it("Trace detail endpoints: traversal sessionId / agentId → 404", async () => {
+    expect((await attacker.get(`${agentBase()}/default_agent/traces/..%2Fx/1`)).status).toBe(404);
+    expect(
+      (await attacker.get(`${agentBase()}/default_agent/traces/..%2Fx/1/analysis`)).status,
+    ).toBe(404);
+    expect((await attacker.get(`${agentBase()}/${traversal()}/traces/s/1`)).status).toBe(404);
+  });
+
+  it("traversal / invalid-character projectId → 404 (defensive validation)", async () => {
+    expect((await attacker.get(`/api/projects/..%2Fetc/agents`)).status).toBe(404);
+    expect((await attacker.get(`/api/projects/..%2Fetc/models`)).status).toBe(404);
+    expect((await attacker.get(`/api/projects/..%2Fetc/usage`)).status).toBe(404);
+    expect((await attacker.get(`/api/projects/..%2Fetc/usage/errors`)).status).toBe(404);
+    expect((await attacker.get(`/api/projects/..%2Fetc/members`)).status).toBe(404);
+    expect((await attacker.delete(`/api/projects/..%2F${victimProject}`)).status).toBe(404);
+  });
+});

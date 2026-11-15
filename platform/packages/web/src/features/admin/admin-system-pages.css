@@ -1,0 +1,54 @@
+.sys-page{background:var(--ad-bg,#f7f8fa)}
+.sys-card{background:var(--ad-card,#fff);border:1px solid var(--ad-border-soft,#e4e8ee);border-radius:12px;overflow:hidden}
+.sys-table-wrap{overflow-x:auto}
+.sys-table{width:100%;border-collapse:collapse;font-size:13px}
+.sys-table th{text-align:left;background:var(--ad-card-2,#eef1f5);color:var(--ad-secondary,#515c6a);font-weight:500;font-size:12px;padding:11px 18px;white-space:nowrap}
+.sys-table td{padding:14px 18px;border-top:1px solid var(--ad-border-soft,#e4e8ee);color:var(--ad-secondary,#515c6a)}
+.sys-table td strong{color:var(--ad-text,#20252d)}
+.sys-role-name,.sys-actions{display:flex;align-items:center;gap:10px}
+.sys-role-name small{display:block;margin-top:2px;color:var(--ad-muted,#748090);font-size:11px}
+.sys-avatar{display:inline-grid;place-items:center;flex:none;width:28px;height:28px;border-radius:50%;background:#3979b5;color:white;font-size:12px;font-weight:600}
+.sys-badge{display:inline-block;margin-left:8px;padding:2px 6px;border-radius:5px;background:var(--ad-card-2,#eef1f5);color:var(--ad-muted,#748090);font-size:11px;font-weight:400}
+.sys-actions button,.sys-menu-row>button:not(.sys-move){color:#3370ff;font-size:13px;white-space:nowrap}
+.sys-actions button:disabled,.sys-menu-row button:disabled{opacity:.4;cursor:not-allowed}
+.sys-menu-row>button.danger{color:#d83931}
+.sys-hint{color:var(--ad-muted,#748090);font-size:12px;margin:12px 2px;line-height:1.6}
+.sys-error{color:#c0392b;font-size:13px;margin:12px 0}
+.sys-notice{color:#1f8a5a;font-size:13px;margin:12px 0}
+.sys-input{display:block;width:100%;border:1px solid var(--ad-border,#d1d7e0);border-radius:8px;padding:8px 10px;background:var(--ad-card,#fff);color:var(--ad-text,#20252d);font-size:13px}
+.sys-search{margin-bottom:8px}
+.sys-picker{max-height:50vh;overflow-y:auto;overscroll-behavior:contain}
+.sys-pick{display:flex;align-items:center;gap:10px;min-height:40px;padding:7px 9px;border-radius:8px;font-size:13px;cursor:pointer}
+.sys-pick:hover{background:var(--ad-card-2,#eef1f5)}
+.sys-pick input{accent-color:#3370ff}
+.sys-pick span:not(.sys-avatar){flex:1}
+.sys-pick small{margin-left:auto;color:var(--ad-muted,#748090);font-size:11px}
+.sys-group-title{font-size:12px;color:var(--ad-muted,#748090);margin:12px 0 4px}
+.sys-menu-section{margin-bottom:18px}
+.sys-menu-head{display:flex;align-items:center;justify-content:space-between;background:var(--ad-card,#fff);border:1px solid var(--ad-border-soft,#e4e8ee);border-radius:12px 12px 0 0;padding:13px 16px}
+.sys-menu-head strong{font-size:14px}
+.sys-menu-head small{margin-left:10px;color:var(--ad-muted,#748090);font-size:12px}
+.sys-menu-head button{font-size:20px;color:#3370ff}
+.sys-menu-section .sys-card{border-radius:0 0 12px 12px;border-top:0}
+.sys-menu-row{display:flex;align-items:center;gap:11px;min-height:56px;padding:10px 16px;border-top:1px solid var(--ad-border-soft,#e4e8ee);font-size:13px}
+.sys-menu-row:first-child{border-top:0}
+.sys-menu-row.dragging{opacity:.5}
+.sys-menu-row strong{white-space:nowrap;font-weight:500}
+.sys-menu-row code{color:var(--ad-muted,#748090);font-size:11px;white-space:nowrap}
+.sys-drag{cursor:grab;color:#aeb6c2}
+.sys-order{display:grid;place-items:center;width:22px;height:22px;border-radius:6px;background:var(--ad-card-2,#eef1f5);color:var(--ad-muted,#748090);font-size:11px;flex:none}
+.sys-menu-icon{display:grid;place-items:center;width:30px;height:30px;border-radius:8px;color:white;font-weight:600;flex:none}
+.sys-menu-icon svg,.sys-colors svg{width:16px;height:16px}
+.sys-spacer{flex:1}
+.sys-show{white-space:nowrap;color:var(--ad-secondary,#515c6a);font-size:12px}
+.sys-show input{accent-color:#3370ff;margin-right:4px}
+.sys-move{width:26px;height:26px;border:1px solid var(--ad-border-soft,#e4e8ee);border-radius:6px}
+.sys-empty{text-align:center;padding:30px;color:var(--ad-muted,#748090);font-size:13px}
+.sys-form{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.sys-form label,.sys-form>div>span{font-size:12px;color:var(--ad-secondary,#515c6a)}
+.sys-form .sys-input{margin-top:6px}
+.sys-colors{display:flex;gap:8px;margin-top:8px}
+.sys-colors button{display:grid;place-items:center;width:30px;height:30px;border-radius:7px;color:white}
+.sys-colors button.active{outline:2px solid var(--ad-text,#20252d);outline-offset:2px}
+.sys-form .sys-checkbox{display:flex;align-items:center;gap:8px;grid-column:1/-1;font-size:13px}
+@media(max-width:760px){.sys-menu-row{flex-wrap:wrap}.sys-menu-row code{max-width:100%;overflow:hidden;text-overflow:ellipsis}.sys-form{grid-template-columns:1fr}}

@@ -1,0 +1,7 @@
+{
+  "name": "qa-delegation-guard",
+  "description": "Verify QA dispatch ownership and professional target before spawning a child.",
+  "pre_tool_use": [{"command":"guard.mjs","timeout":10}],
+  "stop": [{"command":"finish.mjs","timeout":60}],
+  "user_prompt": []
+}

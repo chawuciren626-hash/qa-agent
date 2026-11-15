@@ -1,0 +1,31 @@
+/* Only the administrator's Agent list uses this frame; settings and create dialogs keep their own styles. */
+.admin-agent-frame{overflow:hidden!important;background:var(--ad-bg,#f7f8fa)}
+.admin-agent-content{display:flex;flex-direction:column;min-height:0;height:100%;max-width:1440px;margin:auto}
+.admin-agent-columns{display:grid;grid-template-columns:216px minmax(0,1fr);gap:16px;flex:1;min-height:0;overflow:hidden}
+.admin-agent-stages,.admin-agent-list-scroll{min-height:0;overflow-y:auto;overscroll-behavior-y:contain;overscroll-behavior-x:contain}
+.admin-agent-stages{padding:8px;border:1px solid var(--ad-border-soft,#eef0f2);border-radius:12px;background:var(--ad-card,#fff)}
+.admin-agent-stage-heading{padding:6px 10px 8px;font-size:12px;color:var(--ad-muted,#8f959e)}
+.admin-agent-stage-row.with-divider{border-top:1px solid var(--ad-border-soft,#eef0f2);padding-top:8px;margin-top:8px}
+.admin-agent-stage-row button{display:flex;align-items:center;gap:9px;width:100%;min-height:40px;padding:7px 10px;border-radius:8px;text-align:left;font-size:13px;color:var(--ad-secondary,#646a73)}
+.admin-agent-stage-row button:hover{background:var(--ad-card-2,#f5f6f7)}
+.admin-agent-stage-row button.active{background:color-mix(in srgb,var(--ad-accent,#185fa5) 10%,transparent);color:var(--ad-accent,#185fa5);font-weight:600}
+.admin-agent-stage-icon{display:grid;place-items:center;width:22px;height:22px;flex:none;border-radius:6px;color:white;font-size:11px;font-weight:700}
+.admin-agent-stage-name{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.admin-agent-stage-row button small{flex:none;padding:1px 8px;border-radius:999px;background:var(--ad-card-2,#f5f6f7);color:var(--ad-muted,#8f959e);font-size:11px;font-variant-numeric:tabular-nums}
+.admin-agent-stage-row button.active small{background:var(--ad-card,#fff);color:var(--ad-accent,#185fa5)}
+.admin-agent-right{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+.admin-agent-results-head{display:flex;align-items:center;gap:12px;flex:none;flex-wrap:wrap;margin:0 2px 14px}
+.admin-agent-results-head h2{font-size:17px;font-weight:700;line-height:1.4}
+.admin-agent-results-head>span{padding:2px 10px;border:1px solid var(--ad-border-soft,#eef0f2);border-radius:999px;background:var(--ad-card,#fff);color:var(--ad-muted,#8f959e);font-size:12px}
+.admin-agent-results-head input{width:230px;margin-left:auto;padding:7px 12px;border:1px solid var(--ad-border,#e5e7eb);border-radius:8px;background:var(--ad-card,#fff);color:var(--ad-text,#1f2329);font-size:12px;outline:none}
+.admin-agent-results-head input:focus{border-color:var(--ad-accent,#185fa5);box-shadow:0 0 0 3px color-mix(in srgb,var(--ad-accent,#185fa5) 10%,transparent)}
+.admin-agent-list-scroll{flex:1;padding:0 2px 20px}
+.admin-agent-card{background:var(--ad-card,#fff);border-color:var(--ad-border-soft,#eef0f2);border-radius:12px;box-shadow:none}
+.admin-agent-card:hover{box-shadow:0 3px 12px #0000000f}
+.admin-agent-add-stage{width:100%;margin-top:12px;padding:8px;border:1px dashed var(--ad-border,#e5e7eb);border-radius:8px;color:var(--ad-secondary,#646a73);font-size:12px}
+.admin-agent-stage-row .admin-agent-stage-remove{width:auto;min-height:20px;padding:3px 8px;margin-left:30px;color:#b42318;font-size:11px}
+.admin-agent-stage-row{position:relative}
+.admin-agent-stage-actions{position:absolute;right:7px;top:50%;display:flex;align-items:center;gap:2px;transform:translateY(-50%);padding:2px;border-radius:6px;background:var(--ad-card,#fff)}
+.admin-agent-stage-row .admin-agent-stage-actions button{display:grid;place-items:center;width:23px;min-height:23px;height:23px;padding:0;border-radius:5px;color:var(--ad-secondary,#646a73)}
+.admin-agent-stage-row .admin-agent-stage-actions button:last-child{color:#b42318}
+@media(max-width:760px){.admin-agent-columns{grid-template-columns:1fr;grid-template-rows:158px minmax(0,1fr)}.admin-agent-stages{display:flex;align-content:flex-start;align-items:flex-start;flex-wrap:wrap;gap:2px}.admin-agent-stage-heading{width:100%}.admin-agent-stage-row.with-divider{border:0;padding:0;margin:0}.admin-agent-stage-row button{width:auto;min-height:34px;padding:5px 7px}.admin-agent-stage-row button small{margin-left:4px}.admin-agent-results-head input{width:100%;margin-left:0}}

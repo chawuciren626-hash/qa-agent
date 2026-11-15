@@ -1,0 +1,21 @@
+AITestHarness Windows distribution candidate
+
+This application includes PenguinHarness 0.2.16 by Prism Shadow, licensed under
+Apache-2.0. AITestHarness adds testing workflows, interface adaptations, installation
+and first-run initialization. It is not an official PenguinHarness release.
+The applicable license and upstream notices are in licenses/.
+
+The packaged PenguinHarness runtime includes Electron and Chromium; their notices
+are in runtime/penguin/LICENSE.electron.txt and LICENSES.chromium.html, and the
+upstream notices describe its other dependencies and fonts.
+
+The Node.js 24.14.0 runtime notice is in licenses/Node-LICENSE.txt.
+Python 3.12.10 includes LICENSE.txt in runtime/tools/python. Python package
+licenses are retained in Lib/site-packages, including each .dist-info directory.
+Production npm dependencies retain their licenses in app/engine/node_modules.
+Playwright browser distributions and FFmpeg retain the files shipped by their
+respective upstream archives under runtime/tools/browsers.
+
+The product payload manifest identifies the shipped files and their SHA256 values.
+Build tools are not part of the application runtime. User accounts, API keys,
+browser profiles, private test targets and conversation history are not supplied.

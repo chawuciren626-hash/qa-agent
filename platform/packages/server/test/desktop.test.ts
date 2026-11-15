@@ -1,0 +1,225 @@
+/**
+ * Desktop mode: a server the desktop shell spawned with a one-shot token.
+ *
+ * - The shell's token redeems once for a cookie session in desktop mode; a replay, a wrong or a
+ *   missing token goes back to the login page without spending the real one.
+ * - Outside desktop mode the claim route refuses a shell token, and /api/me says so.
+ * - The shutdown endpoint takes the token as a Bearer, repeatedly, and runs the registered
+ *   handler after answering; a wrong or missing token is 401, and a plain server has no such
+ *   route.
+ * - The single-user guard closes the user-management surface and the Project-member surface,
+ *   even to a fully authorized admin session, and creates nobody.
+ * - The shell's own session may set the password without the old one, but an old one it does
+ *   give is still checked; a password session in desktop mode keeps needing it.
+ */
+import { describe, expect, it } from "vitest";
+import {
+  apiClient,
+  createDesktopApp,
+  desktopLoginCookie,
+  createTestApp,
+  loginAdmin,
+  TEST_DESKTOP_TOKEN,
+} from "./helpers.js";
+import type { ErrorBody, MeResponse } from "../src/api/types.js";
+
+describe("desktop claim", () => {
+  /** What a browser gets for a token this server will not honour: the login page, plus the advice it can give there. */
+  function expectRefusal(res: Response, advice: "desktop" | "server"): void {
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(`/login?claimFailed=${advice}`);
+    expect(res.headers.get("set-cookie")).toBeNull();
+  }
+
+  it("redeems the token once: cookie session, redirect to /, a replay back to the login page", async () => {
+    const t = await createDesktopApp();
+    try {
+      const res = await t.app.request(`/api/auth/claim?token=${TEST_DESKTOP_TOKEN}`);
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/");
+      const cookie = res.headers.get("set-cookie");
+      expect(cookie).toContain("penguin_session=");
+
+      const me = await t.app.request("/api/me", {
+        headers: { cookie: cookie!.split(";")[0]! },
+      });
+      expect(me.status).toBe(200);
+      const body = (await me.json()) as MeResponse;
+      expect(body.user.userId).toBe("admin");
+      expect(body.desktopMode).toBe(true);
+
+      const replay = await t.app.request(`/api/auth/claim?token=${TEST_DESKTOP_TOKEN}`);
+      expectRefusal(replay, "desktop");
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("rejects a wrong or missing token without consuming the real one", async () => {
+    const t = await createDesktopApp();
+    try {
+      expectRefusal(await t.app.request("/api/auth/claim?token=wrong"), "desktop");
+      expectRefusal(await t.app.request("/api/auth/claim"), "desktop");
+      // The real token still works after failed attempts.
+      expect((await t.app.request(`/api/auth/claim?token=${TEST_DESKTOP_TOKEN}`)).status).toBe(302);
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("refuses a desktop token outside desktop mode, and /api/me reports desktopMode false", async () => {
+    const t = await createTestApp();
+    try {
+      // The claim route serves the first-login link too, so it exists in every mode. A server
+      // with no shell has no shell token to honour, and refuses this one the way it refuses
+      // every other wrong value here — pointing at the only advice it can give, since no
+      // restart of anything on this machine would produce a link.
+      expectRefusal(await t.app.request("/api/auth/claim?token=x"), "server");
+      const admin = await loginAdmin(t.app);
+      const me = await apiClient(t.app, admin.cookie).get("/api/me");
+      expect(((await me.json()) as MeResponse).desktopMode).toBe(false);
+    } finally {
+      await t.cleanup();
+    }
+  });
+});
+
+describe("desktop shutdown endpoint", () => {
+  it("accepts the Bearer token repeatedly and triggers the registered handler", async () => {
+    const t = await createDesktopApp();
+    try {
+      let requested = 0;
+      let shutdownRequested!: () => void;
+      const handled = new Promise<void>((resolve) => (shutdownRequested = resolve));
+      t.deps.desktop!.onShutdownRequest(() => {
+        requested += 1;
+        shutdownRequested();
+      });
+      const res = await t.app.request("/api/desktop/shutdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TEST_DESKTOP_TOKEN}` },
+      });
+      expect(res.status).toBe(202);
+      // The route defers the trigger so the 202 can flush first: the handler runs after it.
+      await handled;
+      expect(requested).toBe(1);
+
+      // Unlike the login token, the shutdown credential is NOT one-shot.
+      const again = await t.app.request("/api/desktop/shutdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TEST_DESKTOP_TOKEN}` },
+      });
+      expect(again.status).toBe(202);
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("rejects wrong or missing tokens, and does not exist outside desktop mode", async () => {
+    const t = await createDesktopApp();
+    try {
+      const wrong = await t.app.request("/api/desktop/shutdown", {
+        method: "POST",
+        headers: { authorization: "Bearer nope" },
+      });
+      expect(wrong.status).toBe(401);
+      const missing = await t.app.request("/api/desktop/shutdown", { method: "POST" });
+      expect(missing.status).toBe(401);
+    } finally {
+      await t.cleanup();
+    }
+
+    const plain = await createTestApp();
+    try {
+      // Outside desktop mode the route is not mounted, and /api/desktop is the runtime's
+      // own namespace (the business platform declines it wholesale): an honest 404.
+      const res = await plain.app.request("/api/desktop/shutdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TEST_DESKTOP_TOKEN}` },
+      });
+      expect(res.status).toBe(404);
+    } finally {
+      await plain.cleanup();
+    }
+  });
+});
+
+describe("desktop single-user mode", () => {
+  async function expectSingleUser403(res: Response): Promise<void> {
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error.code).toBe("desktop_single_user");
+  }
+
+  it("closes user management and Project members to even a full admin session", async () => {
+    const t = await createDesktopApp();
+    try {
+      // The seeded admin signed in through the regular login form: even a fully authorized
+      // admin session gets the dedicated 403, not admin_required.
+      const admin = await loginAdmin(t.app);
+      const api = apiClient(t.app, admin.cookie);
+      await expectSingleUser403(await api.get("/api/admin/users"));
+      await expectSingleUser403(
+        await api.post("/api/admin/users", { userId: "eve", password: "password-123" }),
+      );
+      await expectSingleUser403(
+        await api.post("/api/admin/users/admin/password", { password: "password-456" }),
+      );
+      await expectSingleUser403(await api.delete("/api/admin/users/eve"));
+      await expectSingleUser403(await api.get("/api/projects/default_project/members"));
+      await expectSingleUser403(
+        await api.post("/api/projects/default_project/members", { userId: "eve" }),
+      );
+      await expectSingleUser403(await api.delete("/api/projects/default_project/members/eve"));
+      // No user was created by the rejected POST.
+      expect(t.deps.db.prepare("SELECT COUNT(*) AS n FROM users").get()?.n).toBe(1);
+    } finally {
+      await t.cleanup();
+    }
+  });
+});
+
+describe("desktop-session password change", () => {
+  it("allows omitting oldPassword for a desktop session and clears the initial flag", async () => {
+    const t = await createDesktopApp();
+    try {
+      const cookie = await desktopLoginCookie(t.app);
+      const res = await apiClient(t.app, cookie).put("/api/me/password", {
+        newPassword: "brand-new-password",
+      });
+      expect(res.status).toBe(204);
+      const me = (await (await apiClient(t.app, cookie).get("/api/me")).json()) as MeResponse;
+      expect(me.user.passwordIsInitial).toBe(false);
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("still validates oldPassword when it is provided by a desktop session", async () => {
+    const t = await createDesktopApp();
+    try {
+      const cookie = await desktopLoginCookie(t.app);
+      const res = await apiClient(t.app, cookie).put("/api/me/password", {
+        oldPassword: "wrong-password",
+        newPassword: "brand-new-password",
+      });
+      expect(res.status).toBe(400);
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("keeps requiring oldPassword for password-established sessions in desktop mode", async () => {
+    const t = await createDesktopApp();
+    try {
+      // Sign in via the regular login form against the same desktop-mode server.
+      const admin = await loginAdmin(t.app);
+      const res = await apiClient(t.app, admin.cookie).put("/api/me/password", {
+        newPassword: "brand-new-password",
+      });
+      expect(res.status).toBe(400);
+    } finally {
+      await t.cleanup();
+    }
+  });
+});

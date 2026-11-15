@@ -1,0 +1,110 @@
+[
+  {
+    "id": "REQ-01",
+    "input": { "text": "1. 列表展示标题、预算、状态。2. 标题去首尾空格后长度为 1-40，空标题和超长标题不得保存。3. 预算必须是非负整数，空值、小数、负数都不得保存。" },
+    "expect": {
+      "required": ["items"],
+      "items_path": "items",
+      "expected_count": 3,
+      "count_tolerance": 0.7,
+      "must_include": ["标题", "预算"],
+      "must_not_include": ["折扣", "退款"]
+    },
+    "recorded_output": {
+      "items": [
+        { "id": "R-01", "statement": "列表展示标题、预算、状态", "source": { "quote": "列表展示标题、预算、状态" } },
+        { "id": "R-02", "statement": "标题去首尾空格后长度为 1-40，空标题和超长标题不得保存", "source": { "quote": "标题去首尾空格后长度为 1-40，空标题和超长标题不得保存" } },
+        { "id": "R-03", "statement": "预算必须是非负整数，空值、小数、负数都不得保存", "source": { "quote": "预算必须是非负整数，空值、小数、负数都不得保存" } }
+      ]
+    }
+  },
+  {
+    "id": "REQ-02",
+    "input": { "text": "" },
+    "expect": {
+      "required": ["items"],
+      "items_path": "items",
+      "expected_count": 0,
+      "count_tolerance": 0.7,
+      "check_citations": false,
+      "must_include": []
+    },
+    "recorded_output": { "items": [] }
+  },
+  {
+    "id": "REQ-03",
+    "input": { "text": "草稿可创建、查询、修改、删除。删除后不可恢复。管理员可删除任意草稿，普通用户不得删除他人草稿。创建成功后列表需真实出现新草稿。调用第三方短信服务失败时不得阻断创建。" },
+    "expect": {
+      "required": ["items"],
+      "items_path": "items",
+      "expected_count": 5,
+      "count_tolerance": 0.7,
+      "must_include": ["管理员", "短信"],
+      "must_not_include": ["邮件", "支付"]
+    },
+    "recorded_output": {
+      "items": [
+        { "id": "R-11", "statement": "草稿可创建、查询、修改、删除", "source": { "quote": "草稿可创建、查询、修改、删除" } },
+        { "id": "R-12", "statement": "删除后不可恢复", "source": { "quote": "删除后不可恢复" } },
+        { "id": "R-13", "statement": "管理员可删除任意草稿，普通用户不得删除他人草稿", "source": { "quote": "管理员可删除任意草稿，普通用户不得删除他人草稿" } },
+        { "id": "R-14", "statement": "创建成功后列表需真实出现新草稿", "source": { "quote": "创建成功后列表需真实出现新草稿" } },
+        { "id": "R-15", "statement": "调用第三方短信服务失败时不得阻断创建", "source": { "quote": "调用第三方短信服务失败时不得阻断创建" } }
+      ]
+    }
+  },
+  {
+    "id": "REQ-04",
+    "input": { "text": "搜索框输入关键字后展示匹配结果，响应要尽量快。结果为空时展示空状态文案。" },
+    "expect": {
+      "required": ["items"],
+      "items_path": "items",
+      "expected_count": 2,
+      "count_tolerance": 0.7,
+      "must_include": ["尽量快"],
+      "must_not_include": ["退款", "订单"]
+    },
+    "recorded_output": {
+      "items": [
+        { "id": "R-21", "statement": "搜索框输入关键字后展示匹配结果，响应要尽量快（存在不可测表述，需澄清时延上限）", "source": { "quote": "搜索框输入关键字后展示匹配结果，响应要尽量快" } },
+        { "id": "R-22", "statement": "结果为空时展示空状态文案", "source": { "quote": "结果为空时展示空状态文案" } }
+      ]
+    }
+  },
+  {
+    "id": "REQ-05",
+    "input": { "text": "预算区间为 0-120；超出范围拒绝保存并提示上限。状态仅允许 draft 与 published 两种。" },
+    "expect": {
+      "required": ["items"],
+      "items_path": "items",
+      "expected_count": 2,
+      "count_tolerance": 0.7,
+      "must_include": ["0-120", "draft"],
+      "must_not_include": ["archived"]
+    },
+    "recorded_output": {
+      "items": [
+        { "id": "R-31", "statement": "预算区间为 0-120，超出范围拒绝保存并提示上限", "source": { "quote": "预算区间为 0-120；超出范围拒绝保存并提示上限" } },
+        { "id": "R-32", "statement": "状态仅允许 draft 与 published 两种", "source": { "quote": "状态仅允许 draft 与 published 两种" } }
+      ]
+    }
+  },
+  {
+    "id": "REQ-06",
+    "input": { "text": "删除草稿时需二次确认；取消确认不执行删除。删除成功后返回列表页。" },
+    "expect": {
+      "required": ["items"],
+      "items_path": "items",
+      "expected_count": 3,
+      "count_tolerance": 0.7,
+      "must_include": ["二次确认"],
+      "must_not_include": ["批量删除", "回收站"]
+    },
+    "recorded_output": {
+      "items": [
+        { "id": "R-41", "statement": "删除草稿时需二次确认", "source": { "quote": "删除草稿时需二次确认" } },
+        { "id": "R-42", "statement": "取消确认不执行删除", "source": { "quote": "取消确认不执行删除" } },
+        { "id": "R-43", "statement": "删除成功后返回列表页", "source": { "quote": "删除成功后返回列表页" } }
+      ]
+    }
+  }
+]

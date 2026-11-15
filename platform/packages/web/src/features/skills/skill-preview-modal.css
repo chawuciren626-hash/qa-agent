@@ -1,0 +1,4 @@
+.skill-preview-info{font-size:13px;line-height:1.8}
+.skill-preview-info>p{margin-bottom:14px;white-space:pre-wrap}
+.skill-preview-id{color:var(--qa-secondary,var(--ad-muted,#8f959e));font-size:11px;overflow-wrap:anywhere}
+.skill-preview-export{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0}
