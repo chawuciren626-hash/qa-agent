@@ -43,7 +43,6 @@ import { CompanyProvider } from "./state/company";
 import { AppLayout } from "./components/layout/app-layout";
 import { IntegratedAccountPage } from "./pages/integrated-account";
 import { LoginPage } from "./pages/login";
-import { LocalWorkspacePage } from "./pages/local-workspace";
 import { ChatPage } from "./features/chat/chat-page";
 import { QaSectionPage } from "./features/qa/workspace-ui";
 import { QaProjectView } from "./features/qa/project-view";
@@ -186,8 +185,12 @@ function RootFrame() {
   );
 }
 
-function appRoutes(admin = false, accountCenter = false) {
-  if (accountCenter && !admin) return createRoutesFromElements(<Route element={<RootFrame />}><Route path="*" element={<LocalWorkspacePage />} /></Route>);
+/**
+ * 路由树：客户端（桌面壳与 web 同构）与完整平台共用同一棵树。
+ * 登录默认进项目管理页（/qa/projects），点「进入」切到项目工作区（/qa/project）；
+ * admin 以用户身份进入同一棵树（allowedModule 对 isAdmin 直接放行），管理后台保留在 /admin。
+ */
+function appRoutes(admin = false) {
   return createRoutesFromElements(
     <Route element={<RootFrame />}>
       <Route path="/login" element={admin ? <AdminLogin /> : <LoginRoute />} />
@@ -278,10 +281,10 @@ function appRoutes(admin = false, accountCenter = false) {
  */
 let browserRouter: ReturnType<typeof createBrowserRouter> | null = null;
 
-export function AppRouter({ initialPath, accountCenter = false }: { initialPath?: string; accountCenter?: boolean } = {}) {
+export function AppRouter({ initialPath }: { initialPath?: string } = {}) {
   const [router] = useState(() =>
     initialPath === undefined
-      ? (browserRouter ??= createBrowserRouter(appRoutes(location.pathname.startsWith("/admin"), accountCenter), {basename:location.pathname.startsWith("/admin")?"/admin":location.pathname.startsWith("/user")?"/user":"/"}))
+      ? (browserRouter ??= createBrowserRouter(appRoutes(location.pathname.startsWith("/admin")), {basename:location.pathname.startsWith("/admin")?"/admin":location.pathname.startsWith("/user")?"/user":"/"}))
       : createMemoryRouter(appRoutes(), { initialEntries: [initialPath] }),
   );
   return <RouterProvider router={router} />;
