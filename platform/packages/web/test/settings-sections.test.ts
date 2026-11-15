@@ -50,7 +50,11 @@ describe("visibleSettingsSections", () => {
     expect(visibleSettingsSections({ isAdmin: true, desktopMode: true, sessionVia: "desktop", accountClient: true }).map(s => s.key)).toContain("account");
   });
   it("keeps central personal settings without mounting local workspace or execution settings", () => {
-    expect(visibleSettingsSections({ isAdmin: true, desktopMode: false, sessionVia: "password", accountCenter: true }).map(s => s.key)).toEqual(["profile", "general", "appearance", "shortcuts", "account"]);
+    // 管理员在账号中心（客户端）多出「模型」页（WorkBuddy 式自定义模型，见 user-models-settings）。
+    expect(visibleSettingsSections({ isAdmin: true, desktopMode: false, sessionVia: "password", accountCenter: true }).map(s => s.key)).toEqual(["profile", "general", "appearance", "models", "shortcuts", "account"]);
+  });
+  it("hides the models page from a non-admin in the account center", () => {
+    expect(visibleSettingsSections({ isAdmin: false, desktopMode: false, sessionVia: "password", accountCenter: true }).map(s => s.key)).not.toContain("models");
   });
   it("gives a web admin every page, in rail order", () => {
     expect(admin.map((s) => s.key)).toEqual([

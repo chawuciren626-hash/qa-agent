@@ -1,0 +1,437 @@
+/**
+ * 设置 → 模型（WorkBuddy 式，账号中心客户端形态）。
+ *
+ * 两个卡片（对照 WorkBuddy 的模型设置页）：
+ * 1. 自定义模型 — 模型列表（添加 / 编辑 / 删除），保存进管理模型目录
+ *    （central-model-catalog，复用 modelsRoutes 全套 API），会话页与测试任务即可直接选用；
+ * 2. 辅助任务模型 — 单选下拉，写入用户偏好（ui_prefs.aux_model），不影响主对话模型。
+ *
+ * 「添加模型」弹窗对照 WorkBuddy：供应商（预设清单 + 自定义，仅 OpenAI 兼容协议）、
+ * 接口地址、API Key + 测试连接、模型名称、高级配置（图片输入、协议、输入/输出限额）。
+ * 连接信息（baseUrl / API Key / 协议）写入供应商组（[providers.<id>]），模型信息写入
+ * 模型条目；一条「模型」在目录里 = 供应商组 + 该组下的一个 model_id。
+ *
+ * 权限：管理目录仅管理员可写（central-model-config 的 admin_required），账号中心客户端的
+ * 实际使用者就是管理员；models section 对非管理员保持隐藏（见 settings-sections.ts）。
+ */
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ChangeEvent, ReactNode } from "react";
+import {
+  Button,
+  Modal,
+  PrefRow,
+  Select,
+  SettingsGroup,
+  buttonClass,
+  toastSuccess,
+} from "@prismshadow/penguin-ui";
+import * as api from "../../api/endpoints";
+import type { ModelInfo, ModelUpdateEntry, ModelsResponse, ProviderConnectionUpdate } from "@prismshadow/penguin-server/api";
+
+/** 供应商预设：选中即填默认接口地址（可改），provider id 沿用预设 id。 */
+const PROVIDER_PRESETS: ReadonlyArray<{ id: string; name: string; baseUrl: string }> = [
+  { id: "deepseek", name: "深度求索", baseUrl: "https://api.deepseek.com/v1" },
+  { id: "moonshot", name: "Kimi 中国版", baseUrl: "https://api.moonshot.cn/v1" },
+  { id: "minimax", name: "MiniMax 中国版", baseUrl: "https://api.minimaxi.chat/v1" },
+  { id: "zhipu", name: "智谱开放平台", baseUrl: "https://open.bigmodel.cn/api/paas/v4" },
+  { id: "tokenhub", name: "腾讯云 TokenHub", baseUrl: "https://api.tokenhub.cn/v1" },
+];
+const CUSTOM_PROVIDER = "__custom__";
+
+/** 协议档位：空 = 跟随供应商默认（server 按端点探测）。 */
+const CLIENT_TYPES: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "", label: "跟随供应商默认" },
+  { value: "openai-chat", label: "OpenAI 兼容 (chat)" },
+  { value: "openai-responses", label: "OpenAI Responses" },
+  { value: "ant-messages", label: "自定义协议 (messages)" },
+];
+
+const CONTEXT_CHOICES = ["", "32000", "64000", "128000", "256000", "1000000"];
+const OUTPUT_CHOICES = ["", "8000", "16000", "32000", "64000"];
+
+const numberOrNull = (raw: string): number | undefined => {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : undefined;
+};
+
+/** 目录条目 → 全表替换请求行（凭据永不回传，省略 = 保留原值）。 */
+const toUpdateEntry = (model: ModelInfo): ModelUpdateEntry => ({
+  provider: model.provider,
+  modelId: model.modelId,
+  ...(model.displayName !== undefined ? { displayName: model.displayName } : {}),
+  ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
+  ...(model.maxTokens !== undefined ? { maxTokens: model.maxTokens } : {}),
+  ...(model.vision !== undefined ? { vision: model.vision } : {}),
+  ...(model.clientType !== undefined && model.clientType !== "" ? { clientType: model.clientType } : {}),
+});
+
+interface DraftState {
+  editRef: { provider: string; modelId: string } | null;
+  presetId: string;
+  providerName: string;
+  baseUrl: string;
+  apiKey: string;
+  modelId: string;
+  displayName: string;
+  vision: boolean;
+  clientType: string;
+  /** 编辑时目录里已存的协议（行级或组级生效值）：保存时仅在该字段变化时提交，避免意外清掉组级覆盖。 */
+  originalClientType: string;
+  contextWindow: string;
+  maxTokens: string;
+}
+
+const emptyDraft = (): DraftState => ({
+  editRef: null,
+  presetId: PROVIDER_PRESETS[0]?.id ?? CUSTOM_PROVIDER,
+  providerName: "",
+  baseUrl: PROVIDER_PRESETS[0]?.baseUrl ?? "",
+  apiKey: "",
+  modelId: "",
+  displayName: "",
+  vision: false,
+  clientType: "",
+  originalClientType: "",
+  contextWindow: "",
+  maxTokens: "",
+});
+
+const rowLabel = (model: ModelInfo) =>
+  model.displayName && model.displayName !== model.modelId ? `${model.displayName} · ${model.modelId}` : model.modelId;
+
+export function UserModelsSettings() {
+  const [response, setResponse] = useState<ModelsResponse | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [auxModel, setAuxModel] = useState<{ provider: string; modelId: string } | null>(null);
+  const [dialog, setDialog] = useState<DraftState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    try {
+      const [models, prefs] = await Promise.all([
+        api.getModels(api.CENTRAL_MODEL_CATALOG_ID, null),
+        api.getPrefs().catch(() => null),
+      ]);
+      setResponse(models);
+      setLoadError(null);
+      setAuxModel(prefs?.prefs?.aux_model ?? null);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "模型目录读取失败，请稍后重试。");
+    }
+  }, []);
+
+  useEffect(() => { void reload(); }, [reload]);
+
+  const models = useMemo(() => response?.models ?? [], [response]);
+  const providerNames = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const preset of PROVIDER_PRESETS) names.set(preset.id, preset.name);
+    for (const [id, group] of Object.entries(response?.providers ?? {})) {
+      if (group.displayName?.trim()) names.set(id, group.displayName.trim());
+    }
+    for (const model of models) if (!names.has(model.provider)) names.set(model.provider, model.provider);
+    return names;
+  }, [response, models]);
+
+  const openAdd = () => { setTestResult(null); setDialog(emptyDraft()); };
+  const openEdit = (model: ModelInfo) => {
+    setTestResult(null);
+    const preset = PROVIDER_PRESETS.find((item) => item.id === model.provider);
+    setDialog({
+      editRef: { provider: model.provider, modelId: model.modelId },
+      presetId: preset ? preset.id : CUSTOM_PROVIDER,
+      providerName: model.provider,
+      baseUrl: model.effective?.baseUrl ?? response?.providers?.[model.provider]?.baseUrl ?? preset?.baseUrl ?? "",
+      apiKey: "",
+      modelId: model.modelId,
+      displayName: model.displayName ?? "",
+      vision: model.vision !== false,
+      clientType: model.clientType ?? "",
+      originalClientType: model.clientType ?? "",
+      contextWindow: model.contextWindow !== undefined ? String(model.contextWindow) : "",
+      maxTokens: model.maxTokens !== undefined ? String(model.maxTokens) : "",
+    });
+  };
+
+  const patchDialog = (patch: Partial<DraftState>) => setDialog((current) => current === null ? null : { ...current, ...patch });
+
+  const pickPreset = (presetId: string) => {
+    if (presetId === CUSTOM_PROVIDER) {
+      patchDialog({ presetId, baseUrl: "", providerName: dialog?.providerName || "" });
+      return;
+    }
+    const preset = PROVIDER_PRESETS.find((item) => item.id === presetId);
+    patchDialog({ presetId, baseUrl: preset?.baseUrl ?? "", providerName: "" });
+  };
+
+  const draftProvider = dialog === null ? "" : dialog.presetId === CUSTOM_PROVIDER ? (dialog.providerName.trim() || "custom") : dialog.presetId;
+
+  const runTest = async () => {
+    if (dialog === null) return;
+    if (!dialog.modelId.trim() || (dialog.presetId === CUSTOM_PROVIDER && !dialog.baseUrl.trim())) {
+      setTestResult("请先填写模型名称" + (dialog.presetId === CUSTOM_PROVIDER ? "和接口地址。" : "。"));
+      return;
+    }
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await api.testModel(api.CENTRAL_MODEL_CATALOG_ID, {
+        provider: draftProvider,
+        modelId: dialog.modelId.trim(),
+        ...(dialog.apiKey ? { apiKey: dialog.apiKey } : {}),
+        ...(dialog.baseUrl.trim() ? { baseUrl: dialog.baseUrl.trim() } : {}),
+        ...(dialog.clientType ? { clientType: dialog.clientType } : {}),
+      });
+      setTestResult(result.ok === false ? `连接未通过：${result.message ?? "请检查地址与密钥。"}` : "连接通过。");
+    } catch (error) {
+      setTestResult(error instanceof Error ? error.message : "连接测试失败。");
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const saveDialog = async () => {
+    if (dialog === null || busy) return;
+    const modelId = dialog.modelId.trim();
+    const baseUrl = dialog.baseUrl.trim();
+    if (!modelId) return;
+    if (dialog.presetId === CUSTOM_PROVIDER && !baseUrl) return;
+    setBusy(true);
+    try {
+      const provider = draftProvider;
+      const connection: ProviderConnectionUpdate = { baseUrl: baseUrl || null };
+      if (dialog.apiKey) connection.apiKey = dialog.apiKey;
+      // 协议仅在用户改动时提交：空值传 null 表示显式清掉组级覆盖（回到跟随供应商默认）。
+      if (dialog.clientType !== dialog.originalClientType) {
+        connection.clientType = dialog.clientType === "" ? null : dialog.clientType;
+      }
+      if (dialog.presetId === CUSTOM_PROVIDER && dialog.providerName.trim()) {
+        connection.displayName = dialog.providerName.trim();
+      }
+      await api.putProviderConnection(api.CENTRAL_MODEL_CATALOG_ID, provider, connection);
+
+      const rows = models
+        .filter((model) => dialog.editRef === null || !(model.provider === dialog.editRef.provider && model.modelId === dialog.editRef.modelId))
+        .map(toUpdateEntry);
+      rows.push({
+        provider,
+        modelId,
+        displayName: dialog.displayName.trim() || undefined,
+        contextWindow: numberOrNull(dialog.contextWindow),
+        maxTokens: numberOrNull(dialog.maxTokens),
+        vision: dialog.vision ? undefined : false,
+        ...(dialog.editRef !== null && (dialog.editRef.provider !== provider || dialog.editRef.modelId !== modelId)
+          ? { renamedFrom: dialog.editRef }
+          : {}),
+      });
+      await api.putModels(api.CENTRAL_MODEL_CATALOG_ID, { models: rows });
+      setDialog(null);
+      toastSuccess(dialog.editRef === null ? "模型已添加。" : "模型已更新。");
+      await reload();
+    } catch (error) {
+      setTestResult(error instanceof Error ? error.message : "保存失败，请稍后重试。");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeModel = async (model: ModelInfo) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const rows = models
+        .filter((item) => !(item.provider === model.provider && item.modelId === model.modelId))
+        .map(toUpdateEntry);
+      await api.putModels(api.CENTRAL_MODEL_CATALOG_ID, { models: rows });
+      if (auxModel?.provider === model.provider && auxModel.modelId === model.modelId) {
+        await api.putPrefs({ aux_model: null });
+        setAuxModel(null);
+      }
+      toastSuccess("模型已删除。");
+      await reload();
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "删除失败，请稍后重试。");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pickAux = async (event: ChangeEvent<HTMLSelectElement>) => {
+    const raw = event.target.value;
+    const [provider = "", modelId = ""] = raw === "" ? ["", ""] : raw.split("\u0000");
+    const next = raw === "" ? null : provider && modelId ? { provider, modelId } : null;
+    setAuxModel(next);
+    try {
+      await api.putPrefs({ aux_model: next });
+    } catch {
+      setAuxModel(auxModel);
+    }
+  };
+
+  const auxKey = auxModel === null ? "" : `${auxModel.provider}\u0000${auxModel.modelId}`;
+
+  return (
+    <div className="flex flex-col gap-6">
+      {loadError !== null && (
+        <p className="text-sm text-red-600" role="alert">{loadError}</p>
+      )}
+
+      <section>
+        <div className="mb-2 flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-semibold">自定义模型</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              模型添加后会保存到平台模型目录，会话与测试任务可直接选用（仅支持 OpenAI 兼容协议 API）。
+            </p>
+          </div>
+          <Button onClick={openAdd}>添加模型</Button>
+        </div>
+        <div className="divide-y divide-line-muted rounded-lg border border-line-muted">
+          {models.length === 0 && (
+            <p className="px-4 py-6 text-center text-sm text-muted-foreground">还没有模型。点击「添加模型」接入你的第一个模型。</p>
+          )}
+          {models.map((model) => (
+            <div key={`${model.provider}\u0000${model.modelId}`} className="flex items-center justify-between gap-3 px-4 py-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{rowLabel(model)}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">{providerNames.get(model.provider) ?? model.provider}{model.isDefault ? " · 默认" : ""}</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <button type="button" className={buttonClass("ghost", "sm")} onClick={() => openEdit(model)} aria-label={`编辑 ${rowLabel(model)}`}>编辑</button>
+                <button type="button" className={buttonClass("ghost", "sm")} disabled={busy} onClick={() => void removeModel(model)} aria-label={`删除 ${rowLabel(model)}`}>删除</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <SettingsGroup title="辅助任务模型">
+        <PrefRow
+          label="选择模型"
+          info="用于增强提示词、生成标题、会话摘要、记忆筛选等辅助任务，不影响主对话所用的模型。"
+        >
+          <Select value={auxKey} onChange={(event) => void pickAux(event)} aria-label="辅助任务模型">
+            <option value="">默认（推荐）</option>
+            {models.map((model) => (
+              <option key={`${model.provider}\u0000${model.modelId}`} value={`${model.provider}\u0000${model.modelId}`}>
+                {rowLabel(model)}
+              </option>
+            ))}
+          </Select>
+        </PrefRow>
+      </SettingsGroup>
+
+      {dialog !== null && (
+        <Modal open title={dialog.editRef === null ? "添加模型" : "编辑模型"} onClose={() => setDialog(null)} widthClass="sm:max-w-xl">
+          <div className="flex flex-col gap-4">
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="font-medium">供应商<span className="ml-1 text-xs font-normal text-muted-foreground">（仅支持 OpenAI 兼容协议 API）</span></span>
+              <Select value={dialog.presetId} onChange={(event) => pickPreset(event.target.value)} aria-label="供应商">
+                {PROVIDER_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>{preset.name}</option>
+                ))}
+                <option value={CUSTOM_PROVIDER}>自定义</option>
+              </Select>
+            </label>
+
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="font-medium">接口地址</span>
+              <input
+                type="text"
+                className="w-full rounded-md border border-line-muted bg-transparent px-3 py-2 text-sm"
+                placeholder="https://api.example.com/v1/chat/completions"
+                value={dialog.baseUrl}
+                onChange={(event) => patchDialog({ baseUrl: event.target.value })}
+              />
+            </label>
+
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="font-medium">API Key</span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="password"
+                  className="min-w-0 flex-1 rounded-md border border-line-muted bg-transparent px-3 py-2 text-sm"
+                  placeholder={dialog.editRef === null ? "输入你的 API Key" : "留空保留已保存的密钥"}
+                  value={dialog.apiKey}
+                  onChange={(event) => patchDialog({ apiKey: event.target.value })}
+                />
+                <Button disabled={testing} onClick={() => void runTest()}>{testing ? "测试中…" : "测试连接"}</Button>
+              </div>
+            </label>
+
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="font-medium">模型名称</span>
+              <input
+                type="text"
+                className="w-full rounded-md border border-line-muted bg-transparent px-3 py-2 text-sm"
+                placeholder="输入模型参数值，例如 deepseek-chat 或 gpt-4o"
+                value={dialog.modelId}
+                onChange={(event) => patchDialog({ modelId: event.target.value })}
+              />
+            </label>
+
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="font-medium">显示名称 <span className="text-xs font-normal text-muted-foreground">（可选）</span></span>
+              <input
+                type="text"
+                className="w-full rounded-md border border-line-muted bg-transparent px-3 py-2 text-sm"
+                placeholder="列表里展示的名字，例如 DeepSeek-V4 Pro"
+                value={dialog.displayName}
+                onChange={(event) => patchDialog({ displayName: event.target.value })}
+              />
+            </label>
+
+            <fieldset className="rounded-md border border-line-muted p-3">
+              <legend className="px-1 text-sm font-medium">高级配置</legend>
+              <div className="flex flex-col gap-3 pt-2">
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={dialog.vision} onChange={(event) => patchDialog({ vision: event.target.checked })} />
+                  图片输入
+                </label>
+                <PrefRow label="协议">
+                  <Select value={dialog.clientType} onChange={(event) => patchDialog({ clientType: event.target.value })} aria-label="协议">
+                    {CLIENT_TYPES.map((item) => (
+                      <option key={item.value} value={item.value}>{item.label}</option>
+                    ))}
+                  </Select>
+                </PrefRow>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="flex flex-col gap-1.5 text-sm">
+                    <span className="font-medium">输入 <span className="text-xs font-normal text-muted-foreground">（上下文窗口）</span></span>
+                    <Select value={dialog.contextWindow} onChange={(event) => patchDialog({ contextWindow: event.target.value })} aria-label="输入限额">
+                      {CONTEXT_CHOICES.map((value) => (
+                        <option key={value || "default"} value={value}>{value === "" ? "使用供应商默认值" : value}</option>
+                      ))}
+                    </Select>
+                  </label>
+                  <label className="flex flex-col gap-1.5 text-sm">
+                    <span className="font-medium">输出</span>
+                    <Select value={dialog.maxTokens} onChange={(event) => patchDialog({ maxTokens: event.target.value })} aria-label="输出限额">
+                      {OUTPUT_CHOICES.map((value) => (
+                        <option key={value || "default"} value={value}>{value === "" ? "使用供应商默认值" : value}</option>
+                      ))}
+                    </Select>
+                  </label>
+                </div>
+              </div>
+            </fieldset>
+
+            {testResult !== null && (
+              <p className={`text-sm ${testResult.startsWith("连接通过") ? "text-emerald-600" : "text-amber-600"}`} role="status">{testResult}</p>
+            )}
+          </div>
+          <div className="mt-5 flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setDialog(null)}>取消</Button>
+            <Button disabled={busy || !dialog.modelId.trim() || (dialog.presetId === CUSTOM_PROVIDER && !dialog.baseUrl.trim())} onClick={() => void saveDialog()}>
+              {busy ? "保存中…" : "保存"}
+            </Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}

@@ -70,7 +70,9 @@ const SECTION_RULES: ReadonlyArray<SettingsSection & { visible(viewer: SettingsV
     { key: "profile", group: "personal", visible: () => true },
     { key: "general", group: "personal", visible: () => true },
     { key: "appearance", group: "personal", visible: () => true },
-    { key: "models", group: "personal", visible: (v) => !v.accountCenter },
+    // 模型设置：完整平台沿用模型库页；账号中心（客户端）对管理员开放 WorkBuddy 式
+    // 自定义模型页（user-models-settings），非管理员仍隐藏（目录写入需要管理员权限）。
+    { key: "models", group: "personal", visible: (v) => !v.accountCenter || v.isAdmin },
     // Keyboard shortcuts are the account's, and apply in every session of it.
     { key: "shortcuts", group: "personal", visible: () => true },
     // The conversations not in the sidebar — archived by hand, or opened by a program and not
@@ -99,7 +101,7 @@ const SECTION_RULES: ReadonlyArray<SettingsSection & { visible(viewer: SettingsV
 
 /** The pages this viewer may open, in rail order. */
 export function visibleSettingsSections(viewer: SettingsViewer): readonly SettingsSection[] {
-  return SECTION_RULES.filter((section) => section.visible(viewer) && (!viewer.accountCenter || ["profile", "general", "appearance", "shortcuts", "account"].includes(section.key))).map(({ key, group }) => ({
+  return SECTION_RULES.filter((section) => section.visible(viewer) && (!viewer.accountCenter || ["profile", "general", "appearance", "models", "shortcuts", "account"].includes(section.key))).map(({ key, group }) => ({
     key,
     group,
   }));

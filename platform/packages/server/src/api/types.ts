@@ -405,6 +405,11 @@ export interface StoredKeybindings {
 export interface UiPrefs {
   theme?: "light" | "dark";
   lastProjectId?: string;
+  /**
+   * 辅助任务模型（设置→模型页）：null = 跟随主对话模型（默认）；否则为模型目录里的一个
+   * (provider, modelId) 引用。供标题、摘要等辅助任务调用读取；引擎侧接线前仅作配置存储。
+   */
+  aux_model?: { provider: string; modelId: string } | null;
   /** Whether the "no API key configured" guide has already been shown: once ever (on first visit to the chat page). */
   credentialGuideSeen?: boolean;
   /** The initial-password notice banner (app layout) was permanently dismissed by the user. */

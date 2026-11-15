@@ -43,6 +43,7 @@ import { AgentApiSection } from "./agent-api-section";
 import { PluginsSection } from "./plugins-section";
 import { AdminUsersSection } from "../admin/admin-users-page";
 import { ModelsPage } from "../models/models-page";
+import { UserModelsSettings } from "../models/user-models-settings";
 
 /** Rail glyphs (see NAV_ICONS' conventions). */
 const SECTION_ICONS: Record<SettingsSectionKey, string> = {
@@ -184,7 +185,7 @@ export function SettingsDialog({
       {current === "profile" && <ProfileSection />}
       {current === "general" && <GeneralSection workspace={!accountCenter} {...(!accountCenter ? { onOpenUpdates: () => { requestClose(); openAppInfo(); } } : {})} />}
       {current === "appearance" && <AppearanceSection />}
-      {current === "models" && <ModelsPage embedded />}
+      {current === "models" && (accountCenter ? <UserModelsSettings /> : <ModelsPage embedded />)}
       {current === "shortcuts" && <ShortcutsSection />}
       {current === "archived" && <ArchivedSessionsSection />}
       {current === "account" && <AccountSection canChangePassword={offersChangePassword({ desktopMode, sessionVia })} />}
