@@ -2,7 +2,15 @@
 
 AITestHarness 是基于 [PenguinHarness](https://github.com/Prism-Shadow/penguin-harness) 的软件测试智能体应用。用户在项目中提交需求或测试目标，由总控协调需求分析、测试点、用例设计、测试执行、缺陷分析和测试报告等专业智能体。项目视图集中查看任务进度、阶段结果、用例、缺陷与报告。
 
-> **当前处于开发和预览阶段。** 本仓库的 `develop` 源码、本机受控同步的运行版、GitHub Release 安装包是三个不同状态。源码中出现的功能不代表已进入公开安装包，也不代表已通过真实业务验收。
+> **当前处于开发和预览阶段。** `main` 是当前活跃开发分支（2026-11-15 已按 B1~B12 重构批次全量重置）；`develop` 为历史分支，不再同步更新。源码中出现的功能不代表已进入公开安装包，也不代表已通过真实业务验收。
+
+## 近期落地（2026-11-15，B1~B12 重构批次）
+
+- **IR 契约 v1.1**：阶段产物结构契约升级，新增 `expected[].source/state` 与 `exec.verdict_cap`（预期溯源与判定上限）；配套 irval 校验器 114 条用例全通过。
+- **质量防线**：数据生命周期审计（UNDECLARED_DATASET / PERSISTENT_MUTATED 等 5 类违规码）、确认卡点三层（内容指纹 diff → 确定性抽样 → 风险分级强制）落地。
+- **一致性验收**：M1 同源一致性达到 `ready_pending_manual`（3 次真实执行 + duration 落地验证；剩余人工比对项见 `docs/m1-consistency-acceptance.md`）。
+- **后台注册表**：管理员端工具注册表扩至 **33 条**（含 `login.captcha_chain` 登录与验证码策略链），全部启用。
+- **测试基线**：仓库 CI 1149 条用例 0 失败（11 条平台限制 skip，均注明缺失条件）；irval 冒烟 242 条全绿。
 
 ## 当前能力
 
@@ -14,15 +22,15 @@ AITestHarness 是基于 [PenguinHarness](https://github.com/Prism-Shadow/penguin
 
 系统会保留运行记录和历史产物。项目级缺陷状态与单次运行的缺陷产物目前是两套记录，统计范围不能混用；历史数据的自动对账仍待建设。
 
-## 版本与安装（截至 2026-11-03）
+## 版本与安装（截至 2026-11-15）
 
 | 状态 | 当前依据 | 说明 |
 | --- | --- | --- |
-| 开发源码 | `develop` 分支、`platform/upstream-source.json` | 集成的 PenguinHarness 源码版本为 **0.2.17**；开发中的功能需分别测试和部署。 |
+| 开发源码 | `main` 分支（活跃）、`platform/upstream-source.json` | 集成的 PenguinHarness 源码版本为 **0.2.17**；`develop` 为历史分支。 |
 | 维护者本机运行版 | `installation.json` 与 `aitest-source-runtime.json` | 统一目录安装，运行清单为 `mode: source`、上游 **0.2.17**。它是本机受控同步结果，不是发行安装包。 |
-| 发行打包配置 | `packaging/runtime-sources.json` | **0.1.0-preview.4 / PenguinHarness 0.2.16**。当前源码更新尚未重新制作并验收新的 Release 安装包。 |
+| 发行安装候选 | Actions artifact `windows-installation-candidate` | 由 `main`（`eb633c4`）经 **Windows installation candidate** 工作流构建（run [43670404119](https://github.com/chawuciren626-hash/qa-agent/actions/runs/43670404119)）。旧的 v0.1.0-preview.4 Release 已删除，正式 Release 尚未发布。 |
 
-已有 Windows x64 预览版可从 [v0.1.0-preview.4 Release](https://github.com/chawuciren626-hash/qa-agent/releases/tag/v0.1.0-preview.4) 获取；仓库为私有时需要相应访问权限。预览包内置运行所需宿主和工具，但不包含模型账号、额度或维护者的项目数据。下载后请以该 Release 的说明、校验文件和验收记录为准，不能用本页的开发能力清单推断预览包功能。
+安装候选包内置运行所需宿主和工具，但不包含模型账号、额度或维护者的项目数据。下载后请以 artifact 内的 RELEASE-NOTES、SHA256 与文件清单为准，不能用本页的开发能力清单推断安装包功能。`distribution_ready` 当前仍为 `false`：干净 Windows 验收、真实模型任务全流程验收等事项未完成，不应作为正式版本发布。
 
 安装器尚未签名。安装或升级前退出应用；升级须遵循[安装与恢复说明](packaging/README.md)，不要用上游 PenguinHarness 安装器覆盖本产品管理的宿主目录，也不要直接移动已初始化的安装目录。
 
@@ -64,6 +72,10 @@ pnpm --filter @prismshadow/penguin-web typecheck
 
 - [技术文档导航](docs/index.md)
 - [阶段与产物契约](docs/artifact-contracts.md)
+- [IR 契约规范 v1.1](docs/AITestHarness-IR契约规范-v1.md)（含缺省语义与 V-39/V-40 规则）
+- [架构重构方案 v3 与批次执行记录](docs/AITestHarness测试平台架构重构方案-v3.md)、[重构批次清单](docs/refactor-batches-v3.md)
+- [数据生命周期审计](docs/data-lifecycle.md)、[确认卡点](docs/confirm-gate.md)、[golden set 管理](docs/golden-set.md)
+- [M1 一致性验收](docs/m1-consistency-acceptance.md)
 - [工程测试与 CI](docs/engineering-tests-and-ci.md)
 - [安装包构建与恢复](packaging/README.md)
 - [凭据与数据保护](docs/credential-security.md)
