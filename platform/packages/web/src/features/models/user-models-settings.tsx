@@ -2,8 +2,12 @@
  * 设置 → 模型（WorkBuddy 式，账号中心客户端形态）。
  *
  * 两个卡片（对照 WorkBuddy 的模型设置页）：
- * 1. 自定义模型 — 模型列表（添加 / 编辑 / 删除），保存进管理模型目录
- *    （central-model-catalog，复用 modelsRoutes 全套 API），会话页与测试任务即可直接选用；
+ * 1. 自定义模型 — 模型列表（添加 / 编辑 / 删除）。保存目标不是某个项目，而是「用户全局」：
+ *    服务端在写入用户名下项目模型配置时自动发布一份按用户的全局模型配置文件
+ *    （<数据根>/.account-models/<用户hash>.json），并同步到该用户拥有的所有项目的
+ *    .project_config.toml；新建项目也会自动继承（project-service / project-config-service
+ *    的共享模型机制）。这里选取用户第一个「拥有（owner）」的项目作为写入入口，其余项目
+ *    由服务端自动同步；会话页与测试任务即可直接选用。
  * 2. 辅助任务模型 — 单选下拉，写入用户偏好（ui_prefs.aux_model），不影响主对话模型。
  *
  * 「添加模型」弹窗对照 WorkBuddy：供应商（预设清单 + 自定义，仅 OpenAI 兼容协议）、
@@ -11,8 +15,8 @@
  * 连接信息（baseUrl / API Key / 协议）写入供应商组（[providers.<id>]），模型信息写入
  * 模型条目；一条「模型」在目录里 = 供应商组 + 该组下的一个 model_id。
  *
- * 权限：管理目录仅管理员可写（central-model-config 的 admin_required），账号中心客户端的
- * 实际使用者就是管理员；models section 对非管理员保持隐藏（见 settings-sections.ts）。
+ * 权限：写入走项目模型 API（项目 owner 本来就有权配置），每个登录用户都可用；管理员登录
+ * 客户端与普通用户完全一致，models section 对所有用户可见（见 settings-sections.ts）。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
@@ -102,6 +106,8 @@ const rowLabel = (model: ModelInfo) =>
   model.displayName && model.displayName !== model.modelId ? `${model.displayName} · ${model.modelId}` : model.modelId;
 
 export function UserModelsSettings() {
+  /** 写入入口：用户拥有（owner）的第一个项目；其余项目由服务端共享模型机制自动同步。 */
+  const [projectId, setProjectId] = useState<string | null>(null);
   const [response, setResponse] = useState<ModelsResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [auxModel, setAuxModel] = useState<{ provider: string; modelId: string } | null>(null);
@@ -112,15 +118,22 @@ export function UserModelsSettings() {
 
   const reload = useCallback(async () => {
     try {
-      const [models, prefs] = await Promise.all([
-        api.getModels(api.CENTRAL_MODEL_CATALOG_ID, null),
-        api.getPrefs().catch(() => null),
-      ]);
+      const list = await api.listProjects();
+      const mine = list.projects.find((item) => item.role === "owner") ?? null;
+      if (mine === null) {
+        setProjectId(null);
+        setResponse(null);
+        setLoadError("请先在项目管理页创建一个项目，再回到这里配置模型（配置会自动同步到你名下的所有项目）。");
+        return;
+      }
+      setProjectId(mine.projectId);
+      const prefs = await api.getPrefs().catch(() => null);
+      const models = await api.getModels(mine.projectId, null);
       setResponse(models);
       setLoadError(null);
       setAuxModel(prefs?.prefs?.aux_model ?? null);
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "模型目录读取失败，请稍后重试。");
+      setLoadError(error instanceof Error ? error.message : "模型配置读取失败，请稍后重试。");
     }
   }, []);
 
@@ -179,7 +192,7 @@ export function UserModelsSettings() {
     setTesting(true);
     setTestResult(null);
     try {
-      const result = await api.testModel(api.CENTRAL_MODEL_CATALOG_ID, {
+      const result = await api.testModel(projectId ?? "", {
         provider: draftProvider,
         modelId: dialog.modelId.trim(),
         ...(dialog.apiKey ? { apiKey: dialog.apiKey } : {}),
@@ -212,7 +225,7 @@ export function UserModelsSettings() {
       if (dialog.presetId === CUSTOM_PROVIDER && dialog.providerName.trim()) {
         connection.displayName = dialog.providerName.trim();
       }
-      await api.putProviderConnection(api.CENTRAL_MODEL_CATALOG_ID, provider, connection);
+      await api.putProviderConnection(projectId ?? "", provider, connection);
 
       const rows = models
         .filter((model) => dialog.editRef === null || !(model.provider === dialog.editRef.provider && model.modelId === dialog.editRef.modelId))
@@ -228,7 +241,7 @@ export function UserModelsSettings() {
           ? { renamedFrom: dialog.editRef }
           : {}),
       });
-      await api.putModels(api.CENTRAL_MODEL_CATALOG_ID, { models: rows });
+      await api.putModels(projectId ?? "", { models: rows });
       setDialog(null);
       toastSuccess(dialog.editRef === null ? "模型已添加。" : "模型已更新。");
       await reload();
@@ -246,7 +259,7 @@ export function UserModelsSettings() {
       const rows = models
         .filter((item) => !(item.provider === model.provider && item.modelId === model.modelId))
         .map(toUpdateEntry);
-      await api.putModels(api.CENTRAL_MODEL_CATALOG_ID, { models: rows });
+      await api.putModels(projectId ?? "", { models: rows });
       if (auxModel?.provider === model.provider && auxModel.modelId === model.modelId) {
         await api.putPrefs({ aux_model: null });
         setAuxModel(null);
@@ -285,7 +298,8 @@ export function UserModelsSettings() {
           <div>
             <h3 className="text-sm font-semibold">自定义模型</h3>
             <p className="mt-1 text-xs text-muted-foreground">
-              模型添加后会保存到平台模型目录，会话与测试任务可直接选用（仅支持 OpenAI 兼容协议 API）。
+              模型添加后会自动写入全局模型配置文件，并同步到你名下的所有项目（含新建项目），
+              会话与测试任务可直接选用（仅支持 OpenAI 兼容协议 API）。
             </p>
           </div>
           <Button onClick={openAdd}>添加模型</Button>

@@ -70,9 +70,10 @@ const SECTION_RULES: ReadonlyArray<SettingsSection & { visible(viewer: SettingsV
     { key: "profile", group: "personal", visible: () => true },
     { key: "general", group: "personal", visible: () => true },
     { key: "appearance", group: "personal", visible: () => true },
-    // 模型设置：完整平台沿用模型库页；账号中心（客户端）对管理员开放 WorkBuddy 式
-    // 自定义模型页（user-models-settings），非管理员仍隐藏（目录写入需要管理员权限）。
-    { key: "models", group: "personal", visible: (v) => !v.accountCenter || v.isAdmin },
+    // 模型设置：WorkBuddy 式自定义模型页（user-models-settings）。写入走项目模型 API
+    // （项目 owner 本来就有权配置），服务端自动发布为按用户的全局共享模型并同步到该用户
+    // 名下所有项目——所以每个登录用户都能配置自己的模型，管理员与普通用户一致。
+    { key: "models", group: "personal", visible: () => true },
     // Keyboard shortcuts are the account's, and apply in every session of it.
     { key: "shortcuts", group: "personal", visible: () => true },
     // The conversations not in the sidebar — archived by hand, or opened by a program and not
