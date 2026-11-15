@@ -2,7 +2,7 @@ import {readFileSync,writeFileSync,copyFileSync,mkdirSync,existsSync,readdirSync
 import {resolve,dirname} from 'node:path';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {releaseResources} from '../scripts/check-release-resources.mjs';
+import {releaseResources,assertReleaseImportClosure} from '../scripts/check-release-resources.mjs';
 import {finalizeWindowsStage} from './finalize-windows.mjs';
 
 const root=resolve(import.meta.dirname,'..'),options={};
@@ -16,6 +16,7 @@ if(existsSync(options.stage))throw Error('Build staging directory already exists
 const stage=options.stage,engine=resolve(stage,'app/engine'),host=resolve(stage,'runtime/penguin'),toolsRoot=resolve(stage,'runtime/tools');
 const seven=resolve(options.tooling,'node_modules/7zip-bin/win/x64/7za.exe'),nodeSource=resolve(options.tooling,'node_modules/node-win-x64/bin/node.exe');
 const policy=JSON.parse(readFileSync(resolve(root,'config/release-resources.json'),'utf8'));releaseResources(root,policy);
+assertReleaseImportClosure(root,[...policy.files,'scripts/qa-project-bootstrap.mjs','scripts/trace-outcome.mjs','scripts/source-runtime.mjs']);
 function run(exe,args,env=process.env,cwd=root){return new Promise((done,reject)=>{const child=spawn(exe,args,{cwd,env,windowsHide:true,stdio:'inherit'});child.once('error',reject);child.once('close',code=>code===0?done():reject(Error('Build step failed: '+exe+' (exit '+code+')')));});}
 const copy=(a,b)=>{mkdirSync(dirname(b),{recursive:true});copyFileSync(a,b);};
 mkdirSync(stage,{recursive:true});
