@@ -23,7 +23,8 @@ type Tool = {
 };
 type Category = { id: string; name: string; builtin: number };
 type AuditEntry = { action: string; actor: string; detail: string; createdAt: string };
-type ExecutionEntry = { at: string; runId: string | null; stage: string | null; receipt: string; implementationSha256: string | null };
+type ExecutionEntry = { at: string; runId: string | null; stage: string | null; receipt: string;
+  implementationSha256: string | null; status: string; action: string | null; input: unknown; output: unknown; summary: unknown };
 const base = "/api/control/tools/admin";
 const automaticStageChecks = new Set(["requirement.completeness", "testpoint.coverage", "expected.provenance", "regression.select", "defects.cluster", "coverage.split", "m1.consistency"]);
 
@@ -159,11 +160,13 @@ function Detail({ tool, close, edit }: { tool: Tool; close: () => void; edit: ()
           </>}
       <h3>参数契约</h3><pre>{pretty(tool.parameters)}</pre>
       <h3>返回结构</h3><pre>{pretty(tool.returns)}</pre>
-      <h3>最近实际执行</h3>
-      {executions.length === 0 ? <p className="at-muted">暂无实际执行回执。</p> : <ul className="at-audit">{executions.map(item =>
-        <li key={`${item.at}-${item.receipt}`}><strong>{item.stage ?? '未知阶段'}</strong><span>{item.runId ?? '未知 run'}</span>
-          <code>{item.receipt}</code><span>实现 {item.implementationSha256?.slice(0, 12) ?? '未知'}</span>
-          <time>{item.at.replace('T', ' ').slice(0, 19)}</time></li>)}</ul>}
+      <h3>最近阶段检查</h3>
+      {executions.length === 0 ? <p className="at-muted">暂无阶段检查回执。</p> : <ul className="at-audit">{executions.map(item =>
+        <li key={`${item.at}-${item.receipt}`}><strong>{item.status}</strong><span>{item.runId ?? '未知 run'} / {item.stage ?? '未知阶段'}</span>
+          <span>{item.action ?? '阶段工具'}</span><code>{item.receipt}</code>
+          <span>实现 {item.implementationSha256?.slice(0, 12) ?? '未知'}</span>
+          <time>{item.at.replace('T', ' ').slice(0, 19)}</time>
+          <pre>{pretty(JSON.stringify({ input: item.input, output: item.output, result: item.summary }))}</pre></li>)}</ul>}
       <h3>变更记录</h3>
       {entries.length === 0 ? <p className="at-muted">暂无记录</p> : <ul className="at-audit">{entries.map((item, index) => <li key={`${item.createdAt}-${index}`}><strong>{ACTION_LABEL[item.action] ?? item.action}</strong><span>{item.actor}</span>{item.detail && <span>{item.detail}</span>}<time>{item.createdAt.replace("T", " ").slice(0, 19)}</time></li>)}</ul>}
     </div>

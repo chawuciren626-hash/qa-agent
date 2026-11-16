@@ -783,6 +783,10 @@ test('invalid case source stops validation without increasing successful tool ca
   assert.equal(receipt.tool_checks?.[0]?.status, 'failed');
   assert.equal(receipt.tool_checks[0].tool_id, 'expected.provenance');
   assert.equal(readToolUsage(root).per_tool['expected.provenance'] ?? 0, before);
+  const checks=readFileSync(resolve(root,'output/runtime/tool-usage.jsonl'),'utf8').split('\n')
+    .map(line=>{try{return JSON.parse(line)}catch{return null}});
+  assert.ok(checks.some(row=>row?.kind==='check' && row.tool_id==='expected.provenance'
+    && row.run_id===f.run_id && row.status==='failed' && row.receipt===result.action_receipt));
 });
 
 test('analysis validation automatically records the completeness result', async () => {

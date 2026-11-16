@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node
 import { resolve } from 'node:path';
 import {
   TOOL_BINDINGS, STATE_PATH, USAGE_PATH,
-  gateAction, readRuntimeState, recordToolUsage, readToolUsage, bindingSummary,
+  gateAction, readRuntimeState, recordToolUsage, recordToolCheck, readToolUsage, bindingSummary,
 } from '../../scripts/tool-gate.mjs';
 import { inspectExpectedProvenance } from '../../scripts/artifact-contracts.mjs';
 
@@ -121,6 +121,9 @@ test('调用流水按 action 与工具聚合，坏行跳过', () => {
     recordToolUsage(root, 'dispatch', { tools: ['agent.contract', 'plan.phases'], degraded: ['regression.select'], receipt: 'audit/stage-tools/2.json' });
     recordToolUsage(root, 'browser_task', { tools: ['dom.snapshot'], receipt: 'audit/stage-tools/3.json' });
     recordToolUsage(root, 'read_source', { tools: [] });
+    recordToolCheck(root, 'validate_artifacts', {tool_id:'testpoint.coverage',status:'failed',
+      implementation:'scripts/test-point-diagnosis.mjs',input:{path:'design/test_points.json'},missing_rule_ids:['RULE-2']},
+      {receipt:'audit/action.json',runId:'run-1',stage:'test_points'});
     writeFileSync(path, '{"broken\n', { flag: 'a' });
     const usage = readToolUsage(root);
     assert.equal(usage.total, 3);
@@ -129,6 +132,10 @@ test('调用流水按 action 与工具聚合，坏行跳过', () => {
     assert.equal(usage.per_action.dispatch, 2);
     // 空工具的调用不落盘：记一行「什么都没用到」只是噪音。
     assert.equal(usage.per_action.read_source, undefined);
+    assert.equal(usage.per_tool['testpoint.coverage'], undefined, 'failed checks do not inflate successful calls');
+    const check=readFileSync(path,'utf8').split('\n').map(line=>{try{return JSON.parse(line)}catch{return null}})
+      .find(row=>row?.kind==='check' && row.tool_id==='testpoint.coverage');
+    assert.deepEqual(check.summary.missing_rule_ids,['RULE-2']);
   } finally { if (prior === null) rmSync(path, { force: true }); else writeFileSync(path, prior); }
 });
 

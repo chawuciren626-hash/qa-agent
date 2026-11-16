@@ -566,17 +566,21 @@ export function centralToolRoutes(store: ControlStore): Hono<AppEnv> {
     admin(c);
     const target = row(c.req.param("id"));
     if (!engineRoot() || !existsSync(usagePath())) return c.json({ entries: [] });
-    const entries: { at: string; runId: string | null; stage: string | null; receipt: string; implementationSha256: string | null }[] = [];
+    const entries: { at: string; runId: string | null; stage: string | null; receipt: string;
+      implementationSha256: string | null; status: string; action: string | null;
+      input: unknown; output: unknown; summary: unknown }[] = [];
     try {
       for (const line of readFileSync(usagePath(), "utf8").split("\n")) {
         if (!line.trim()) continue;
         let item: Record<string, unknown>;
         try { item = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-        if (item.kind !== "execution" || !Array.isArray(item.tools) || !item.tools.includes(target.name)
-          || typeof item.at !== "string" || typeof item.receipt !== "string") continue;
+        if (item.kind !== "check" || item.tool_id !== target.name || typeof item.at !== "string"
+          || typeof item.receipt !== "string" || typeof item.status !== "string") continue;
         entries.push({ at: item.at, runId: typeof item.run_id === "string" ? item.run_id : null,
           stage: typeof item.stage === "string" ? item.stage : null, receipt: item.receipt,
-          implementationSha256: typeof item.implementation_sha256 === "string" ? item.implementation_sha256 : null });
+          implementationSha256: typeof item.implementation_sha256 === "string" ? item.implementation_sha256 : null,
+          status: item.status, action: typeof item.action === "string" ? item.action : null,
+          input: item.input ?? null, output: item.output ?? null, summary: item.summary ?? null });
       }
     } catch { return c.json({ entries: [] }); }
     return c.json({ entries: entries.slice(-50).reverse() });

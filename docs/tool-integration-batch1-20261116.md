@@ -37,6 +37,8 @@
 
 测试点阶段在提交和交接时调用 `scripts/test-point-diagnosis.mjs` 对当前台账与测试点双向核查，缺失规则 ID 写入 `testpoint.coverage` Node 回执并阻止流转；后台停用该硬校验时相应验证与完成动作被拒绝。执行准备动作运行既有 `select-test-cases.mjs` 后记录 `regression.select` 的输入、策略和选集哈希，不能把“闸门放行”计为选集已生成。
 
+后台工具详情现可按最近 run 和阶段查看检查状态、动作、输入/输出哈希和安全摘要；检查失败、跳过及不适用也留在检查流水中，但成功调用计数只来自成功执行。回执路径可以进一步定位控制器的原始动作记录。该流水是可观察性记录，不代替 run 内阶段完成证据。
+
 实际 `browser_task.snapshot` 成功且浏览器证据回执绑定本次命令时，控制器记录 `dom.snapshot` 调用；同一 request_id 的重复读取不新增调用。缺陷阶段仅有真实失败结果时用 `defect-cluster.mjs` 生成展示分组，保留原缺陷单不变。报告阶段以封存结果运行 `consistency-report.mjs`，单次执行或无失败时保持 `unknown` / `not_applicable`，不得把 M1 诊断当成已达标。所有这些回执都注明 Node 实现，不冒充 Python v3 IR 工具。
 
 独立 task 的测试用例产物契约现也调用同一份 Node `expected.provenance` 实现；来源只限该 task 明确列出的 `source_paths`，并检查可选断言的确认状态，失败会阻断该 task 验证。需求完备性和报告覆盖度的自动检查仍只对具备相应完整台账及封存执行结果的 lifecycle 产物运行；不能把 lifecycle 的结果推断为所有独立任务也已覆盖。
@@ -65,7 +67,7 @@
 
 1. v3 IR 工具包与当前阶段 JSON 不是同一契约；`requirement.testability`、`plan.gates`、`report.reviewer` 等只有完整 IR 时才能调用。迁移旧产物为 v3 IR 是独立的契约升级工作，不能用空字段和模型臆造值伪适配。本批把这些标为 `ir_adapter_pending`，不宣称自动执行。
 2. `requirement.parse` / `knowledge.incremental` 的文档与链接来源适配、`testpoint.matrix` 的产品维度种子、`defect.evidence` 的真实 exec IR、回归影响的变更来源和 `release.probe` 的构建输入仍需相应场景的数据及接口。无触发条件时为不适用，不是遗漏执行。
-3. 管理后台列出最近成功执行回执及阶段，但按 run 展开完整工具结果和失败状态的页面尚待建设。
+3. 后台已展示最近阶段检查摘要；原始完整结果仍在 run 的动作或工具回执里，后台暂不直接展开包含潜在敏感数据的完整原始回执。
 4. 真实业务登录—新建测试用户—核对—删除测试用户验收需要用户后续提供环境；合成测试不能替代该验收。
 
 ## 已完成验证

@@ -177,6 +177,25 @@ export function recordToolUsage(root, action, { tools = [], degraded = [], recei
   }
 }
 
+// A separate diagnostic stream preserves failed/skipped/not-applicable checks
+// without inflating the successful invocation counter.
+export function recordToolCheck(root, action, check, { receipt = null, runId = null, stage = null } = {}) {
+  if (!check || typeof check.tool_id !== 'string' || typeof check.status !== 'string' || !receipt) return;
+  try {
+    const path = resolve(root, USAGE_PATH);
+    mkdirSync(dirname(path), { recursive: true });
+    const summary = Object.fromEntries(['available', 'score', 'denominator', 'coverage_counts', 'missing_rule_ids',
+      'located', 'not_recorded', 'verified', 'designed', 'executed', 'assigned_only', 'coverage_rate',
+      'selected', 'excluded', 'stats', 'overall', 'merge_safety', 'error_code'].filter(key => check[key] !== undefined)
+      .map(key => [key, check[key]]));
+    const row = { kind: 'check', at: new Date().toISOString(), action, tool_id: check.tool_id,
+      status: check.status, run_id: runId, stage, receipt, implementation: check.implementation ?? null,
+      implementation_sha256: check.implementation_sha256 ?? null, input: check.input ?? null,
+      output: check.output ?? null, summary };
+    appendFileSync(path, `${JSON.stringify(row)}\n`);
+  } catch { /* Observability must not mutate the business result. */ }
+}
+
 /** 读回调用流水并聚合，供管理后台展示。坏行直接跳过，不让一行烂数据带崩整张表。 */
 export function readToolUsage(root, { since = null } = {}) {
   const path = resolve(root, USAGE_PATH);

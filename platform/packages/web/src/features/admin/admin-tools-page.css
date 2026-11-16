@@ -82,7 +82,8 @@
 .at-detail h3{margin:20px 0 8px;font-size:13px;font-weight:600}
 .at-detail pre{max-height:220px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;border-radius:8px;background:var(--ad-card-2,#f4f5f6);font-size:12px}
 .at-audit{display:flex;flex-direction:column;gap:6px;font-size:12px}
-.at-audit li{display:flex;gap:10px;align-items:baseline;color:var(--ad-secondary,#646a73)}
+.at-audit li{display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;color:var(--ad-secondary,#646a73)}
+.at-audit li pre{flex-basis:100%;margin:2px 0 6px}
 .at-audit strong{flex:none;min-width:64px;color:var(--ad-text,#1f2329)}
 .at-audit time{margin-left:auto;flex:none;color:var(--ad-muted,#8f959e);font-size:11px}
 .at-audit code{min-width:0;overflow-wrap:anywhere}

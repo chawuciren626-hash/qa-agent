@@ -20,7 +20,7 @@ import { previewDraftRevision, reviseDraftStage, draftStageFiles } from './draft
 import { diagnoseTestPoints } from './test-point-diagnosis.mjs';
 import { diagnoseTestCases } from './test-case-diagnosis.mjs';
 import { revisedDispatchId } from './recovery-policy.mjs';
-import { gateAction, recordToolUsage } from './tool-gate.mjs';
+import { gateAction, recordToolUsage, recordToolCheck } from './tool-gate.mjs';
 import { runStageTool, stageToolCatalog, stageToolReceipts } from './stage-tool-runtime.mjs';
 import { stageScenarioPrompt } from './stage-tool-scenarios.mjs';
 import { recordTrace } from './trace.mjs';
@@ -507,6 +507,10 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
         receipt.tool_implementation_sha256 = result.implementation_sha256;
         recordToolUsage(root, parsed.action, { tools: tracedTools, receipt: result.tool_receipt,
           runId: parsed.run_id, stage: parsed.stage, implementationSha256: result.implementation_sha256 });
+        recordToolCheck(root, parsed.action, {tool_id:parsed.tool_id,status:'completed',
+          implementation:stageToolCatalog(parsed.stage).find(item=>item.id===parsed.tool_id)?.implementation,
+          implementation_sha256:result.implementation_sha256,input:result.input_source ?? {payload_sha256:hash(JSON.stringify(parsed.payload))},
+          output:{receipt_path:result.tool_receipt}}, {receipt:result.tool_receipt,runId:parsed.run_id,stage:parsed.stage});
         return { status: 'completed', exit_code: 0, execution_mode: 'in_process', launches_child: false, result };
       }
       if(parsed.action==='api_task') {
@@ -992,6 +996,9 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
     const next=error.code==='queue_cancelled'?'cancelled_before_execution_no_recovery_needed':error.code==='session_running'?'wait_for_active_command_or_report_engineering_issue':'report_engineering_issue_without_user_unlock';
     return {...receipt,next_action:error.recovery?.next_action ?? next,action_receipt:path};
   } finally { receipt.finished_at=new Date().toISOString();receipt.timing={version:1,queue_wait_ms:receipt.queue_wait_ms ?? null,action_ms:startedAt===undefined?null:performance.now()-startedAt,total_ms:performance.now()-queuedAt}; writeJson(path,receipt);
+    for (const check of receipt.tool_checks ?? []) {
+      recordToolCheck(root, receipt.action, check, {receipt:path,runId:receipt.run_id,stage:receipt.stage ?? parsed?.stage});
+    }
     if (receipt.status === 'completed') for (const check of receipt.tool_checks ?? []) {
       if (['passed', 'completed'].includes(check.status)) recordToolUsage(root, receipt.action, { tools: [check.tool_id], receipt: path,
         runId: receipt.run_id, stage: receipt.stage ?? parsed?.stage, implementationSha256: check.implementation_sha256 });
