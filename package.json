@@ -62,7 +62,7 @@
     "m1:consistency": "node scripts/consistency-report.mjs",
     "data:lifecycle": "node scripts/data-lifecycle.mjs",
     "confirm:plan": "node scripts/confirm-gate.mjs",
-    "ci:irval": "cd ../aitestharness-ir && python3 -m pytest tests/ -q",
+    "ci:irval": "cd aitestharness-ir && python3 -m pytest tests -q",
     "quality:reconcile-ledgers": "node scripts/reconcile-defect-ledgers.mjs",
     "quality:metrics": "node scripts/build-quality-metrics.mjs",
     "quality:trends": "node scripts/build-quality-trends.mjs",
@@ -75,7 +75,8 @@
     "results:parse": "node scripts/parse-playwright-result.mjs",
     "test:ui:headed": "node scripts/run-ui-tests.mjs --headed",
     "skills:check": "node scripts/check-skills.mjs",
-    "skills:contracts": "node scripts/run-engineering-tests.mjs tests/acceptance/skill-resources.test.mjs"
+    "skills:contracts": "node scripts/run-engineering-tests.mjs tests/acceptance/skill-resources.test.mjs",
+    "ci:tools": "cd aitestharness-tools && python3 tests/smoke_tools.py && python3 tests/smoke_round4.py"
   },
   "engines": {
     "node": ">=20.11"

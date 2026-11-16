@@ -1,0 +1,49 @@
+schema_version: "1.0"
+type: case
+id: CASE-00123
+version: 1
+status: approved
+project: proj-internal-crm
+module: order
+derived_from: ["TP-0045-02@1"]
+content_hash: "sha256:7a3f5e21"
+labels: []
+created_at: 2026-11-13T17:08:00+08:00
+created_by: agent:test_case_agent
+updated_at: 2026-11-13T17:08:00+08:00
+approved_by: ["human:lisi"]
+notes: ""
+
+test_point: TP-0045-02@1
+title: 满减边界 - 订单金额 99.99 不享受满减
+primary_driver: api
+
+preconditions:
+  - {type: account, ref: "cred://internal-qa/vip01"}
+  - {type: fragment, ref: "FRAG-login@2"}
+  - {type: data, ref: "data://ds-order-boundary@1"}
+
+dataset: "data://ds-order-boundary@1"
+
+steps:
+  - {id: s1, intent: 以 99.99 元创建订单, driver: api}
+  - {id: s2, intent: 查询订单优惠金额, driver: api}
+
+assertions:
+  - id: a1
+    source: "TP-0045-02@1#E-01"
+    level: decide
+    statement: 优惠金额为 0
+  - id: a2
+    source: "TP-0045-02@1#E-01"
+    level: observe
+    statement: 订单状态为已创建
+
+budget:
+  max_steps: 8
+  max_duration_ms: 30000
+
+teardown:
+  - {action: request, intent: 删除测试订单}
+
+tags: [regression, api, boundary]

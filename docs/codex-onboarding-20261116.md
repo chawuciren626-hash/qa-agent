@@ -58,7 +58,11 @@
 - **《IR 契约规范》v1 → v1.1**：测试点/用例升级为带 `source` + `state` 的一等对象（预期结果收权）；`exec` 增 `verdict_cap`；新增 S 层规则 `EXPECT_UNVERIFIED_PASS` / `EXPECT_DRIFT`；附录 C 记变更。**目的：消除"两套契约"这一复发点。**
 - **可运行的校验器 `aitestharness-ir/irval`**：契约 38 条规则中 23 条做成代码，**114 个用例全通过**（含 V-39/V-40），支持 `suite` / `validate` / `check-payload` 三种用法。
 
-> ⚠️ **重要更正（2026-11-16，Codex 核查发现）**：`aitestharness-ir/`（irval 校验器）与 `aitestharness-tools/`（零 LLM 确定性工具包：API 执行引擎、计划校验、断言引擎、探索器规则、资产库、阶段状态机、增量重算、回归选集）**源码不在本仓库 main 树内**——它们建在仓库外的独立本机目录（`package.json` 的 `ci:irval` 指向 `../aitestharness-ir/` 即为证据），2026-11-15 仓库重置时只带走了 Node 侧治理脚本与平台源码，Python 侧未随 main 提交。因此本节 114/114、43/43、29/29 等冒烟数字是**本机当时可复跑的记录**，但在本仓库 CI 上**当前不可复跑**。准确口径：**「已建设（本机已验证），但源码交付位置、版本与本产品的集成尚未核实/完成」**。接手第一件事见 §3.0。
+> ✅ **已修复（2026-11-16）**：`aitestharness-ir/` 与 `aitestharness-tools/` 已从沙箱本机目录**完整迁入仓库**（与 `platform/` 同级），并在仓库内复跑通过：
+> - `npm run ci:irval` → `cd aitestharness-ir && python3 -m pytest tests -q`，**114 passed**；`python3 -m irval suite` → **112 用例通过 / 反例拦截 70/70 = 100% / 正例误杀 0 / 规则覆盖 25 条**
+> - `npm run ci:tools` → `tests/smoke_tools.py` + `tests/smoke_round4.py`，**两套全 PASS**
+> 原 `ci:irval` 指向 `../aitestharness-ir` 的路径已修正为仓内相对路径；`__pycache__`/`*.pyc` 已被 `.gitignore` 排除。
+> **剩余待办**：tools 的冒烟目前是两份独立脚本（非 pytest 用例组织），建议接手后统一收进 pytest 或 `ci-run.mjs` 的套件，使 CI 一条命令覆盖；`aitestharness-tools/INTEGRATION.md` 是各文件"能直接用 / 要小修 / 建议跳过"的三档判定表，整合时按它逐文件推进。
 
 ### 2.2 治理与证据层：B1~B12（本期主战场，全部 ✅）
 
@@ -94,10 +98,10 @@
 
 ## 3. 还有哪些没建设（明确边界，别当成漏做也别当成已做）
 
-### 3.0 【最高优先级】Python 侧源码未入库（2026-11-16 确认的交付缺口）
-- `aitestharness-ir/`（irval）与 `aitestharness-tools/` 建在仓库外本机目录，**未随 main 提交**（见 §2.1 更正）。
-- **建议 Codex 第一步**：让产品负责人把这两个本机目录迁入仓库（或明确为独立仓 + 固定版本引用），同时修正 `package.json` 的 `ci:irval` 路径，让 irval 114 条用例进入本仓库 CI——否则「契约 v1.1 校验器」只是文档级声明，无法在本仓验证。
-- 迁入后按 B10 的验收口径重跑一遍（`pytest tests/ -q`，114 通过）再更新本文档。
+### 3.0 【已关闭】Python 侧源码入库（2026-11-16 完成）
+- 原问题：`aitestharness-ir/` 与 `aitestharness-tools/` 只存在于开发机的仓库外目录，2026-11-15 仓库重置时未随之提交。
+- 处理：两目录已完整迁入本仓库根目录（与 `platform/` 同级），`ci:irval` 改为仓内路径，新增 `ci:tools`；仓库内复跑 irval 114 passed / 工具冒烟全 PASS（见 §2.1 更正块）。
+- 遗留小项：tools 冒烟仍为独立脚本，建议并入统一 CI 套件；`INTEGRATION.md` 的三档判定表是逐文件整合路径。
 
 ### 3.0b M1 验收状态的真实口径（两处记录的差异解释，Codex 质疑成立）
 仓库内能核到的两处记录**不是同一件事**，但结论上 Codex 的判定是对的：

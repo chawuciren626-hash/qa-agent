@@ -1,0 +1,81 @@
+schema_version: "1.0"
+type: plan
+id: PLAN-00123
+version: 1
+status: approved
+project: proj-internal-crm
+module: order
+derived_from: ["CASE-00123@1"]
+content_hash: "sha256:5d8e0f1a"
+labels: []
+created_at: 2026-11-13T15:20:00+08:00
+created_by: program:compiler
+updated_at: 2026-11-13T15:20:00+08:00
+approved_by: ["human:lisi"]
+notes: ""
+
+case_ref: CASE-00123@1
+primary_driver: web
+
+compiled_from:
+  explore_run: explore-20261113-1420
+  compiler_version: "1.0.3"
+  compiled_at: 2026-11-13T15:20:00+08:00
+  compiled_by: program:compiler
+
+gates:
+  locator_unique:      {pass: true, checked: 6, failures: []}
+  assertion_decidable: {pass: true, checked: 4, failures: []}
+  data_no_hardcode:    {pass: true, findings: []}
+  traceable:           {pass: true, orphans: []}
+  replay_verified:     {pass: true, exec_ref: EXEC-8820@1, attempts: 3, identical: true}
+
+touched:
+  pages: [/login, /order/create]
+  apis: ["POST /api/auth/login", "POST /api/order", "GET /api/coupon/calc"]
+
+fragments: ["FRAG-login@2"]
+
+environment:
+  target: internal-qa
+  variant: chrome-1280
+
+context_flow: []
+
+steps:
+  - id: s1
+    intent: 打开登录页
+    action: goto
+    target:
+      url: /login
+    assert:
+      - {type: url_contains, value: /login, level: decide}
+      - {type: visible, target: {testid: login-form}, level: decide}
+
+  - id: s2
+    intent: 在用户名输入框填写账号
+    action: fill
+    target:
+      locators:
+        - {testid: login-username}
+        - {role: textbox, name: 用户名}
+        - {label: 用户名}
+    value: "${data.username}"
+    assert:
+      - {type: value_equals, expected: "${data.username}", level: observe}
+
+  - id: s3
+    intent: 点击登录按钮
+    action: click
+    target:
+      locators:
+        - {testid: login-submit}
+        - {role: button, name: 登录}
+    wait:
+      - {type: network_idle, idle_ms: 500}
+      - {type: element_stable, target: {testid: login-form}}
+    assert:
+      - {type: text_visible, value: 密码错误, level: decide}
+
+teardown:
+  - {action: reset_session}

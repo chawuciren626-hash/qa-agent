@@ -1,0 +1,68 @@
+schema_version: "1.1"
+type: exec
+id: EXEC-8830
+version: 1
+status: approved
+project: proj-internal-crm
+module: order
+derived_from: ["PLAN-00123@1"]
+content_hash: "sha256:c4f10a77"
+labels: []
+created_at: 2026-11-15T09:20:00+08:00
+created_by: program:engine
+updated_at: 2026-11-15T09:20:02+08:00
+approved_by: []
+notes: "V-39 基线：verdict_cap 已说明上限只到 inconclusive，verdict 却给了 pass"
+
+plan_ref: PLAN-00123@1
+case_ref: CASE-00123@1
+suite_ref: null
+
+attempt: 1
+verdict: pass
+verdict_reason: ""
+inconclusive_kind: null
+
+verdict_cap:
+  ceiling: inconclusive
+  applied: true
+  reason: "2 条 decide 断言引用的预期未经人工确认（R3/R4）"
+  unverified_assertions: [a1, a2]
+
+steps:
+  - {id: s1, status: pass, driver: web, duration_ms: 210, locator_hit: null}
+  - {id: s2, status: pass, driver: web, duration_ms: 130, locator_hit: 2}
+  - {id: s3, status: pass, driver: api, duration_ms: 88, locator_hit: null}
+
+assertions:
+  - {id: a1, level: decide, result: pass, expected: "0", actual: "0"}
+  - {id: a2, level: decide, result: pass, expected: "10", actual: "10"}
+
+evidence_ref: "evidence://EXEC-8830"
+self_heal: []
+
+touched:
+  pages: [/login, /order/create]
+  apis: ["POST /api/order"]
+
+metrics:
+  duration_ms: 1820
+  llm_calls: 0
+  llm_tokens: 0
+  cpu_ms: 940
+
+environment:
+  target: internal-qa
+  variant: chrome-1280
+  engine_version: "0.9.1"
+
+consistency:
+  group: CG-00123-20261115
+  runs: 3
+  identical: true
+  divergent_runs: []
+  baseline_exec: EXEC-8830
+  diff_detail: []
+
+started_at: 2026-11-15T09:20:00+08:00
+finished_at: 2026-11-15T09:20:02+08:00

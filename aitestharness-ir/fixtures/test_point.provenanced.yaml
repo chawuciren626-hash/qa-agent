@@ -1,0 +1,63 @@
+schema_version: "1.1"
+type: test_point
+id: TP-0045-07
+version: 1
+status: approved
+project: proj-internal-crm
+module: order
+derived_from: ["REQ-0045@3"]
+content_hash: "sha256:7e2a1c44"
+labels: []
+created_at: 2026-11-15T09:10:00+08:00
+created_by: agent:test_point_agent
+updated_at: 2026-11-15T09:10:00+08:00
+approved_by: ["human:lisi"]
+notes: "V-39/V-40 的溯源基线：一条 verified、一条 unverified、一条 model"
+
+title: 满减边界 - 带溯源
+dimension: boundary
+matrix:
+  cell: "TP-0045-07"
+  requirement: REQ-0045@3
+  dimension: boundary
+control_type: input_number
+
+expected:
+  - id: E-01
+    statement: 99.99 元订单不享受满减
+    observable: order.discount_amount
+    matcher: equals
+    value: "0"
+    source:
+      type: doc
+      ref: "PRD-v3 §3.2 第2段"
+      quote: "满 100 减 10"
+    state: verified
+  - id: E-02
+    statement: 100.00 元订单减免 10 元
+    observable: order.discount_amount
+    matcher: equals
+    value: "10"
+    source:
+      type: model
+      ref: "推断：门槛达成即享全额减免"
+    state: unverified
+  - id: E-03
+    statement: 100.01 元订单减免 10 元
+    observable: order.discount_amount
+    matcher: between
+    matcher_args: {min: "9.99", max: "10.01"}
+    source:
+      type: derived
+      ref: "derived from E-02"
+    state: unverified
+
+verification:
+  primary: api
+  secondary: [db]
+  rationale: 金额计算属业务逻辑，UI 层只能看到展示值，无法判定计算正确性
+  api_verifiable_but_ui: false
+
+priority: P1
+knowledge_ref: ["KB-numeric-boundary@2"]
+coverage_generated_by: matrix

@@ -1,0 +1,54 @@
+schema_version: "1.0"
+type: defect
+id: DEF-0031
+version: 1
+status: approved
+project: proj-internal-crm
+module: order
+derived_from: ["EXEC-8821@1"]
+content_hash: "sha256:c1d2e3f4"
+labels: []
+created_at: 2026-11-13T16:45:00+08:00
+created_by: agent:defect_analysis_agent
+updated_at: 2026-11-13T16:45:00+08:00
+approved_by: ["human:lisi"]
+notes: ""
+
+title: 满减门槛在 100.01 元时未生效
+description: 订单金额 100.01 元时优惠金额为 0，预期 10。
+
+found_by:
+  exec_ref: EXEC-8821@1
+  case_ref: CASE-00123@1
+  step: s3
+  found_at: 2026-11-13T16:40:14+08:00
+
+fingerprint: "sha256:7b1c0d5e"
+
+dedup:
+  decision: new
+  similar: [{defect: DEF-0012, similarity: "0.91"}]
+  merged_into: null
+
+attribution:
+  category: product_bug
+  confidence: "0.86"
+  evidence: ["evidence://EXEC-8821"]
+  by: agent:defect_analysis_agent
+  rationale: 接口返回 discount=0，但同类金额 100.00 返回 10，判定为边界条件未处理
+
+severity: S2
+
+affected:
+  module: order
+  requirements: ["REQ-0045@3"]
+  cases: ["CASE-00123@1"]
+
+lifecycle: confirmed
+
+verification:
+  fixed_claim: null
+  verify_exec: null
+
+external: null
+reopen_history: []

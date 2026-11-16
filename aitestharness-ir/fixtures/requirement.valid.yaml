@@ -1,0 +1,63 @@
+schema_version: "1.0"
+type: requirement
+id: REQ-0045
+version: 3
+status: approved
+project: proj-internal-crm
+module: order
+derived_from: ["REQ-0044@1"]
+content_hash: "sha256:9f2a1b3c"
+labels: []
+created_at: 2026-11-13T17:00:00+08:00
+created_by: agent:requirement_analysis_agent
+updated_at: 2026-11-13T17:30:00+08:00
+approved_by: ["human:lisi"]
+notes: ""
+
+title: 订单满减规则
+kind: functional
+source_ref:
+  doc: prd/order-v3.docx
+  page: 12
+  para: "3.2 满减规则"
+  quote: 订单金额满 100 元减 10 元
+
+business_rules:
+  - id: BR-01
+    statement: 满 100 元减 10 元
+    inputs: [order_amount]
+    expression: "order_amount >= 100 ? discount = 10 : discount = 0"
+    boundary: ["99.99", "100", "100.01"]
+  - id: BR-02
+    statement: 不与其他优惠叠加
+    inputs: [order_amount, coupon_amount]
+    expression: "coupon_applied ? discount = 0 : discount = 10"
+    boundary: []
+
+data_constraints:
+  - field: order_amount
+    type: "decimal(10,2)"
+    range: ["0.01", "999999.99"]
+    format: "两位小数"
+    nullable: false
+
+acceptance:
+  - id: AC-01
+    statement: 满 100 的订单实付 = 订单总额 - 10
+    observable: order.pay_amount
+  - id: AC-02
+    statement: 满 100 且使用优惠券时，优惠金额 = 0
+    observable: order.discount_amount
+
+preconditions:
+  - 用户已登录且实名认证
+
+clarifications: []
+
+testability:
+  score: high
+  issues: []
+
+supersedes: REQ-0045@2
+change_note: "满减门槛由 100 调整为 200（客户 2026-11-12 需求变更）"
+no_semantic_change: false
