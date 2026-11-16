@@ -176,7 +176,7 @@ export function SettingsDialog({
       title={S.settings.title}
       groups={groups}
       active={current}
-      bodyClassName={current === "models" ? "min-h-0 flex-1 overflow-hidden px-0 pb-0 pt-3" : undefined}
+      bodyClassName={current === "models" ? "min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-3 sm:px-6 sm:pb-6" : undefined}
       onSelect={(key) => {
         if (key !== current) void guardLeave(() => setActive(key), SETTINGS_SCOPE);
       }}

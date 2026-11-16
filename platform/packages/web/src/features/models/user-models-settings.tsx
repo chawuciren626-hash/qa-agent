@@ -29,6 +29,7 @@ import {
   Modal,
   PrefRow,
   Select,
+  toastError,
   toastSuccess,
 } from "@prismshadow/penguin-ui";
 import * as api from "../../api/endpoints";
@@ -115,6 +116,8 @@ export function UserModelsSettings() {
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  /** 行级连通性测试进行中的行（provider\0modelId），按钮转圈并禁用。 */
+  const [testingRow, setTestingRow] = useState<string | null>(null);
 
   /** 读取与写入都走用户级端点 /api/user-models：不依赖「有没有项目」，登录即可配置。 */
   const reload = useCallback(async () => {
@@ -253,8 +256,29 @@ export function UserModelsSettings() {
     }
   };
 
-  const removeModel = async (model: ModelInfo) => {
-    if (busy) return;
+  /** 行级「测试连通性」：用该行已保存的凭据（owner 项目里存的那份）发起一次真实探测，
+      结果用 toast 告知；密钥明文不经过前端。 */
+  const testRow = async (model: ModelInfo) => {
+    const rowKey = `${model.provider}\u0000${model.modelId}`;
+    if (busy || testingRow !== null) return;
+    setTestingRow(rowKey);
+    try {
+      const probeProject = (await api.listProjects()).projects.find((item) => item.role === "owner")?.projectId;
+      if (probeProject === undefined) {
+        toastError("连接测试需要至少一个项目；请先创建项目后重试。");
+        return;
+      }
+      const result = await api.testModel(probeProject, { provider: model.provider, modelId: model.modelId });
+      if (result.ok === false) toastError(`连接未通过：${result.message ?? "请检查接口地址与密钥。"}`);
+      else toastSuccess(`「${rowLabel(model)}」连接通过。`);
+    } catch (error) {
+      toastError(error instanceof Error ? error.message : "连接测试失败。");
+    } finally {
+      setTestingRow(null);
+    }
+  };
+
+  const removeModel = async (model: ModelInfo) => {    if (busy) return;
     setBusy(true);
     try {
       const rows = models
@@ -295,7 +319,7 @@ export function UserModelsSettings() {
       )}
 
       {/* Card 1 — 自定义模型：WorkBuddy 同构（灰底圆角卡，标题+说明在卡内顶部，右上「添加模型」，
-          模型行左侧名称+来源，右侧编辑/密钥/删除图标）。 */}
+          模型行左侧名称+来源，右侧编辑/测试连通性/删除图标）。 */}
       <section className="rounded-xl border border-line-muted bg-surface-muted px-4 py-3">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
@@ -325,15 +349,17 @@ export function UserModelsSettings() {
                 <IconButton
                   variant="ghost"
                   size="sm"
-                  label={`更新 ${rowLabel(model)} 的 API Key`}
-                  disabled={busy}
-                  onClick={() => {
-                    setTestResult(null);
-                    openEdit(model);
-                    patchDialog({ apiKey: "" });
-                  }}
+                  label={`测试连通性 ${rowLabel(model)}`}
+                  disabled={busy || testingRow !== null}
+                  onClick={() => void testRow(model)}
                 >
-                  <GlyphIcon d={ICONS.key} size={ICON_SIZE.iconButton} />
+                  {testingRow === `${model.provider}\u0000${model.modelId}` ? (
+                    <span className="animate-spin" aria-hidden="true">
+                      <GlyphIcon d={ICONS.refresh} size={ICON_SIZE.iconButton} />
+                    </span>
+                  ) : (
+                    <GlyphIcon d={ICONS.pulse} size={ICON_SIZE.iconButton} />
+                  )}
                 </IconButton>
                 <IconButton variant="ghost" size="sm" label={`删除 ${rowLabel(model)}`} disabled={busy} onClick={() => void removeModel(model)}>
                   <GlyphIcon d={ICONS.trash} size={ICON_SIZE.iconButton} />
