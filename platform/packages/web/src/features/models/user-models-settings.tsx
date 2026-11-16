@@ -318,9 +318,10 @@ export function UserModelsSettings() {
         <p className="text-sm text-red-600" role="alert">{loadError}</p>
       )}
 
-      {/* Card 1 — 自定义模型：WorkBuddy 同构（灰底圆角卡，标题+说明在卡内顶部，右上「添加模型」，
-          模型行左侧名称+来源，右侧编辑/测试连通性/删除图标）。 */}
-      <section className="rounded-xl border border-line-muted bg-surface-muted px-4 py-3">
+      {/* Card 1 — 自定义模型：WorkBuddy 同构（灰底圆角卡）。说明区（标题+说明+「添加模型」）与
+          模型列表布局切割：卡头固定，列表在固定高度内自行滚动（overflow-y-auto），不撑高卡片、
+          不影响下方「辅助任务模型」卡片。 */}
+      <section className="flex flex-col rounded-xl border border-line-muted bg-surface-muted px-4 py-3">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h3 className="text-sm font-semibold">自定义模型</h3>
@@ -331,18 +332,19 @@ export function UserModelsSettings() {
           </div>
           <Button className="shrink-0" onClick={openAdd}>添加模型</Button>
         </div>
-        <div className="mt-2 divide-y divide-line-muted">
-          {models.length === 0 && (
-            <p className="py-6 text-center text-sm text-muted-foreground">还没有模型。点击「添加模型」接入你的第一个模型。</p>
-          )}
-          {models.map((model) => (
-            <div key={`${model.provider}\u0000${model.modelId}`} className="flex items-center justify-between gap-3 py-2.5">
-              <div className="flex min-w-0 items-center gap-2">
-                <GlyphIcon d={ICONS.chip} size={ICON_SIZE.iconButton} className="shrink-0 text-muted-foreground" />
-                <span className="truncate text-sm font-medium">{model.displayName?.trim() || model.modelId}</span>
-                <span className="shrink-0 text-xs text-muted-foreground">{providerNames.get(model.provider) ?? model.provider}</span>
-              </div>
-              <div className="flex shrink-0 items-center gap-0.5">
+        <div className="mt-2 min-h-0 max-h-80 overflow-y-auto rounded-lg border border-line-muted [scrollbar-width:thin]">
+          <div className="divide-y divide-line-muted">
+            {models.length === 0 && (
+              <p className="py-6 text-center text-sm text-muted-foreground">还没有模型。点击「添加模型」接入你的第一个模型。</p>
+            )}
+            {models.map((model) => (
+              <div key={`${model.provider}\u0000${model.modelId}`} className="flex items-center justify-between gap-3 px-2.5 py-2.5">
+                <div className="flex min-w-0 items-center gap-2">
+                  <GlyphIcon d={ICONS.chip} size={ICON_SIZE.iconButton} className="shrink-0 text-muted-foreground" />
+                  <span className="truncate text-sm font-medium">{model.displayName?.trim() || model.modelId}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">{providerNames.get(model.provider) ?? model.provider}</span>
+                </div>
+                <div className="flex shrink-0 items-center gap-0.5">
                 <IconButton variant="ghost" size="sm" label={`编辑 ${rowLabel(model)}`} disabled={busy} onClick={() => openEdit(model)}>
                   <GlyphIcon d={ICONS.pencil} size={ICON_SIZE.iconButton} />
                 </IconButton>
@@ -364,9 +366,10 @@ export function UserModelsSettings() {
                 <IconButton variant="ghost" size="sm" label={`删除 ${rowLabel(model)}`} disabled={busy} onClick={() => void removeModel(model)}>
                   <GlyphIcon d={ICONS.trash} size={ICON_SIZE.iconButton} />
                 </IconButton>
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       </section>
 
