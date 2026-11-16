@@ -57,3 +57,23 @@
 4. 预期效果：A 档全部落地后 111 → **103 张**（-8）；若 B1 也收敛，可到 **95 张左右**，且后续每类执行检查/事件不再增表。
 
 —— 本盘点由沙箱直读 `web.db` sqlite_master + 逐表 schema 生成，代码引用已用 grep 核实（machines 组）。
+
+## 四、补充核查（2026-11-16 下午）：哪些表是「宿主遗留、当前产品用不到」？
+
+对 111 张表做了两层交叉核对：
+1. **表名 ↔ 代码引用**（排除 schema.ts 与 migrations 定义层）：110/111 张都有运行时引用——宿主给每张表都写了 repo，**没有一张纯死表**；
+2. **功能入口 ↔ 产品可达性**（服务端路由注册 + Web 用户端/管理端实际调用路径）：
+
+| 分类 | 域 | 张数 | 判定 |
+|---|---|---|---|
+| **整域无调用方**（路由注册了，但 Web 用户端、管理端、CLI、aitestharness-tools 全都不调） | exchange_*（任务交换，外部平台推任务集成） | 8 | **可摘除**：从 platform.ts 摘注册 + 迁移删表；若未来要做外部任务接入再按需重建 |
+| 产品有入口、当前实例未启用（数据全空） | public_*（发布/角色/菜单）、org_*（公司模式）、messaging_*（IM 桥）、connectors、trace_*、agent_api、trusted_plugin、plugin_session_pins、browser_extensions、project_management | ~43 | **保留**：功能挂在产品上（公司模式、发布审批、IM 渠道、API 令牌等都有页面），启用即有数据 |
+| 建设中（Codex 批次正在接） | qa_* 主链 27 张 | 27 | **保留**：批次 3/4/5 的落点 |
+| 核心在用 | users/projects/sessions/auth_sessions/ui_prefs/server_settings/error_records/schedule_state/unattended_lifecycle/machine 组/central_*/model_promotions | ~18 | 保留 |
+
+**结论修正**：「一大半用不到」在**数据层**成立（94/111 空表），但在**代码层**不成立——宿主把全部表都接了 repo，只有 `exchange_*` 一个整域是真正无调用方的遗留集成（8 张）。其余空表属于「有产品入口、未启用」或「建设中」。
+
+**建议动作**：
+1. 短期只摘 `exchange_*`（8 张 + task-exchange 路由与 OutboxDispatcher/LocalExchangeExecutor 注册），其余不动——删错表的风险远大于收益；
+2. 表数量焦虑的正确解法仍是前文 A/B 档合并（111 → ~95），而不是大规模删表；
+3. 如果确定 AITestHarness 永远不做「外部平台任务推送」「IM 渠道」「公司模式」，可再列一个观察名单分批摘除（messaging 2 + org 9 ≈ 11 张），但需要先在产品侧明确砍掉这些功能入口。
