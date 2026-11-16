@@ -1,5 +1,5 @@
 /** Public configuration only: this store never reads a project, credential store or workspace. */
-import { CentralModelConfig, centralModelConfigRoutes } from "./central-model-config.js";
+import { CENTRAL_MODEL_CATALOG_ID, CentralModelConfig, centralModelConfigRoutes } from "./central-model-config.js";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { strFromU8 } from "fflate";
@@ -8,6 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { defaultSystemConfig, parseSkillFrontmatter } from "@prismshadow/penguin-core";
+import { presetProjectConfig } from "../services/project-config-seed.js";
 import { parsePeriod, MIN_PERIOD_MS } from "../runtime/schedule-file.js";
 import { APPROVAL_MODES } from "./routes/sessions.js";
 import { HttpError } from "./errors.js";
@@ -502,6 +503,23 @@ export function controlRoutes(store:ControlStore):Hono<AppEnv>{
   app.delete("/admin/central-plugin-categories/:id",c=>{const id=c.req.param("id");if(store.db.prepare("SELECT 1 FROM public_plugin_category_assignments WHERE category_id=?").get(id))throw new HttpError(409,"category_not_empty","请先移走该分类下的插件。");store.db.prepare("DELETE FROM public_plugin_categories WHERE id=?").run(id);return c.json({ok:true});});
   app.get("/access",c=>{const u=c.var.user;return c.json({modules:store.modules(u.userId,u.isAdmin),menuKeys:u.isAdmin?store.system.menuItems().map(item=>item.key):store.system.ordinaryMenus(),resourceIds:store.list().filter(r=>store.accessible(r.id,u.userId,u.isAdmin)).map(r=>r.id)});});
   app.get("/catalog",c=>{const u=c.var.user;return c.json({resources:store.list().filter(r=>store.accessible(r.id,u.userId,u.isAdmin))});});
+  /** 渠道目录（登录用户可读）：平台统一维护的供应商组（管理后台「渠道管理」）。
+   *  目录为空时以内置渠道种子打底（与模型目录同源 presetProjectConfig）；只读，不含任何密钥。 */
+  app.get("/channels",async c=>{
+    const seedModels=await store.modelConfig.getModels(CENTRAL_MODEL_CATALOG_ID);
+    if(Object.keys(seedModels.providers??{}).length===0){
+      const preset=presetProjectConfig();
+      if(preset.providers!==undefined) await store.modelConfig.writeRaw(CENTRAL_MODEL_CATALOG_ID,{...(await store.modelConfig.readRaw(CENTRAL_MODEL_CATALOG_ID)),providers:preset.providers});
+    }
+    const models=await store.modelConfig.getModels(CENTRAL_MODEL_CATALOG_ID);
+    return c.json({channels:Object.entries(models.providers??{}).map(([id,group])=>({
+      id,
+      displayName:group.displayName?.trim()||id,
+      baseUrl:group.baseUrl??"",
+      clientType:group.clientType??"",
+      models:(models.models??[]).filter(m=>m.provider===id).length,
+    }))});
+  });
   app.get("/catalog/roles",c=>{const u=c.var.user;return c.json({roles:store.list().filter(r=>r.kind==="agents"&&typeof r.payload.agentId==="string"&&store.accessible(r.id,u.userId,u.isAdmin)).map(r=>({agentId:r.payload.agentId,resourceId:r.id,version:r.version}))});});
   app.get("/catalog/roles/resolved",c=>{const u=c.var.user;return c.json(store.resolveRoleCatalog(u.userId,u.isAdmin));});
   app.get("/catalog/:id",c=>c.json({resources:store.bundle(c.req.param("id"),c.var.user.userId,c.var.user.isAdmin)}));

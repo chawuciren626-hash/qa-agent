@@ -1,4 +1,4 @@
-import { ModelsPage } from "../models/models-page";
+import { AdminChannelsPage } from "./admin-channels-page";
 import { AppLayout } from "../../components/layout/app-layout";
 import { createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
@@ -215,7 +215,7 @@ export function AdminHostGate({ children }: { children: ReactNode }) {
   const section = location.pathname.split("/")[1] || "agents";
   if (section === "chat") return <CentralAssistantContext.Provider value>{children}</CentralAssistantContext.Provider>;
   const kind = (section === "publications" ? location.pathname.split("/")[2] : section) as ManagedKind;
-  return <AdminChrome>{section === "overview" ? <AdminOverviewPage /> : section === "users" ? <AdminAccountsPage /> : section === "roles" ? <AdminRolesPage /> : section === "menus" ? <AdminMenusPage /> : section === "permissions" ? <AdminPermissionsPage /> : section === "audit" ? <AdminAuditPage /> : kind === "agents" ? (location.pathname.startsWith("/agents/") ? <CentralAgentSettingsPage /> : <CentralAgentsPage />) : kind === "plugins" ? <CentralPluginsPage /> : kind === "skills" ? <AdminSkillsPage central /> : section === "tools" ? <AdminToolsPage /> : kind === "models" ? <ModelsPage central /> : kind in RESOURCE_NAMES ? <CentralResourcesPage key={kind} kind={kind} /> : <PageFrame>未知管理模块。</PageFrame>}</AdminChrome>;
+  return <AdminChrome>{section === "overview" ? <AdminOverviewPage /> : section === "users" ? <AdminAccountsPage /> : section === "roles" ? <AdminRolesPage /> : section === "menus" ? <AdminMenusPage /> : section === "permissions" ? <AdminPermissionsPage /> : section === "audit" ? <AdminAuditPage /> : kind === "agents" ? (location.pathname.startsWith("/agents/") ? <CentralAgentSettingsPage /> : <CentralAgentsPage />) : kind === "plugins" ? <CentralPluginsPage /> : kind === "skills" ? <AdminSkillsPage central /> : section === "tools" ? <AdminToolsPage /> : kind === "models" ? <AdminChannelsPage /> : kind in RESOURCE_NAMES ? <CentralResourcesPage key={kind} kind={kind} /> : <PageFrame>未知管理模块。</PageFrame>}</AdminChrome>;
 }
 
 export function AdminLayout() {

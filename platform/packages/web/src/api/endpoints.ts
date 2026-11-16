@@ -441,6 +441,26 @@ export const userModels = {
 };
 
 export const CENTRAL_MODEL_CATALOG_ID = "central-model-catalog";
+
+/** 平台渠道（管理后台「渠道管理」维护）：只读目录，不含任何密钥（BYOK，用户自备 key）。 */
+export interface ChannelInfo {
+  id: string;
+  displayName: string;
+  baseUrl: string;
+  clientType: string;
+  /** 该渠道下平台侧托管的模型数（0 = 纯渠道，仅提供接入地址）。 */
+  models: number;
+}
+
+/** 登录用户可读：设置→添加模型的供应商下拉数据源。非中央部署返回 404，前端回退内置预设。 */
+export const getChannels = () => apiFetch<{ channels: ChannelInfo[] }>("/api/control/channels");
+
+/** 管理员：删除渠道（连渠道下平台侧托管模型与促销一并移除）。 */
+export const deleteChannel = (provider: string) =>
+  apiFetch<ModelsResponse>(
+    `/api/control/admin/model-config/${CENTRAL_MODEL_CATALOG_ID}/providers/${encodeURIComponent(provider)}`,
+    { method: "DELETE" },
+  );
 const modelConfigPath = (projectId: string) => projectId === CENTRAL_MODEL_CATALOG_ID
   ? `/api/control/admin/model-config/${CENTRAL_MODEL_CATALOG_ID}`
   : `/api/projects/${encodeURIComponent(projectId)}/models`;

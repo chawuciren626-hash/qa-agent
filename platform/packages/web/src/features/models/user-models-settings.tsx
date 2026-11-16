@@ -33,10 +33,14 @@ import {
   toastSuccess,
 } from "@prismshadow/penguin-ui";
 import * as api from "../../api/endpoints";
+import type { ChannelInfo } from "../../api/endpoints";
 import type { ModelInfo, ModelUpdateEntry, ModelsResponse, ProviderConnectionUpdate } from "@prismshadow/penguin-server/api";
 
-/** 供应商预设：选中即填默认接口地址（可改），provider id 沿用预设 id。 */
-const PROVIDER_PRESETS: ReadonlyArray<{ id: string; name: string; baseUrl: string }> = [
+/**
+ * 供应商下拉数据源 = 平台渠道（管理后台「渠道管理」维护，GET /api/control/channels）+ 内置预设兜底。
+ * 平台渠道是权威来源；非中央部署读不到时回退内置预设。自定义渠道入口始终保留（BYOK 自建网关）。
+ */
+const BUILTIN_PRESETS: ReadonlyArray<{ id: string; name: string; baseUrl: string }> = [
   { id: "deepseek", name: "深度求索", baseUrl: "https://api.deepseek.com/v1" },
   { id: "moonshot", name: "Kimi 中国版", baseUrl: "https://api.moonshot.cn/v1" },
   { id: "minimax", name: "MiniMax 中国版", baseUrl: "https://api.minimaxi.chat/v1" },
@@ -44,6 +48,10 @@ const PROVIDER_PRESETS: ReadonlyArray<{ id: string; name: string; baseUrl: strin
   { id: "tokenhub", name: "腾讯云 TokenHub", baseUrl: "https://api.tokenhub.cn/v1" },
 ];
 const CUSTOM_PROVIDER = "__custom__";
+
+interface ProviderOption { id: string; name: string; baseUrl: string }
+
+const builtinOptions = (): ProviderOption[] => BUILTIN_PRESETS.map((p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl }));
 
 /** 协议档位：空 = 跟随供应商默认（server 按端点探测）。 */
 const CLIENT_TYPES: ReadonlyArray<{ value: string; label: string }> = [
@@ -90,11 +98,11 @@ interface DraftState {
   maxTokens: string;
 }
 
-const emptyDraft = (): DraftState => ({
+const emptyDraft = (options: ProviderOption[]): DraftState => ({
   editRef: null,
-  presetId: PROVIDER_PRESETS[0]?.id ?? CUSTOM_PROVIDER,
+  presetId: options[0]?.id ?? CUSTOM_PROVIDER,
   providerName: "",
-  baseUrl: PROVIDER_PRESETS[0]?.baseUrl ?? "",
+  baseUrl: options[0]?.baseUrl ?? "",
   apiKey: "",
   modelId: "",
   displayName: "",
@@ -118,6 +126,17 @@ export function UserModelsSettings() {
   const [testResult, setTestResult] = useState<string | null>(null);
   /** 行级连通性测试进行中的行（provider\0modelId），按钮转圈并禁用。 */
   const [testingRow, setTestingRow] = useState<string | null>(null);
+  /** 平台渠道目录（管理后台「渠道管理」维护）；读不到（非中央部署）为 null，回退内置预设。 */
+  const [channels, setChannels] = useState<ChannelInfo[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.getChannels().then(
+      (result) => { if (!cancelled) setChannels(result.channels); },
+      () => { if (!cancelled) setChannels(null); },
+    );
+    return () => { cancelled = true; };
+  }, []);
 
   /** 读取与写入都走用户级端点 /api/user-models：不依赖「有没有项目」，登录即可配置。 */
   const reload = useCallback(async () => {
@@ -137,20 +156,32 @@ export function UserModelsSettings() {
   useEffect(() => { void reload(); }, [reload]);
 
   const models = useMemo(() => response?.models ?? [], [response]);
+  /** 供应商选项 = 内置预设 + 平台渠道（渠道里新增的追加在后面）；渠道是权威来源，渠道未覆盖的预设保留兜底。 */
+  const providerOptions = useMemo<ProviderOption[]>(() => {
+    const options = builtinOptions();
+    if (channels !== null) {
+      for (const channel of channels) {
+        if (!options.some((option) => option.id === channel.id)) {
+          options.push({ id: channel.id, name: channel.displayName, baseUrl: channel.baseUrl });
+        }
+      }
+    }
+    return options;
+  }, [channels]);
   const providerNames = useMemo(() => {
     const names = new Map<string, string>();
-    for (const preset of PROVIDER_PRESETS) names.set(preset.id, preset.name);
+    for (const option of providerOptions) names.set(option.id, option.name);
     for (const [id, group] of Object.entries(response?.providers ?? {})) {
       if (group.displayName?.trim()) names.set(id, group.displayName.trim());
     }
     for (const model of models) if (!names.has(model.provider)) names.set(model.provider, model.provider);
     return names;
-  }, [response, models]);
+  }, [response, models, providerOptions]);
 
-  const openAdd = () => { setTestResult(null); setDialog(emptyDraft()); };
+  const openAdd = () => { setTestResult(null); setDialog(emptyDraft(providerOptions)); };
   const openEdit = (model: ModelInfo) => {
     setTestResult(null);
-    const preset = PROVIDER_PRESETS.find((item) => item.id === model.provider);
+    const preset = providerOptions.find((item) => item.id === model.provider);
     setDialog({
       editRef: { provider: model.provider, modelId: model.modelId },
       presetId: preset ? preset.id : CUSTOM_PROVIDER,
@@ -174,7 +205,7 @@ export function UserModelsSettings() {
       patchDialog({ presetId, baseUrl: "", providerName: dialog?.providerName || "" });
       return;
     }
-    const preset = PROVIDER_PRESETS.find((item) => item.id === presetId);
+    const preset = providerOptions.find((item) => item.id === presetId);
     patchDialog({ presetId, baseUrl: preset?.baseUrl ?? "", providerName: "" });
   };
 
@@ -400,10 +431,10 @@ export function UserModelsSettings() {
         <Modal open title={dialog.editRef === null ? "添加模型" : "编辑模型"} onClose={() => setDialog(null)} widthClass="sm:max-w-xl">
           <div className="flex flex-col gap-4">
             <label className="flex flex-col gap-1.5 text-sm">
-              <span className="font-medium">供应商<span className="ml-1 text-xs font-normal text-muted-foreground">（仅支持 OpenAI 兼容协议 API）</span></span>
+              <span className="font-medium">供应商<span className="ml-1 text-xs font-normal text-muted-foreground">（平台渠道 / 自定义，仅 OpenAI 兼容协议 API，密钥自备）</span></span>
               <Select value={dialog.presetId} onChange={(event) => pickPreset(event.target.value)} aria-label="供应商">
-                {PROVIDER_PRESETS.map((preset) => (
-                  <option key={preset.id} value={preset.id}>{preset.name}</option>
+                {providerOptions.map((option) => (
+                  <option key={option.id} value={option.id}>{option.name}</option>
                 ))}
                 <option value={CUSTOM_PROVIDER}>自定义</option>
               </Select>
