@@ -147,6 +147,9 @@ import type {
 
 export type RawTable = Record<string, unknown>;
 
+/** 仅用于 modelViewOfRaw 的内存缓存键，不对应任何真实项目目录。 */
+const USER_MODEL_VIEW_KEY = "__user_models_view__";
+
 const sharedModelKeys = ["providers", "models", "default_model", "vision_model"] as const;
 type SharedModelRecord = {
   version: 1; ownerUserId: string; sourceProjectId: string; updatedAt: string;
@@ -1617,6 +1620,127 @@ export class ProjectConfigService implements ProjectConfigStore {
       };
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * 用户级模型视图（WorkBuddy 式设置页）：把一个**内存中的**模型块（providers / models /
+   * default_model / vision_model）渲染成与 GET /api/projects/:p/models 完全一致的响应。
+   *
+   * 为什么要它：用户级配置存在 `<root>/.account-models/` 而不是项目 TOML 里，但标签补全
+   * （内置目录的 displayName）、凭证掩码、effective 连接、默认模型标记这些规则必须与项目页
+   * 逐字一致——复制一份就是两套口径。所以这里只换"数据从哪来"，其余逻辑走同一条。
+   *
+   * 不写盘、不碰缓存：临时把 raw 喂给渲染，用 `__user_models_view__` 作为
+   * promotions 的键（没有促销记录即无折扣，与新建项目一致）。
+   */
+  /**
+   * 把 `/api/user-models` 的 PUT 请求体转成与项目 TOML 同形的模型块（`model_id` /
+   * `display_name` / `context_window` … 下划线键）。
+   *
+   * 为什么不复用 updateModels：那条路径要求项目目录存在（readRaw/writeRaw 落盘 + 机器同步），
+   * 而无项目的用户根本没有可写目标。这里只做"字段名归一"这一步——DTO 的驼峰字段与服务端
+   * 渲染器读的下划线字段是两套名字，直接存 DTO 会让列表显示为空（本页曾经踩过的坑）。
+   */
+  userModelBlockOf(req: ModelsUpdateRequest): RawTable {
+    const rows = (req.models ?? []).map((entry) => {
+      const row: RawTable = { provider: entry.provider, model_id: entry.modelId };
+      const cat = catalogEntryFor(entry.provider, entry.modelId);
+      if (entry.displayName && entry.displayName !== cat?.displayName) row.display_name = entry.displayName;
+      else if (entry.displayName === "" && cat?.displayName !== undefined) row.display_name = "";
+      if (entry.contextWindow !== undefined) row.context_window = entry.contextWindow;
+      if (entry.maxTokens !== undefined) row.max_tokens = entry.maxTokens;
+      if (entry.clientType) row.client_type = canonicalClientType(entry.clientType);
+      if (entry.vision !== undefined) row.vision = entry.vision;
+      if (entry.fastMode === true) row.fast_mode = true;
+      if (entry.pricing !== undefined) {
+        row.pricing = { unit: "usd_per_mtok", cache_read: entry.pricing.cacheRead, cache_write: entry.pricing.cacheWrite, output: entry.pricing.output };
+      }
+      if (entry.baseUrl !== undefined && entry.baseUrl !== null) row.base_url = entry.baseUrl;
+      if (entry.apiKey !== undefined) { row.api_key = entry.apiKey; row.created_at = new Date().toISOString(); }
+      return row;
+    });
+    const providers: RawTable = {};
+    for (const [id, patch] of Object.entries(req.providers ?? {})) {
+      const group: RawTable = {};
+      if (patch.displayName !== undefined) group.display_name = patch.displayName;
+      if (patch.baseUrl !== undefined && patch.baseUrl !== null) group.base_url = patch.baseUrl;
+      if (patch.clientType) group.client_type = canonicalClientType(patch.clientType);
+      if (patch.apiKey !== undefined) { group.api_key = patch.apiKey; group.created_at = new Date().toISOString(); }
+      providers[id] = group;
+    }
+    const block: RawTable = { models: rows };
+    if (Object.keys(providers).length > 0) block.providers = providers;
+    if (req.defaultModel !== undefined) block.default_model = req.defaultModel;
+    if (req.visionModel !== undefined) block.vision_model = req.visionModel;
+    return block;
+  }
+
+  /**
+   * 把「用户级模型块」发布为该用户的共享模型记录，并同步到其名下所有项目。
+   *
+   * 为什么不能自己拼 JSON 写盘：`readSharedModels` 对记录有强校验（`version===1`、
+   * `ownerUserId` 匹配、`models.models` 是数组、`promotions` 是数组），而新建项目时
+   * `writeInitialConfig` 正是靠它继承配置——结构差一个字段就会让**建项目直接 500**
+   * （写设置页时踩过一次）。所以这里按 `publishSharedModels` 的同一份 schema 组装，
+   * 顺序也一致：先写项目（可回滚），最后落共享记录；失败则把项目恢复原样。
+   */
+  async publishUserModelBlock(ownerUserId: string, block: RawTable): Promise<void> {
+    const previous = this.sharedModelLocks.get(ownerUserId) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const current = previous.catch(() => undefined).then(() => gate);
+    this.sharedModelLocks.set(ownerUserId, current);
+    await previous.catch(() => undefined);
+    try {
+      let existing: SharedModelRecord | null = null;
+      try { existing = await this.readSharedModels(ownerUserId); }
+      catch { existing = null; }
+      const record: SharedModelRecord = {
+        version: 1,
+        ownerUserId,
+        sourceProjectId: existing?.sourceProjectId ?? "",
+        updatedAt: new Date().toISOString(),
+        models: modelPart(block),
+        promotions: existing?.promotions ?? [],
+        ...(existing?.modelScopeToken ? { modelScopeToken: existing.modelScopeToken } : {}),
+      };
+      const targets = this.projects?.listByOwner(ownerUserId).map((row) => row.projectId) ?? [];
+      const backups: Array<{ projectId: string; raw: RawTable }> = [];
+      try {
+        for (const projectId of targets) {
+          const before = await this.readRaw(projectId);
+          backups.push({ projectId, raw: before });
+          await this.writeRaw(projectId, withModelPart(before, record.models));
+        }
+        const sharedPath = this.sharedModelPath(ownerUserId);
+        await fs.mkdir(path.dirname(sharedPath), { recursive: true, mode: 0o700 });
+        await atomicWriteFile(sharedPath, JSON.stringify(record), { mode: 0o600, followSymlinks: false });
+      } catch (error) {
+        for (const backup of backups.reverse()) {
+          try { await this.writeRaw(backup.projectId, backup.raw); }
+          catch { /* 回滚尽力而为，原始错误优先上报 */ }
+        }
+        throw error;
+      }
+    } finally {
+      release();
+    }
+  }
+
+  async modelViewOfRaw(raw: RawTable): Promise<ModelsResponse> {
+    const saved = this.cache.get(USER_MODEL_VIEW_KEY);
+    this.cache.set(USER_MODEL_VIEW_KEY, { mtimeMs: -1, table: raw });
+    // readTable 先 stat 磁盘文件：伪 id 没有文件会走 ENOENT 并清掉缓存。这里临时接管一次
+    // readRaw，让它在本次渲染中直接返回内存块，渲染完原样还原（不写盘、不影响其它项目）。
+    const originalReadRaw = this.readRaw.bind(this);
+    this.readRaw = async (id: string) => (id === USER_MODEL_VIEW_KEY ? raw : originalReadRaw(id));
+    try {
+      return await this.getModels(USER_MODEL_VIEW_KEY);
+    } finally {
+      this.readRaw = originalReadRaw;
+      if (saved === undefined) this.cache.delete(USER_MODEL_VIEW_KEY);
+      else this.cache.set(USER_MODEL_VIEW_KEY, saved);
     }
   }
 

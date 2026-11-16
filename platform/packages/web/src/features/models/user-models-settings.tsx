@@ -22,11 +22,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
 import {
   Button,
+  GlyphIcon,
+  ICONS,
+  ICON_SIZE,
+  IconButton,
   Modal,
   PrefRow,
   Select,
-  SettingsGroup,
-  buttonClass,
   toastSuccess,
 } from "@prismshadow/penguin-ui";
 import * as api from "../../api/endpoints";
@@ -106,8 +108,6 @@ const rowLabel = (model: ModelInfo) =>
   model.displayName && model.displayName !== model.modelId ? `${model.displayName} · ${model.modelId}` : model.modelId;
 
 export function UserModelsSettings() {
-  /** 写入入口：用户拥有（owner）的第一个项目；其余项目由服务端共享模型机制自动同步。 */
-  const [projectId, setProjectId] = useState<string | null>(null);
   const [response, setResponse] = useState<ModelsResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [auxModel, setAuxModel] = useState<{ provider: string; modelId: string } | null>(null);
@@ -116,19 +116,13 @@ export function UserModelsSettings() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
 
+  /** 读取与写入都走用户级端点 /api/user-models：不依赖「有没有项目」，登录即可配置。 */
   const reload = useCallback(async () => {
     try {
-      const list = await api.listProjects();
-      const mine = list.projects.find((item) => item.role === "owner") ?? null;
-      if (mine === null) {
-        setProjectId(null);
-        setResponse(null);
-        setLoadError("请先在项目管理页创建一个项目，再回到这里配置模型（配置会自动同步到你名下的所有项目）。");
-        return;
-      }
-      setProjectId(mine.projectId);
-      const prefs = await api.getPrefs().catch(() => null);
-      const models = await api.getModels(mine.projectId, null);
+      const [models, prefs] = await Promise.all([
+        api.userModels.get(),
+        api.getPrefs().catch(() => null),
+      ]);
       setResponse(models);
       setLoadError(null);
       setAuxModel(prefs?.prefs?.aux_model ?? null);
@@ -192,7 +186,12 @@ export function UserModelsSettings() {
     setTesting(true);
     setTestResult(null);
     try {
-      const result = await api.testModel(projectId ?? "", {
+      const probeProject = (await api.listProjects()).projects.find((item) => item.role === "owner")?.projectId;
+      if (probeProject === undefined) {
+        setTestResult("保存后即可在会话中验证；连接测试需要至少一个项目。");
+        return;
+      }
+      const result = await api.testModel(probeProject, {
         provider: draftProvider,
         modelId: dialog.modelId.trim(),
         ...(dialog.apiKey ? { apiKey: dialog.apiKey } : {}),
@@ -225,7 +224,6 @@ export function UserModelsSettings() {
       if (dialog.presetId === CUSTOM_PROVIDER && dialog.providerName.trim()) {
         connection.displayName = dialog.providerName.trim();
       }
-      await api.putProviderConnection(projectId ?? "", provider, connection);
 
       const rows = models
         .filter((model) => dialog.editRef === null || !(model.provider === dialog.editRef.provider && model.modelId === dialog.editRef.modelId))
@@ -241,7 +239,10 @@ export function UserModelsSettings() {
           ? { renamedFrom: dialog.editRef }
           : {}),
       });
-      await api.putModels(projectId ?? "", { models: rows });
+      await api.userModels.put({
+        models: rows,
+        providers: { ...(response?.providers ?? {}), [provider]: connection },
+      });
       setDialog(null);
       toastSuccess(dialog.editRef === null ? "模型已添加。" : "模型已更新。");
       await reload();
@@ -259,7 +260,7 @@ export function UserModelsSettings() {
       const rows = models
         .filter((item) => !(item.provider === model.provider && item.modelId === model.modelId))
         .map(toUpdateEntry);
-      await api.putModels(projectId ?? "", { models: rows });
+      await api.userModels.put({ models: rows });
       if (auxModel?.provider === model.provider && auxModel.modelId === model.modelId) {
         await api.putPrefs({ aux_model: null });
         setAuxModel(null);
@@ -293,51 +294,78 @@ export function UserModelsSettings() {
         <p className="text-sm text-red-600" role="alert">{loadError}</p>
       )}
 
-      <section>
-        <div className="mb-2 flex items-start justify-between gap-4">
-          <div>
+      {/* Card 1 — 自定义模型：WorkBuddy 同构（灰底圆角卡，标题+说明在卡内顶部，右上「添加模型」，
+          模型行左侧名称+来源，右侧编辑/密钥/删除图标）。 */}
+      <section className="rounded-xl border border-line-muted bg-surface-muted px-4 py-3">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
             <h3 className="text-sm font-semibold">自定义模型</h3>
             <p className="mt-1 text-xs text-muted-foreground">
-              模型添加后会自动写入全局模型配置文件，并同步到你名下的所有项目（含新建项目），
-              会话与测试任务可直接选用（仅支持 OpenAI 兼容协议 API）。
+              模型添加后会自动写入本地模型配置文件（.account-models），并同步到你名下的所有项目的
+              project_config.toml；新建项目与独立会话可直接选用（仅支持 OpenAI 兼容协议 API）。
             </p>
           </div>
-          <Button onClick={openAdd}>添加模型</Button>
+          <Button className="shrink-0" onClick={openAdd}>添加模型</Button>
         </div>
-        <div className="divide-y divide-line-muted rounded-lg border border-line-muted">
+        <div className="mt-2 divide-y divide-line-muted">
           {models.length === 0 && (
-            <p className="px-4 py-6 text-center text-sm text-muted-foreground">还没有模型。点击「添加模型」接入你的第一个模型。</p>
+            <p className="py-6 text-center text-sm text-muted-foreground">还没有模型。点击「添加模型」接入你的第一个模型。</p>
           )}
           {models.map((model) => (
-            <div key={`${model.provider}\u0000${model.modelId}`} className="flex items-center justify-between gap-3 px-4 py-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">{rowLabel(model)}</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">{providerNames.get(model.provider) ?? model.provider}{model.isDefault ? " · 默认" : ""}</p>
+            <div key={`${model.provider}\u0000${model.modelId}`} className="flex items-center justify-between gap-3 py-2.5">
+              <div className="flex min-w-0 items-center gap-2">
+                <GlyphIcon d={ICONS.chip} size={ICON_SIZE.iconButton} className="shrink-0 text-muted-foreground" />
+                <span className="truncate text-sm font-medium">{model.displayName?.trim() || model.modelId}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">{providerNames.get(model.provider) ?? model.provider}</span>
               </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <button type="button" className={buttonClass("ghost", "sm")} onClick={() => openEdit(model)} aria-label={`编辑 ${rowLabel(model)}`}>编辑</button>
-                <button type="button" className={buttonClass("ghost", "sm")} disabled={busy} onClick={() => void removeModel(model)} aria-label={`删除 ${rowLabel(model)}`}>删除</button>
+              <div className="flex shrink-0 items-center gap-0.5">
+                <IconButton variant="ghost" size="sm" label={`编辑 ${rowLabel(model)}`} disabled={busy} onClick={() => openEdit(model)}>
+                  <GlyphIcon d={ICONS.pencil} size={ICON_SIZE.iconButton} />
+                </IconButton>
+                <IconButton
+                  variant="ghost"
+                  size="sm"
+                  label={`更新 ${rowLabel(model)} 的 API Key`}
+                  disabled={busy}
+                  onClick={() => {
+                    setTestResult(null);
+                    openEdit(model);
+                    patchDialog({ apiKey: "" });
+                  }}
+                >
+                  <GlyphIcon d={ICONS.key} size={ICON_SIZE.iconButton} />
+                </IconButton>
+                <IconButton variant="ghost" size="sm" label={`删除 ${rowLabel(model)}`} disabled={busy} onClick={() => void removeModel(model)}>
+                  <GlyphIcon d={ICONS.trash} size={ICON_SIZE.iconButton} />
+                </IconButton>
               </div>
             </div>
           ))}
         </div>
       </section>
 
-      <SettingsGroup title="辅助任务模型">
-        <PrefRow
-          label="选择模型"
-          info="用于增强提示词、生成标题、会话摘要、记忆筛选等辅助任务，不影响主对话所用的模型。"
-        >
-          <Select value={auxKey} onChange={(event) => void pickAux(event)} aria-label="辅助任务模型">
-            <option value="">默认（推荐）</option>
-            {models.map((model) => (
-              <option key={`${model.provider}\u0000${model.modelId}`} value={`${model.provider}\u0000${model.modelId}`}>
-                {rowLabel(model)}
-              </option>
-            ))}
-          </Select>
-        </PrefRow>
-      </SettingsGroup>
+      {/* Card 2 — 辅助任务模型：标题+说明，下方一行「选择模型」下拉。 */}
+      <section className="rounded-xl border border-line-muted bg-surface-muted px-4 py-3">
+        <h3 className="text-sm font-semibold">辅助任务模型</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          用于增强提示词、生成标题、会话摘要、记忆筛选等辅助任务，不影响主对话所用的模型。
+        </p>
+        <div className="mt-2 border-t border-line-muted pt-1">
+          <PrefRow
+            label="选择模型"
+            info="用于增强提示词、生成标题、会话摘要、记忆筛选等辅助任务，不影响主对话所用的模型。"
+          >
+            <Select value={auxKey} onChange={(event) => void pickAux(event)} aria-label="辅助任务模型">
+              <option value="">默认（推荐）</option>
+              {models.map((model) => (
+                <option key={`${model.provider}\u0000${model.modelId}`} value={`${model.provider}\u0000${model.modelId}`}>
+                  {rowLabel(model)}
+                </option>
+              ))}
+            </Select>
+          </PrefRow>
+        </div>
+      </section>
 
       {dialog !== null && (
         <Modal open title={dialog.editRef === null ? "添加模型" : "编辑模型"} onClose={() => setDialog(null)} widthClass="sm:max-w-xl">

@@ -197,3 +197,37 @@ node scripts/ci-run.mjs --suite=smoke --junit   # CI 入口 + JUnit
 1. **先问"没有它，这个阶段的数据还可信吗"，再问"将来要不要返工"**——前者决定做不做，后者决定留什么接口（方案 §18.2.1 的判据）。
 2. **任何新能力先接证据链再上线**：没有 `expected-source` / `execution-stub` / `coverage-split` 三条，不要产出"通过率""覆盖率"这类对外数字。
 3. **不要用"功能数量"证明进展**：这次重构的验收标准是"同一用例跑 3 次结果一致 + 失败可定位根因"，不是"又加了几个 Agent"。
+
+---
+
+## 7. 2026-11-16 追加：模型设置改为「用户级全局配置」（已实现，验收重点）
+
+### 7.1 产品口径（用户明确要求，别改回去）
+- 桌面客户端与 Web **形态完全一致**：登录 → 项目管理页 → 选项目进工作台（会话 / 项目视图 / 项目资料 / 定时任务）。admin 登录客户端也是**普通用户**视角。
+- 设置 → 模型**对所有登录用户开放**（不再限管理员）：用户可以自己添加模型（供应商预设或自定义：接口地址 + API Key + 模型名 + 显隐 / 协议 / 上下文参数），另有「辅助任务模型」下拉。
+- 配置语义是**一份全局配置**：用户配一次，名下所有项目（含将来新建的项目、独立任务会话）直接可用；会话页模型下拉即目录全量。
+
+### 7.2 实现（改动文件一览）
+| 文件 | 作用 |
+| --- | --- |
+| `server/src/http/routes/user-models.ts`（新） | `GET/PUT /api/user-models`，登录即可用，**不依赖任何项目** |
+| `server/src/services/project-config-service.ts` | 新增 `modelViewOfRaw`（内存块→与项目页一致的视图）、`userModelBlockOf`（DTO→TOML 下划线键归一）、`publishUserModelBlock`（写共享记录 + 同步名下项目，带回滚） |
+| `server/src/mechanisms/projects.ts` | `ProjectConfigStore` 补上述三个方法声明 |
+| `server/src/platform.ts` | 注册 `UserModelRoutes` 模块 |
+| `web/src/api/endpoints.ts` | 新增 `api.userModels.{get,put}` |
+| `web/src/features/models/user-models-settings.tsx` | 改为用户级端点 + WorkBuddy 式布局（灰底圆角卡片、右上「添加模型」、行尾编辑/密钥/删除图标） |
+| `web/src/features/settings/settings-dialog.tsx` | models 页**不再按 `accountCenter` 分支**渲染旧的全表模型库（`ModelsPage`），一律渲染 `UserModelsSettings` |
+
+存储位置与共享模型机制**同一份文件**：`<root>/.account-models/<sha256(userId)>.json`，schema 是 `SharedModelRecord`（`version:1 / ownerUserId / models / promotions`）。因此「新建项目自动继承」不需要新代码——`writeInitialConfig` 本来就读它。
+
+### 7.3 两个已踩过的坑（改动这块前必读）
+1. **共享记录是强校验的**：`readSharedModels` 要求 `version===1`、`ownerUserId` 匹配、`models.models` 是数组、`promotions` 是数组。少一个字段，**新建项目会直接 500**（`Invalid account model settings`），而模型设置页本身看起来是好的——只在建项目时炸。
+2. **`updateModels` 不发布共享记录**：项目级 `PUT /api/projects/:p/models` 之后，是 `routes/models.ts` 显式调用 `publishSharedModels(projectId, true)`。用户级路由里必须同样显式调用，否则"设置页改了、项目里没变"。
+
+### 7.4 已验证（接口级，2026-11-16）
+无项目普通用户 → `PUT /api/user-models` 200 → 建项目 201 → 新项目模型视图自动含所配模型 → 再改设置 → **已存在的两个项目与设置页三处一致**；服务端零异常；API Key 响应全程掩码（`sk-t…cdef`）。
+
+### 7.5 已知问题（留给你处理，非本轮引入）
+- 既有测试失败（baseline 复现一致，与本轮无关）：`control-size`（17 处 Modal footer 按钮未 `size="sm"`，集中在 admin-* 与 qa/project-knowledge 页）、`form-commit-guard`（`central-agent-settings-page.tsx` 未注册表单守卫；`skills-tab.tsx:289`、`models-page.tsx:2091` 的 Modal 未走 `useGuardedClose`）。
+- 新增的模型弹窗尚未接入 `useFormDraft`/`useGuardedClose`（与旧 `models-page` 现状一致），若要全仓统一治理，把 `user-models-settings.tsx` 一并加进 `FORM_MODULES` 即可。
+- 「辅助任务模型」（`ui_prefs.aux_model`）目前**只存偏好，未接引擎**：标题/摘要等辅助任务仍用主模型，二期再切。

@@ -151,6 +151,7 @@ import { SessionForwardRoutes } from "./machines/session-forward.js";
 import { ProjectAdminRoutes } from "./http/routes/projects.js";
 import { AdminRoutes } from "./http/routes/admin.js";
 import { MeRoutes } from "./http/routes/me.js";
+import { UserModelRoutes } from "./http/routes/user-models.js";
 import { AuthRoutes } from "./http/routes/auth.js";
 import { RemoteRoutes } from "./http/routes/remote.js";
 import {
@@ -351,6 +352,7 @@ export class IdentityModule {}
     ModelScopeAuthProvider,
     ProjectsRoutes,
     ProjectAdminRoutes,
+    UserModelRoutes,
   ],
   exports: [
     Projects,

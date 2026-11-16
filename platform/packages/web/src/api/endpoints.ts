@@ -430,6 +430,16 @@ export interface SharedModelsInfo {
   projectIds: string[];
 }
 
+/**
+ * 用户级模型配置（WorkBuddy 式设置页）：不挂在任何项目上，登录即可读写。
+ * 服务端把这份配置存进 `<root>/.account-models/<hash>.json`，并同步到该用户名下的项目。
+ */
+export const userModels = {
+  get: () => apiFetch<ModelsResponse>("/api/user-models"),
+  put: (body: ModelsUpdateRequest) =>
+    apiFetch<ModelsResponse>("/api/user-models", { method: "PUT", body }),
+};
+
 export const CENTRAL_MODEL_CATALOG_ID = "central-model-catalog";
 const modelConfigPath = (projectId: string) => projectId === CENTRAL_MODEL_CATALOG_ID
   ? `/api/control/admin/model-config/${CENTRAL_MODEL_CATALOG_ID}`

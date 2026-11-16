@@ -168,6 +168,12 @@ export abstract class ProjectConfigStore {
     timeoutMs?: number,
   ): Promise<EndpointModelListResponse>;
   abstract getModels(projectId: string): Promise<ModelsResponse>;
+  /** 把内存中的模型块渲染成与 getModels 一致的视图（用户级模型配置用，不写盘）。 */
+  abstract modelViewOfRaw(raw: Record<string, unknown>): Promise<ModelsResponse>;
+  /** PUT 请求体 → 与项目 TOML 同形的模型块（字段名归一，用户级模型配置用）。 */
+  abstract userModelBlockOf(req: ModelsUpdateRequest): Record<string, unknown>;
+  /** 把用户级模型块写成该用户的共享模型记录，并同步到名下所有项目（含新建项目继承）。 */
+  abstract publishUserModelBlock(ownerUserId: string, block: Record<string, unknown>): Promise<void>;
   abstract updateModels(projectId: string, req: ModelsUpdateRequest): Promise<ModelsResponse>;
   /** One group's `[providers.<id>]` connection, merged per field; rows are never touched. */
   abstract setProviderConnection(
