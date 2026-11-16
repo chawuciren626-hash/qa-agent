@@ -23,8 +23,8 @@ import { AdminOverviewPage } from "./admin-overview-page";
 import type { ManagedKind } from "../../lib/managed-resources";
 import { useUpdateBadges } from "../../lib/use-update-badges";
 import { SettingsDialog } from "../settings/settings-dialog";
-import { AdminMenusPage, AdminRolesPage, SYSTEM_MENU_KEYS, defaultAdminMenus, normalizeAdminMenus } from "./admin-system-pages";
-import type { AdminMenuItem, AdminMenuKey } from "./admin-system-pages";
+import { AdminMenusPage, AdminRolesPage, defaultAdminMenus, normalizeAdminMenus } from "./admin-system-pages";
+import type { AdminMenuItem } from "./admin-system-pages";
 import { AdminAuditPage } from "./admin-audit-page";
 export { AdminAuditPage } from "./admin-audit-page";
 import { discoverLocalWorkspace, rememberedWorkspace, rememberWorkspace } from "../../lib/local-workspace";
@@ -58,31 +58,68 @@ function AdminAssistantHistory() {
   return <div className="admin-assistant-history"><div className="admin-assistant-history-head"><strong>最近会话</strong><button type="button" onClick={newChat}>＋ 新会话</button></div><nav aria-label="管理员助手会话">{recent.map(session => <Link key={session.sessionId} to={`/chat/${session.sessionId}`} className={location.pathname === `/chat/${session.sessionId}` ? "active" : ""} title={session.title || "未命名会话"}>{session.title || "未命名会话"}</Link>)}</nav>{recent.length === 0 && <p>暂无会话</p>}</div>;
 }
 
-function AdminNavigation({ central, userView }: { central: boolean; userView: string | null }) {
+function AdminAccountMenu({ central, userView, variant }: { central: boolean; userView: string | null; variant?: "side" | "top" }) {
   const { user, logout } = useAuth();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  return <>
+    <details className={`admin-account${variant === "top" ? " admin-account-top" : ""}`}>
+      <summary>
+        <span className="admin-avatar">{(user?.displayName ?? user?.userId ?? "A").slice(0, 1).toUpperCase()}</span>
+        <span className="admin-account-name">{user?.displayName ?? user?.userId}</span>
+        <span className="admin-account-role">管理员</span>
+      </summary>
+      <div className="admin-account-menu">
+        <p>当前：管理员视图</p>
+        <a href={central ? "/user/" : userView ?? "/user/"}>切换到用户视图</a>
+        <button type="button" onClick={event => { event.currentTarget.closest("details")?.removeAttribute("open"); setSettingsOpen(true); }}>设置</button>
+        <button type="button" onClick={() => void logout().then(() => window.location.assign("/admin/login"))}>退出登录</button>
+      </div>
+    </details>
+    <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} accountCenter={central} />
+  </>;
+}
+
+function AdminNavigation({ central, userView, showAccount = true }: { central: boolean; userView: string | null; showAccount?: boolean }) {
   const [menuItems, setMenuItems] = useState<AdminMenuItem[]>(defaultAdminMenus);
   const location = useLocation();
   const section = location.pathname.split("/")[1] || "overview";
   const active = section === "publications" ? location.pathname.split("/")[2] : section;
-  const [systemOpen, setSystemOpen] = useState(() => SYSTEM_MENU_KEYS.has(active as AdminMenuKey));
+  // 两个分组（平台管理 / 系统管理）各自可折叠：进入组内页面时自动展开，其余时候记忆用户的选择。
+  const [collapsed, setCollapsed] = useState<Record<"main" | "sys", boolean>>({ main: false, sys: false });
   useEffect(() => {
     const refresh = () => { void controlRequest("/api/control/admin/menus").then(result => setMenuItems(normalizeAdminMenus(result.items))).catch(() => setMenuItems(defaultAdminMenus())); };
     refresh(); window.addEventListener("admin-menus-changed", refresh);
     return () => window.removeEventListener("admin-menus-changed", refresh);
   }, []);
-  useEffect(() => { if (SYSTEM_MENU_KEYS.has(active as AdminMenuKey)) setSystemOpen(true); }, [active]);
+  const activeGroup: "main" | "sys" | null = menuItems.some(item => item.group === "sys" && (active === item.key || location.pathname === item.path))
+    ? "sys"
+    : menuItems.some(item => item.group === "main" && (active === item.key || location.pathname === item.path)) ? "main" : null;
+  useEffect(() => { if (activeGroup !== null) setCollapsed(current => current[activeGroup] ? { ...current, [activeGroup]: false } : current); }, [activeGroup]);
   const row = (item: AdminMenuItem) => {
     const selected = active === item.key || location.pathname === item.path;
     return <Link key={item.key} className={`admin-nav-item${selected ? " active" : ""}`} to={item.path} aria-current={selected ? "page" : undefined}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{navIcons[item.icon] ?? navIcons.menus}</svg>{item.name}</Link>;
   };
-  const mainItems = menuItems.filter(item => item.group === "main");
-  const systemItems = menuItems.filter(item => item.group === "sys");
+  const group = (id: "main" | "sys", label: string) => {
+    const items = menuItems.filter(item => item.group === id);
+    if (items.length === 0) return null;
+    const open = !collapsed[id];
+    return <div className={`admin-nav-group${id === "sys" ? " admin-nav-group-sys" : ""}`}>
+      <button type="button" className="admin-nav-group-toggle" aria-expanded={open} onClick={() => setCollapsed(current => ({ ...current, [id]: !current[id] }))}>
+        {label}<span aria-hidden="true">{open ? "⌄" : "›"}</span>
+      </button>
+      {open && <div className="admin-nav-group-children">{items.map(row)}</div>}
+    </div>;
+  };
   return <aside className="admin-side" aria-label="管理员导航">
     <div className="admin-brand"><span className="admin-brand-mark" aria-hidden="true"><img className="admin-logo-default" src={brandLogo} alt="" draggable={false}/><img className="admin-logo-light" src={brandLogoLight} alt="" draggable={false}/></span><strong>AITestHarness</strong></div>
-    <div className="admin-side-scroll"><nav>{mainItems.map(row)}<div className="admin-nav-system"><button type="button" className="admin-nav-system-toggle" aria-expanded={systemOpen} onClick={() => setSystemOpen(!systemOpen)}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 5h16v14H4zM8 9h8M8 13h8"/></svg>系统管理<span aria-hidden="true">{systemOpen ? "⌄" : "›"}</span></button>{systemOpen && <div className="admin-nav-system-children">{systemItems.map(row)}</div>}</div></nav>{active === "chat" && <AdminAssistantHistory />}</div>
-    <details className="admin-account"><summary><span className="admin-avatar">{(user?.displayName ?? user?.userId ?? "A").slice(0, 1).toUpperCase()}</span><span className="admin-account-name">{user?.displayName ?? user?.userId}</span><span className="admin-account-role">管理员</span></summary><div className="admin-account-menu"><p>当前：管理员视图</p><a href={central ? "/user/" : userView ?? "/user/"}>切换到用户视图</a><button type="button" onClick={event => { event.currentTarget.closest("details")?.removeAttribute("open"); setSettingsOpen(true); }}>设置</button><button type="button" onClick={() => void logout().then(() => window.location.assign("/admin/login"))}>退出登录</button></div></details>
-    <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} accountCenter={central} />
+    <div className="admin-side-scroll">
+      <nav>
+        {group("main", "平台管理")}
+        {group("sys", "系统管理")}
+      </nav>
+      {active === "chat" && <AdminAssistantHistory />}
+    </div>
+    {showAccount && <AdminAccountMenu central={central} userView={userView} />}
   </aside>;
 }
 
@@ -90,9 +127,49 @@ function userViewUrl(): string | null {
   return rememberedWorkspace();
 }
 
+/** 顶栏面包屑：管理后台 / 分组 / 当前页，从菜单结构自动生成；未知路由（如 Agent 详情）回退到段落名。 */
+function AdminTopbar({ central, userView }: { central: boolean; userView: string | null }) {
+  const [menuItems, setMenuItems] = useState<AdminMenuItem[]>(defaultAdminMenus);
+  const location = useLocation();
+  const section = location.pathname.split("/")[1] || "overview";
+  const active = section === "publications" ? location.pathname.split("/")[2] : section;
+  useEffect(() => {
+    const refresh = () => { void controlRequest("/api/control/admin/menus").then(result => setMenuItems(normalizeAdminMenus(result.items))).catch(() => setMenuItems(defaultAdminMenus())); };
+    refresh(); window.addEventListener("admin-menus-changed", refresh);
+    return () => window.removeEventListener("admin-menus-changed", refresh);
+  }, []);
+  const activeItem = menuItems.find(item => active === item.key || location.pathname === item.path);
+  const crumbs = [
+    { label: "管理后台", path: "/overview" },
+    ...(activeItem?.group === "sys" ? [{ label: "系统管理", path: null as string | null }] : []),
+    { label: activeItem?.name ?? section, path: null as string | null },
+  ];
+  return <header className="admin-topbar">
+    <nav className="admin-crumbs" aria-label="面包屑">
+      {crumbs.map((crumb, index) => (
+        <span key={`${crumb.label}-${index}`} className="admin-crumb">
+          {index > 0 && <span className="admin-crumb-sep" aria-hidden="true">/</span>}
+          {crumb.path !== null && index < crumbs.length - 1
+            ? <Link to={crumb.path}>{crumb.label}</Link>
+            : <span aria-current={index === crumbs.length - 1 ? "page" : undefined}>{crumb.label}</span>}
+        </span>
+      ))}
+    </nav>
+    <div className="admin-topbar-side">
+      <AdminAccountMenu central={central} userView={userView} variant="top" />
+    </div>
+  </header>;
+}
+
 function AdminChrome({ children }: { children: ReactNode }) {
   const userView = userViewUrl();
-  return <div className="admin-shell"><AdminNavigation central userView={userView}/><main className="admin-main">{children}</main></div>;
+  return <div className="admin-shell">
+    <AdminNavigation central userView={userView} showAccount={false} />
+    <div className="admin-col">
+      <AdminTopbar central userView={userView} />
+      <main className="admin-main">{children}</main>
+    </div>
+  </div>;
 }
 
 /** Public resources live centrally; native Agent authoring uses the administrator's local project. */
