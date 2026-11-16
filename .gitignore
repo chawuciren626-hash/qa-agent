@@ -123,6 +123,7 @@ Thumbs.db
 !/docs/AITestHarness改造后效果-用户端与管理端.md
 !/docs/AITestHarness架构重构方案-v2-讨论定稿版.md
 !/docs/AITestHarness阶段职责梳理-Agent-LLM-工具-Skill-插件.md
+!/docs/db-table-audit-20261116.md
 !/docs/admin-tool-console.md
 !/docs/artifact-scope-and-invalidation.md
 !/docs/ci-integration.md
