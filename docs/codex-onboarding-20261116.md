@@ -58,6 +58,8 @@
 - **《IR 契约规范》v1 → v1.1**：测试点/用例升级为带 `source` + `state` 的一等对象（预期结果收权）；`exec` 增 `verdict_cap`；新增 S 层规则 `EXPECT_UNVERIFIED_PASS` / `EXPECT_DRIFT`；附录 C 记变更。**目的：消除"两套契约"这一复发点。**
 - **可运行的校验器 `aitestharness-ir/irval`**：契约 38 条规则中 23 条做成代码，**114 个用例全通过**（含 V-39/V-40），支持 `suite` / `validate` / `check-payload` 三种用法。
 
+> ⚠️ **重要更正（2026-11-16，Codex 核查发现）**：`aitestharness-ir/`（irval 校验器）与 `aitestharness-tools/`（零 LLM 确定性工具包：API 执行引擎、计划校验、断言引擎、探索器规则、资产库、阶段状态机、增量重算、回归选集）**源码不在本仓库 main 树内**——它们建在仓库外的独立本机目录（`package.json` 的 `ci:irval` 指向 `../aitestharness-ir/` 即为证据），2026-11-15 仓库重置时只带走了 Node 侧治理脚本与平台源码，Python 侧未随 main 提交。因此本节 114/114、43/43、29/29 等冒烟数字是**本机当时可复跑的记录**，但在本仓库 CI 上**当前不可复跑**。准确口径：**「已建设（本机已验证），但源码交付位置、版本与本产品的集成尚未核实/完成」**。接手第一件事见 §3.0。
+
 ### 2.2 治理与证据层：B1~B12（本期主战场，全部 ✅）
 
 | 批次 | 建设内容 | 关键产物 | 自检 |
@@ -91,6 +93,17 @@
 ---
 
 ## 3. 还有哪些没建设（明确边界，别当成漏做也别当成已做）
+
+### 3.0 【最高优先级】Python 侧源码未入库（2026-11-16 确认的交付缺口）
+- `aitestharness-ir/`（irval）与 `aitestharness-tools/` 建在仓库外本机目录，**未随 main 提交**（见 §2.1 更正）。
+- **建议 Codex 第一步**：让产品负责人把这两个本机目录迁入仓库（或明确为独立仓 + 固定版本引用），同时修正 `package.json` 的 `ci:irval` 路径，让 irval 114 条用例进入本仓库 CI——否则「契约 v1.1 校验器」只是文档级声明，无法在本仓验证。
+- 迁入后按 B10 的验收口径重跑一遍（`pytest tests/ -q`，114 通过）再更新本文档。
+
+### 3.0b M1 验收状态的真实口径（两处记录的差异解释，Codex 质疑成立）
+仓库内能核到的两处记录**不是同一件事**，但结论上 Codex 的判定是对的：
+1. `docs/m1-consistency-acceptance.md` line 67 的 `not_ready`：是**一致性报告工具的自检**——故意用只有 1 条 blocked 记录的 run（`run-ba3980c2-…`）验证工具「不编造通过」，属工具行为验证，不是 M1 验收结果。
+2. `README.md` line 11 的 `ready_pending_manual`：声称「3 次真实执行 + duration 落地验证」已完成。**但支撑它的执行证据（execution/attempts、run 报告、资源占用采集）都在本机 `output/` 工作区，未入库，仓库内无法核实。**
+3. **采信口径**：在产品负责人导出/复跑出对应的 N=3 执行证据之前，M1 验收状态一律记为 **「待核实的执行证据」（M1 验收待核）**——既不宣称已通过，也不否定 README 记录。核验方式：本机跑 `node scripts/consistency-report.mjs --run-id=<run_id>`，导出 `output/runs/<run_id>/report/m1-consistency.md` 与 attempts 产物随验收提交。
 
 ### 3.1 路线图未完成部分（M2~M5）
 
