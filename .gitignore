@@ -119,6 +119,10 @@ Thumbs.db
 !/docs/AITestHarness校验器测试用例集-v1.md
 !/docs/AITestHarness测试平台架构重构方案-v3.md
 !/docs/AITestHarness自动化执行底座与全流程建设方案.md
+!/docs/AITestHarness工程评审-三方视角问题清单.md
+!/docs/AITestHarness改造后效果-用户端与管理端.md
+!/docs/AITestHarness架构重构方案-v2-讨论定稿版.md
+!/docs/AITestHarness阶段职责梳理-Agent-LLM-工具-Skill-插件.md
 !/docs/admin-tool-console.md
 !/docs/artifact-scope-and-invalidation.md
 !/docs/ci-integration.md

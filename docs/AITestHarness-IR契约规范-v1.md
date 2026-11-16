@@ -1,9 +1,11 @@
-# AITestHarness 产物契约规范（IR Contract Spec v1）
+# AITestHarness 产物契约规范（IR Contract Spec v1.1）
 
 > 配套文档：《AITestHarness 测试平台架构重构方案 v3》第 6 章。  
 > 本文件是**字段级定稿**，开发实现以本文件为准。v1 定稿后，字段增删必须走附录 A 的变更流程。  
-> 覆盖面：1 个公共头 + 6 份核心 IR + 2 份附属契约 + **38 条校验规则** + 端到端示例。  
-> 状态：**v1 已定稿**（2026-11-13）。第 10 章 7 项待确认问题已全部拍板，决策记录见第 10 章。
+> 覆盖面：1 个公共头 + 6 份核心 IR + 2 份附属契约 + **40 条校验规则** + 端到端示例。  
+> 状态：**v1.1**（2026-11-13 定稿 v1；2026-11-15 升 v1.1，新增 3 个可选字段 + 2 条规则，变更记录见附录 C）。
+
+> **v1.1 只加可选字段，不破坏旧产物。** 三个新字段（`test_point.expected[].source` / `state`、`exec.verdict_cap`）均可缺省；缺省时按附录 C.3 的默认语义处理，不需要迁移脚本。
 
 ---
 
@@ -338,16 +340,30 @@ expected:                          # 断言的直接来源
     observable: order.discount_amount
     matcher: equals
     value: "0"
+    source:                        # v1.1 新增：这条预期从哪来
+      type: doc                    # doc | human | derived | model
+      ref: "PRD-v3 §3.2 第2段"
+      quote: "满 100 减 10"
+    state: verified                # verified | unverified | drifted
   - id: E-02
     statement: 100.00 元订单减免 10 元
     observable: order.discount_amount
     matcher: equals
     value: "10"
+    source:
+      type: doc
+      ref: "PRD-v3 §3.2 第2段"
+      quote: "满 100 减 10"
+    state: verified
   - id: E-03
     statement: 100.01 元订单减免 10 元
     observable: order.discount_amount
     matcher: equals
     value: "10"
+    source:
+      type: derived                # 从 E-02 的规则推导出边界行为，不是原文直接写
+      ref: "derived from E-02"
+    state: unverified              # 推导出来的默认不确认
 
 verification:                       # 验证方式分配（强制，防 UI 泛滥）
   primary: api
@@ -367,12 +383,40 @@ derived_from: ["REQ-0045@3"]
 | `expected[].matcher_args` | 条件✓ | agent | matcher 为 `between` / `abs_diff` / `regex` 时的参数（见 10.1） |
 | `matrix.cell` | ✓/✓ | program | 去重、覆盖缺口计算、覆盖率报表 |
 | `expected[].observable` | -/✓ | agent | **断言生成**（没有 observable 的预期无法机判） |
+| `expected[].source` | -/- | agent（提案） | **v1.1**：预期溯源（V-39/V-40）；缺失时 `state` 强制 `unverified` |
+| `expected[].source.type` | 条件✓ | agent | `doc`/`human` 可直接生效；`model` **不得标 verified**（R2） |
+| `expected[].source.ref` | 条件✓ | agent | 人工复核定位；`type=doc` 时必须是可检索的原文位置 |
+| `expected[].source.quote` | -/- | agent | 原文摘录。**有 quote 才能验"预期有没有读错"**，这是 P0-1 的防线 |
+| `expected[].state` | -/- | program（判定） + human（转正） | **v1.1**：判定上限（V-39）、漂移报告（V-40）、冒烟集准入 |
 | `verification.primary` | ✓/✓ | program（规则表） | 验证方式分配校验、调度分池 |
 | `verification.rationale` | -/✓ | agent | 人工评审；异常分配的解释 |
 | `knowledge_ref` | -/- | program | 知识库覆盖率统计 |
 | `coverage_generated_by` | ✓/✓ | program | **衡量 LLM 占比**：advisor 占比过高说明知识库不足 |
 
 **为什么必须有 `observable`**：这是本契约最关键的设计之一。`expected` 若只写"页面显示 0 元"，断言只能靠 LLM 看图判断；写了 `observable: order.discount_amount` + `matcher` + `value`，就能程序判定。**没有 observable 的预期 = 不可判定 = 不许生成 decide 级断言。**
+
+**为什么 `source`/`state` 挂在 `expected` 而不是 `assertions`（v1.1 决策）**
+
+方案 §6.4 的示例把 `source{type,ref,quote}` 画在 `assertions` 上。落地时发现**这里已经有同名不同义的字段**：
+
+| 位置 | 字段名 | 含义 |
+|---|---|---|
+| `case.assertions[].source` | 字符串 | `"TP-0045-02@1#E-01"`，**引用**某个 `test_point.expected[].id`（V-07/V-30 在查它） |
+| 方案 §6.4 | 对象 | `{type, ref, quote}`，**这条预期从哪来**（文档原文 / 人工 / 推导 / 模型） |
+
+同名不同义会让校验器无法判断读的是哪一个，这正是 §11.10 那类一致性事故的成因。**不改字段名，改挂载点**：预期产出地在 `test_point.expected[]`，溯源就该挂在那里；`case.assertions[].source` 保持"引用"语义不变，通过它指向 expected 后自然继承来源与状态。
+
+链路因此是完整的：
+
+```
+PRD 原文 quote
+   ↓ test_point.expected[].source{type,ref,quote} + state
+case.assertions[].source → "TP-0045-02@1#E-01"   （引用，不变）
+   ↓ 继承 expected 的 state
+exec.verdict_cap 记录"本条因哪些 expected 未确认而被压低"
+```
+
+**为什么 `state` 由程序判定、只允许人转正**：如果 agent 能自己把 `unverified` 改成 `verified`，这条纪律等于不存在——这和 P0-2（`expected` 不许 agent 写）是同一个漏洞的两个入口。
 
 ### 3.3 `case` 用例
 
@@ -496,6 +540,12 @@ verdict: fail                       # pass|fail|flaky|skipped|inconclusive
 verdict_reason: "断言 a1 失败：期望 0，实际 10"
 inconclusive_kind: null             # verdict=inconclusive 时必填
 
+verdict_cap:                        # v1.1 新增：本条结论是否被「预期未确认」压低
+  ceiling: inconclusive             # 理论上限；无来源/全未确认时为 inconclusive（R3/R4）
+  applied: false                    # 是否真的压低了结论（原本就能判 fail 时压不压都一样）
+  reason: "2 条 decide 断言无 verified 来源（R3）"
+  unverified_assertions: [a2]       # 具体是哪几条把上限拉低，便于人工定点确认
+
 steps:
   - {id: s1, status: pass, driver: web, duration_ms: 210, locator_hit: null}
   - {id: s2, status: pass, driver: web, duration_ms: 130, locator_hit: 3}
@@ -543,6 +593,9 @@ finished_at: 2026-11-13T16:40:14+08:00
 |---|---|---|---|
 | `verdict` | ✓/✓ | program（断言引擎） | 报表、准入结论、flaky 检测 |
 | `inconclusive_kind` | 条件✓ | program | **准入结论单独统计**；区分环境问题与质量问题 |
+| `verdict_cap` | -/- | program | **v1.1**：回答「这次没判 pass，是产品不行还是预期没确认」；报表必须单列，不得混进失败率 |
+| `verdict_cap.applied` | -/- | program | `true` 表示结论确实被压低；`false` 表示上限本就无关（如已 fail） |
+| `verdict_cap.unverified_assertions` | -/- | program | 人工定点确认的工作清单——**不给清单，人不知道去确认哪几条** |
 | `assertions[].expected/actual` | -/✓ | program | 错误通过率、断言有效性分析 |
 | `self_heal` | -/- | program | 资产健康度扣分、flaky 前兆 |
 | `metrics.llm_calls/tokens` | ✓/✓ | program | **证明"重放零 LLM"**；成本趋势 |
@@ -550,9 +603,10 @@ finished_at: 2026-11-13T16:40:14+08:00
 | `consistency.baseline_exec` | -/✓ | program | 一致性比对锚点；失败时回答"和哪一次不一致" |
 | `consistency.diff_detail` | 条件✓ | program | `identical=false` 时必填，直接支撑 flaky 归因（不用 LLM 猜） |
 
-**两条硬规则**：
+**三条硬规则**：
 1. `verdict: pass` 的前提是**所有 `decide` 断言都 pass**（V-14）；`observe` 失败不改变 verdict，但必须记录；
-2. **`attempt > 1` 不影响 verdict 计算**：重试只用于判断环境抖动，绝不允许"第二次通过就算通过"（对应"禁用含重试的通过率"）。
+2. **`attempt > 1` 不影响 verdict 计算**：重试只用于判断环境抖动，绝不允许"第二次通过就算通过"（对应"禁用含重试的通过率"）；
+3. **v1.1：`verdict_cap.ceiling = inconclusive` 时不许出 `pass`**（V-39）。这条是把 oracle 不可信从"评审时提醒"变成"机器上过不去"——**宁可报 inconclusive（我们不知道），不可报 pass（我们以为知道）**。
 
 ### 3.6 `defect` 缺陷
 
@@ -732,14 +786,16 @@ resolution: null
 | V-36 | M | `report` 对外导出必须 `status=approved` 且 `approved_by` 含 human（10.1 #4） | 拒绝导出 | 状态机前置 |
 | V-37 | M | 同一 `case_ref` 只允许一份 `plan`，环境差异入 `variants/`（10.1 #6） | 拒绝入库 | 索引唯一性检查 |
 | V-38 | S | 数值型 `range` / `value` / `boundary` 必须为字符串十进制，检测到 float 报错（10.1 #7） | schema 拒绝 | YAML 加载时类型断言 |
+| V-39 | M | **`EXPECT_UNVERIFIED_PASS`**：`exec.verdict=pass` 时，被引用 expected 的 `state` 不得全为 `unverified`/`drifted`（至少一条 `verified` 的 decide 断言，R4）；`verdict_cap.ceiling=inconclusive` 却给 `pass` 直接判违规 | verdict 强制改 `inconclusive` | 断言汇总 + 期望状态反查 |
+| V-40 | X | **`EXPECT_DRIFT`**：同一 `case_id` 的 `expected` 在一个版本周期内变更 ≥2 次，`state` 必须标 `drifted`，且该用例不得进冒烟集 | 强制标 drifted + 阻塞冒烟入选 | 变更计数（store 历史）+ 状态比对 |
 
 **实现优先级建议**：
 
 | 批次 | 规则 | 理由 |
 |---|---|---|
 | M1 必做 | V-01~V-08、V-15~V-21、V-27、V-30、V-31、**V-37、V-38** | schema + 执行链路完整性，直接支撑"重放可复现"；V-37/V-38 属落地即生效的硬约束 |
-| M1 应做 | V-05、V-14、**V-35**、V-33 | 防凭证泄露、防不可判定断言（含 matcher 越界）、覆盖率对账 |
-| M2 做 | V-09~V-13、V-28、V-29、V-34、**V-36** | 依赖需求分析链路、原文库与报告状态机 |
+| M1 应做 | V-05、V-14、**V-35**、V-33、**V-39** | 防凭证泄露、防不可判定断言（含 matcher 越界）、覆盖率对账、**防"错误预期产出绿色结论"**（V-39 是最便宜的一道，只需断言状态求和） |
+| M2 做 | V-09~V-13、V-28、V-29、V-34、**V-36**、**V-40** | 依赖需求分析链路、原文库、报告状态机；V-40 还需变更历史（store） |
 | M3 做 | V-22~V-26、V-32 | 依赖缺陷库、报告、回归集 |
 
 ---
@@ -1086,6 +1142,90 @@ range: [0.01, 999999.99]         # 禁止（YAML 解析为 float）
 | 4.2 risk | 16.3 | 风险台账 |
 | 第 5 章 | 17.2 | "防不可复现"约束的清单化 |
 | 第 6 章 | 6.2、13 | 血缘、覆盖率对账、选集可解释 |
+
+---
+
+## 附录 C：v1.1 变更记录（2026-11-15）
+
+按附录 A 六步执行，逐步留痕。
+
+### C.1 提出
+
+| 新增项 | 消费它的机制 | 不填的后果 |
+|---|---|---|
+| `test_point.expected[].source{type,ref,quote}` | V-39 判定上限、冒烟集准入（R1/R2）、人工复核定位 | 预期无源可查，「满 100 减 10 读成打 9 折」这种错误无法被发现 |
+| `test_point.expected[].state` | V-39（verdict 上限）、V-40（漂移）、报表单列 | 全未确认的用例照样判 pass，绿色结论失去含义 |
+| `exec.verdict_cap{ceiling,applied,reason,unverified_assertions}` | 报表单列「因预期未确认而未判 pass」；人工定点确认清单 | 报告里分不清「产品坏了」和「我们不知道」，两者被混进同一个失败率 |
+
+### C.2 审计（对照第 7 章：无消费者一律拒绝）
+
+| 字段 | 消费者 | 是否具体 |
+|---|---|---|
+| `expected[].source.type` | V-39（`model` 不得 verified）、冒烟集准入 | ✓ 有明确判定分支 |
+| `expected[].source.ref` | 人工复核（定位原文位置）、V-28 扩展 | ✓ |
+| `expected[].source.quote` | 人工复核「预期是否读错」 | ✓ 这是 P0-1 唯一的人可核证据 |
+| `expected[].state` | V-39 / V-40 / 冒烟集 / 报告 | ✓ 四处 |
+| `verdict_cap.ceiling/applied` | 报表口径拆分、准入结论 | ✓ 防止 inconclusive 混入失败率 |
+| `verdict_cap.unverified_assertions` | 人工确认工作清单 | ✓ 无此清单则人不知去确认哪几条 |
+
+无一项被拒。
+
+### C.3 缺省语义（旧产物不迁移的依据）
+
+| 缺失字段 | 视同 | 理由 |
+|---|---|---|
+| `expected[].source` 缺失 | `state` 强制 `unverified` | R1「无源即无信」。**不能默认 verified**——那等于给所有历史产物发一张信用证明 |
+| `expected[].state` 缺失 | `unverified` | 同上 |
+| `exec.verdict_cap` 缺失 | 视为「未评估」，报表标 `unknown`，**不当作 `applied=false`** | 「没评估」和「评估了但没压低」是两件事，混同会掩盖风险 |
+| `source.type=model` + `state=verified` | 违规（V-39 附带检查） | R2：模型不能自证，只能由人转正 |
+
+### C.3.1 「视同 unverified」的适用范围（这一条比上面那张表更重要）
+
+上面说「缺失视同 unverified」，但**这个「视同」不等于「V-39 要拦」**。两者的区别是这条规则能不能在真实团队里活下去的关键：
+
+| 情形 | 判定 | 处置 |
+|---|---|---|
+| 一条 `state` 都没填（v1.0 时期的历史产物） | **历史债务，不是违规** | 不进冒烟集（R1）+ 报告单列「N 条 pass 建立在未评估的预期上」 |
+| 填了 `state`，但全部是 `unverified`/`drifted` | **明确违规** | V-39 拦，verdict 降 `inconclusive`（R3/R4） |
+
+为什么必须分开：**「没记录」和「记录了说没确认」不是一回事。**
+
+- 前者是这套机制上线前产生的数据，没有人说过「确认过」，也没有人说过「没确认」。硬拦等于上线当天把所有历史用例判红——团队的第一反应不是去补 1500 条确认，而是把这条规则关掉。**一条会被关掉的规则，等于没有。**
+- 后者是产物自己声明了「这条预期没被确认」，结论却还是 pass。这是自相矛盾，必须当场拦住。
+
+历史债务靠**报告暴露**（让人看见有多少绿色是不可信的），不靠**校验器硬拦**（把人逼到关规则）。两者都是「诚实」，但只有前者能真正落地。
+
+> 这条区分是 v1.1 落地时踩出来的：首版 V-39 对所有缺 `state` 的产物一律报错，97 条既有 fixture 当场红了 2 条。**规则本身没错，是处置粒度错了。**
+
+### C.4 影响面
+
+| 面 | 影响 | 处置 |
+|---|---|---|
+| IR 契约 | 3 个可选字段 + 2 条规则 | 本文件 v1.1 |
+| 校验器 | `irval` 新增 V-39 / V-40 与结构校验 | 已同步（`schema_rules.py` / `semantic_rules.py` / `xref_rules.py`） |
+| agent 提示词 | 生成 test_point 时需填 `source`/`state` | 提示词侧标注「无源则默认 unverified」，不强制填（强制填会诱导编造 ref） |
+| 已有产物 | **无需迁移** | C.3 给出缺省语义 |
+| 执行链路 | `applyCeiling` 结果需落 `verdict_cap` | 编排层同步（JS 侧） |
+
+> **「强制 agent 填 source」是错的**：填不出真来源时它会编一个看着像的 ref，比留空更危险。留空→`unverified`→V-39 拦住 pass，是正确闭环。
+
+### C.5 落地
+
+| 项 | 位置 |
+|---|---|
+| 契约文本 | 本文件 §3.2 / §3.5 / §5 规则表 |
+| 结构校验 | `irval/schema_rules.py` |
+| V-39 | `irval/semantic_rules.py` |
+| V-40 | `irval/xref_rules.py` |
+| 错误码 | `irval/errors.py`：`EXPECT_UNVERIFIED_PASS` / `EXPECT_DRIFT` / `EXPECT_SOURCE_INVALID` / `EXPECT_STATE_INVALID` / `VERDICT_CAP_INVALID` |
+| 测试 | `aitestharness-ir/tests/` 新增用例 |
+
+### C.6 回归
+
+用第 9 章端到端样例跑全链路，确认：
+1. 旧产物（无新字段）仍能通过校验——**不因升级卡住历史数据**；
+2. 新产物带全字段时 V-39/V-40 判定正确；
+3. 规则总数 38 → 40，`irval` 原 97 条 fixture 全绿。
 
 ---
 
