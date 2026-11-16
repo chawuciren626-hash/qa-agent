@@ -1057,7 +1057,11 @@ export class ProjectConfigService implements ProjectConfigStore {
   }
 
   /**
-   * Initial config for a newly created Project: display name + the built-in catalog's seed
+   * Initial config for a newly created Project: display name + the model config. With a user's
+   * shared model record (the account-wide settings, `.account-models/`), the Project **reads**
+   * it — its model part (default/vision model, provider groups, model rows) becomes the file's
+   * whole model config, so the picker offers exactly what the user configured globally; the
+   * preset catalog is not seeded. Without one, the built-in catalog's seed falls back
    * (presetProjectConfig: the default model, each built-in group's `[providers.<id>]` table —
    * endpoint and protocol — and all preset entries; an entry stores its catalog facts, plus a
    * protocol or endpoint only where it differs from its group's table — and no key). From here
@@ -1068,7 +1072,22 @@ export class ProjectConfigService implements ProjectConfigStore {
    */
   async writeInitialConfig(projectId: string, name: string, ownerUserId?: string): Promise<void> {
     const preset = presetProjectConfig();
-    const shared=ownerUserId ? await this.readSharedModels(ownerUserId) : null;
+    const shared = ownerUserId
+      ? await this.readSharedModels(ownerUserId).catch(() => null)
+      : null;
+    if (shared && ownerUserId) {
+      await this.writeRaw(projectId, {
+        name,
+        // The factory command-policy rules are seeded exactly like the model presets:
+        // copied in at creation, owned by the project from then on.
+        ...(preset.command_policy !== undefined ? { command_policy: preset.command_policy } : {}),
+        ...(shared.models ?? {}),
+      });
+      // Side tables the shared publish also carries: the row marks (省/推荐 promotions) and
+      // the ModelScope token, so the picker reads the same as the publishing Project.
+      await this.applySharedModelExtras(projectId, ownerUserId);
+      return;
+    }
     await this.writeRaw(projectId, {
       name,
       ...(preset.default_model !== undefined ? { default_model: preset.default_model } : {}),
@@ -1077,7 +1096,6 @@ export class ProjectConfigService implements ProjectConfigStore {
       ...(preset.command_policy !== undefined ? { command_policy: preset.command_policy } : {}),
       ...(preset.providers !== undefined ? { providers: preset.providers } : {}),
       models: preset.models,
-      ...(shared ? shared.models : {}),
     });
   }
 
