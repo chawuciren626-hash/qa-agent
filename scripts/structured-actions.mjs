@@ -21,6 +21,8 @@ import { diagnoseTestPoints } from './test-point-diagnosis.mjs';
 import { diagnoseTestCases } from './test-case-diagnosis.mjs';
 import { revisedDispatchId } from './recovery-policy.mjs';
 import { gateAction, recordToolUsage } from './tool-gate.mjs';
+import { runStageTool, stageToolCatalog, stageToolReceipts } from './stage-tool-runtime.mjs';
+import { stageScenarioPrompt } from './stage-tool-scenarios.mjs';
 import { recordTrace } from './trace.mjs';
 import { setReviewMode } from './review-mode.mjs';
 import { isIndependent, usesTaskArtifacts, inspectIndependentArtifacts, independentPrompt, taskArtifacts, taskRequiredArtifacts } from './independent-task.mjs';
@@ -43,6 +45,7 @@ import { createApiSnapshotReport, verifySnapshotReport } from './api-snapshot.mj
 import { planTestTracks, testTrackStatus, validateTrackRequest, trackInstructions, assertTrackStage, assertSiblingResources, publishTrackDelivery, configureDelivery } from './test-tracks.mjs';
 
 const definitions = {
+  run_stage_tool: ['run_id','stage','tool_id','payload','source_path'],
   create_api_snapshot_report: ['run_id','snapshot_path'],
   configure_delivery: ['run_id','scope_name'],
   plan_test_tracks: ['run_id','tracks','stages','review_mode','workflow_mode','source_mode','scope_name'],
@@ -97,6 +100,7 @@ export function actionCatalog(root) {
     controller_request_transport:{preferred:'For controller AND dispatched professional children: when exec_command exposes qa_request, supply the complete action object with the normal execute command and a unique request filename. The role hook persists it before execution; original dispatch/authorization guards still apply. No separate write_file needed.',fallback:'Without qa_request support, write_file first, wait for success, then execute.',retry:'Preparing a request is not proof of execution or an idempotency key. Unknown execution outcomes must be inspected, never blindly replayed.'},
     browser_operation_contract:{version:1,fields:browserOperationFields,note:'Allowed fields, not all required. Validation uses this same field registry; action-specific constraints below still apply.'},
     actions: definitions, request_format: { action: 'plan_run', run_id: 'run-example', stages: ['analysis'] },
+    stage_tools: Object.fromEntries(stageDefinitions.map(stage => [stage.id, stageToolCatalog(stage.id)])),
     required_artifacts:requiredArtifacts,
     dispatch_templates:stageDefinitions.map(stage=>dispatchTemplate(stage.id)),
     independent_required_artifacts:Object.fromEntries(Object.keys(taskArtifacts).map(stage=>[stage,taskRequiredArtifacts(stage)])),
@@ -178,6 +182,8 @@ function validate(request) {
     if(key==='snapshot_path' && request[key]===undefined)continue;
     if(key==='tracks'){validateTrackRequest(request);continue;}
     if(key==='operation') {try {if(request.action==='api_task') validateApiOperation(request.operation); else if(request.action==='draft_records') validateDraftOperation(request.operation); else if(request.action==='android_task') validateAndroidOperation(request.operation); else if(request.action==='miniprogram_task') validateMiniprogramOperation(request.operation); else validateBrowserOperation(request.operation);} catch(error){throw new CommandUsageError(error.message);} continue;}
+    if (key === 'payload') { requireInput(request[key] === undefined || request[key] && typeof request[key] === 'object' && !Array.isArray(request[key]), 'Tool payload must be a JSON object'); continue; }
+    if (key === 'source_path') { requireInput(request[key] === undefined || typeof request[key] === 'string' && request[key].trim(), 'source_path must be a run-local JSON path'); continue; }
     if (key === 'resource_keys') {requireInput(request[key]===undefined || Array.isArray(request[key]) && request[key].length<=40 && request[key].every(k=>typeof k==='string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(k)),'Invalid resource_keys');continue;}
     if (key === 'child_session' && request[key] === undefined) continue;
     if (key === 'recovery' && request[key] === undefined) continue;
@@ -186,6 +192,7 @@ function validate(request) {
     if (['start_line','end_line'].includes(key)) { requireInput(Number.isSafeInteger(v) && v>0, `Positive integer required for ${key}`); continue; }
     requireInput(['stages','skills','artifacts'].includes(key) ? Array.isArray(v) && v.length && v.every(s => typeof s === 'string' && s.trim() && !s.includes(',')) : typeof v === 'string' && v.trim(), `Invalid or missing ${key}`);
   }
+  if (request.action === 'run_stage_tool') requireInput((request.payload === undefined) !== (request.source_path === undefined), 'run_stage_tool needs exactly one of payload or source_path');
   if (request.mode !== undefined) requireInput(request.action === 'dispatch' && request.stage === 'execution' && ['prepare','browser','resume_browser'].includes(request.mode), 'dispatch.mode is optional: OMIT mode normally; use prepare for scripts, browser for lifecycle browser testing, or resume_browser after real human intervention. Do not use mode="default".');
   if(request.recovery!==undefined) requireInput(request.action==='handoff' && request.stage==='report' && request.recovery==='interrupted_report','Only report handoff supports interrupted_report recovery');
   if (request.review_mode !== undefined) requireInput(['auto','staged'].includes(request.review_mode), 'review_mode must be auto or staged');
@@ -448,8 +455,9 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
       const toolGate = gateAction(root, parsed.action, parsed);
       if (toolGate.blocked) throw new CommandUsageError(toolGate.blocked);
       if (toolGate.degraded.length) receipt.tool_degraded = toolGate.degraded;
-      tracedTools = toolGate.tools; tracedDegraded = toolGate.degraded;
-      recordToolUsage(root, parsed.action, { tools: toolGate.tools, degraded: toolGate.degraded });
+      // Policy bindings are prerequisites, not proof that an implementation ran.
+      receipt.tool_policy = { requires: toolGate.requires, degraded: toolGate.degraded };
+      tracedDegraded = toolGate.degraded;
       if(parsed.source_message_key) {
         const rows=assertParentSession(root,parsed.run_id,session,agentRoot);
         const users=nativeUserRequests(rows).filter(user=>hash(JSON.stringify([session,user.timestamp,user.payload.text]))===parsed.source_message_key);
@@ -489,6 +497,18 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
         const result=createApiSnapshotReport(root,parsed.run_id,session,snapshotPath);
         return {status:'completed',exit_code:0,execution_mode:'in_process',launches_child:false,result};
       }
+      if (parsed.action === 'run_stage_tool') {
+        const manifest = JSON.parse(readRunFile(runDirectory(root, parsed.run_id), 'manifest.json').data);
+        const dispatch = manifest.orchestration?.events?.filter(e => e.type === 'dispatched' && e.stage === parsed.stage).at(-1);
+        requireInput(dispatch?.['parent-session-id'] === session, 'Current owning stage dispatch required for tool invocation');
+        const result = runStageTool(root, { runId: parsed.run_id, stage: parsed.stage, toolId: parsed.tool_id, payload: parsed.payload, sourcePath: parsed.source_path });
+        tracedTools = [parsed.tool_id];
+        receipt.tool_receipt = result.tool_receipt;
+        receipt.tool_implementation_sha256 = result.implementation_sha256;
+        recordToolUsage(root, parsed.action, { tools: tracedTools, receipt: result.tool_receipt,
+          runId: parsed.run_id, stage: parsed.stage, implementationSha256: result.implementation_sha256 });
+        return { status: 'completed', exit_code: 0, execution_mode: 'in_process', launches_child: false, result };
+      }
       if(parsed.action==='api_task') {
         const rows=assertParentSession(root,parsed.run_id,session,agentRoot);
         const result=await apiTask(root,parsed.run_id,session,parsed.operation,{nativeMessages:nativeUserRequests(rows).map(r=>r.payload.text)});
@@ -507,6 +527,17 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
         try {
           const output=await runProjectCommand(root,{kind:'node',script:'browser-task.mjs',args:[parsed.run_id,temp],runId:parsed.run_id,timeoutMs:parsed.operation.type==='sequence'?250000:65000,signal});
           if(output.status==='completed') {try {output.data=JSON.parse(readRunFile(dir,`audit/commands/${output.command_id}/command.log`).data.toString('utf8'));} catch {output.data={status:'inspect_command_log'};}}
+          if (parsed.operation.type === 'snapshot' && output.status === 'completed' && output.exit_code === 0 &&
+            typeof output.data?.snapshot?.sha256 === 'string') {
+            const evidencePath=`execution/browser-evidence/${parsed.operation.request_id}.json`;
+            const evidence=readRunFile(dir,evidencePath);
+            const operationReceipt=JSON.parse(evidence.data);
+            if (operationReceipt.status === 'completed' && operationReceipt.command_id === output.command_id)
+              receipt.tool_checks=[{tool_id:'dom.snapshot',implementation:'scripts/browser-task.mjs',
+                implementation_sha256:hash(readFileSync(resolve(root,'scripts/browser-task.mjs'))),status:'completed',
+                input:{request_id:parsed.operation.request_id,receipt_path:evidencePath,receipt_sha256:evidence.sha256},
+                snapshot_sha256:output.data.snapshot.sha256}];
+          }
           return output;
         } finally {unlinkSync(temp);}
       }
@@ -631,6 +662,14 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
         }
         const selection=await runProjectCommand(root,{kind:'node',script:'select-test-cases.mjs',args:[`--run-id=${parsed.run_id}`,`--cases=${resolve(dir,'design/test_cases.json')}`,`--profile=${profile}`,...(parsed.changed_modules?[`--changed-modules=${parsed.changed_modules}`]:[]),...(parsed.changed_tags?[`--changed-tags=${parsed.changed_tags}`]:[])],runId:parsed.run_id,signal});
         if(selection.status!=='completed' || selection.exit_code!==0) return selection;
+        const selectedFile=readRunFile(dir,'selection/test-selection.json');
+        const selected=JSON.parse(selectedFile.data);
+        receipt.tool_checks=[{tool_id:'regression.select',implementation:'scripts/select-test-cases.mjs',
+          implementation_sha256:hash(readFileSync(resolve(root,'scripts/select-test-cases.mjs'))),status:'completed',
+          input:{path:'design/test_cases.json',sha256:readRunFile(dir,'design/test_cases.json').sha256,
+            policy_sha256:hash(readFileSync(resolve(root,'config/test-selection-policy.json'))),profile},
+          output:{path:'selection/test-selection.json',sha256:selectedFile.sha256},
+          selected:selected.summary?.selected ?? null,excluded:selected.summary?.excluded ?? null}];
         const plan=await runProjectCommand(root,{kind:'node',script:'create-execution-plan.mjs',args:[`--run-id=${parsed.run_id}`,`--cases=${resolve(dir,'design/test_cases.json')}`,`--selection=${resolve(dir,'selection/test-selection.json')}`,`--test-dir=${resolve(dir,'execution/scripts')}`,...(environmentConfig?[`--environment-config=${resolve(dir,environmentConfig)}`]:[])],runId:parsed.run_id,signal});
         if(plan.status!=='completed' || plan.exit_code!==0) return {...plan,selection_receipt:selection,execution_started:false,approval_granted:false};
         const script_reuse=reuseWebScripts(root,parsed.run_id);
@@ -638,7 +677,14 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
       }
       if (parsed.action === 'handoff') {
         const result=await handoffStage(root,session,parsed,{agentRoot,signal});
-        if(result.status==='completed')result.typed_delivery=publishTrackDelivery(root,parsed.run_id,parsed.stage);
+        if(result.status==='completed') {
+          if (!result.data?.already_recorded) {
+            const manifest=JSON.parse(readRunFile(runDirectory(root,parsed.run_id),'manifest.json').data);
+            const event=manifest.orchestration?.events?.filter(item=>item.type==='completed' && item.stage===parsed.stage).at(-1);
+            if (event?.['dispatch-id']===result.data?.dispatch_id) receipt.tool_checks=event.evidence?.artifact_contract?.tool_checks;
+          }
+          result.typed_delivery=publishTrackDelivery(root,parsed.run_id,parsed.stage);
+        }
         return result;
       }
       if (Object.hasOwn(draftArtifactActions, parsed.action)) return runDraftArtifactAction(root, session, parsed.action, parsed.run_id, { signal });
@@ -726,6 +772,12 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
         if(manifest.stages?.analysis?.status==='in_progress') env.QA_CONTROLLER_SESSION=session;
       }
       const output=await runProjectCommand(root,{kind:'node',...command,signal,env});
+      if (output.status !== 'completed' && ['validate_artifacts', 'validate_analysis'].includes(parsed.action)) {
+        try {
+          const validation = JSON.parse(output.output_tail);
+          if (Array.isArray(validation.tool_checks)) receipt.tool_checks = validation.tool_checks;
+        } catch { /* Failed command output is retained in its command log. */ }
+      }
       if (output.status === 'completed') {
         if(parsed.action==='resolve_confirmation' && parsed.stage==='execution' && parsed.decision==='approved') {
           try { output.script_library=archiveVerifiedWebScripts(root,parsed.run_id); }
@@ -735,6 +787,10 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
         if(parsed.action==='create_run') writeJson(receipt.task_binding,{session_id:session,run_id:parsed.run_id,created_at:receipt.at});
         if(parsed.action==='create_run') output.input_context=captureUserInputs(root,parsed.run_id,session,agentRoot,assertParentSession(root,parsed.run_id,session,agentRoot));
         try { output.data=JSON.parse(output.output_tail); } catch { output.data=null; output.data_note='Read full command log; no inferred result'; }
+        if (parsed.action === 'complete' && Array.isArray(output.data?.event?.evidence?.artifact_contract?.tool_checks))
+          receipt.tool_checks = output.data.event.evidence.artifact_contract.tool_checks;
+        if (['validate_artifacts', 'validate_analysis'].includes(parsed.action) && Array.isArray(output.data?.tool_checks))
+          receipt.tool_checks = output.data.tool_checks;
         if(['plan_run','extend_plan','run_status'].includes(parsed.action)) {
           const manifest=JSON.parse(readRunFile(runDirectory(root,parsed.run_id),'manifest.json').data);
           output.dispatch_templates=(manifest.orchestration?.plan?.stages ?? []).filter(s=>s.selected).map(s=>({action:'dispatch',run_id:parsed.run_id,stage:s.id,agent:s.agent,skills:s.skills}));
@@ -753,6 +809,7 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
           const inputFiles=readdirSync(resolve(runDirectory(root,parsed.run_id),'inputs'),{withFileTypes:true}).filter(e=>e.isFile()).map(e=>`inputs/${e.name}`);
           output.source_read_templates=inputFiles.filter(path=>!/\.(docx?|pdf)$/i.test(path)).map(path=>({action:'read_source',run_id:parsed.run_id,path,start_line:1,end_line:200}));
           output.source_paths=inputFiles;
+          output.upstream_tool_receipts=stageToolReceipts(root,parsed.run_id,{beforeStage:parsed.stage});
           output.completion_template={action:'complete',run_id:parsed.run_id,stage:parsed.stage,dispatch_id:event.dispatch_id,artifacts:parsed.mode==='prepare'?['execution/execution-plan.json']:requiredArtifacts[parsed.stage]};
           output.handoff_template={action:'handoff',run_id:parsed.run_id,stage:parsed.stage,artifacts:output.completion_template.artifacts};
           output.failure_template={action:'fail',run_id:parsed.run_id,stage:parsed.stage,dispatch_id:event.dispatch_id,reason:'Replace with the actual returned child failure and receipt reference; not a retry authorization.'};
@@ -888,6 +945,7 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
           output.delegation.description=`处理${label}`;
           const deliveryInstructions=[
             trackInstructions(track),
+            `上游确定性工具回执：${JSON.stringify(output.upstream_tool_receipts)}。仅在与本阶段范围和输入契约匹配时读取并引用；回执中的实际 result 是工具输出，不能由 Agent 复写或据此扩大测试范围。`,
             `交付功能/模块名称：${deliveryManifest.delivery?.scope_name??'从真实需求提取功能或模块名称'}。正文标题使用该名称。内部产物仍写契约固定路径；总控 handoff 后发布模块命名文件：需求分析.md、功能/接口测试点.xmind、功能/接口测试用例.xlsx、功能/接口测试报告.html。报告只生成 HTML，执行和缺陷结果汇入报告，不向用户交付 test_xxx、内部 JSON 或 Word/PDF。`,
             ...(track?[`本链路当前阶段状态：${JSON.stringify(JSON.parse(readRunFile(runDirectory(root,parsed.run_id),'manifest.json').data).stages)}。执行失败/取消/受阻时，缺陷或报告task.outcome必须partial；无有效执行证据不得补造通过或确认产品缺陷。`]:[]),
             '对用户及总控的任务说明、进度、问题和最终答复使用中文；路径、字段名、ID、原始引用保持原样。内部推理语言不限。',
@@ -895,7 +953,9 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
             'exec_command支持qa_request时，动作对象直接放在该字段，不另写请求文件；请求文件名不同内容不得复用。'
           ].join('\n');
           writeFileSync(internalContractPath,
-            renderDelegationTaskBrief(taskBrief)+'\n\n【执行细则】\n'+readFileSync(internalContractPath,'utf8')+'\n'+deliveryInstructions+'\n','utf8');
+            renderDelegationTaskBrief(taskBrief)+'\n\n【执行细则】\n'+readFileSync(internalContractPath,'utf8')+'\n'
+            +`阶段场景与工具：\n${stageScenarioPrompt(parsed.stage)}\n阶段硬校验由控制器在验证与交接时自动执行，Agent 无需自行选择或复述校验结果。v3 IR 工具仅在本 run 已有完整且可核对的 IR 文件时可用；旧阶段 JSON 不可冒充 IR，不得补造缺失字段。可调用实现及输入契约：${JSON.stringify(stageToolCatalog(parsed.stage))}。若确有适用的完整 IR，使用 run_stage_tool.source_path 并引用真实回执；pending 不算已执行，停用工具不可绕过。\n`
+            +deliveryInstructions+'\n','utf8');
           output.delegation.prompt=[
             'Caller agent: test_agent',
             `任务：${label}。使用中文答复，仅处理stage=${parsed.stage}。`,
@@ -932,6 +992,10 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
     const next=error.code==='queue_cancelled'?'cancelled_before_execution_no_recovery_needed':error.code==='session_running'?'wait_for_active_command_or_report_engineering_issue':'report_engineering_issue_without_user_unlock';
     return {...receipt,next_action:error.recovery?.next_action ?? next,action_receipt:path};
   } finally { receipt.finished_at=new Date().toISOString();receipt.timing={version:1,queue_wait_ms:receipt.queue_wait_ms ?? null,action_ms:startedAt===undefined?null:performance.now()-startedAt,total_ms:performance.now()-queuedAt}; writeJson(path,receipt);
+    if (receipt.status === 'completed') for (const check of receipt.tool_checks ?? []) {
+      if (['passed', 'completed'].includes(check.status)) recordToolUsage(root, receipt.action, { tools: [check.tool_id], receipt: path,
+        runId: receipt.run_id, stage: receipt.stage ?? parsed?.stage, implementationSha256: check.implementation_sha256 });
+    }
     // 全链路 trace（L-10）：一次动作一行，参数已脱敏。写失败不影响本次调用——见 trace.mjs 文件头。
     recordTrace(root,{run_id:receipt.run_id,stage:receipt.stage ?? parsed?.stage ?? null,action:receipt.action,session,
       status:receipt.status,exit_code:receipt.exit_code,ok:receipt.status==='completed',

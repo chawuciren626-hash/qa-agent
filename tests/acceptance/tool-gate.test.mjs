@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   TOOL_BINDINGS, STATE_PATH, USAGE_PATH,
@@ -18,13 +18,14 @@ const root = resolve(import.meta.dirname, '../..');
  */
 function withState(disabled, run) {
   const path = resolve(root, STATE_PATH);
-  const backup = existsSync(path) ? path + `.bak-${randomUUID()}` : null;
+  const prior = existsSync(path) ? readFileSync(path) : null;
   try {
     if (disabled === null) rmSync(path, { force: true });
     else { mkdirSync(resolve(root, 'config'), { recursive: true }); writeFileSync(path, JSON.stringify({ version: 1, updated_at: new Date().toISOString(), disabled })); }
     return run();
   } finally {
-    rmSync(path, { force: true });
+    if (prior === null) rmSync(path, { force: true });
+    else writeFileSync(path, prior);
   }
 }
 
@@ -39,12 +40,13 @@ test('状态文件不存在时全部放行：工具是纪律增强，不是安�
 
 test('状态文件坏掉/不可读也放行，不让一次写盘决定流水线生死', () => {
   const path = resolve(root, STATE_PATH);
+  const prior = existsSync(path) ? readFileSync(path) : null;
   mkdirSync(resolve(root, 'config'), { recursive: true });
   writeFileSync(path, '{ not json');
   try {
     assert.deepEqual([...readRuntimeState(root).disabled], []);
     assert.equal(gateAction(root, 'dispatch', {}).blocked, null);
-  } finally { rmSync(path, { force: true }); }
+  } finally { if (prior === null) rmSync(path, { force: true }); else writeFileSync(path, prior); }
 });
 
 test('硬依赖停用 = 拒绝执行，且理由里说清楚该去哪儿恢复', () => {
@@ -54,6 +56,14 @@ test('硬依赖停用 = 拒绝执行，且理由里说清楚该去哪儿恢复',
     assert.match(gate.blocked, /管理后台/);
     // 不能建议绕道：绕过去产出的是一份少了快照的「正常」结果。
     assert.match(gate.blocked, /不要绕过/);
+  });
+});
+
+test('阶段工具调用受对应工具开关约束，不把其他工具一并停掉', () => {
+  withState(['plan.gates'], () => {
+    assert.match(gateAction(root, 'run_stage_tool', {tool_id:'plan.gates'}).blocked, /plan\.gates/);
+    assert.equal(gateAction(root, 'run_stage_tool', {tool_id:'report.reviewer'}).blocked, null);
+    assert.deepEqual(bindingSummary()['plan.gates'].hard, ['run_stage_tool']);
   });
 });
 
@@ -73,11 +83,24 @@ test('多硬依赖只要停一个就拦，理由只列真正停用的那个', ()
   });
 });
 
-test('条件依赖只在对应阶段生效：case 阶段的 validate_artifacts 才要求预期溯源', () => {
+test('条件依赖只在测试用例阶段生效：validate_artifacts 要求预期溯源', () => {
   withState(['expected.provenance'], () => {
-    assert.match(gateAction(root, 'validate_artifacts', { stage: 'case' }).blocked, /expected\.provenance/);
+    assert.match(gateAction(root, 'validate_artifacts', { stage: 'test_cases' }).blocked, /expected\.provenance/);
+    assert.match(gateAction(root, 'export_test_cases', {}).blocked, /expected\.provenance/);
+    assert.match(gateAction(root, 'diagnose_test_cases', {}).blocked, /expected\.provenance/);
+    assert.match(gateAction(root, 'handoff', { stage: 'test_cases' }).blocked, /expected\.provenance/);
+    assert.match(gateAction(root, 'complete', { stage: 'test_cases' }).blocked, /expected\.provenance/);
+    assert.match(gateAction(root, 'resolve_confirmation', { stage: 'test_cases', decision: 'approved' }).blocked, /expected\.provenance/);
     // 同一个 action、换个阶段就不该被这条工具拦住——否则一次停用会误伤整条流水线。
-    assert.equal(gateAction(root, 'validate_artifacts', { stage: 'testpoint' }).blocked, null);
+    assert.equal(gateAction(root, 'validate_artifacts', { stage: 'test_points' }).blocked, null);
+  });
+});
+
+test('测试点覆盖在对应阶段停用时阻止验证与完成', () => {
+  withState(['testpoint.coverage'], () => {
+    for (const action of ['validate_artifacts', 'handoff', 'complete'])
+      assert.match(gateAction(root, action, {stage:'test_points'}).blocked, /testpoint\.coverage/);
+    assert.equal(gateAction(root, 'validate_artifacts', {stage:'test_cases'}).blocked, null);
   });
 });
 
@@ -91,12 +114,12 @@ test('未绑定的 action 永远放行，也不产生计数', () => {
 
 test('调用流水按 action 与工具聚合，坏行跳过', () => {
   const path = resolve(root, USAGE_PATH);
-  const backup = existsSync(path) ? path + `.bak-${randomUUID()}` : null;
+  const prior = existsSync(path) ? readFileSync(path) : null;
   try {
     rmSync(path, { force: true });
-    recordToolUsage(root, 'dispatch', { tools: ['agent.contract', 'plan.phases'] });
-    recordToolUsage(root, 'dispatch', { tools: ['agent.contract', 'plan.phases'], degraded: ['regression.select'] });
-    recordToolUsage(root, 'browser_task', { tools: ['dom.snapshot'] });
+    recordToolUsage(root, 'dispatch', { tools: ['agent.contract', 'plan.phases'], receipt: 'audit/stage-tools/1.json' });
+    recordToolUsage(root, 'dispatch', { tools: ['agent.contract', 'plan.phases'], degraded: ['regression.select'], receipt: 'audit/stage-tools/2.json' });
+    recordToolUsage(root, 'browser_task', { tools: ['dom.snapshot'], receipt: 'audit/stage-tools/3.json' });
     recordToolUsage(root, 'read_source', { tools: [] });
     writeFileSync(path, '{"broken\n', { flag: 'a' });
     const usage = readToolUsage(root);
@@ -106,13 +129,14 @@ test('调用流水按 action 与工具聚合，坏行跳过', () => {
     assert.equal(usage.per_action.dispatch, 2);
     // 空工具的调用不落盘：记一行「什么都没用到」只是噪音。
     assert.equal(usage.per_action.read_source, undefined);
-  } finally { rmSync(path, { force: true }); }
+  } finally { if (prior === null) rmSync(path, { force: true }); else writeFileSync(path, prior); }
 });
 
 test('绑定表覆盖全部关键 action，且没有指向不存在工具的孤条目', () => {
   const known = new Set([
     'irval.check', 'assets.library', 'regression.select', 'plan.phases', 'agent.contract',
     'knowledge.incremental', 'dom.snapshot', 'expected.provenance', 'requirement.completeness',
+    'testpoint.coverage', 'm1.consistency',
   ]);
   for (const [action, binding] of Object.entries(TOOL_BINDINGS)) {
     for (const name of [...(binding.requires ?? []), ...(binding.enhances ?? [])]) {

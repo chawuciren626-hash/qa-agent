@@ -6,7 +6,7 @@ import { assertChildCommands, childCommandPolicy } from '../../scripts/child-com
 import { revisedDispatchId, upstreamDraftRevision, stageRevisionBudget, draftStages } from '../../scripts/recovery-policy.mjs';
 import { draftStageFiles } from '../../scripts/draft-stage-revision.mjs';
 import { resolve } from 'node:path';
-import { mkdirSync, writeFileSync, readFileSync, symlinkSync, existsSync, readdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, symlinkSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { requestAnalysisRevision } from '../../scripts/analysis-revision.mjs';
 import { actionCatalog, actionCommand, executeAction, actionFailureSummary } from '../../scripts/structured-actions.mjs';
 import { readControllerSession, withControllerSession } from '../../scripts/controller-command-session.mjs';
@@ -18,6 +18,7 @@ import { guardControllerTool } from '../../scripts/controller-tool-guard.mjs';
 import { guardChildTool } from '../../scripts/child-tool-guard.mjs';
 import { probePython } from '../../scripts/command-runtime.mjs';
 import { scriptTarget } from '../../scripts/command-runtime.mjs';
+import { readToolUsage } from '../../scripts/tool-gate.mjs';
 import { extendRunPlan } from '../../scripts/run-plan-extension.mjs';
 import { inspectStageArtifacts } from '../../scripts/artifact-contracts.mjs';
 import { assertStageReady } from '../../scripts/orchestration-state.mjs';
@@ -48,6 +49,32 @@ function fixture() {
   const execute=request=>executeAction(root,id,()=>JSON.stringify(request.action==='plan_run' ? {workflow_mode:'lifecycle',review_mode:'staged',...request} : request),{agentRoot});
   return {id,agentRoot,run_id,execute};
 }
+
+test('stage tool action invokes implementation and links its receipt', { skip: !process.env.QA_PYTHON }, async () => {
+  const f = fixture();
+  try {
+    assert.equal((await f.execute({action:'create_run',run_id:f.run_id})).exit_code, 0);
+    assert.equal((await f.execute({action:'plan_run',run_id:f.run_id,stages:['analysis']})).exit_code, 0);
+    assert.equal((await f.execute({action:'archive_input',run_id:f.run_id,name:'requirement.txt',text:'管理员可以创建用户'})).exit_code, 0);
+    assert.equal((await f.execute({action:'archive_input',run_id:f.run_id,name:'requirement-ir.json',text:JSON.stringify({requirement:{id:'R1',title:'创建用户',description:'创建用户',expected:'显示成功',preconditions:'管理员已登录'}})})).exit_code, 0);
+    const dispatched = await f.execute({action:'dispatch',run_id:f.run_id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis']});
+    assert.equal(dispatched.exit_code, 0, JSON.stringify(dispatched));
+    assert.match(contractText(dispatched), /run_stage_tool/);
+    const result = await f.execute({action:'run_stage_tool',run_id:f.run_id,stage:'analysis',tool_id:'requirement.testability',
+      payload:{requirement:{id:'R1',title:'创建用户',description:'创建用户',expected:'显示成功',preconditions:'管理员已登录'}}});
+    assert.equal(result.exit_code, 0, JSON.stringify(result));
+    const receipt = JSON.parse(readFileSync(result.action_receipt, 'utf8'));
+    assert.equal(receipt.tool_receipt, result.result.tool_receipt);
+    const sourced = await f.execute({action:'run_stage_tool',run_id:f.run_id,stage:'analysis',tool_id:'requirement.testability',source_path:'inputs/requirement-ir.json'});
+    assert.equal(sourced.exit_code, 0, JSON.stringify(sourced));
+    assert.equal(sourced.result.input_source.path, 'inputs/requirement-ir.json');
+    assert.match(sourced.result.input_source.sha256, /^[a-f0-9]{64}$/);
+    assert.equal(readToolUsage(root).per_tool['requirement.testability'] > 0, true);
+  } finally {
+    rmSync(resolve(root,'output/runs',f.run_id),{recursive:true,force:true});
+    rmSync(f.agentRoot,{recursive:true,force:true});
+  }
+});
 
 test('non-CSS sequence targets are rejected before launching and never stop the controller',async()=>{
   const f=fixture();
@@ -527,6 +554,7 @@ test('handoff verifies a returned child and reaches pending confirmation exactly
 
 test('handoff rejects invalid artifacts and incomplete children without stopping all commands',async()=>{
   const f=await returnedAnalysis();
+  const beforeCompleteness=readToolUsage(root).per_tool['requirement.completeness'] ?? 0;
   const file=resolve(f.dir,'analysis/requirement_analysis.md');const original=readFileSync(file);
   const before=f.read();writeFileSync(file,'invalid draft');
   const bad=await f.execute(f.request);
@@ -536,7 +564,10 @@ test('handoff rejects invalid artifacts and incomplete children without stopping
   const child=readFileSync(f.childFile,'utf8');writeFileSync(f.childFile,child.replace('"status":"completed"','"status":"running"'));
   assert.equal((await f.execute(f.request)).exit_code,2);assert.deepEqual(f.read(),before);
   writeFileSync(f.childFile,child);
-  assert.equal((await f.execute(f.request)).exit_code,0);
+  const completed=await f.execute(f.request);
+  assert.equal(completed.exit_code,0);
+  assert.equal(JSON.parse(readFileSync(completed.action_receipt,'utf8')).tool_checks?.[0]?.tool_id,'requirement.completeness');
+  assert.equal(readToolUsage(root).per_tool['requirement.completeness'],beforeCompleteness+1);
 });
 
 test('handoff retains native rejected write history without re-dispatch, but still validates artifacts',async()=>{
@@ -726,6 +757,45 @@ async function artifactFixture(stage) {
   writeFileSync(resolve(data.dir,'defects/bugs.json'),JSON.stringify({run_id:f.run_id,bugs:[]}));
   return {...f,...data,path};
 }
+
+test('case validation automatically records the provenance implementation and its action receipt', async () => {
+  const f = await artifactFixture('test_cases');
+  const before = readToolUsage(root).per_tool['expected.provenance'] ?? 0;
+  const result = await f.execute({ action: 'validate_artifacts', run_id: f.run_id, stage: 'test_cases' });
+  assert.equal(result.exit_code, 0, JSON.stringify(result));
+  const receipt = JSON.parse(readFileSync(result.action_receipt, 'utf8'));
+  assert.equal(receipt.tool_checks?.[0]?.tool_id, 'expected.provenance');
+  assert.equal(receipt.tool_checks[0].status, 'passed');
+  assert.equal(readToolUsage(root).per_tool['expected.provenance'], before + 1);
+});
+
+test('invalid case source stops validation without increasing successful tool calls', async () => {
+  const f = await artifactFixture('test_cases');
+  const before = readToolUsage(root).per_tool['expected.provenance'] ?? 0;
+  const cases = JSON.parse(readFileSync(resolve(f.dir, 'design/test_cases.json'), 'utf8'));
+  const rows = Array.isArray(cases) ? cases : cases.cases ?? cases.test_cases;
+  rows[0].expected_basis = [{ expected: rows[0].expected, kind: 'requirement', source_path: 'inputs/absent.txt', quote: rows[0].expected }];
+  writeFileSync(resolve(f.dir, 'design/test_cases.json'), JSON.stringify(cases));
+  const result = await f.execute({ action: 'validate_artifacts', run_id: f.run_id, stage: 'test_cases' });
+  assert.notEqual(result.exit_code, 0);
+  assert.match(result.output_tail ?? '', /already verified task source/);
+  const receipt = JSON.parse(readFileSync(result.action_receipt, 'utf8'));
+  assert.equal(receipt.tool_checks?.[0]?.status, 'failed');
+  assert.equal(receipt.tool_checks[0].tool_id, 'expected.provenance');
+  assert.equal(readToolUsage(root).per_tool['expected.provenance'] ?? 0, before);
+});
+
+test('analysis validation automatically records the completeness result', async () => {
+  const f = await artifactFixture('analysis');
+  const before = readToolUsage(root).per_tool['requirement.completeness'] ?? 0;
+  const result = await f.execute({ action: 'validate_analysis', run_id: f.run_id });
+  assert.equal(result.exit_code, 0, JSON.stringify(result));
+  const receipt = JSON.parse(readFileSync(result.action_receipt, 'utf8'));
+  const check = receipt.tool_checks?.find(item => item.tool_id === 'requirement.completeness');
+  assert.ok(check);
+  assert.equal(check.status, 'completed');
+  assert.equal(readToolUsage(root).per_tool['requirement.completeness'], before + 1);
+});
 
 test('every non-execution stage receives new validation and export budgets only after bounded recorded revision',async()=>{
   const workflow=JSON.parse(readFileSync(resolve(root,'config/orchestration-workflow.json'))).stages;

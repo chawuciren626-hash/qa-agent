@@ -69,7 +69,7 @@ export function guardChildTool(root,input,{agentId,agentRoot}) {
           const stage=stages[agentId];
           const dispatch=manifest.orchestration?.events?.filter(e=>e.type==='dispatched' && e.stage===stage).at(-1);
           if(manifest.stages?.[stage]?.status!=='in_progress' || !dispatch?.['parent-session-id']) throw new Error('Active professional dispatch required');
-          const common=['read_source','run_status','validate_artifacts','extract_word','diagnose_task'];
+          const common=['read_source','run_status','validate_artifacts','extract_word','diagnose_task','run_stage_tool'];
           const own={api_execution:['api_task'],analysis:['api_task','generate_analysis','validate_analysis','diagnose_analysis','analysis_summary'],test_points:['api_task','draft_records','diagnose_test_points','export_test_points'],test_cases:['api_task','draft_records','diagnose_test_cases','export_test_cases'],execution:['browser_task','explore_url','prepare_execution_plan','validate_execution_prepare'],defects:['assess_evidence','normalize_defects'],report:['build_report_metrics','export_report']};
           if(![...common,...own[stage]].includes(args.qa_request.action) || (args.qa_request.stage!==undefined && args.qa_request.stage!==stage)) throw new Error('Action belongs to another role; use this stage catalog');
           if(args.qa_request.action==='api_task' && stage!=='api_execution' && args.qa_request.operation?.type!=='inspect_contract') throw new Error('Design roles may only inspect API contracts');

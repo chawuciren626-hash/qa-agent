@@ -23,6 +23,11 @@ import { resolve, dirname } from 'node:path';
 export const STATE_PATH = 'config/tool-runtime-state.json';
 /** 调用流水，相对 engine root。一行一次调用，追加写避免并发覆盖。 */
 export const USAGE_PATH = 'output/runtime/tool-usage.jsonl';
+export const CALLABLE_STAGE_TOOL_IDS = Object.freeze([
+  'requirement.testability', 'requirement.acceptance', 'testpoint.coverage',
+  'irval.check', 'plan.gates', 'report.reviewer', 'defect.evidence', 'defect.tools',
+  'regression.impact', 'regression.select',
+]);
 
 /**
  * action → 工具绑定。
@@ -36,6 +41,7 @@ export const USAGE_PATH = 'output/runtime/tool-usage.jsonl';
  * 等能力落地再接。
  */
 export const TOOL_BINDINGS = {
+  run_stage_tool: { conditional: parsed => parsed?.tool_id ? [parsed.tool_id] : [] },
   // —— 阶段状态机：建 run、排阶段、推进、确认、失效 ——
   create_run: { requires: ['plan.phases'] },
   plan_run: { requires: ['plan.phases'] },
@@ -45,7 +51,7 @@ export const TOOL_BINDINGS = {
   preview_revision: { requires: ['plan.phases'] },
   revise_stage: { requires: ['plan.phases'] },
   request_confirmation: { requires: ['plan.phases'] },
-  resolve_confirmation: { requires: ['plan.phases'] },
+  resolve_confirmation: { requires: ['plan.phases'], conditional: parsed => parsed?.stage === 'test_cases' && parsed?.decision === 'approved' ? ['expected.provenance'] : [] },
   prepare_execution_plan: { requires: ['plan.phases', 'regression.select'] },
   configure_delivery: { requires: ['plan.phases'] },
   plan_test_tracks: { requires: ['plan.phases'] },
@@ -54,8 +60,8 @@ export const TOOL_BINDINGS = {
 
   // —— 派发契约：谁派给谁、交回来什么 ——
   dispatch: { requires: ['agent.contract', 'plan.phases'] },
-  handoff: { requires: ['agent.contract', 'plan.phases'] },
-  complete: { requires: ['agent.contract', 'plan.phases'] },
+  handoff: { requires: ['agent.contract', 'plan.phases'], conditional: parsed => stageChecks(parsed?.stage) },
+  complete: { requires: ['agent.contract', 'plan.phases'], conditional: parsed => stageChecks(parsed?.stage) },
   block: { requires: ['agent.contract', 'plan.phases'] },
   fail: { requires: ['agent.contract', 'plan.phases'] },
   resolve_child: { requires: ['agent.contract'] },
@@ -65,11 +71,11 @@ export const TOOL_BINDINGS = {
   diagnose_task: { requires: ['irval.check'] },
   diagnose_analysis: { requires: ['irval.check'] },
   diagnose_test_points: { requires: ['irval.check'] },
-  diagnose_test_cases: { requires: ['irval.check', 'expected.provenance'], when: parsed => parsed?.stage === 'case' },
+  diagnose_test_cases: { requires: ['irval.check', 'expected.provenance'] },
   validate_analysis: { requires: ['irval.check'] },
   validate_execution_prepare: { requires: ['irval.check'] },
   export_test_points: { requires: ['irval.check'] },
-  export_test_cases: { requires: ['irval.check', 'expected.provenance'], when: parsed => parsed?.stage === 'case' },
+  export_test_cases: { requires: ['irval.check', 'expected.provenance'] },
   assess_evidence: { requires: ['irval.check'] },
   normalize_defects: { requires: ['irval.check'] },
   build_report_metrics: { requires: ['irval.check'] },
@@ -78,7 +84,7 @@ export const TOOL_BINDINGS = {
   // validate_artifacts 按阶段分：case 阶段才有预期溯源这一说
   validate_artifacts: {
     requires: ['irval.check'],
-    conditional: parsed => (parsed?.stage === 'case' ? ['expected.provenance'] : []),
+    conditional: parsed => stageChecks(parsed?.stage),
   },
 
   // —— 执行面快照：多 frame 页面没有 frame_path 就会假失败 ——
@@ -92,6 +98,12 @@ export const TOOL_BINDINGS = {
   analysis_summary: { enhances: ['plan.phases'] },
 };
 
+function stageChecks(stage) {
+  if (stage === 'test_points') return ['testpoint.coverage'];
+  if (stage === 'test_cases') return ['expected.provenance'];
+  return [];
+}
+
 /**
  * 读运行期状态。返回停用的工具名集合。
  *
@@ -101,12 +113,13 @@ export const TOOL_BINDINGS = {
 export function readRuntimeState(root) {
   try {
     const path = resolve(root, STATE_PATH);
-    if (!existsSync(path)) return { disabled: new Set(), updatedAt: null, source: 'absent' };
+    if (!existsSync(path)) return { disabled: new Set(), versions: {}, updatedAt: null, source: 'absent' };
     const value = JSON.parse(readFileSync(path, 'utf8'));
     const disabled = Array.isArray(value?.disabled) ? value.disabled.filter(item => typeof item === 'string') : [];
-    return { disabled: new Set(disabled), updatedAt: typeof value?.updated_at === 'string' ? value.updated_at : null, source: 'file' };
+    const versions = value?.versions && typeof value.versions === 'object' && !Array.isArray(value.versions) ? value.versions : {};
+    return { disabled: new Set(disabled), versions, updatedAt: typeof value?.updated_at === 'string' ? value.updated_at : null, source: 'file' };
   } catch {
-    return { disabled: new Set(), updatedAt: null, source: 'unreadable' };
+    return { disabled: new Set(), versions: {}, updatedAt: null, source: 'unreadable' };
   }
 }
 
@@ -116,7 +129,7 @@ export function readRuntimeState(root) {
  * 返回结构固定三件套，调用方不需要再判断形态：
  *   blocked 非空 → 拒绝执行，blocked 就是原因
  *   degraded     → 可以跑，但要在回执里带上
- *   tools        → 这次调用实际用到的工具（含被拦的），用于计数
+ *   tools        → 本次动作受约束的工具 ID；实际调用由执行回执单独记录
  */
 export function gateAction(root, action, parsed) {
   const binding = TOOL_BINDINGS[action];
@@ -149,12 +162,15 @@ export function gateAction(root, action, parsed) {
  * 为什么不写成汇总 JSON：多个子会话会并发跑 action，读-改-写会互相覆盖，
  * 而 `O_APPEND` 的小行追加是原子的。宁可在读取端多聚合一次。
  */
-export function recordToolUsage(root, action, { tools = [], degraded = [] } = {}) {
-  if (!tools.length && !degraded.length) return;
+export function recordToolUsage(root, action, { tools = [], degraded = [], receipt = null, runId = null, stage = null, implementationSha256 = null } = {}) {
+  // A passed policy gate is not a tool invocation. Only a completed implementation
+  // with a durable receipt may increment the admin's call counter.
+  if (!receipt || !tools.length) return;
   try {
     const path = resolve(root, USAGE_PATH);
     mkdirSync(dirname(path), { recursive: true });
-    const row = { at: new Date().toISOString(), action, tools: [...new Set(tools)], degraded: [...new Set(degraded)] };
+    const row = { kind: 'execution', at: new Date().toISOString(), action, tools: [...new Set(tools)], degraded: [...new Set(degraded)], receipt,
+      run_id: runId, stage, implementation_sha256: implementationSha256 };
     appendFileSync(path, `${JSON.stringify(row)}\n`);
   } catch {
     // 计数是观测，不是业务。写不进去不能影响这次调用本身。
@@ -175,7 +191,7 @@ export function readToolUsage(root, { since = null } = {}) {
     if (!line.trim()) continue;
     let row;
     try { row = JSON.parse(line); } catch { continue; }
-    if (typeof row?.at !== 'string') continue;
+    if (row?.kind !== 'execution' || typeof row?.receipt !== 'string' || typeof row?.at !== 'string') continue;
     if (since && row.at < since) continue;
     total += 1;
     if (!firstAt || row.at < firstAt) firstAt = row.at;
@@ -205,6 +221,10 @@ export function bindingSummary() {
       if (!byTool.has(name)) byTool.set(name, { hard: [], soft: [] });
       byTool.get(name).soft.push(action);
     }
+  }
+  for (const name of CALLABLE_STAGE_TOOL_IDS) {
+    if (!byTool.has(name)) byTool.set(name, { hard: [], soft: [] });
+    byTool.get(name).hard.push('run_stage_tool');
   }
   return Object.fromEntries([...byTool].map(([name, value]) => [name, {
     hard: value.hard.sort(),

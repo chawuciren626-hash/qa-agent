@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { resourcePath } from './directory-context.mjs';
 import { assertExecutionTargets, executionScriptFiles } from './execution-targets.mjs';
@@ -12,14 +13,18 @@ import { governedDefects, lifecycleReferences } from './defect-lifecycle.mjs';
 import { defectGateReasons, qualityGateStatus } from './quality-gate.mjs';
 import { severityProblems } from './defect-severity.mjs';
 import { inspectRequirementLedger } from './requirement-provenance.mjs';
+import { inspectCompleteness } from './requirement-completeness.mjs';
+import { inspectCoverage } from './coverage-split.mjs';
+import { inspectM1 } from './consistency-report.mjs';
+import { buildClusters } from './defect-cluster.mjs';
 import { assertAnalysisMarkdown } from './analysis-markdown.mjs';
 import { sealedExecutionOutcome } from './execution-outcome.mjs';
 import { diagnoseTestPoints } from './test-point-diagnosis.mjs';
 import { isIndependent, usesTaskArtifacts, taskRequiredArtifacts, inspectIndependentArtifacts } from './independent-task.mjs';
 import { usesBrowserArtifacts } from './browser-lifecycle.mjs';
 import { assertTrackRows } from './test-tracks.mjs';
-import { inspectCaseExpectations } from './expected-source.mjs';
-import { inspectExpectationBasis, collectSourceTexts } from './expectation-basis.mjs';
+import { inspectExpectedProvenance } from './expected-provenance-check.mjs';
+export { inspectExpectedProvenance } from './expected-provenance-check.mjs';
 import { readRuntimeState } from './tool-gate.mjs';
 
 import { lifecycleArtifacts } from './stage-registry.mjs';
@@ -44,6 +49,12 @@ const compiledSchema = schemaCache();
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const sameSet = (a, b) => isDeepStrictEqual([...a].sort(), [...b].sort());
+const provenanceImplementationHash = createHash('sha256').update(readFileSync(new URL('./expected-provenance-check.mjs', import.meta.url))).digest('hex');
+const completenessImplementationHash = createHash('sha256').update(readFileSync(new URL('./requirement-completeness.mjs', import.meta.url))).digest('hex');
+const coverageImplementationHash = createHash('sha256').update(readFileSync(new URL('./coverage-split.mjs', import.meta.url))).digest('hex');
+const pointCoverageImplementationHash = createHash('sha256').update(readFileSync(new URL('./test-point-diagnosis.mjs', import.meta.url))).digest('hex');
+const consistencyImplementationHash = createHash('sha256').update(readFileSync(new URL('./consistency-report.mjs', import.meta.url))).digest('hex');
+const clusteringImplementationHash = createHash('sha256').update(readFileSync(new URL('./defect-cluster.mjs', import.meta.url))).digest('hex');
 
 export function validateSchema(name, value, label = name) {
   assert(/^[a-z][a-z0-9_-]*$/.test(name),'Invalid schema name');
@@ -60,48 +71,11 @@ function zipEntry(data, name) {
   return Buffer.from(entry.content).toString('utf8');
 }
 
-/**
- * 预期溯源自洽性检查（工具 `expected.provenance`）。
- *
- * **只拦「写了但自相矛盾」的，不拦「没写」的**：写了的必须站得住——model 不能自证 verified、
- * verified 必须有人签字、decide 必须有原文引用；没写的照旧放行，但把 unverified 的数量报出来，
- * 让「这条用例的预期从来没人确认过」变成一个看得见的数。
- *
- * 工具被停用时**直接跳过且不报错**：此时闸门已经在更外层拒绝了 case 阶段的 `validate_artifacts`，
- * 还能走到这里说明是别的路径在调（比如 handoff 内部的产物检查）。停用的语义是「这条纪律不生效」，
- * 不是「所有相关流程都瘫掉」。
- */
-export function inspectExpectedProvenance(rows, root, dir = null) {
-  const skipped = { problems: [], located: 0, notRecorded: 0, verified: 0, skipped: true };
-  try { if (readRuntimeState(root).disabled.has('expected.provenance')) return skipped; }
-  catch { return skipped; }
-  const problems = [];
-  let located = 0;
-  let notRecorded = 0;
-  let verified = 0;
-  // 依据判定复用 `expectation-basis.mjs`——执行期用的也是那一套，两套并存的话，
-  // 用例阶段说「依据齐全」、执行阶段说「引用不成立」，没人知道该信哪个。
-  const sources = dir ? collectSourceTexts(dir) : new Map();
-  for (const row of Array.isArray(rows) ? rows : []) {
-    const caseId = row?.case_id ?? 'case';
-    const basis = inspectExpectationBasis(row, sources);
-    basis.errors.forEach(error => problems.push(`${caseId}: ${error}`));
-    if (basis.status === 'source_located') located += 1; else notRecorded += 1;
-    // `expectations` 是可选的**状态**声明（谁确认过、可信到什么程度）；
-    // 与 `expected_basis`（这句话的依据在哪）互补，不是二选一。
-    if (row?.expectations === undefined) continue;
-    try {
-      const { expectations } = inspectCaseExpectations(row, caseId);
-      for (const item of expectations) if (item.state === 'verified') verified += 1;
-    } catch (error) { problems.push(error.message); }
-  }
-  return { problems, located, notRecorded, verified, skipped: false };
-}
-
 export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', artifacts = [] } = {}) {
   if (usesTaskArtifacts(root,runId,stage)) return inspectIndependentArtifacts(root,runId,stage,{artifacts});
   const files = new Map();
   const errors = [];
+  const toolChecks = [];
   let executionOutcome;
   const dir = runDirectory(root, runId);
   const capture = path => {
@@ -147,7 +121,12 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
     }
   };
   const points = () => {
-    const { rows, ledger, errors: pointErrors } = diagnoseTestPoints(runId, capture);
+    const { rows, ledger, errors: pointErrors, coverage, coverage_counts } = diagnoseTestPoints(runId, capture);
+    if (stage === 'test_points') toolChecks.push({ tool_id: 'testpoint.coverage',
+      implementation: 'scripts/test-point-diagnosis.mjs', implementation_sha256: pointCoverageImplementationHash,
+      status: pointErrors.length ? 'failed' : 'passed',
+      input: [files.get('analysis/requirement-ledger.json'), files.get('design/test_points.json')].filter(Boolean),
+      coverage_counts, missing_rule_ids: coverage.missing, problems: pointErrors });
     assertTrackRows(JSON.parse(readRunFile(dir,'manifest.json').data).test_track,rows,{design:true});
     assert(!pointErrors.length, pointErrors.join('; '));
     feedbackIncluded(ledger);
@@ -185,6 +164,24 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
     // verified 必须有人签字、decide 必须有原文引用；没写的照旧放行，但要在结果里如实报出
     // unverified 的数量，让「这个用例的预期从来没人确认过」变成一个看得见的数，而不是沉默通过。
     const provenance = inspectExpectedProvenance(rows, root, dir);
+    if (stage === 'test_cases') {
+      const sourceFiles = [];
+      if (!provenance.problems.length && !provenance.skipped) for (const path of new Set(rows.flatMap(row =>
+        (row.expected_basis ?? []).map(basis => basis.source_path).filter(Boolean)))) {
+        const file = readRunFile(dir, path);
+        files.set(file.path, { path: file.path, sha256: file.sha256 });
+        sourceFiles.push({ path: file.path, sha256: file.sha256 });
+      }
+      // Keep the result in the stage contract, including a failed check. A policy
+      // gate alone is not evidence that the implementation inspected these cases.
+      toolChecks.push({ tool_id: 'expected.provenance', implementation: 'scripts/expected-provenance-check.mjs',
+        implementation_sha256: provenanceImplementationHash,
+        status: provenance.skipped ? 'skipped' : provenance.problems.length ? 'failed' : 'passed',
+        input: { path: 'design/test_cases.json', sha256: files.get('design/test_cases.json')?.sha256,
+          source_files: sourceFiles },
+        located: provenance.located, not_recorded: provenance.notRecorded, verified: provenance.verified,
+        problems: provenance.problems });
+    }
     assert(!provenance.problems.length, provenance.problems.join('; '));
     return rows;
   };
@@ -301,6 +298,14 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
       const { ledger } = inspectRequirementLedger(runId, capture);
       feedbackIncluded(ledger);
       assertAnalysisMarkdown(ledger, capture(required[0]));
+      const completenessDisabled = readRuntimeState(root).disabled.has('requirement.completeness');
+      const completeness = completenessDisabled ? null : inspectCompleteness(ledger);
+      toolChecks.push({ tool_id: 'requirement.completeness', implementation: 'scripts/requirement-completeness.mjs',
+        implementation_sha256: completenessImplementationHash,
+        status: completenessDisabled ? 'skipped' : completeness.available ? 'completed' : 'not_applicable',
+        input: { path: 'analysis/requirement-ledger.json', sha256: files.get('analysis/requirement-ledger.json')?.sha256 },
+        available: completeness?.available ?? false, score: completeness?.score ?? null,
+        ...(completenessDisabled ? { reason: 'tool_disabled' } : completeness.available ? { denominator: completeness.denominator, warnings: completeness.warnings } : { reason: completeness.reason }) });
     }
     if (stage === 'test_points') {
       const rows = points();
@@ -344,6 +349,15 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
     if (stage === 'defects' || stage === 'report') {
       const result = stage === 'report' ? reportResults() : terminalResults();
       const rows = defects(result);
+      if (stage === 'defects' && result.cases.some(row => row.status === 'failed') &&
+        !readRuntimeState(root).disabled.has('defects.cluster')) {
+        const clustered = buildClusters(rows, { results: result.cases });
+        toolChecks.push({ tool_id: 'defects.cluster', implementation: 'scripts/defect-cluster.mjs',
+          implementation_sha256: clusteringImplementationHash, status: 'completed',
+          input: [files.get('defects/defect-records.json'), files.get('execution/test_results.json')].filter(Boolean),
+          stats: clustered.stats, merge_safety: clustered.merge_safety,
+          cluster_ids: clustered.clusters.map(item => item.cluster_id) });
+      }
       const assessment = assessmentFor(result);
       const levels = ['low', 'medium', 'strong'];
       for (const row of rows) assert(row.related_cases.every(id => levels.indexOf(row.confidence) <= levels.indexOf(assessment.assessments.find(item => item.case_id === id).evidence_confidence)), `${row.defect_id}: confidence exceeds evidence assessment`);
@@ -362,6 +376,23 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
         assert(isDeepStrictEqual(metrics.execution.failure_categories, categories), 'Report execution failure categories mismatch');
         if (result.status !== 'blocked') {
           const designed = cases();
+          if (!readRuntimeState(root).disabled.has('m1.consistency')) {
+            const consistency = inspectM1({ runs: result.cases });
+            toolChecks.push({ tool_id: 'm1.consistency', implementation: 'scripts/consistency-report.mjs',
+              implementation_sha256: consistencyImplementationHash, status: 'completed',
+              input: files.get('execution/test_results.json'), overall: consistency.overall,
+              checks: consistency.checks });
+          }
+          const coverageDisabled = readRuntimeState(root).disabled.has('coverage.split');
+          const coverage = coverageDisabled ? null : inspectCoverage({ cases: designed, results: result.cases });
+          toolChecks.push({ tool_id: 'coverage.split', implementation: 'scripts/coverage-split.mjs',
+            implementation_sha256: coverageImplementationHash,
+            status: coverageDisabled ? 'skipped' : coverage.available ? 'completed' : 'not_applicable',
+            input: [files.get('design/test_cases.json'), files.get('execution/test_results.json')].filter(Boolean),
+            available: coverage?.available ?? false, designed: coverage?.designed ?? null,
+            executed: coverage?.executed ?? null, assigned_only: coverage?.assigned_only ?? null,
+            coverage_rate: coverage?.coverage_rate ?? null, warnings: coverage?.warnings ?? [],
+            ...(coverageDisabled ? { reason: 'tool_disabled' } : {}) });
           const expectedDesign = { total_cases: designed.length, traceable_cases: designed.filter(row => Boolean(row.related_test_point)).length, automation_feasible_cases: designed.filter(row => row.automation_feasible).length, asset_referenced_cases: designed.filter(row => row.asset_refs?.length > 0).length };
           assert(isDeepStrictEqual(metrics.design, expectedDesign), 'Report design counts mismatch');
           assert(metrics.execution.plan_case_count === plan().cases.length, 'Report plan_case_count mismatch');
@@ -407,7 +438,8 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
       }
     }
   } catch (error) { errors.push(error.message); }
-  return { version: 1, run_id: runId, stage, mode, status: errors.length ? 'blocked' : 'passed', files: [...files.values()].sort((a, b) => a.path.localeCompare(b.path)), ...(executionOutcome?{execution_outcome:executionOutcome}:{}), errors };
+  return { version: 1, run_id: runId, stage, mode, status: errors.length ? 'blocked' : 'passed', files: [...files.values()].sort((a, b) => a.path.localeCompare(b.path)),
+    ...(toolChecks.length ? { tool_checks: toolChecks } : {}), ...(executionOutcome?{execution_outcome:executionOutcome}:{}), errors };
 }
 
 export function assertArtifactContract(root, runId, stage, options) {

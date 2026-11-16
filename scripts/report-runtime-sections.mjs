@@ -123,7 +123,10 @@ export function buildRuntimeSections({ dir, root = null } = {}) {
   }
 
   // —— 3. 需求完备性 ——
-  const completeness = readJson(resolve(dir, 'analysis/requirement-completeness.json')) ?? deriveCompleteness(dir);
+  // The current ledger wins over an older standalone check without source hashes.
+  const completeness = disabled.includes('requirement.completeness') ? null
+    : existsSync(resolve(dir, 'analysis/requirement-ledger.json'))
+      ? deriveCompleteness(dir) : readJson(resolve(dir, 'analysis/requirement-completeness.json'));
   if (completeness?.available) {
     data.requirement_completeness = completeness;
     const label = completeness.score === null ? '无法判定' : `${(completeness.score * 100).toFixed(0)}%`;
@@ -136,7 +139,9 @@ export function buildRuntimeSections({ dir, root = null } = {}) {
       lines.push(`- 缺「${check.label}」${detail ? `：${detail}` : ''}`);
     }
   } else {
-    lines.push('本轮未生成需求完备性检查。覆盖率分母未做修正——此时的分母只含「已写下来的需求」。');
+    lines.push(disabled.includes('requirement.completeness')
+      ? '需求完备性工具已停用，本轮不执行该检查。覆盖率分母未做修正。'
+      : '本轮未生成需求完备性检查。覆盖率分母未做修正——此时的分母只含「已写下来的需求」。');
   }
 
   // —— 4. 缺陷聚类 ——
@@ -152,12 +157,17 @@ export function buildRuntimeSections({ dir, root = null } = {}) {
   }
 
   // —— 5. 覆盖度 ——
-  const coverage = readJson(resolve(dir, 'execution/coverage-split.json')) ?? deriveCoverage(dir);
+  // Do not let a previous split mask changed case or execution result files.
+  const coverage = disabled.includes('coverage.split') ? null
+    : existsSync(resolve(dir, 'design/test_cases.json'))
+      ? deriveCoverage(dir) : readJson(resolve(dir, 'execution/coverage-split.json'));
   if (coverage) {
     data.coverage = { coverage_rate: coverage.coverage_rate, optimistic_rate: coverage.optimistic_rate, assigned_only: coverage.assigned_only };
     lines.push(renderCoverageSection(coverage));
   } else {
-    lines.push('本轮未生成覆盖度拆分。若报表给出覆盖率，其口径未区分「已执行」与「仅分配」。');
+    lines.push(disabled.includes('coverage.split')
+      ? '覆盖度拆分工具已停用，本轮不执行该检查。'
+      : '本轮未生成覆盖度拆分。若报表给出覆盖率，其口径未区分「已执行」与「仅分配」。');
   }
 
   // —— 6. 数据生命周期（P1-6）——

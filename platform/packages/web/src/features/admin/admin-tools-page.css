@@ -85,6 +85,7 @@
 .at-audit li{display:flex;gap:10px;align-items:baseline;color:var(--ad-secondary,#646a73)}
 .at-audit strong{flex:none;min-width:64px;color:var(--ad-text,#1f2329)}
 .at-audit time{margin-left:auto;flex:none;color:var(--ad-muted,#8f959e);font-size:11px}
+.at-audit code{min-width:0;overflow-wrap:anywhere}
 
 @media(max-width:760px){
   .at-columns{grid-template-columns:1fr;grid-template-rows:150px minmax(0,1fr)}

@@ -448,17 +448,19 @@ export function centralToolRoutes(store: ControlStore): Hono<AppEnv> {
    * 这是工具模块从台账变成开关的那一步：`scripts/tool-gate.mjs` 在执行 action 前读这个文件，
    * 硬依赖被停用就拒绝执行。不同步的话，后台的停用按钮只是个画画。
    *
-   * 只写 `disabled` 一个列表，不写全量工具：默认启用，文件小，人工看也一眼能读懂。
+   * 停用列表决定闸门，版本映射写入执行回执，便于与后台契约对账。
    * 写失败不抛错——后台的一次保存不该因为引擎目录不可写而整单回滚，但要留痕。
    */
   const syncRuntimeState = (): void => {
     const root = engineRoot();
     if (!root) return;
     try {
-      const disabled = (db.prepare("SELECT name FROM central_tools WHERE enabled=0 ORDER BY name").all() as { name: string }[]).map(item => item.name);
+      const tools = db.prepare("SELECT name,version,enabled FROM central_tools ORDER BY name").all() as { name: string; version: number; enabled: number }[];
+      const disabled = tools.filter(item => item.enabled === 0).map(item => item.name);
+      const versions = Object.fromEntries(tools.map(item => [item.name, item.version]));
       const path = statePath();
       mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, `${JSON.stringify({ version: 1, updated_at: new Date().toISOString(), disabled }, null, 2)}\n`, "utf8");
+      writeFileSync(path, `${JSON.stringify({ version: 1, updated_at: new Date().toISOString(), disabled, versions }, null, 2)}\n`, "utf8");
     } catch (error) {
       console.warn(`[tools] 运行期状态未同步到引擎：${(error as Error).message}`);
     }
@@ -503,9 +505,9 @@ export function centralToolRoutes(store: ControlStore): Hono<AppEnv> {
     try {
       for (const line of readFileSync(usagePath(), "utf8").split("\n")) {
         if (!line.trim()) continue;
-        let row: { at?: unknown; action?: unknown; tools?: unknown };
+        let row: { kind?: unknown; receipt?: unknown; at?: unknown; action?: unknown; tools?: unknown };
         try { row = JSON.parse(line); } catch { continue; }
-        if (typeof row.at !== "string") continue;
+        if (row.kind !== "execution" || typeof row.receipt !== "string" || typeof row.at !== "string") continue;
         total += 1;
         if (!lastAt || row.at > lastAt) lastAt = row.at;
         for (const name of Array.isArray(row.tools) ? row.tools : []) {
@@ -558,6 +560,26 @@ export function centralToolRoutes(store: ControlStore): Hono<AppEnv> {
       engine_configured: engineRoot() !== "",
       note: engineRoot() === "" ? "未配置 AITEST_ENGINE_ROOT，工具状态与调用次数都无法与引擎同步；此时后台的启停不会拦住 Agent。" : null,
     });
+  });
+
+  app.get("/admin/:id/executions", c => {
+    admin(c);
+    const target = row(c.req.param("id"));
+    if (!engineRoot() || !existsSync(usagePath())) return c.json({ entries: [] });
+    const entries: { at: string; runId: string | null; stage: string | null; receipt: string; implementationSha256: string | null }[] = [];
+    try {
+      for (const line of readFileSync(usagePath(), "utf8").split("\n")) {
+        if (!line.trim()) continue;
+        let item: Record<string, unknown>;
+        try { item = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+        if (item.kind !== "execution" || !Array.isArray(item.tools) || !item.tools.includes(target.name)
+          || typeof item.at !== "string" || typeof item.receipt !== "string") continue;
+        entries.push({ at: item.at, runId: typeof item.run_id === "string" ? item.run_id : null,
+          stage: typeof item.stage === "string" ? item.stage : null, receipt: item.receipt,
+          implementationSha256: typeof item.implementation_sha256 === "string" ? item.implementation_sha256 : null });
+      }
+    } catch { return c.json({ entries: [] }); }
+    return c.json({ entries: entries.slice(-50).reverse() });
   });
 
 
@@ -620,7 +642,7 @@ export function centralToolRoutes(store: ControlStore): Hono<AppEnv> {
     if (nextEnabled !== target.enabled) audit(c.var.user.userId, target.id, nextEnabled ? "enable" : "disable", "");
     audit(c.var.user.userId, target.id, changed ? "update" : "touch", changed ? `v${target.version + 1}` : "");
     // 编辑页也能改启停，两个入口都必须同步，否则从这条路径关掉的工具在引擎侧还开着。
-    if (nextEnabled !== target.enabled) syncRuntimeState();
+    if (nextEnabled !== target.enabled || changed) syncRuntimeState();
     return c.json(serialize(row(target.id), agentMap()));
   });
 

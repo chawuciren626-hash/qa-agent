@@ -3,7 +3,7 @@
  *
  * 布局照技能管理页：左侧阶段分类 + 右侧卡片网格 + 整页编辑器。
  * 不同之处是卡片要回答四个问题——**属于哪个阶段、读还是写、被谁引用、是否启用**，
- * 因为这四样是「这条纪律真的接上了」的唯一证据；技能页不需要回答这些。
+ * 是否真正调用以执行回执为准；登记、引用和闸门绑定分别展示。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, ConfirmModal, GlyphIcon, ICONS, Modal, PageFrame, PageHeader, toastError, toastSuccess } from "@prismshadow/penguin-ui";
@@ -18,12 +18,14 @@ type Tool = {
   version: number; revision: number; enabled: boolean; builtin: boolean; agents: string[];
   /** 这条工具在运行期管着哪些 action。null = 引擎侧读不到，或者它本来就没绑任何 action。 */
   bindings: { hard: string[]; soft: string[] } | null;
-  /** 引擎侧记录到的调用次数。 */
+  /** 实际实现成功执行且有回执的次数；闸门放行不计数。 */
   calls: number;
 };
 type Category = { id: string; name: string; builtin: number };
 type AuditEntry = { action: string; actor: string; detail: string; createdAt: string };
+type ExecutionEntry = { at: string; runId: string | null; stage: string | null; receipt: string; implementationSha256: string | null };
 const base = "/api/control/tools/admin";
+const automaticStageChecks = new Set(["requirement.completeness", "testpoint.coverage", "expected.provenance", "regression.select", "defects.cluster", "coverage.split", "m1.consistency"]);
 
 const ACTION_LABEL: Record<string, string> = {
   create: "新建", update: "更新契约", touch: "微调描述", enable: "启用", disable: "停用", delete: "删除",
@@ -124,8 +126,10 @@ function Editor({ entry, categories, agents, close, saved }: {
 
 function Detail({ tool, close, edit }: { tool: Tool; close: () => void; edit: () => void }) {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
+  const [executions, setExecutions] = useState<ExecutionEntry[]>([]);
   useEffect(() => {
     void controlRequest(`${base}/${tool.id}/audit`).then(result => setEntries(result.entries as AuditEntry[])).catch(() => setEntries([]));
+    void controlRequest(`${base}/${tool.id}/executions`).then(result => setExecutions(result.entries as ExecutionEntry[])).catch(() => setExecutions([]));
   }, [tool.id]);
   return <Modal open title={tool.displayName} onClose={close} widthClass="sm:max-w-4xl" footer={<><Button onClick={close}>关闭</Button><Button variant="primary" onClick={edit}>编辑</Button></>}>
     <div className="at-detail">
@@ -137,11 +141,12 @@ function Detail({ tool, close, edit }: { tool: Tool; close: () => void; edit: ()
         <span className={tool.enabled ? "at-on" : "at-off"}>{tool.enabled ? "已启用" : "已停用"}</span>
         {tool.builtin && <span>内置</span>}
         <span>引用 {tool.agents.length} 个 Agent</span>
-        <span>{tool.calls} 次运行期调用</span>
+        <span>{tool.calls} 次成功执行</span>
+        <span>{automaticStageChecks.has(tool.name) ? '阶段条件自动校验' : tool.bindings?.hard.includes('run_stage_tool') ? 'v3 IR 可调用实现' : '尚无阶段工具执行入口'}</span>
       </div>
       <h3>停用它会发生什么</h3>
       {tool.bindings === null
-        ? <p className="at-muted">这条工具在运行期没有绑定任何 action。停用后它只会从运行期清单里消失，<strong>不会拦住任何调用</strong>——它目前还是一份登记，不是一道闸门。</p>
+        ? <p className="at-muted">这条工具尚未绑定阶段动作；登记和启用状态不代表实现已被调用。</p>
         : <>
             {tool.bindings.hard.length > 0 && <>
               <p className="at-bind-title">硬依赖：停用后这些 action 直接拒绝执行</p>
@@ -154,6 +159,11 @@ function Detail({ tool, close, edit }: { tool: Tool; close: () => void; edit: ()
           </>}
       <h3>参数契约</h3><pre>{pretty(tool.parameters)}</pre>
       <h3>返回结构</h3><pre>{pretty(tool.returns)}</pre>
+      <h3>最近实际执行</h3>
+      {executions.length === 0 ? <p className="at-muted">暂无实际执行回执。</p> : <ul className="at-audit">{executions.map(item =>
+        <li key={`${item.at}-${item.receipt}`}><strong>{item.stage ?? '未知阶段'}</strong><span>{item.runId ?? '未知 run'}</span>
+          <code>{item.receipt}</code><span>实现 {item.implementationSha256?.slice(0, 12) ?? '未知'}</span>
+          <time>{item.at.replace('T', ' ').slice(0, 19)}</time></li>)}</ul>}
       <h3>变更记录</h3>
       {entries.length === 0 ? <p className="at-muted">暂无记录</p> : <ul className="at-audit">{entries.map((item, index) => <li key={`${item.createdAt}-${index}`}><strong>{ACTION_LABEL[item.action] ?? item.action}</strong><span>{item.actor}</span>{item.detail && <span>{item.detail}</span>}<time>{item.createdAt.replace("T", " ").slice(0, 19)}</time></li>)}</ul>}
     </div>
@@ -234,17 +244,15 @@ export function AdminToolsPage() {
   </PageFrame>;
 
   return <PageFrame width="full" className="at-frame" contentClassName="at-content">
-    <PageHeader title="工具管理" description="登记可被 Agent 调用的能力单元：参数契约、读写权限、启用状态与引用关系"
+    <PageHeader title="工具管理" description="查看工具登记、阶段执行接线、实际调用回执与启停状态"
       actions={<Button variant="primary" onClick={() => setEditing("new")}>＋ 新增工具</Button>} />
     <div className="at-stats">
       <div><strong>{entries.length}</strong><span>登记工具</span></div>
       <div><strong>{enabledCount}</strong><span>已启用</span></div>
       <div><strong>{writeCount}</strong><span>写权限</span></div>
       <div><strong>{linkCount}</strong><span>Agent 引用</span></div>
-      <div><strong>{runtime?.total ?? 0}</strong><span>运行期调用</span></div>
-      <p>{runtime?.total
-        ? "调用次数来自引擎侧流水，是判断这条纪律是否真的在必经路径上的唯一证据。"
-        : "还没有调用记录。工具刚接入时为零是正常的；长期为零说明它不在任何阶段的必经路径上。"}</p>
+      <div><strong>{runtime?.total ?? 0}</strong><span>成功执行</span></div>
+      <p>这里仅统计实际实现成功执行且有回执的调用；阶段是否必经，还需查看对应阶段的产物和流转校验。</p>
     </div>
     {runtime && !runtime.enforced && <p role="status" className="at-warn">
       未与引擎同步{runtime.note ? `（${runtime.note}）` : ""}：此时停用只影响运行期清单，<strong>不会拦住 Agent 的调用</strong>。
@@ -276,10 +284,10 @@ export function AdminToolsPage() {
             <footer>
               <span>{stageName(item.categoryId)}</span>
               <span>v{item.version}</span>
-              <span title={item.bindings ? `硬依赖 ${item.bindings.hard.length} 个 action，软依赖 ${item.bindings.soft.length} 个` : "这条工具在运行期没有绑定任何 action，停用它不会影响流程"}>
-                {item.bindings ? `管 ${item.bindings.hard.length + item.bindings.soft.length} 个 action` : "未接入运行期"}
+              <span title={item.bindings ? `硬依赖 ${item.bindings.hard.length} 个 action，软依赖 ${item.bindings.soft.length} 个` : "尚未绑定阶段动作"}>
+                {automaticStageChecks.has(item.name) ? '阶段条件自动校验' : item.bindings?.hard.includes('run_stage_tool') ? 'v3 IR 可调用' : item.bindings ? '仅流程闸门' : '未接入运行期'}
               </span>
-              <span title="引擎侧记录的运行期调用次数">{item.calls} 次</span>
+              <span title="实际实现成功执行且有回执的调用次数">{item.calls} 次</span>
               <div className="at-card-actions">
                 <button type="button" title={item.enabled ? "停用" : "启用"} aria-label={`${item.enabled ? "停用" : "启用"} ${item.name}`} disabled={busy} onClick={event => { event.stopPropagation(); void toggle(item); }}><GlyphIcon d={item.enabled ? ICONS.pause : ICONS.play} size={14} /></button>
                 <button type="button" title="编辑" aria-label={`编辑 ${item.name}`} onClick={event => { event.stopPropagation(); setEditing(item); }}><GlyphIcon d={ICONS.pencil} size={14} /></button>

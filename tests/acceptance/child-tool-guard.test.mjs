@@ -73,6 +73,13 @@ test('professional inline requests persist once and cannot dispatch another role
   writeFileSync(resolve(f.root,'output/runs/run-a/manifest.json'),JSON.stringify({stages:{execution:{status:'in_progress'}},orchestration:{events:[{type:'dispatched',stage:'execution','parent-session-id':'session-parent'}]}}));
   const input={tool_name:'exec_command',session_id:f.session_id,arguments:{cmd:'node scripts/project-action.mjs execute --controller-session=session-parent --request=output/action-requests/inline.json',qa_request:{action:'browser_task',run_id:'run-a',operation:{type:'health',request_id:'health'}}}};
   assert.deepEqual(guardChildTool(f.root,input,options),{});assert.deepEqual(guardChildTool(f.root,input,options),{});
+  const toolInput={...input,arguments:{...input.arguments,
+    cmd:input.arguments.cmd.replace('inline.json','stage-tool.json'),
+    qa_request:{action:'run_stage_tool',run_id:'run-a',stage:'execution',tool_id:'plan.gates',payload:{plan:{steps:[]},case:{assertions:[]}}}}};
+  assert.deepEqual(guardChildTool(f.root,toolInput,options),{});
+  assert.equal(guardChildTool(f.root,{...toolInput,arguments:{...toolInput.arguments,
+    cmd:toolInput.arguments.cmd.replace('stage-tool.json','wrong-stage.json'),
+    qa_request:{...toolInput.arguments.qa_request,stage:'report'}}},options).decision,'deny');
   assert.equal(guardChildTool(f.root,{...input,arguments:{...input.arguments,qa_request:{action:'dispatch',run_id:'run-a'}}},options).decision,'deny');
   assert.equal(guardChildTool(f.root,{...input,arguments:{...input.arguments,cmd:input.arguments.cmd.replace('session-parent','session-other')}},options).decision,'deny');
 });

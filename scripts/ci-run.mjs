@@ -31,6 +31,7 @@ import { pathToFileURL } from 'node:url';
 export const SUITES = {
   smoke: [
     'tests/acceptance/tool-gate.test.mjs',
+    'tests/acceptance/stage-tool-scenarios.test.mjs',
     'tests/acceptance/trace.test.mjs',
     'tests/acceptance/execution-verdict.test.mjs',
     'tests/acceptance/expected-provenance.test.mjs',

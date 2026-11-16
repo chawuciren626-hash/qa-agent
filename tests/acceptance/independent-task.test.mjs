@@ -81,7 +81,10 @@ test('independent expectation basis is checked and exported without predecessor 
   let result=await f.send({action:'diagnose_test_cases'});
   assert.equal(result.result.status,'passed');assert.equal(result.result.expectation_diagnostics[0].semantic_verified,false);
   assert.equal((await f.send({action:'export_test_cases'})).exit_code,0);
-  assert.equal(inspectIndependentArtifacts(root,f.id,'test_cases').status,'passed');
+  const checked=inspectIndependentArtifacts(root,f.id,'test_cases');
+  assert.equal(checked.status,'passed');
+  assert.equal(checked.tool_checks?.[0]?.tool_id,'expected.provenance');
+  assert.equal(checked.tool_checks[0].status,'passed');
   const bytes=readFileSync(resolve(f.dir,'design/test_cases.xlsx'));
   row.expected+=' No record stored.';f.put('design/test_cases.json',[row]);
   result=await f.send({action:'diagnose_test_cases'});
@@ -96,6 +99,16 @@ test('independent expectation basis is checked and exported without predecessor 
   assert.equal((await f.send({action:'export_test_cases'})).exit_code,0);
   assert.equal(inspectIndependentArtifacts(root,f.id,'test_cases').status,'passed');
   assert.equal(existsSync(resolve(f.dir,'analysis/requirement-ledger.json')),false);
+});
+
+test('independent case contract rejects self-verified model expectations', async () => {
+  const f=await fixture('test_cases');
+  f.put('design/test_cases.json',[{case_id:'TC-SELF',title:'Create user',priority:'P1',preconditions:[],steps:['Submit'],expected:'Success',
+    expectations:[{text:'Success',kind:'decide',source:{type:'model',ref:'self',quote:'Success'},state:'verified',verified_by:'human:tester'}]}]);
+  const checked=inspectIndependentArtifacts(root,f.id,'test_cases',{draft:true});
+  assert.equal(checked.status,'blocked');
+  assert.equal(checked.tool_checks?.[0]?.status,'failed');
+  assert.match(checked.errors.join('; '),/model 不能标记 verified/);
 });
 
 test('independent data diagnosis measures Unicode and rejects declared bad data without predecessors or writes',async()=>{

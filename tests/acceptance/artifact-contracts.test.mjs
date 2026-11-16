@@ -108,6 +108,80 @@ test('all stage contracts accept explicit synthetic valid fixtures, including em
   }
 });
 
+test('case stage records the Node provenance check with the exact case artifact hash', () => {
+  const f = fixture();
+  const result = inspect(f, 'test_cases');
+  assert.equal(result.status, 'passed', result.errors.join('; '));
+  const check = result.tool_checks?.find(item => item.tool_id === 'expected.provenance');
+  assert.equal(check?.status, 'passed');
+  assert.equal(check.implementation, 'scripts/expected-provenance-check.mjs');
+  assert.match(check.implementation_sha256, /^[a-f0-9]{64}$/);
+  assert.equal(check.input.path, 'design/test_cases.json');
+  assert.equal(check.input.sha256, readRunFile(f.dir, 'design/test_cases.json').sha256);
+  assert.equal(check.located + check.not_recorded, f.cases.length);
+  assert.deepEqual(assertArtifactContract(root, f.id, 'test_cases').tool_checks, result.tool_checks);
+});
+
+test('test point stage records actual rule coverage with source hashes and missing IDs', () => {
+  const f = fixture();
+  const result = inspect(f, 'test_points');
+  const check = result.tool_checks?.find(item => item.tool_id === 'testpoint.coverage');
+  assert.equal(check?.status, 'passed', result.errors.join('; '));
+  assert.equal(check.implementation, 'scripts/test-point-diagnosis.mjs');
+  assert.equal(check.input.find(item => item.path === 'design/test_points.json').sha256,
+    readRunFile(f.dir, 'design/test_points.json').sha256);
+  assert.deepEqual(check.missing_rule_ids, []);
+  const ledger = JSON.parse(readFileSync(resolve(f.dir, 'analysis/requirement-ledger.json')));
+  ledger.rules.push({ ...ledger.rules[0], id: 'RULE-UNCOVERED' });
+  save(f, 'analysis/requirement-ledger.json', ledger);
+  const blocked = inspect(f, 'test_points');
+  assert.equal(blocked.status, 'blocked');
+  assert.equal(blocked.tool_checks.find(item => item.tool_id === 'testpoint.coverage').status, 'failed');
+  assert.deepEqual(blocked.tool_checks.find(item => item.tool_id === 'testpoint.coverage').missing_rule_ids, ['RULE-UNCOVERED']);
+});
+
+test('analysis stage runs completeness on the archived ledger and reports its limits', () => {
+  const f = fixture();
+  const result = inspect(f, 'analysis');
+  assert.equal(result.status, 'passed', result.errors.join('; '));
+  const check = result.tool_checks?.find(item => item.tool_id === 'requirement.completeness');
+  assert.ok(check);
+  assert.match(check.implementation_sha256, /^[a-f0-9]{64}$/);
+  assert.equal(check.input.sha256, readRunFile(f.dir, 'analysis/requirement-ledger.json').sha256);
+  assert.ok(['completed', 'not_applicable'].includes(check.status));
+  assert.deepEqual(assertArtifactContract(root, f.id, 'analysis').tool_checks, result.tool_checks);
+});
+
+test('report stage runs coverage split from the sealed design and results', () => {
+  const f = fixture(true);
+  const result = inspect(f, 'report');
+  assert.equal(result.status, 'passed', result.errors.join('; '));
+  const check = result.tool_checks?.find(item => item.tool_id === 'coverage.split');
+  assert.equal(check?.status, 'completed');
+  assert.match(check.implementation_sha256, /^[a-f0-9]{64}$/);
+  assert.deepEqual(check.input.map(item => item.path), ['design/test_cases.json', 'execution/test_results.json']);
+  assert.equal(check.designed, f.cases.length);
+  assert.ok(check.executed > 0);
+  const consistency = result.tool_checks.find(item => item.tool_id === 'm1.consistency');
+  assert.equal(consistency.status, 'completed');
+  assert.equal(consistency.implementation, 'scripts/consistency-report.mjs');
+  assert.equal(consistency.input.path, 'execution/test_results.json');
+  assert.ok(consistency.checks.some(item => item.id === 'consistency'));
+  assert.match(consistency.implementation_sha256, /^[a-f0-9]{64}$/);
+});
+
+test('failed execution triggers defect display clustering without changing defect records', () => {
+  const f = fixture(true, true);
+  const before = readRunFile(f.dir, 'defects/defect-records.json').sha256;
+  const result = inspect(f, 'defects');
+  assert.equal(result.status, 'passed', result.errors.join('; '));
+  const check = result.tool_checks?.find(item => item.tool_id === 'defects.cluster');
+  assert.equal(check?.status, 'completed');
+  assert.equal(check.merge_safety, 'display_only');
+  assert.equal(check.input.find(item => item.path === 'defects/defect-records.json').sha256, before);
+  assert.equal(readRunFile(f.dir, 'defects/defect-records.json').sha256, before);
+});
+
 test('design contracts reject malformed JSON, schema errors, duplicate IDs and foreign sources', () => {
   const f = fixture();
   save(f, 'design/test_points.json', { points: [...f.points, ...f.points] });

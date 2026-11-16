@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import xlsx from './spreadsheet-runtime.mjs';
@@ -7,6 +8,7 @@ import { CommandUsageError } from './command-contracts.mjs';
 
 import { independentArtifacts, stageDefinition } from './stage-registry.mjs';
 import { inspectExpectationBasis, expectationBasisRows, basisHeaders } from './expectation-basis.mjs';
+import { inspectExpectedProvenance } from './expected-provenance-check.mjs';
 import { usesBrowserArtifacts, browserCoverage } from './browser-lifecycle.mjs';
 import { verifyRecoveredBrowserResults } from './browser-recovery-delivery.mjs';
 import { assertTrackRows } from './test-tracks.mjs';
@@ -14,6 +16,7 @@ import { verifySnapshotReport } from './api-snapshot.mjs';
 import { verifyAndroidExecutionResult, verifyMiniprogramExecutionResult } from './mobile-execution-evidence.mjs';
 import { severityProblems } from './defect-severity.mjs';
 export const taskArtifacts = independentArtifacts;
+const provenanceImplementationHash = createHash('sha256').update(readFileSync(new URL('./expected-provenance-check.mjs', import.meta.url))).digest('hex');
 export const taskResultPath = stage => stageDefinition(stage).task_result;
 export function isIndependent(root, runId) {
   const path=resolve(runDirectory(root,runId),'manifest.json');
@@ -38,6 +41,7 @@ export function verifiedSourcesFor(manifest,stage) {
 }
 export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifacts=[]}={}) {
   const files=new Map(), errors=[];
+  const toolChecks=[];
   let executionOutcome, dataDiagnostics, expectationDiagnostics;
   let browserFlow=false;
   let inputCorrection = false;
@@ -106,9 +110,17 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
       dataDiagnostics=rows.map(inspectCaseData);
       for(const item of dataDiagnostics) errors.push(...item.errors.map(error=>`${item.case_id}: ${error}`));
       const sourceTexts=new Map(task.source_paths.map(path=>[path,capture(path).toString('utf8')]));
-      expectationDiagnostics=rows.map(row=>inspectExpectationBasis(row,sourceTexts));
+      const provenance=inspectExpectedProvenance(rows,root,dir,{sources:sourceTexts});
+      expectationDiagnostics=provenance.skipped ? [] : rows.map(row=>inspectExpectationBasis(row,sourceTexts));
       for(const item of expectationDiagnostics) errors.push(...item.errors.map(error=>`${item.case_id}: ${error}`));
-      if(expectationDiagnostics.some(item=>item.errors.length)) inputCorrection=true;
+      for(const problem of provenance.problems) if(!errors.includes(problem)) errors.push(problem);
+      toolChecks.push({tool_id:'expected.provenance',implementation:'scripts/expected-provenance-check.mjs',
+        implementation_sha256:provenanceImplementationHash,status:provenance.skipped?'skipped':provenance.problems.length?'failed':'passed',
+        input:{path:'design/test_cases.json',sha256:files.get('design/test_cases.json')?.sha256,
+          source_files:task.source_paths.map(path=>files.get(path)).filter(Boolean)},
+        located:provenance.located,not_recorded:provenance.notRecorded,verified:provenance.verified,
+        problems:provenance.problems});
+      if(provenance.problems.length) inputCorrection=true;
       for(const row of rows) {
         const ref=row.related_test_point;
         if(ref===undefined || ref===null || ref==='') continue;
@@ -348,7 +360,7 @@ export function inspectIndependentArtifacts(root,runId,stage,{draft=false,artifa
       for(const path of [...required,...artifacts]) capture(path);
     }
   } catch(error) {errors.push(error.message);inputCorrection=error instanceof CommandUsageError || error instanceof SyntaxError || error.code==='ENOENT';}
-  return {version:1,run_id:runId,stage,mode:browserFlow?'browser':'task',status:errors.length?'blocked':'passed',input_correction:inputCorrection,files:[...files.values()].sort((a,b)=>a.path.localeCompare(b.path)),errors,...(dataDiagnostics?{data_diagnostics:dataDiagnostics}:{}),...(expectationDiagnostics?{expectation_diagnostics:expectationDiagnostics}:{}),...(executionOutcome?{execution_outcome:executionOutcome}:{}),...(task?{delivery:{summary:task.summary,outcome:task.outcome,questions:task.questions,limitations:task.limitations,...(executionOutcome?{execution:executionOutcome}:{})}}:{})};
+  return {version:1,run_id:runId,stage,mode:browserFlow?'browser':'task',status:errors.length?'blocked':'passed',input_correction:inputCorrection,files:[...files.values()].sort((a,b)=>a.path.localeCompare(b.path)),errors,...(toolChecks.length?{tool_checks:toolChecks}:{}),...(dataDiagnostics?{data_diagnostics:dataDiagnostics}:{}),...(expectationDiagnostics?{expectation_diagnostics:expectationDiagnostics}:{}),...(executionOutcome?{execution_outcome:executionOutcome}:{}),...(task?{delivery:{summary:task.summary,outcome:task.outcome,questions:task.questions,limitations:task.limitations,...(executionOutcome?{execution:executionOutcome}:{})}}:{})};
 }
 
 export function independentPrompt(stage,runId,{browserFlow=false,mobilePlatform=null,mobileLifecycle=false}={}) {

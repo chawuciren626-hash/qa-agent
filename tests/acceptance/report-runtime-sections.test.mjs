@@ -47,6 +47,34 @@ test('停用中的工具列出来：报告生成时不参与判定的能力要�
   assert.match(markdown, /处于停用状态.*expected\.provenance/);
 }));
 
+test('需求完备性停用后不读取旧结果，也不现场重新计算', () => withRun(({ root, dir }) => {
+  writeJson(resolve(root, 'config/tool-runtime-state.json'), { version: 1, disabled: ['requirement.completeness'] });
+  writeJson(resolve(dir, 'analysis/requirement-completeness.json'), { available: true, score: 1, denominator: { covered: 1, missing: 0, unknown: 0 } });
+  const { markdown, data } = buildRuntimeSections({ root, dir });
+  assert.match(markdown, /需求完备性工具已停用/);
+  assert.equal(data.requirement_completeness, undefined);
+}));
+
+test('当前输入已变化时不沿用旧的完备性和覆盖度结果', () => withRun(({ root, dir }) => {
+  writeJson(resolve(dir, 'analysis/requirement-completeness.json'), { available: true, score: 1, denominator: { covered: 1, missing: 0, unknown: 0 } });
+  writeJson(resolve(dir, 'execution/coverage-split.json'), { available: true, designed: 1, executed: 1, assigned_only: 0, coverage_rate: 1, optimistic_rate: 1, by_layer: {} });
+  writeJson(resolve(dir, 'analysis/requirement-ledger.json'), { rules: [] });
+  writeJson(resolve(dir, 'design/test_cases.json'), []);
+  const { markdown, data } = buildRuntimeSections({ root, dir });
+  assert.match(markdown, /未生成需求完备性检查/);
+  assert.match(markdown, /未生成覆盖度拆分/);
+  assert.equal(data.requirement_completeness, undefined);
+  assert.equal(data.coverage, undefined);
+}));
+
+test('覆盖度工具停用后不展示旧结果', () => withRun(({ root, dir }) => {
+  writeJson(resolve(root, 'config/tool-runtime-state.json'), { version: 1, disabled: ['coverage.split'] });
+  writeJson(resolve(dir, 'execution/coverage-split.json'), { available: true, designed: 1, executed: 1, assigned_only: 0, coverage_rate: 1, optimistic_rate: 1, by_layer: {} });
+  const { markdown, data } = buildRuntimeSections({ root, dir });
+  assert.match(markdown, /覆盖度拆分工具已停用/);
+  assert.equal(data.coverage, undefined);
+}));
+
 test('需求完备性：无法判定的项单独说，不混进分数', () => withRun(({ root, dir }) => {
   writeJson(resolve(dir, 'analysis/requirement-completeness.json'), {
     available: true, score: 0.5,
