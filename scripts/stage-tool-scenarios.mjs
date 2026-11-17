@@ -8,7 +8,7 @@ export const TOOL_SCENARIOS = Object.freeze([
   {stage:'test_points', scene:'已确认需求进入设计', tools:['testpoint.matrix'], input:'已确认需求 IR 和维度配置', outcome:'枚举矩阵骨架', state:'ir_adapter_pending'},
   {stage:'test_points', scene:'测试点导出前', tools:['testpoint.coverage','irval.check'], input:'当前需求台账与测试点 JSON；v3 IR 另需完整契约', outcome:'Node 规则覆盖缺口阻止交接；v3 IR 校验待适配', state:'node_active_ir_pending'},
   {stage:'test_cases', scene:'测试用例编制与导出', tools:['expected.provenance','plan.gates','irval.check'], input:'已确认规则、测试点、计划 IR、用例 IR', outcome:'来源链和五闸；不通过阻止交接', state:'node_active_ir_pending'},
-  {stage:'execution', scene:'仅地址探索或 Web 执行', tools:['dom.snapshot','login.captcha_chain'], input:'真实浏览器页面、登录授权、DOM/截图', outcome:'真实 snapshot 成功时记录 DOM 证据；验证码策略链待接线', state:'dom_snapshot_active_login_pending'},
+  {stage:'execution', scene:'仅地址探索或 Web 执行', tools:['dom.snapshot','login.captcha_chain'], input:'真实浏览器页面、登录授权、DOM/截图', outcome:'真实 snapshot 成功时记录 DOM 证据；验证码策略链已接 browser login_probe/login（分类/算术识别/受限重试/会话复用），真实环境验收前只报分类或未完成', state:'dom_snapshot_active_login_engineering_pending_acceptance'},
   {stage:'execution', scene:'首次执行或回归计划', tools:['regression.select','regression.impact','plan.gates','exec.pools','execution.stub'], input:'已批准用例、计划 IR、版本差异、预算、桩策略', outcome:'冻结执行选集与资源调度；五闸失败不执行', state:'node_active_ir_pending'},
   {stage:'execution', scene:'执行结果封存', tools:['irval.check'], input:'真实浏览器 exec IR', outcome:'结构和来源检查；失败不标通过', state:'ir_adapter_pending'},
   {stage:'api_execution', scene:'接口执行或回归', tools:['exec.api_engine','exec.pools','execution.stub','regression.select','regression.impact','plan.gates'], input:'已批准场景、接口环境、凭据引用、计划 IR 和预算', outcome:'真实接口执行核验结果与请求回执；其余 IR/调度工具待接线', state:'api_engine_active_other_pending'},

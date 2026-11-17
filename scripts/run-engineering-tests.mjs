@@ -53,7 +53,7 @@ export function selectEngineeringTests(engine, args) {
   }
   if(suite!==null && (!['all','core','browser'].includes(suite) || explicit.length)) throw new Error('Use one suite (all/core/browser) OR explicit test files');
   suite ??= explicit.length?'selected':'all';
-  const browser=file=>['tests/acceptance/browser-task.test.mjs','tests/acceptance/browser-ui-assertions.test.mjs','tests/acceptance/browser-worker-exit.test.mjs','tests/acceptance/independent-task.test.mjs'].includes(file);
+  const browser=file=>['tests/acceptance/browser-task.test.mjs','tests/acceptance/browser-ui-assertions.test.mjs','tests/acceptance/browser-worker-exit.test.mjs','tests/acceptance/independent-task.test.mjs','tests/acceptance/login-captcha-chain.test.mjs'].includes(file);
   const files=explicit.length?explicit:available.filter(file=>suite==='all' || (suite==='browser'?browser(file):!browser(file)));
   if(!files.length) throw new Error('Selected suite has no tests');
   return {suite,files,list,coverage};
