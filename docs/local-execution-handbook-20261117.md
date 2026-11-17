@@ -18,9 +18,17 @@
 | Python | 3.11+，pytest 可用 | `python -m pytest --version`（Windows 无 `python3`，用 `python`/`py`） |
 | Python 依赖 | 仓库根 `requirements-ci.txt` | `pip install -r requirements-ci.txt` |
 | Playwright 浏览器 | Chromium（`playwright.config.ts` 已指定本机路径，Windows 下按需改 `executablePath`） | `npx playwright install chromium` |
-| Git 凭据 | 用户提供的 PAT 或已登录凭据助手 | `git ls-remote origin main` |
+| Git 凭据 | 已登录凭据助手或受控 SSH 身份 | `git ls-remote origin main` |
 
 注意：`ci:irval` 脚本里写的是 `python3 -m pytest`，Windows 下直接执行 `cd aitestharness-ir && python -m pytest tests -q`。
+
+### 虚拟机验收实例（2026-11-17 实查）
+
+当前隔离的 `main` 实例在 Linux 虚拟机：从宿主机执行 `ssh -p 2222 agent@127.0.0.1`，部署根目录是 `/home/agent/aitest-main-21254a2`。其中 `source/` 是运行源码副本，`data/` 是实例数据与 launcher 状态，`logs/` 是服务日志，`backups/` 是部署前备份。验收时先核对这些目录和运行代码版本；不要把 `data/`、日志或备份提交到 Git。
+
+该实例的用户端监听虚拟机 `127.0.0.1:18776`，管理端监听 `127.0.0.1:18777`；本机端口映射可访问 `http://localhost:18776/user/login` 与 `http://localhost:18777/admin/login`。实查时两个根路径均返回 302 登录跳转，不能把此探针当成登录后业务验收。宿主机 `E:\AITestHarness\source` 是主 Git 仓库，`E:\AITestHarness\installed` 是另一份已安装应用；虚拟机实例也与两者独立。Git 推送不会自动更新任何运行副本。
+
+每批部署前先检查虚拟机是否有正在执行的任务，记录旧版本与关键文件哈希并在该实例 `backups/` 留可恢复备份；部署后核对两个服务、页面与静态资源，再用授权的真实场景检查 run 回执。失败时恢复备份并记录回滚结果。此前的 `develop` 服务端口 18766 仍独立运行，本批不得覆盖它；其部署目录需在接管时另行核实。
 
 ## 2. 每批次固定工作流
 
