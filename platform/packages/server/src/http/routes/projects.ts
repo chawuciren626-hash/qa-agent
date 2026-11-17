@@ -17,6 +17,7 @@ import {
 } from "../validate.js";
 import { Bind, Component, Use } from "@prismshadow/penguin-core/kernel";
 import type { Desktop } from "../../hmr/capabilities.js";
+import type { Paths } from "../../hmr/capabilities.js";
 import type { DesktopService } from "../../services/desktop-service.js";
 import { membersRoutes } from "./members.js";
 import type { ProjectLifecycle } from "../../mechanisms/projects.js";
@@ -24,12 +25,15 @@ import type { Machines } from "../../machines/service.js";
 import type { Db } from "../../hmr/capabilities.js";
 import type { ProjectRuns } from "../../services/project-service.js";
 import { managedProjectsRoutes } from "./managed-projects.js";
+import { projectEnvironmentsRoutes } from "./project-environments.js";
 
 /** What this route group reaches — bound by its module (src/modules). */
 export interface ProjectsRouteDeps {
   projectService: ProjectLifecycle;
   db?: Db;
   runs?: ProjectRuns;
+  /** 数据根目录：环境建档把 maps 落在 <root>/<projectId>/maps/<env>/。 */
+  root?: string;
   /** The machines this Project uses carry its name too (machines/service.ts). */
   machines: Pick<Machines, "syncConfigEverywhere">;
 }
@@ -37,6 +41,14 @@ export interface ProjectsRouteDeps {
 export function projectsRoutes(deps: ProjectsRouteDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   if (deps.db && deps.runs) app.route("/managed", managedProjectsRoutes({ db: deps.db, projectService: deps.projectService, runs: deps.runs }));
+  if (deps.db && deps.root) {
+    app.route("/:projectId/environments", projectEnvironmentsRoutes({
+      db: deps.db,
+      projectService: deps.projectService,
+      root: deps.root,
+      engineRoot: process.env.AITEST_ENGINE_ROOT,
+    }));
+  }
 
   app.get("/", async (c) => {
     const projects = await deps.projectService.listProjects(c.var.user.userId);
@@ -99,6 +111,7 @@ export class ProjectAdminRoutes {
   @Use() private readonly runs!: ProjectRuns;
   @Use() private readonly desktop!: Desktop;
   @Use() private readonly machines!: Machines;
+  @Use() private readonly paths!: Paths;
   @Bind("project-admin.projects") projectsRoutes!: Hono<AppEnv>;
   @Bind("project-admin.members") membersRoutes!: Hono<AppEnv>;
   setup() {
@@ -106,6 +119,7 @@ export class ProjectAdminRoutes {
       projectService: this.projectService,
       db: this.db,
       runs: this.runs,
+      root: this.paths.root,
       machines: this.machines,
     });
     this.membersRoutes = membersRoutes({

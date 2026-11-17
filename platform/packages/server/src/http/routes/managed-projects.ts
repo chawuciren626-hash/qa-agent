@@ -4,6 +4,7 @@ import type { Db } from "../../hmr/capabilities.js";
 import type { ProjectLifecycle } from "../../mechanisms/projects.js";
 import type { ProjectRuns } from "../../services/project-service.js";
 import { readTaskRuns } from "../../services/qa-project-overview.js";
+import { defaultEnvironment, normalizeBaseUrl, normalizeEnvName, upsertEnvironment } from "../../services/project-environment-service.js";
 import { HttpError } from "../errors.js";
 import { readJson, requireValidId } from "../validate.js";
 
@@ -53,6 +54,8 @@ function projectView(deps: ManagedDeps, userId: string, summary: Summary) {
     isPinned: pref.is_pinned === 1,
     lastVisitedAt: (pref.last_visited_at as string | null) ?? null,
     revision: Number(meta.revision ?? 1),
+    /** 默认环境摘要；没有环境时是 null（列表显示"未建档"，不是 0 页 0 接口）。 */
+    environment: defaultEnvironment(deps.db, id),
     capabilities: {
       canEnter: status === "active",
       cannotEnterReason: status === "archived" ? "项目已归档" : status === "disabled" ? "项目已停用" : null,
@@ -125,6 +128,14 @@ export function managedProjectsRoutes(deps: ManagedDeps): Hono<AppEnv> {
     const id = stringField(body.projectId, "Project id", 64, true);
     const name = stringField(body.name, "项目名称", 80, true);
     const description = body.description === undefined ? "" : stringField(body.description, "项目简介", 500, false);
+    // 环境先校验再建项目：校验失败直接 400，不会留下"项目建好、环境写不进去"的半创建。
+    const environment = body.environment === undefined || body.environment === null
+      ? null
+      : (() => {
+        const input = body.environment as { env?: unknown; baseUrl?: unknown };
+        if (input.baseUrl === undefined) throw new HttpError(400, "invalid_environment_url", "环境地址必填");
+        return { env: normalizeEnvName(input.env), baseUrl: normalizeBaseUrl(input.baseUrl) };
+      })();
     const user = c.var.user;
     let created: Summary;
     try { created = await deps.projectService.createProject(user, id, name); }
@@ -138,6 +149,15 @@ export function managedProjectsRoutes(deps: ManagedDeps): Hono<AppEnv> {
     } catch (error) {
       await deps.projectService.destroyProject(created.projectId);
       throw error;
+    }
+    // 建档第一屏：创建时就带上被测环境（地址归环境，不归项目）。
+    if (environment) {
+      try {
+        upsertEnvironment(deps.db, created.projectId, { ...environment, isDefault: true });
+      } catch (error) {
+        await deps.projectService.destroyProject(created.projectId);
+        throw error;
+      }
     }
     return c.json({ project: projectView(deps, user.userId, created) }, 201);
   });

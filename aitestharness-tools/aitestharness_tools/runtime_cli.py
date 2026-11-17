@@ -46,6 +46,22 @@ def invoke(tool_id: str, payload: dict) -> object:
     if tool_id == "regression.select":
         from .regression.selector import select_regression
         return select_regression(payload["cases"], payload.get("tier", "smoke"), payload.get("budget_s"))
+    if tool_id == "onboard.bootstrap":
+        # 建档不是 run 内的阶段工具（没有 run/stage），所以它是本入口里唯一
+        # 允许"产出文件"的分支：给 out 就落 maps + 报告，不给就只回结构。
+        # 失败时一律不落盘——不生成"看起来成功"的半份产物。
+        from .onboard.bootstrap import bootstrap, write_bundle
+        result = bootstrap(
+            payload["project"], payload.get("env") or "test", payload["target_url"],
+            payload.get("openapi_url"),
+        )
+        out_dir = payload.get("out")
+        if out_dir:
+            if result.get("ok"):
+                result["paths"] = write_bundle(out_dir, result["maps"], result["report"])
+            else:
+                result["paths"] = None
+        return result
     raise ValueError("Tool is not exposed through the stage runtime")
 
 

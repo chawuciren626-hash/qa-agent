@@ -74,6 +74,32 @@ CREATE TABLE IF NOT EXISTS project_management (
   last_synced_at TEXT,
   revision INTEGER NOT NULL DEFAULT 1
 );
+-- 被测环境（B1）：地址归属于环境，不归属于项目；一个项目多环境，maps 落在
+-- maps/<env>/ 下。.project_config.toml 只记默认环境名，绝不再存地址——那里的
+-- base_url 是模型供应商端点，语义不同，混用会污染模型配置。
+-- status 有 unregistered/probing/registered/failed 四态：用 probing 区分"正在跑"
+-- 与"从没跑过"，也用来在进程崩溃后看出残留；failed 与 registered 互斥，失败绝不
+-- 写成 registered + pages=0（那会被读成"扫过了但没有页面"）。
+CREATE TABLE IF NOT EXISTS project_environments (
+  project_id       TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  env              TEXT NOT NULL,
+  base_url         TEXT NOT NULL,
+  is_default       INTEGER NOT NULL DEFAULT 0,
+  status           TEXT NOT NULL DEFAULT 'unregistered'
+                   CHECK(status IN ('unregistered','probing','registered','failed')),
+  pages_total      INTEGER,               -- NULL = 没跑过，0 = 跑过且确实 0 个
+  pages_registered INTEGER,
+  apis_total       INTEGER,
+  api_modules      TEXT,                  -- JSON 数组：接口模块名
+  login_captcha    TEXT,                  -- none|image|slider|click_select|sms|unknown
+  maps_path        TEXT,                  -- 相对项目目录的 maps 文件路径
+  report_path      TEXT,                  -- 相对项目目录的建档报告路径
+  last_error       TEXT,                  -- 最近一次失败原因（成功时清空）
+  probed_at        TEXT,
+  created_at       TEXT NOT NULL,
+  revision         INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (project_id, env)
+);
 CREATE TABLE IF NOT EXISTS project_management_prefs (
   user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,

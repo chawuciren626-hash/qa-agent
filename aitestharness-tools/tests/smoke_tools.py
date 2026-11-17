@@ -1174,6 +1174,59 @@ def test_bootstrap_1010():
     srv.shutdown()
 
 
+def test_onboard_runtime_cli():
+    """onboard.bootstrap 走 runtime_cli：这是产品建档按钮唯一的执行入口。
+
+    产品侧（服务端环境服务）spawn 的就是 `runtime_cli onboard.bootstrap`，
+    所以这里必须验证"给 out 落盘、不给 out 只回结构、失败不落盘"三条契约——
+    少任何一条，建档按钮都会要么写不出 maps，要么在失败时留下半份产物。
+    """
+    import json, threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from aitestharness_tools.runtime_cli import invoke
+
+    html = ("<html><body><form><input type='text' name='u'>"
+            "<input type='password' name='p'><img src='/captcha.jpg'></form></body></html>")
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            body = html.encode() if self.path == "/" else b""
+            if not body:
+                self.send_response(404); self.end_headers(); return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+
+    # 1) 给 out：落盘 maps + 报告，路径回传
+    out = tempfile.mkdtemp(prefix="bootstrap-cli-")
+    result = invoke("onboard.bootstrap", {"project": "proj-cli", "env": "uat",
+                                          "target_url": base, "out": out})
+    assert result["ok"] is True and result["maps"]["env"] == "uat"
+    assert os.path.exists(result["paths"]["maps"]) and os.path.exists(result["paths"]["report"])
+    assert result["paths"]["maps"].endswith("maps-uat.yaml")
+
+    # 2) 不给 out：只回结构，不写任何文件（run 内调用不留散落产物）
+    bare = invoke("onboard.bootstrap", {"project": "proj-cli", "env": "uat", "target_url": base})
+    assert bare["ok"] is True and "paths" not in bare
+
+    # 3) 失败不落盘：地址不可达时 ok=False 且没有 paths，不能留半份 maps
+    failed = invoke("onboard.bootstrap", {"project": "proj-cli", "env": "uat",
+                                          "target_url": "http://127.0.0.1:9/",
+                                          "out": tempfile.mkdtemp(prefix="bootstrap-cli-bad-")})
+    assert failed["ok"] is False and failed["paths"] is None and failed["maps"] is None
+    srv.shutdown()
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
