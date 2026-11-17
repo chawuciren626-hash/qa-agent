@@ -1,4 +1,13 @@
 # CI test environment, not an automatic Agent installation instruction.
+# 回归本身要用的运行依赖：缺这三个，`npm run ci:tools` 与 `python -m pytest` 都跑不起来
+# ——pytest 供 irval 的 114 用例；yaml 供 irval loader 与 bootstrap 落盘；
+# requests + beautifulsoup4 供工具包（api_engine 抓站、bootstrap 的 DOM 探测）。
+# 缺 bs4 时 probe_login 会静默降级成正则路径，username_field 取不到 →
+# test_bootstrap_1010 断言失败，看起来像代码 bug，实际是环境缺依赖。
+pytest>=8
+pyyaml>=6
+requests>=2.31
+beautifulsoup4>=4.12
 python-docx==1.2.0
 reportlab==5.0.1
 lxml==6.1.3
