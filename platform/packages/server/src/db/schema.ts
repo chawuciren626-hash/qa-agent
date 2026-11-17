@@ -96,6 +96,10 @@ CREATE TABLE IF NOT EXISTS project_environments (
   report_path      TEXT,                  -- 相对项目目录的建档报告路径
   last_error       TEXT,                  -- 最近一次失败原因（成功时清空）
   probed_at        TEXT,
+  -- 五步进度（JSON 数组）：Python 侧每报一个 @@step 就覆盖写一次，供抽屉显示真实
+  -- 进度。NULL = 这一轮还没报过任何步（不是"五步全 0%"）。不写进 revision：进度是
+  -- 过程量，不是配置版本，前端按 status 轮询本就会整行重取。
+  steps_json       TEXT,
   created_at       TEXT NOT NULL,
   revision         INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (project_id, env)

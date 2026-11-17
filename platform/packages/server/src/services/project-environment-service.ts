@@ -11,7 +11,7 @@
  * 诚实边界：失败只写 failed + last_error，绝不写 registered + pages=0。NULL 表示
  * "没跑过"，0 表示"跑过且确实一个也没有"，两者在 UI 上是不同的字。
  */
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "../hmr/capabilities.js";
@@ -37,8 +37,39 @@ export interface EnvironmentRow {
   report_path: string | null;
   last_error: string | null;
   probed_at: string | null;
+  steps_json: string | null;
   created_at: string;
   revision: number;
+}
+
+/**
+ * 建档五步的固定清单，与 Python `onboard/bootstrap.py` 的 STEP_NAMES 一一对应。
+ *
+ * 为什么在 TS 侧也留一份：前端在建档开始之前就要画出五行占位，那时还没有任何
+ * Python 事件可读。事件里带 name 时以事件为准（Python 是唯一真源），这里只是
+ * 首帧的占位文案。
+ */
+export const BOOTSTRAP_STEP_NAMES = [
+  "可达性探测",
+  "抓取前端骨架",
+  "提取路由",
+  "探测登录与接口",
+  "生成环境档案",
+] as const;
+
+/** idle 没到这一步 / running 正在做 / done 做完了 / failed 在这步失败。 */
+export type BootstrapStepStatus = "idle" | "running" | "done" | "failed";
+
+export interface BootstrapStep {
+  index: number;
+  name: string;
+  status: BootstrapStepStatus;
+  /** 已结束步骤的耗时毫秒；没有报过耗时就是 null，不写 0 冒充"瞬间完成"。 */
+  ms: number | null;
+  /** 人话结论（"HTTP 200" / "12 页 / 34 接口"）；没报就是 null。 */
+  detail: string | null;
+  /** 结构化事实（bytes / count / finalUrl…），供展开看细节。 */
+  facts: Record<string, unknown>;
 }
 
 export interface EnvironmentView {
@@ -54,6 +85,8 @@ export interface EnvironmentView {
   lastError: string | null;
   mapsPath: string | null;
   reportPath: string | null;
+  /** 固定五行，按 index 升序；没跑过的步骤 status=idle。 */
+  steps: BootstrapStep[];
   revision: number;
 }
 
@@ -76,8 +109,52 @@ function rowToView(row: EnvironmentRow): EnvironmentView {
     lastError: row.last_error,
     mapsPath: row.maps_path,
     reportPath: row.report_path,
+    steps: parseSteps(row.steps_json),
     revision: row.revision,
   };
+}
+
+const STEP_STATUSES: readonly BootstrapStepStatus[] = ["idle", "running", "done", "failed"];
+
+/**
+ * 把 steps_json 铺成固定五行。
+ *
+ * 只接受已知的 index 与 status：Python 那边加了新步骤而这里没跟上时，多出来的
+ * 事件要被丢掉（不能凭空多一行），缺的步骤补 idle（不能少一行）。
+ */
+function parseSteps(raw: string | null): BootstrapStep[] {
+  const stored = new Map<number, Record<string, unknown>>();
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (item && typeof item === "object" && typeof (item as { index?: unknown }).index === "number") {
+            stored.set((item as { index: number }).index, item as Record<string, unknown>);
+          }
+        }
+      }
+    } catch {
+      // 坏 JSON 当作"还没报过进度"：不做半解析的猜测。
+    }
+  }
+  return BOOTSTRAP_STEP_NAMES.map((fallbackName, offset) => {
+    const index = offset + 1;
+    const hit = stored.get(index);
+    const status = hit && typeof hit.status === "string" && (STEP_STATUSES as readonly string[]).includes(hit.status)
+      ? (hit.status as BootstrapStepStatus)
+      : "idle";
+    return {
+      index,
+      name: typeof hit?.name === "string" && hit.name ? hit.name : fallbackName,
+      status,
+      ms: typeof hit?.ms === "number" ? hit.ms : null,
+      detail: typeof hit?.detail === "string" && hit.detail ? hit.detail : null,
+      facts: hit && typeof hit.facts === "object" && hit.facts !== null && !Array.isArray(hit.facts)
+        ? (hit.facts as Record<string, unknown>)
+        : {},
+    };
+  });
 }
 
 function parseModules(raw: string | null): string[] {
@@ -178,7 +255,7 @@ export function upsertEnvironment(
       db.prepare(
         `UPDATE project_environments SET status='unregistered', pages_total=NULL, pages_registered=NULL,
            apis_total=NULL, api_modules=NULL, login_captcha=NULL, maps_path=NULL, report_path=NULL,
-           last_error=NULL, probed_at=NULL WHERE project_id=? AND env=?`,
+           last_error=NULL, probed_at=NULL, steps_json=NULL WHERE project_id=? AND env=?`,
       ).run(projectId, env);
     }
   } else {
@@ -215,7 +292,22 @@ export interface BootstrapRunResult {
 
 export type BootstrapRun = (input: {
   projectId: string; env: string; baseUrl: string; outDir: string;
+  /**
+   * 进度播报：Python 每写一行 `@@step {...}` 就回调一次。可丢（调用方写库失败
+   * 不影响建档结论），但不可用来做判断——结论只看 BootstrapRunResult。
+   */
+  onStep?: (step: BootstrapStepEvent) => void;
 }) => Promise<BootstrapRunResult>;
+
+/** Python 侧原样上报的单步事件；字段可能缺，缺的按"没报"处理。 */
+export interface BootstrapStepEvent {
+  index: number;
+  name?: string;
+  status?: string;
+  ms?: number;
+  detail?: string;
+  facts?: Record<string, unknown>;
+}
 
 /**
  * 触发建档：先把状态置 probing 并立刻返回，再在后台跑 Python。
@@ -231,13 +323,16 @@ export function startBootstrap(deps: BootstrapDeps, projectId: string, env: stri
     throw new HttpError(503, "bootstrap_unavailable", "服务端未配置 AITEST_ENGINE_ROOT，无法调用建档工具");
   }
   const outDir = path.join(deps.projectDir, "maps", env);
+  // 新一轮从零开始：上一轮的步骤进度不能残留成"这轮已经跑到第几步"。
   deps.db.prepare(
-    "UPDATE project_environments SET status='probing', last_error=NULL, revision=revision+1 WHERE project_id=? AND env=?",
+    `UPDATE project_environments SET status='probing', last_error=NULL, steps_json=NULL,
+       revision=revision+1 WHERE project_id=? AND env=?`,
   ).run(projectId, env);
   const run = deps.run ?? pythonBootstrapRun(deps.engineRoot);
+  const onStep = (step: BootstrapStepEvent): void => recordStep(deps.db, projectId, env, step);
   // 不 await：后台跑，结果写回同一行。任何异常都必须落成 failed，不能留在 probing
   // 让 UI 永远转圈，也不能吞掉错误假装成功。
-  void run({ projectId, env, baseUrl: current.baseUrl, outDir })
+  void run({ projectId, env, baseUrl: current.baseUrl, outDir, onStep })
     .then((result) => finishBootstrap(deps, projectId, env, result))
     .catch((error: unknown) => finishBootstrap(deps, projectId, env, {
       ok: false,
@@ -246,6 +341,31 @@ export function startBootstrap(deps: BootstrapDeps, projectId: string, env: stri
       paths: null,
     }));
   return findEnvironment(deps.db, projectId, env) as EnvironmentView;
+}
+
+/** 把一次 step 事件合并进 steps_json（只动进度列：不碰 revision，不碰结论字段）。 */
+function recordStep(db: Db, projectId: string, env: string, event: BootstrapStepEvent): void {
+  const row = db.prepare(`${SELECT} AND env=?`).get(projectId, env) as unknown as EnvironmentRow | undefined;
+  if (!row) return; // 环境在跑的过程中被删了：没有可写的地方，静默结束。
+  const steps = parseSteps(row.steps_json);
+  const target = steps.find((step) => step.index === event.index);
+  if (!target) return; // 未知步骤号：宁可丢，不能凭空多一行。
+  const status = typeof event.status === "string" && (STEP_STATUSES as readonly string[]).includes(event.status)
+    ? (event.status as BootstrapStepStatus)
+    : target.status;
+  const merged: BootstrapStep = {
+    index: target.index,
+    name: typeof event.name === "string" && event.name ? event.name : target.name,
+    status,
+    ms: typeof event.ms === "number" ? event.ms : target.ms,
+    detail: typeof event.detail === "string" && event.detail ? event.detail : target.detail,
+    facts: event.facts && typeof event.facts === "object" && !Array.isArray(event.facts)
+      ? event.facts
+      : target.facts,
+  };
+  const next = steps.map((step) => (step.index === merged.index ? merged : step));
+  db.prepare("UPDATE project_environments SET steps_json=? WHERE project_id=? AND env=?")
+    .run(JSON.stringify(next), projectId, env);
 }
 
 /** 等待当前环境的建档结束（测试与 CLI 用；生产 UI 走轮询）。 */
@@ -262,6 +382,7 @@ export async function awaitBootstrap(deps: BootstrapDeps, projectId: string, env
 
 function finishBootstrap(deps: BootstrapDeps, projectId: string, env: string, result: BootstrapRunResult): void {
   const projectRoot = deps.projectDir;
+  finalizeSteps(deps.db, projectId, env, result);
   const relative = (target: string | undefined): string | null => {
     if (!target) return null;
     const rel = path.relative(projectRoot, target);
@@ -296,43 +417,114 @@ function finishBootstrap(deps: BootstrapDeps, projectId: string, env: string, re
   ).run(result.error ?? "建档失败", new Date().toISOString(), projectId, env);
 }
 
+/**
+ * 收尾：把"结束这一刻还挂在 running 的步骤"落定。
+ *
+ * Python 报了结论却漏发某步的 done（或进程死在半路）时，UI 不能留一个永远转的圈：
+ * 整体成功 → done，整体失败 → failed（并把失败原因写进这一步的 detail）。
+ * 只搬 running 的步骤，已经 done/failed 的历史不动。
+ */
+function finalizeSteps(db: Db, projectId: string, env: string, result: BootstrapRunResult): void {
+  const row = db.prepare(`${SELECT} AND env=?`).get(projectId, env) as unknown as EnvironmentRow | undefined;
+  if (!row?.steps_json) return;
+  const steps = parseSteps(row.steps_json);
+  if (!steps.some((step) => step.status === "running")) return;
+  const settledStatus: BootstrapStepStatus = result.ok ? "done" : "failed";
+  const next = steps.map((step) => step.status !== "running" ? step : {
+    ...step,
+    status: settledStatus,
+    detail: step.detail ?? (result.ok ? null : result.error ?? "建档中断"),
+  });
+  db.prepare("UPDATE project_environments SET steps_json=? WHERE project_id=? AND env=?")
+    .run(JSON.stringify(next), projectId, env);
+}
+
 /** 生产执行器：spawn `python -m aitestharness_tools.runtime_cli onboard.bootstrap`。 */
 function pythonBootstrapRun(engineRoot: string): BootstrapRun {
-  return async ({ projectId, env, baseUrl, outDir }) => {
+  return async ({ projectId, env, baseUrl, outDir, onStep }) => {
     const packageRoot = path.join(engineRoot, "aitestharness-tools");
     const python = process.env.AITEST_PYTHON ?? (process.platform === "win32" ? "python" : "python3");
-    const payload = JSON.stringify({ project: projectId, env, target_url: baseUrl, out: outDir });
-    const stdout = await new Promise<string>((resolve, reject) => {
-      const child = execFile(python, ["-m", "aitestharness_tools.runtime_cli", "onboard.bootstrap"], {
-        cwd: engineRoot,
-        env: {
-          ...process.env,
-          PYTHONPATH: [packageRoot, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
-          PYTHONUTF8: "1",
-          PYTHONIOENCODING: "utf-8",
-        },
-        timeout: BOOTSTRAP_TIMEOUT_MS,
-        maxBuffer: 8 * 1024 * 1024,
-        windowsHide: true,
-        encoding: "utf8",
-      }, (error, out) => {
-        // 非零退出码不直接抛：runtime_cli 用退出码表达"工具层失败"，真正的建档
-        // 结论在 stdout 的 JSON 里，先解析再判。
-        if (error && !out) reject(error);
-        else resolve(out);
-      });
-      child.stdin?.end(payload);
+    const payload = JSON.stringify({ project: projectId, env, target_url: baseUrl, out: outDir, progress: true });
+    // spawn 而不是 execFile：进度在 stderr 上逐行来，必须边跑边读。等进程结束再
+    // 一次性拿 buffer，五步进度就退化成"结束瞬间五条一起到"，抽屉里永远是假动画。
+    const child = spawn(python, ["-m", "aitestharness_tools.runtime_cli", "onboard.bootstrap"], {
+      cwd: engineRoot,
+      env: {
+        ...process.env,
+        PYTHONPATH: [packageRoot, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+        PYTHONUTF8: "1",
+        PYTHONIOENCODING: "utf-8",
+      },
+      windowsHide: true,
     });
+    let stdout = "";
+    let pending = "";
+    // stderr 的非 @@step 行只留尾巴：它是 Python 的 traceback/日志，用来解释"为什么
+    // 一个 JSON 都没拿到"，全留会撑爆内存，丢掉又会让报错无从查起。
+    let stderrTail = "";
+    let timedOut = false;
+    const killTimer = setTimeout(() => { timedOut = true; child.kill(); }, BOOTSTRAP_TIMEOUT_MS);
+    try {
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => { stdout += chunk; });
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk: string) => {
+        pending += chunk;
+        // 按行切：一行可能被拆包，半个 JSON 不能解析也不能丢。
+        const lines = pending.split(/\r?\n/);
+        pending = lines.pop() ?? "";
+        for (const line of lines) {
+          const text = line.trim();
+          if (!text) continue;
+          if (text.startsWith("@@step ")) {
+            const event = parseStepLine(text.slice("@@step ".length));
+            if (event && onStep) {
+              try {
+                onStep(event);
+              } catch {
+                // 写进度失败不能中断建档：进度是可丢的播报，结论才是要紧的。
+              }
+            }
+            continue;
+          }
+          stderrTail = (stderrTail + text + "\n").slice(-2_000);
+        }
+      });
+      await new Promise<void>((resolve, reject) => {
+        child.on("error", reject); // spawn 失败（python 不在 PATH）走这里
+        child.on("close", () => resolve());
+        child.stdin?.end(payload);
+      });
+    } finally {
+      clearTimeout(killTimer);
+    }
     await fs.mkdir(outDir, { recursive: true });
     let parsed: { ok?: boolean; result?: BootstrapRunResult; message?: string };
     try {
       parsed = JSON.parse(stdout) as typeof parsed;
     } catch {
-      throw new Error(`建档工具返回非 JSON：${stdout.slice(0, 200)}`);
+      // 非 JSON 多半是 Python 侧直接崩了：把 stderr 尾巴带上，否则只剩"解析失败"。
+      const why = stderrTail.trim();
+      throw new Error(timedOut
+        ? `建档超时（${Math.round(BOOTSTRAP_TIMEOUT_MS / 1000)}s），已终止子进程${why ? `\n${why}` : ""}`
+        : `建档工具返回非 JSON：${stdout.slice(0, 200) || "(stdout 为空)"}${why ? `\n${why}` : ""}`);
     }
     if (parsed.ok !== true || !parsed.result) {
       throw new Error(parsed.message ?? "建档工具执行失败");
     }
     return parsed.result;
   };
+}
+
+/** 解析一行 `@@step {...}`；坏行返回 null（进度可丢，不值得让整次建档失败）。 */
+function parseStepLine(raw: string): BootstrapStepEvent | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const index = (parsed as { index?: unknown }).index;
+    if (typeof index !== "number") return null;
+    return parsed as BootstrapStepEvent;
+  } catch {
+    return null;
+  }
 }

@@ -116,7 +116,9 @@ describe("environment knowledge", () => {
     expect(final.status).toBe("verified");
     expect(final.verdicts.map(item => [item.round, item.verdict])).toEqual([[2, "refuted"], [3, "verified"]]);
     // 旧结论的"实际观察到什么"必须留着——它决定了断言该放在提交后而不是输入框。
-    expect(final.verdicts[0].evidence).toContain("999999");
+    const [firstVerdict] = final.verdicts;
+    expect(firstVerdict?.round).toBe(2);
+    expect(firstVerdict?.evidence).toContain("999999");
   });
 
   it("summarises hypotheses by status so the header can say 2 待验", async () => {

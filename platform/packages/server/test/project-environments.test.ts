@@ -12,7 +12,15 @@ import {
   findEnvironment,
   startBootstrap,
   type BootstrapRun,
+  type EnvironmentView,
 } from "../src/services/project-environment-service.js";
+
+/** 取某一步（缺了就报错，别用下标 + 断言把缺失掩盖成 undefined）。 */
+function stepAt(view: Pick<EnvironmentView, "steps">, index: number) {
+  const step = view.steps.find((item) => item.index === index);
+  if (!step) throw new Error(`没有第 ${index} 步`);
+  return step;
+}
 
 let test: TestApp | undefined;
 afterEach(async () => { await test?.cleanup(); test = undefined; });
@@ -128,3 +136,93 @@ describe("project environments", () => {
     expect((await outsider.post(`/api/projects/${project.projectId}/environments`, { baseUrl: "http://x.example.com" })).status).toBe(404);
   });
 });
+
+/**
+ * 五步进度：来源只能是 Python 的 @@step 上报，不能按时间猜。
+ *
+ * 这里用注入的执行器发同一形状的事件，验"收到什么就写什么、没收到就是 idle"。
+ */
+describe("bootstrap step progress", () => {
+  it("lays out five idle steps before the first run instead of a fake 0%", async () => {
+    const { admin, created } = await projectWithEnvironment();
+    const { project } = await created.json() as { project: { projectId: string } };
+    const res = await admin.get(`/api/projects/${project.projectId}/environments/test`);
+    const { environment } = await res.json() as { environment: EnvironmentView };
+    expect(environment.steps.map(step => step.index)).toEqual([1, 2, 3, 4, 5]);
+    expect(environment.steps.map(step => step.status)).toEqual(["idle", "idle", "idle", "idle", "idle"]);
+    expect(stepAt(environment, 1).name).toBe("可达性探测");
+    expect(environment.steps.every(step => step.ms === null)).toBe(true);
+  });
+
+  it("records what Python reported, step by step, including a still-running step", async () => {
+    const { admin, created } = await projectWithEnvironment();
+    const { project } = await created.json() as { project: { projectId: string } };
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const run: BootstrapRun = async ({ onStep }) => {
+      onStep?.({ index: 1, status: "running" });
+      onStep?.({ index: 1, status: "done", ms: 210, detail: "HTTP 200", facts: { bytes: 4210 } });
+      onStep?.({ index: 2, status: "running" });
+      // 停在"第 2 步正在做"：真实建档确实会在这里停很久（抓前端骨架）。
+      await gate;
+      return { ok: false, error: "抓取骨架超时", report: null, paths: null };
+    };
+    const deps = { db: test!.deps.db, projectDir: projectDir(test!.root, project.projectId), engineRoot: "engine-root", run };
+    startBootstrap(deps, project.projectId, "test");
+    // 等后台那一轮把前两个事件写进去（轮询置 probing 的那一行）。
+    const midway = await waitForStep(deps, project.projectId, 1, "done");
+    expect(stepAt(midway, 1)).toMatchObject({ status: "done", ms: 210, detail: "HTTP 200", facts: { bytes: 4210 } });
+    expect(stepAt(midway, 2).status).toBe("running");
+    expect(stepAt(midway, 3).status).toBe("idle");
+    expect(midway.status).toBe("probing");
+    release?.();
+    const finished = await awaitBootstrap(deps, project.projectId, "test");
+    // 第 2 步死在半路：必须是 failed，不能永远转圈，也不能假报 done。
+    expect(stepAt(finished, 2).status).toBe("failed");
+    expect(stepAt(finished, 2).detail).toBe("抓取骨架超时");
+    expect(stepAt(finished, 1).status).toBe("done");
+    expect(stepAt(finished, 5).status).toBe("idle");
+  });
+
+  it("ignores unknown step indexes and a fresh run does not inherit the previous run's progress", async () => {
+    const { created } = await projectWithEnvironment();
+    const { project } = await created.json() as { project: { projectId: string } };
+    const deps = { db: test!.deps.db, projectDir: projectDir(test!.root, project.projectId), engineRoot: "engine-root" };
+    const first: BootstrapRun = async ({ onStep }) => {
+      onStep?.({ index: 1, status: "done", ms: 10, detail: "HTTP 200" });
+      onStep?.({ index: 9, status: "done", ms: 10, detail: "未来步骤" });
+      return { ok: true, error: null, report: { pages: { total: 1, registered: 0 }, apis: { count: 0, modules: [] } }, paths: null };
+    };
+    startBootstrap({ ...deps, run: first }, project.projectId, "test");
+    const done = await awaitBootstrap({ ...deps, run: first }, project.projectId, "test");
+    expect(done.steps).toHaveLength(5);
+    expect(stepAt(done, 1).status).toBe("done");
+    // 第二轮：上一轮的 1 号 done 不能变成这一轮的进度。
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const second: BootstrapRun = async () => {
+      await gate;
+      return { ok: false, error: "首页不可达", report: null, paths: null };
+    };
+    const started = startBootstrap({ ...deps, run: second }, project.projectId, "test");
+    expect(started.steps.map(step => step.status)).toEqual(["idle", "idle", "idle", "idle", "idle"]);
+    release?.();
+    await awaitBootstrap({ ...deps, run: second }, project.projectId, "test");
+  });
+});
+
+/** 等某个步骤达到期望状态（后台执行器写库是异步的，不能靠固定 sleep）。 */
+async function waitForStep(
+  deps: Parameters<typeof awaitBootstrap>[0],
+  projectId: string,
+  index: number,
+  status: string,
+) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const view = findEnvironment(deps.db, projectId, "test");
+    if (view?.steps.find(step => step.index === index)?.status === status) return view;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`step ${index} 没有在 5s 内进入 ${status}`);
+}
