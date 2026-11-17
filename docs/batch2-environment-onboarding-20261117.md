@@ -76,6 +76,7 @@ Python 每到一个真实边界就往 **stderr** 写一行 `@@step {"index":1,"s
 | `cd platform/packages/web && npx tsc --noEmit -p .` | 0 错误 |
 | `npx vitest run test/project-environments.test.ts test/environment-knowledge.test.ts` | 9 + 7 passed |
 | `npx vitest run test/bootstrap-steps.test.ts` | 4 passed |
+| `npx vitest run test/project-environments-page.test.ts` | 4 passed（失败原文照抄 / 未探索空态 / 判定追加 / 造数默认关） |
 | `npx vitest run test/project-management-page.test.ts test/qa-project-pagination.test.ts` | 15 + 8 passed |
 | `npx vitest run test/managed-projects.test.ts test/project-rename.test.ts` | 9 passed / 1 skipped（原有 runIf 跳过） |
 
