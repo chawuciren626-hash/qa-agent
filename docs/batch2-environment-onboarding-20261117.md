@@ -62,16 +62,29 @@
 | `cd platform/packages/server && npx tsc --noEmit -p .` | 0 错误 |
 | `cd platform/packages/web && npx tsc --noEmit -p .` | 0 错误 |
 | `npx vitest run test/project-environments.test.ts` | 6 passed |
+| `npx vitest run test/environment-knowledge.test.ts` | 7 passed |
 | `npx vitest run test/managed-projects.test.ts test/project-rename.test.ts` | 9 passed / 1 skipped（原有 runIf 跳过） |
 
-新增用例覆盖：环境登记与"未建档≠0"、地址与环境名校验、失败不冒充成功、成功摘要落库、地址变更清空旧摘要、非成员 404。
+新增用例覆盖：环境登记与"未建档≠0"、地址与环境名校验、失败不冒充成功、成功摘要落库、地址变更清空旧摘要、非成员 404；以及探索资产的层覆盖、key 去重、假设默认关造数、判定 append 不覆盖、按状态计数、环境不存在 404。
 
-## 6. 待产品确认（阻塞前端）
+## 6. 产品决策（2026-11-17 已确认）
 
-1. **环境地址在新建弹窗里选填还是必填**。原型按"选填，填了就创建后立即建档"做，好处是兼容"先建项目后连环境"的老习惯。
-2. 环境页入口位置：项目内左侧导航新增一级「环境」，还是并进项目资料。
+1. **环境地址选填**：填了创建后立即建档，留空则先建项目、之后在环境页补。兼容"先建项目后连环境"的老习惯，历史项目也能惰性补建（详情侧栏显示"未建档"而不是 0）。
+2. **项目内左侧导航新增一级「项目环境」**（不是并进项目资料）。该页不在「项目视图」的 tab 之下——那排 tab（任务与节点/项目用例/缺陷清单/测试报告）只属于项目视图。
+3. **多环境 v1 只做"默认环境 + 添加环境"**，不做环境切换器。
+4. **建档完成后不自动跑探索**：探索会开有头浏览器占机器，给按钮由人触发；触发后系统代建会话。
 
-原型：`prototype/batch2-onboarding-prototype.html`（6 屏，含失败态）。
+原型：`prototype/batch2-onboarding-v2.html`（11 屏）。
+
+## 6.1 三层职责（别再混）
+
+| 层 | 回答什么 | 形态 | 有 run | 有会话 |
+|---|---|---|---|---|
+| 建档 `onboard.bootstrap` | 有哪些地址 | requests+bs4，零 LLM，不开浏览器 | 无 | **无** |
+| 探索 `breadth`/`depth` | 地址怎么走通、前置条件 | 开浏览器跑几分钟 | 有 | **有，人工触发后系统代建** |
+| 测试任务 | 这次验什么 | 六阶段 | 有 | 有（用户建） |
+
+硬依据：`readTaskRuns(workspace, sessionId)`——全仓 run 必挂 session；QA 路由全是 `/:sessionId/*`。所以探索不建会话就没有 run/Trace/界面过程，这不是产品偏好是结构约束。建档没有 run，因此不建会话。
 
 ## 7. 环境坑（本次踩到，建议记入手册 §6）
 
@@ -84,3 +97,27 @@
 - 前端全部改动。
 - 真实环境的建档 run 回执（需要授权地址 + 该地址从服务端可达）。
 - maps 落盘目录仍是扁平文件名 `maps-<env>.yaml`（Python `write_bundle` 现状）。设计文档写的是 `maps/{env}/`；本批把目录定在 `<projectDir>/maps/<env>/`，文件名未改。要不要改成 `maps/<env>/pages.json|apis.json`，等批次 3 来源条款化时一并定，避免两次改落盘格式。
+- `kb/<env>/` 目录本身（modules.yaml / flows / walls 的落盘）未做：本批只落了 DB 索引与接口，文件由探索 Agent 回传后再写，属批次 4 的产物。
+- 前端环境档案页（模块地图 / 未知与假设 / 补充场景）只有原型，未改真实代码。
+
+## 9. 探索资产与假设闭环（本批新增，Codex 请重点复核第 2 条）
+
+三张表跟着 `project_environments` 走，不跟 `qa_` 主区（那里是项目级、人产出物）：
+
+| 表 | 性质 | 关键约定 |
+|---|---|---|
+| `qa_environment_knowledge` | 程序写，每轮**覆盖** | PK 带 env；不再出现的条目被删（它已不成立） |
+| `qa_exploration_hypotheses` | 人提，待验证 | `allow_seed` 默认 0；statement 须可判定 |
+| `qa_hypothesis_verdicts` | append-only | 假设表 status 只是最新快照 |
+
+三个判断需要复核：
+
+1. **为什么知识按环境分而不是按项目**：预发常比生产少几个模块。若合成一张项目级图，下游生成用例时会拿预发的模块去生产环境跑。技能文档里"项目库是唯一事实来源"是通用流程口径，本工程有环境实体，唯一性的最小单元是环境。
+
+2. **为什么假设不写进 knowledge、也不走 `qa_knowledge_candidates`**：候选→规则那条是**业务规则**（退款必须原路退回），确认后约束断言；这里是**探索假设**（退款前需有已支付订单，请去验），确认后补的是链路前置条件。两者语义不同、生命周期不同（规则长期有效，假设一轮即判）。混用会让规则库塞满一次性的探索结论。
+
+3. **为什么 verdict 要 append**：被推翻的结论决定断言放哪。用例里钉住了这个：退款超额是提交时才校验，断言放输入框会误报。只存最新 status，这个信息永久丢失。
+
+接口：`GET/PUT /:env/knowledge[/:layer]`、`GET/POST /:env/hypotheses`、`POST /:env/hypotheses/:id/verdicts`。`GET knowledge` 一次返回四层 + 假设计数，避免首屏"地图有了、计数还是 0"的错帧。
+
+留给下一批的接口空缺：探索任务派发（建会话 + 发 breadth 指令）、kb 文件落盘、探索产物写入 knowledge 的调用点（应由探索 Agent 回传后调 `PUT /:layer`，不由前端调）。

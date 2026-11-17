@@ -1,0 +1,1624 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>批次 2 · 建档第一屏与环境档案（原型 v2）</title>
+<style>
+  :root{
+    --text:#1f2329; --muted:#8f959e; --muted2:#646a73; --line:#e6e9ef; --line2:#eef0f4;
+    --hover:#f1f3f6; --pri:#185fa5; --pri-bg:#eaf2fb; --pri-line:#cfe0f3;
+    --green:#2e9e6b; --green-bg:#e8f6ef; --red:#d45555; --red-bg:#fdeeee;
+    --amber:#b8781a; --amber-bg:#fdf3e3; --grey-bg:#f2f3f5; --bg:#fff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:#f5f6f8;color:var(--text);font-size:13.5px;-webkit-font-smoothing:antialiased;
+  }
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+  input,textarea,select{font:inherit;color:inherit}
+
+  /* ---------- 原型外壳（不属于产品 UI） ---------- */
+  .pg-bar{
+    height:46px;display:flex;align-items:center;gap:14px;padding:0 16px;
+    background:#0f172a;color:#cbd5e1;font-size:12px;position:sticky;top:0;z-index:100;
+  }
+  .pg-bar b{color:#fff;font-weight:600;font-size:12.5px}
+  .pg-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-left:6px}
+  .pg-tabs button{
+    padding:5px 10px;border-radius:6px;color:#94a3b8;font-size:11.5px;border:1px solid transparent;
+  }
+  .pg-tabs button:hover{background:#1e293b;color:#e2e8f0}
+  .pg-tabs button.on{background:#185fa5;color:#fff;border-color:#2f7ac4}
+  .pg-hint{margin-left:auto;color:#7c8ba1;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:44%}
+  .pg-hint b{color:#e2e8f0;font-weight:600}
+
+  /* ---------- 应用框 ---------- */
+  .app{
+    position:relative;display:flex;height:calc(100vh - 46px);min-height:660px;background:var(--bg);
+    max-width:1560px;margin:0 auto;overflow:hidden;box-shadow:0 0 0 1px var(--line);
+  }
+  .side{
+    width:232px;flex:none;border-right:1px solid var(--line);display:flex;flex-direction:column;background:#fff;
+  }
+  .brand{display:flex;align-items:center;gap:10px;padding:18px 16px 14px}
+  .brand-logo{
+    width:32px;height:32px;border-radius:7px;background:#185fa5;color:#fff;display:grid;place-items:center;
+    font-weight:700;font-size:16px;position:relative;flex:none;
+  }
+  .brand-logo::after{
+    content:"";position:absolute;left:7px;right:7px;bottom:7px;height:2px;border-radius:2px;background:#5dcaa5;
+  }
+  .brand-txt b{display:block;font-size:15.5px;font-weight:700;letter-spacing:-.2px}
+  .brand-txt small{display:block;font-size:10.5px;color:var(--muted);letter-spacing:.3px}
+  .nav{padding:8px 10px}
+  .nav-item{
+    display:flex;align-items:center;gap:9px;width:100%;min-height:36px;padding:7px 10px;border-radius:8px;
+    color:var(--muted2);text-align:left;white-space:nowrap;font-size:13.5px;
+  }
+  .nav-item:hover:not(.on){background:var(--hover)}
+  .nav-item.on{background:var(--pri-bg);color:var(--pri);font-weight:600}
+  .nav-item .ic{width:16px;height:16px;opacity:.75}
+  .side-foot{margin-top:auto;padding:12px 14px;border-top:1px solid var(--line);display:flex;align-items:center;gap:9px}
+  .avatar{width:28px;height:28px;border-radius:50%;background:var(--pri);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:600;flex:none}
+  .who b{display:block;font-size:12.5px}
+  .who small{font-size:11px;color:var(--muted)}
+
+  .main{flex:1;min-width:0;position:relative;display:flex;flex-direction:column;overflow:hidden}
+  .base{display:none;flex:1;min-height:0;flex-direction:column}
+  .base.on{display:flex}
+  .scroll{flex:1;min-height:0;overflow-y:auto;padding:26px 30px 40px}
+
+  /* ---------- 页头 / 工具条 ---------- */
+  .head{display:flex;align-items:flex-start;gap:12px}
+  .head h1{font-size:19px;font-weight:700;letter-spacing:-.2px}
+  .head p{font-size:12px;color:var(--muted);margin-top:4px}
+  .head-act{margin-left:auto;display:flex;align-items:center;gap:8px;flex:none}
+  .btn-main{display:inline-flex;align-items:center;gap:6px;background:var(--pri);color:#fff;border-radius:8px;padding:7px 15px;font-weight:600;font-size:13px}
+  .btn-main:hover{background:#14508c}
+  .btn-main:disabled{background:#a8bdd4;cursor:not-allowed}
+  .btn-ghost{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:8px;padding:6px 13px;color:var(--muted2);font-size:13px;background:#fff}
+  .btn-ghost:hover{background:var(--hover)}
+  .btn-sm{padding:4px 10px;font-size:12.5px;border-radius:6px}
+  .icon-btn{width:30px;height:30px;border-radius:7px;display:grid;place-items:center;color:var(--muted2);border:1px solid var(--line);background:#fff}
+  .icon-btn:hover{background:var(--hover)}
+  .icon-btn.plain{border-color:transparent;background:none}
+  .icon-btn.plain:hover{background:var(--hover)}
+
+  .toolbar{display:flex;align-items:center;gap:8px;margin-top:16px;flex-wrap:wrap}
+  .search{
+    display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:8px;
+    padding:6px 10px;min-width:250px;background:#fff;color:var(--muted);
+  }
+  .search input{border:none;outline:none;flex:1;font-size:13px;background:none}
+  .toolbar select{
+    border:1px solid var(--line);border-radius:8px;padding:6px 26px 6px 10px;font-size:13px;
+    background:#fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0h10L5 6z' fill='%238f959e'/></svg>") no-repeat right 9px center;
+    appearance:none;color:var(--muted2);
+  }
+  .count{margin-left:auto;font-size:12px;color:var(--muted)}
+
+  /* ---------- 表格 ---------- */
+  .table{margin-top:12px;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fff}
+  table{width:100%;border-collapse:collapse;table-layout:fixed}
+  th{
+    font-size:11.5px;font-weight:600;color:var(--muted);text-align:left;padding:9px 12px;
+    background:#fafbfc;border-bottom:1px solid var(--line);white-space:nowrap;
+  }
+  td{padding:11px 12px;border-bottom:1px solid var(--line2);vertical-align:middle;font-size:13px}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:#fbfcfd}
+  .c-pin{width:38px}.c-src{width:96px}.c-env{width:214px}.c-st{width:78px}
+  .c-time{width:96px}.c-run{width:104px}.c-acts{width:132px}
+  .pin{color:#c9ced6;font-size:15px;line-height:1}
+  .pin.on{color:#e8a33d}
+  .name{font-size:13.5px;font-weight:600;text-align:left;color:var(--text)}
+  .name:hover{color:var(--pri)}
+  .code{display:block;font-size:11.5px;color:var(--muted);margin-top:2px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .tag{display:inline-flex;align-items:center;gap:4px;border-radius:4px;padding:1px 7px;font-size:11.5px;line-height:18px;white-space:nowrap}
+  .t-manual{background:var(--grey-bg);color:var(--muted2)}
+  .t-sync{background:#eef3fb;color:#3a6ea8}
+  .t-active{background:var(--green-bg);color:var(--green)}
+  .t-arch{background:var(--grey-bg);color:var(--muted)}
+  .t-amber{background:var(--amber-bg);color:var(--amber)}
+  .t-red{background:var(--red-bg);color:var(--red)}
+  .t-green{background:var(--green-bg);color:var(--green)}
+  .muted{color:var(--muted)}
+  .run{color:var(--green);font-size:12px;white-space:nowrap}
+  .acts{display:flex;align-items:center;gap:6px}
+  .enter{color:var(--pri);font-weight:600;font-size:13px;white-space:nowrap}
+  .enter:hover{text-decoration:underline}
+  .more{width:26px;height:26px;border-radius:6px;color:var(--muted2);display:grid;place-items:center}
+  .more:hover{background:var(--hover)}
+
+  /* ---------- 环境单元格（本批次新增：是一个字段，不是操作） ---------- */
+  .env-cell{display:flex;flex-direction:column;gap:5px;min-width:0}
+  .env-line{display:flex;align-items:center;gap:6px;min-width:0}
+  .env-dot{width:7px;height:7px;border-radius:50%;flex:none}
+  .d-none{background:#c9ced6}
+  .d-run{background:var(--pri);animation:pulse 1.4s infinite}
+  .d-ok{background:var(--green)}
+  .d-fail{background:var(--red)}
+  @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.82)}}
+  .env-name{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .env-name.link{color:var(--pri);cursor:pointer}
+  .env-name.link:hover{text-decoration:underline}
+  .env-sub{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .env-sub.err{color:var(--red)}
+  .bar{height:3px;border-radius:2px;background:#eef0f4;overflow:hidden;margin-top:1px}
+  .bar i{display:block;height:100%;background:var(--pri);border-radius:2px;transition:width .5s ease}
+  .bar.fail i{background:var(--red)}
+  .env-add{
+    display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:var(--pri);
+    border:1px dashed var(--pri-line);border-radius:5px;padding:1px 7px;background:#f7fbff;
+    align-self:flex-start;
+  }
+  .env-add:hover{background:var(--pri-bg)}
+
+  /* ---------- 弹窗 ---------- */
+  .mask{
+    position:absolute;inset:0;left:-232px;background:rgba(15,23,42,.28);z-index:40;display:none;
+    align-items:flex-start;justify-content:center;padding-top:22px;
+  }
+  .mask.on{display:flex}
+  .modal{
+    width:488px;background:#fff;border-radius:12px;box-shadow:0 18px 48px rgba(15,23,42,.22);
+    display:flex;flex-direction:column;max-height:calc(100% - 44px);
+  }
+  .modal-head{display:flex;align-items:center;padding:16px 20px 10px}
+  .modal-head h2{font-size:15.5px;font-weight:700}
+  .modal-head .icon-btn{margin-left:auto}
+  .modal-body{padding:4px 20px 14px;overflow-y:auto}
+  .modal-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 20px 18px;border-top:1px solid var(--line)}
+  .row{display:block;margin-top:12px}
+  .row > .lbl{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted2);margin-bottom:6px}
+  .row .lbl em{color:var(--red);font-style:normal}
+  .row input[type=text],.row textarea{
+    width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px;outline:none;font-size:13px;background:#fff;
+  }
+  .row input[type=text]:focus,.row textarea:focus{border-color:var(--pri);box-shadow:0 0 0 3px rgba(24,95,165,.1)}
+  .row textarea{resize:vertical;min-height:62px}
+  .field-count{display:block;text-align:right;font-size:11px;color:var(--muted);margin-top:3px}
+  .field-hint{font-size:11.5px;color:var(--muted);margin-top:5px;line-height:1.55}
+  .field-hint.warn{color:var(--amber)}
+  .sep{height:1px;background:var(--line);margin:14px 0 0}
+  .sub-head{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:var(--muted2);margin-top:12px}
+  .sub-head .tag{margin-left:auto}
+  .cheat{border:1px solid var(--pri-line);background:#f7fbff;border-radius:8px;padding:9px 11px;margin-top:10px}
+  .cheat b{display:block;font-size:12px;color:var(--pri);margin-bottom:3px}
+  .cheat p{font-size:11.5px;color:var(--muted2);line-height:1.6}
+
+  /* ---------- 抽屉（环境档案 / 详情侧栏共用骨架） ---------- */
+  .drawer-wrap{position:absolute;inset:0;left:-232px;z-index:50;display:none}
+  .drawer-wrap.on{display:block}
+  .drawer-wrap .scrim{position:absolute;inset:0;background:rgba(15,23,42,.14)}
+  .drawer{
+    position:absolute;top:0;right:0;bottom:0;width:568px;background:#fff;display:flex;flex-direction:column;
+    box-shadow:-10px 0 32px rgba(15,23,42,.13);
+  }
+  .dr-head{padding:16px 22px 12px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;gap:10px}
+  .dr-head h2{font-size:16px;font-weight:700;display:flex;align-items:center;gap:7px}
+  .dr-sub{font-size:11.5px;color:var(--muted);margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .dr-body{flex:1;min-height:0;overflow-y:auto;padding:16px 22px 26px}
+  .dr-foot{border-top:1px solid var(--line);padding:11px 22px;display:flex;align-items:center;gap:8px;background:#fcfcfd}
+  .dr-foot .right{margin-left:auto;display:flex;gap:8px}
+
+  .addr-box{border:1px solid var(--line);border-radius:9px;padding:10px 12px;display:flex;align-items:center;gap:8px;background:#fcfdfe}
+  .addr-box .k{font-size:11px;color:var(--muted);flex:none}
+  .addr-box .v{flex:1;min-width:0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .addr-box .edit{font-size:12px;color:var(--pri);flex:none}
+
+  .sec-title{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;margin:20px 0 10px;color:var(--text)}
+  .sec-title .cnt{font-weight:400;font-size:11.5px;color:var(--muted)}
+  .sec-title:first-child{margin-top:2px}
+
+  /* 五步进度 */
+  .steps{display:flex;flex-direction:column}
+  .step{display:grid;grid-template-columns:20px 1fr;gap:11px;position:relative;padding-bottom:16px}
+  .step:last-child{padding-bottom:0}
+  .step::before{
+    content:"";position:absolute;left:9px;top:19px;bottom:0;width:1.5px;background:var(--line);
+  }
+  .step:last-child::before{display:none}
+  .step.done::before{background:#bfe3d0}
+  .dot-s{
+    width:19px;height:19px;border-radius:50%;display:grid;place-items:center;font-size:10px;
+    border:1.5px solid var(--line);background:#fff;color:var(--muted);z-index:1;flex:none;
+  }
+  .step.done .dot-s{background:var(--green);border-color:var(--green);color:#fff}
+  .step.run .dot-s{border-color:var(--pri);color:var(--pri);box-shadow:0 0 0 3px rgba(24,95,165,.13);animation:pulse 1.3s infinite}
+  .step.fail .dot-s{background:var(--red);border-color:var(--red);color:#fff}
+  .step.pend{opacity:.55}
+  .st-top{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .st-name{font-size:13px;font-weight:600}
+  .step.pend .st-name{font-weight:500;color:var(--muted2)}
+  .st-meta{font-size:11px;color:var(--muted);font-family:ui-monospace,Menlo,Consolas,monospace}
+  .st-meta.ok{color:var(--green)}
+  .st-meta.bad{color:var(--red)}
+  .st-body{font-size:12px;color:var(--muted2);line-height:1.65;margin-top:3px}
+  .st-body code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;background:var(--grey-bg);padding:0 4px;border-radius:3px}
+  .chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+  .chip{font-size:11px;border:1px solid var(--line);border-radius:4px;padding:1px 6px;color:var(--muted2);background:#fcfcfd}
+  .chip.hot{border-color:#f3ddc0;background:var(--amber-bg);color:var(--amber)}
+  .chip.bad{border-color:#f4d3d3;background:var(--red-bg);color:var(--red)}
+  .st-next{
+    margin-top:7px;font-size:11.5px;line-height:1.6;border-left:2px solid var(--pri-line);
+    padding:5px 0 5px 9px;color:var(--muted2);background:#fafcff;
+  }
+  .st-next b{color:var(--text);font-weight:600}
+
+  /* 摘要网格 */
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .gcell{background:#fff;padding:10px 11px}
+  .gcell b{display:block;font-size:17px;font-weight:700;letter-spacing:-.3px}
+  .gcell b small{font-size:11px;font-weight:400;color:var(--muted);margin-left:2px}
+  .gcell span{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+  .gcell.warn b{color:var(--amber)}
+
+  .kv{display:grid;grid-template-columns:96px 1fr;gap:7px 12px;font-size:12.5px}
+  .kv dt{color:var(--muted)}
+  .kv dd{color:var(--text);word-break:break-word}
+  .kv dd.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+
+  .note{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:#fcfdfe;font-size:12px;color:var(--muted2);line-height:1.65}
+  .note b{color:var(--text)}
+  .note.warn{border-color:#f3ddc0;background:#fffdf8}
+  .note.bad{border-color:#f4d3d3;background:#fffafa}
+
+  .report{
+    border:1px solid var(--line);border-radius:8px;overflow:hidden;
+  }
+  .report-head{display:flex;align-items:center;gap:7px;padding:8px 11px;background:#fafbfc;border-bottom:1px solid var(--line);font-size:12px}
+  .report-head .fname{font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--muted2)}
+  .report-head .right{margin-left:auto;font-size:11.5px;color:var(--pri)}
+  .report pre{
+    padding:11px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.75;
+    color:var(--muted2);max-height:168px;overflow:auto;white-space:pre-wrap;
+  }
+  .report pre b{color:var(--text);font-weight:600}
+
+  .upgrade{
+    display:flex;align-items:flex-start;gap:10px;border:1px solid var(--line);border-radius:9px;
+    padding:11px 12px;margin-top:16px;background:#fcfcfd;
+  }
+  .upgrade .ic2{width:26px;height:26px;border-radius:7px;background:var(--pri-bg);color:var(--pri);display:grid;place-items:center;flex:none;font-size:13px}
+  .upgrade b{display:block;font-size:12.5px;margin-bottom:2px}
+  .upgrade p{font-size:11.5px;color:var(--muted);line-height:1.6}
+  .upgrade .btn-ghost{margin-top:7px;font-size:12px;padding:4px 10px}
+
+  /* ---------- 详情侧栏沿用现有 qpm-field ---------- */
+  .panel-sec{margin-bottom:22px}
+  .panel-sec h3{font-size:12px;font-weight:700;color:var(--muted2);margin-bottom:10px;letter-spacing:.2px}
+  .frow{display:grid;grid-template-columns:96px 1fr;gap:10px;padding:6px 0;font-size:12.5px;align-items:start}
+  .frow .k{color:var(--muted)}
+  .frow .v{color:var(--text);word-break:break-word}
+  .frow .v.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+  .frow .v a{color:var(--pri);text-decoration:none}
+  .frow .v a:hover{text-decoration:underline}
+  .panel-sec.boxed{border:1px solid var(--line);border-radius:9px;padding:12px 13px;background:#fcfdfe}
+
+  /* ---------- 工作台 ---------- */
+  .ws-head{
+    display:flex;align-items:center;gap:10px;padding:14px 24px;border-bottom:1px solid var(--line);flex:none;background:#fff;
+  }
+  .ws-head h1{font-size:16px;font-weight:700}
+  .ws-head .crumb{font-size:11.5px;color:var(--muted)}
+  .ws-head .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+
+  /* 顶部环境条 */
+  .envbar{
+    flex:none;display:flex;align-items:center;gap:14px;padding:10px 24px;
+    border-bottom:1px solid var(--line);background:#fafcff;
+  }
+  .envbar .lead{display:flex;align-items:center;gap:8px;flex:none}
+  .envbar .lead b{font-size:12.5px}
+  .envbar .lead .url{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--muted2)}
+  .envbar .stat{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted2);flex:none}
+  .envbar .stat b{font-weight:600;color:var(--text)}
+  .envbar .grow{flex:1;min-width:0}
+  .envbar .progress-line{display:flex;align-items:center;gap:9px;min-width:0;flex:1}
+  .envbar .progress-line .txt{font-size:11.5px;color:var(--muted2);white-space:nowrap}
+  .envbar .progress-line .bar{flex:1;min-width:60px;height:4px;margin:0}
+  .envbar .acts{display:flex;gap:6px;flex:none}
+
+  .tabs{display:flex;gap:2px;padding:0 24px;border-bottom:1px solid var(--line);flex:none;background:#fff}
+  .tab{padding:10px 12px;font-size:13px;color:var(--muted2);border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tab.on{color:var(--pri);font-weight:600;border-bottom-color:var(--pri)}
+  .tab span{font-size:11px;color:var(--muted);margin-left:4px}
+  .ws-body{flex:1;min-height:0;overflow-y:auto;padding:20px 24px 40px}
+
+  .stats{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+  .stat-card{border:1px solid var(--line);border-radius:9px;padding:11px 12px;display:flex;align-items:center;gap:9px;background:#fff}
+  .stat-ic{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;font-size:13px;background:var(--pri-bg);color:var(--pri);flex:none}
+  .stat-card b{display:block;font-size:16px;font-weight:700;letter-spacing:-.3px}
+  .stat-card span{display:block;font-size:11px;color:var(--muted)}
+
+  /* ---------- 项目资料 ---------- */
+  .lib-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:14px}
+  .lib-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+  .lib-card{border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden}
+  .lib-card header{display:flex;align-items:center;gap:8px;padding:11px 13px;border-bottom:1px solid var(--line2)}
+  .lib-card header .nm{font-size:12.5px;font-weight:700}
+  .lib-card header .cnt{font-size:11px;color:var(--muted);margin-left:auto}
+  .lib-card header .ic3{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:11px;background:var(--grey-bg);color:var(--muted2);flex:none}
+  .lib-card ul{list-style:none;padding:4px 0}
+  .lib-card li{display:flex;align-items:center;gap:8px;padding:7px 13px;font-size:12.5px}
+  .lib-card li:hover{background:#fbfcfd}
+  .lib-card li .fn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lib-card li .meta{font-size:11px;color:var(--muted);white-space:nowrap}
+  .lib-card .empty{padding:12px 13px;font-size:11.5px;color:var(--muted);line-height:1.6}
+  .lib-card .foot{padding:8px 13px;border-top:1px solid var(--line2);font-size:11.5px;color:var(--primuted,#8f959e)}
+  .sys-tag{font-size:10.5px;border-radius:3px;padding:0 5px;background:var(--grey-bg);color:var(--muted);line-height:16px}
+  .lib-note{margin-top:14px;display:flex;gap:9px;align-items:flex-start;border:1px dashed var(--line);border-radius:9px;padding:11px 13px;font-size:11.5px;color:var(--muted);line-height:1.65}
+  .lib-note b{color:var(--muted2)}
+
+  /* ===== 环境档案（模块地图 / 未知与假设） ===== */
+  .kb-status{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;
+    border:1px solid var(--line);border-radius:9px;background:#fff;padding:9px 13px;font-size:12px;color:var(--muted2)}
+  .kb-status .kv{display:inline-flex;align-items:center;gap:5px}
+  .kb-status .kv b{color:var(--text);font-weight:600}
+  .kb-status .dot{width:5px;height:5px;border-radius:50%;background:var(--line);flex:none}
+  .kb-status .alert{margin-left:auto;display:inline-flex;align-items:center;gap:6px;color:#b45309;
+    background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:2px 8px;font-size:11.5px}
+
+  .kb-sub{display:flex;align-items:center;gap:6px;margin-top:16px;border-bottom:1px solid var(--line)}
+  .kb-sub > button{padding:7px 2px;margin-right:16px;font-size:13px;color:var(--muted2);
+    border-bottom:2px solid transparent;margin-bottom:-1px;display:inline-flex;align-items:center;gap:6px}
+  .kb-sub > button.on{color:var(--pri);font-weight:600;border-bottom-color:var(--pri)}
+  .kb-sub > button em{font-style:normal;font-size:11px;background:var(--grey-bg);color:var(--muted);
+    border-radius:9px;padding:0 6px;line-height:15px}
+  .kb-sub > button.on em{background:var(--pri-bg);color:var(--pri)}
+  .kb-sub .r{margin-left:auto;display:flex;gap:8px;padding-bottom:7px}
+
+  .kb-grid{display:grid;grid-template-columns:296px 1fr;gap:14px;margin-top:14px;align-items:start}
+  .kb-tree{border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden}
+  .kb-tree .th{padding:9px 12px;border-bottom:1px solid var(--line2);font-size:11.5px;
+    font-weight:600;color:var(--muted);background:#fafbfc;display:flex;align-items:center;gap:6px}
+  .kb-tree .th .sum{margin-left:auto;font-weight:400}
+  .kb-node{display:flex;align-items:center;gap:7px;padding:8px 12px;font-size:12.5px;cursor:pointer;border-left:2px solid transparent}
+  .kb-node:hover{background:#fbfcfd}
+  .kb-node.on{background:var(--pri-bg);border-left-color:var(--pri);color:var(--pri);font-weight:600}
+  .kb-node .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .kb-node .cnt{font-size:11px;color:var(--muted);font-weight:400}
+  .kb-node.sub{padding-left:26px;font-size:12px;color:var(--muted2)}
+  .kb-node.sub.on{color:var(--pri)}
+  .kb-node .caret{width:9px;color:var(--muted);font-size:9px;flex:none}
+
+  .kb-det{border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden}
+  .kb-det .dh{padding:12px 15px;border-bottom:1px solid var(--line2);display:flex;align-items:center;gap:9px}
+  .kb-det .dh b{font-size:13.5px}
+  .kb-det .dh .path{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--muted);
+    background:var(--grey-bg);border-radius:4px;padding:1px 6px}
+  .kb-det .dh .r{margin-left:auto;display:flex;gap:7px}
+  .kb-sec{padding:11px 15px;border-bottom:1px solid var(--line2)}
+  .kb-sec:last-child{border-bottom:none}
+  .kb-sec .st{font-size:11px;color:var(--muted);font-weight:600;letter-spacing:.2px;margin-bottom:7px;display:flex;align-items:center;gap:6px}
+  .kb-sec .st .src{margin-left:auto;font-weight:400;letter-spacing:0}
+  .kv-row{display:flex;gap:9px;font-size:12.5px;line-height:1.75;padding:2px 0}
+  .kv-row .k{width:82px;flex:none;color:var(--muted);font-size:11.5px;padding-top:2px}
+  .kv-row .v{flex:1;min-width:0}
+  .kv-row.mono .v{font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+
+  .tag-i{display:inline-flex;align-items:center;gap:4px;font-size:11px;border-radius:4px;
+    padding:0 6px;line-height:18px;font-weight:500;white-space:nowrap}
+  .tag-ok{background:#ecfdf3;color:#15803d;border:1px solid #bbf7d0}
+  .tag-no{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca}
+  .tag-open{background:#fffbeb;color:#b45309;border:1px solid #fde68a}
+  .tag-gray{background:var(--grey-bg);color:var(--muted2);border:1px solid var(--line)}
+  .tag-h{background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe}
+
+  .line-item{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;line-height:1.7;padding:4px 0}
+  .line-item .no{width:18px;height:18px;border-radius:50%;background:var(--grey-bg);color:var(--muted2);
+    font-size:10.5px;display:grid;place-items:center;flex:none;margin-top:2px}
+  .line-item .arrow{color:var(--muted);font-size:11px}
+  .wall-item{display:flex;gap:8px;font-size:12.5px;line-height:1.7;padding:5px 0;align-items:flex-start}
+  .wall-item .ic{color:#b45309;flex:none;font-size:11px;margin-top:3px}
+
+  /* 未知与假设 */
+  .unk-wrap{margin-top:14px;display:grid;grid-template-columns:1fr 340px;gap:14px;align-items:start}
+  .unk-list{border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden}
+  .unk-item{display:flex;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line2);align-items:flex-start}
+  .unk-item:last-child{border-bottom:none}
+  .unk-item .bd{flex:1;min-width:0}
+  .unk-item .t1{font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:7px}
+  .unk-item .t2{font-size:11.5px;color:var(--muted);line-height:1.65;margin-top:3px}
+  .unk-item .act{flex:none;display:flex;gap:6px;align-items:center}
+  .hyp-panel{border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden}
+  .hyp-panel .th{padding:10px 13px;border-bottom:1px solid var(--line2);background:#fafbfc;
+    font-size:11.5px;font-weight:600;color:var(--muted2);display:flex;align-items:center;gap:6px}
+  .hyp-panel .th .sum{margin-left:auto;font-weight:400;color:var(--muted)}
+  .hyp{padding:10px 13px;border-bottom:1px solid var(--line2);font-size:12px;line-height:1.65}
+  .hyp:last-child{border-bottom:none}
+  .hyp .hp{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
+  .hyp .ht{margin-top:4px;color:var(--text)}
+  .hyp .hr{margin-top:5px;color:var(--muted);font-size:11.5px;display:flex;align-items:center;gap:5px}
+  .hyp .hr b{color:var(--muted2);font-weight:500}
+  .hyp-foot{padding:9px 13px;border-top:1px dashed var(--line);font-size:11px;color:var(--muted);line-height:1.6}
+  .hyp-hist{margin-top:6px;border-top:1px dashed var(--line2);padding-top:6px}
+  .hyp-hist summary{font-size:11px;color:var(--pri);cursor:pointer;list-style:none;display:flex;align-items:center;gap:4px}
+  .hyp-hist summary::-webkit-details-marker{display:none}
+  .hyp-hist summary::before{content:'▸';font-size:9px}
+  .hyp-hist[open] summary::before{content:'▾'}
+  .hyp-hist .hrow{display:flex;gap:7px;font-size:11px;color:var(--muted2);padding:4px 0 0 11px;line-height:1.55}
+  .hyp-hist .hrow .r{width:44px;flex:none;color:var(--muted)}
+
+  .loop-note{margin-top:14px;border:1px solid #cfe0f3;background:#f7fbff;border-radius:9px;
+    padding:11px 13px;font-size:11.5px;color:var(--muted2);line-height:1.75;display:flex;gap:9px}
+  .loop-note .n{flex:none;width:17px;height:17px;border-radius:50%;background:var(--pri);color:#fff;
+    font-size:10.5px;display:grid;place-items:center;margin-top:1px}
+  .loop-note b{color:var(--text)}
+
+  .flow3{display:grid;grid-template-columns:1fr 22px 1fr 22px 1fr;gap:0;margin-top:10px;align-items:stretch}
+  .flow3 .box{border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:#fff;font-size:11.5px;line-height:1.6;color:var(--muted2)}
+  .flow3 .box b{display:block;font-size:12px;color:var(--text);margin-bottom:3px}
+  .flow3 .ar{display:grid;place-items:center;color:var(--line);font-size:12px}
+
+  /* 演示提示条 */
+  .demo-tip{
+    position:absolute;left:50%;transform:translateX(-50%);bottom:14px;z-index:60;
+    background:rgba(15,23,42,.9);color:#e2e8f0;font-size:11.5px;padding:7px 14px;border-radius:20px;
+    display:flex;align-items:center;gap:8px;box-shadow:0 6px 20px rgba(0,0,0,.2);
+  }
+  .demo-tip b{color:#fff}
+</style>
+</head>
+<body>
+
+<div class="pg-bar">
+  <b>批次 2 原型 v2</b>
+  <div class="pg-tabs" id="tabs">
+    <button data-go="list" class="on">1 项目列表</button>
+    <button data-go="create">2 新建项目</button>
+    <button data-go="run">3 建档中</button>
+    <button data-go="done">4 已建档</button>
+    <button data-go="fail">5 建档失败</button>
+    <button data-go="detail">6 项目详情</button>
+    <button data-go="workspace">7 工作台</button>
+    <button data-go="library">8 项目资料</button>
+    <button data-go="map">9 模块地图</button>
+    <button data-go="unknown">10 未知与假设</button>
+    <button data-go="supp">11 补充场景</button>
+  </div>
+  <span class="pg-hint" id="tip-txt"><b>点环境列</b>打开档案；上方标签切换 8 个界面</span>
+</div>
+
+<div class="app" id="app">
+
+  <!-- ===== 侧栏（两个外壳共用品牌块，工作台态换导航项） ===== -->
+  <aside class="side">
+    <div class="brand">
+      <div class="brand-logo">A</div>
+      <div class="brand-txt"><b>AITestHarness</b><small>软件测试智能体平台</small></div>
+    </div>
+    <nav class="nav" id="nav-list">
+      <button class="nav-item on"><span class="ic">▤</span>项目管理</button>
+    </nav>
+    <nav class="nav" id="nav-ws" style="display:none">
+      <button class="nav-item on"><span class="ic">▦</span>项目视图</button>
+      <button class="nav-item" data-go="map" id="nav-env"><span class="ic">◎</span>项目环境</button>
+      <button class="nav-item"><span class="ic">✓</span>测试任务</button>
+      <button class="nav-item"><span class="ic">◷</span>定时任务</button>
+      <button class="nav-item"><span class="ic">▤</span>项目资料</button>
+    </nav>
+    <div class="side-foot">
+      <div class="avatar">T</div>
+      <div class="who"><b>test</b><small>账号与设置</small></div>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- ===================== 基底 A：项目列表 ===================== -->
+    <div class="base on" id="base-list">
+      <div class="scroll">
+        <header class="head">
+          <div>
+            <h1>项目管理</h1>
+            <p>选择或新建一个项目后，将进入项目工作台（新建任务、项目视图、定时任务、项目资料等）。</p>
+          </div>
+          <div class="head-act">
+            <button class="icon-btn" title="刷新">⟳</button>
+            <button class="btn-main" data-go="create"><span>＋</span>新建项目</button>
+          </div>
+        </header>
+
+        <div class="toolbar">
+          <div class="search"><span>⌕</span><input placeholder="搜索项目名称 / 内部编号 / 外部编号"></div>
+          <select><option>全部来源</option><option>手动创建</option><option>平台同步</option></select>
+          <select><option>进行中</option><option>全部状态</option><option>已归档</option></select>
+          <select><option>按最近活动</option><option>按名称</option><option>按创建时间</option></select>
+          <span class="count">共 5 个项目</span>
+        </div>
+
+        <div class="table">
+          <table>
+            <colgroup>
+              <col class="c-pin"><col><col class="c-src"><col class="c-env"><col class="c-st">
+              <col class="c-time"><col class="c-run"><col class="c-acts">
+            </colgroup>
+            <thead>
+              <tr>
+                <th><span style="display:none">置顶</span></th>
+                <th>项目</th>
+                <th>来源</th>
+                <th>环境</th>
+                <th>状态</th>
+                <th>最近活动</th>
+                <th>运行中任务</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- 已建档 -->
+              <tr>
+                <td><button class="pin on">★</button></td>
+                <td>
+                  <button class="name">会员中心改版回归</button>
+                  <span class="code">mmb-refactor</span>
+                </td>
+                <td><span class="tag t-manual">手动创建</span></td>
+                <td>
+                  <div class="env-cell">
+                    <div class="env-line">
+                      <i class="env-dot d-ok"></i>
+                      <b class="env-name link" data-go="done">测试环境</b>
+                    </div>
+                    <div class="env-sub">已建档 · 12 页 · 28 接口</div>
+                  </div>
+                </td>
+                <td><span class="tag t-active">进行中</span></td>
+                <td class="muted">2 小时前</td>
+                <td><span class="run">● 2 个运行中</span></td>
+                <td>
+                  <div class="acts">
+                    <button class="enter">进入 →</button>
+                    <button class="more">⋯</button>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- 未建档 -->
+              <tr>
+                <td><button class="pin">☆</button></td>
+                <td>
+                  <button class="name">采购下单主流程</button>
+                  <span class="code">purchase-order</span>
+                </td>
+                <td><span class="tag t-manual">手动创建</span></td>
+                <td>
+                  <div class="env-cell">
+                    <div class="env-line">
+                      <i class="env-dot d-none"></i>
+                      <b class="env-name muted">测试环境</b>
+                    </div>
+                    <button class="env-add" data-go="run">未建档 · 点击建档</button>
+                  </div>
+                </td>
+                <td><span class="tag t-active">进行中</span></td>
+                <td class="muted">昨天 17:40</td>
+                <td class="muted">0</td>
+                <td>
+                  <div class="acts">
+                    <button class="enter">进入 →</button>
+                    <button class="more">⋯</button>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- 建档中 -->
+              <tr>
+                <td><button class="pin">☆</button></td>
+                <td>
+                  <button class="name">支付对账平台</button>
+                  <span class="code">pay-recon</span>
+                </td>
+                <td><span class="tag t-sync">平台同步</span></td>
+                <td>
+                  <div class="env-cell">
+                    <div class="env-line">
+                      <i class="env-dot d-run"></i>
+                      <b class="env-name link" data-go="run">测试环境</b>
+                    </div>
+                    <div class="env-sub">第 3 步 · 提取路由 60%</div>
+                    <div class="bar"><i style="width:60%"></i></div>
+                  </div>
+                </td>
+                <td><span class="tag t-active">进行中</span></td>
+                <td class="muted">3 分钟前</td>
+                <td><span class="run">● 1 个运行中</span></td>
+                <td>
+                  <div class="acts">
+                    <button class="enter">进入 →</button>
+                    <button class="more">⋯</button>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- 建档失败 -->
+              <tr>
+                <td><button class="pin">☆</button></td>
+                <td>
+                  <button class="name">老版报表中心</button>
+                  <span class="code">report-legacy</span>
+                </td>
+                <td><span class="tag t-manual">手动创建</span></td>
+                <td>
+                  <div class="env-cell">
+                    <div class="env-line">
+                      <i class="env-dot d-fail"></i>
+                      <b class="env-name link" data-go="fail">测试环境</b>
+                    </div>
+                    <div class="env-sub err">建档失败 · 首页不可达</div>
+                  </div>
+                </td>
+                <td><span class="tag t-active">进行中</span></td>
+                <td class="muted">11 月 15 日</td>
+                <td class="muted">0</td>
+                <td>
+                  <div class="acts">
+                    <button class="enter">进入 →</button>
+                    <button class="more">⋯</button>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- 已建档（少页数） -->
+              <tr>
+                <td><button class="pin">☆</button></td>
+                <td>
+                  <button class="name">用户中心 v2</button>
+                  <span class="code">user-center</span>
+                </td>
+                <td><span class="tag t-manual">手动创建</span></td>
+                <td>
+                  <div class="env-cell">
+                    <div class="env-line">
+                      <i class="env-dot d-ok"></i>
+                      <b class="env-name link" data-go="done">预发环境</b>
+                    </div>
+                    <div class="env-sub">已建档 · 5 页 · 9 接口</div>
+                  </div>
+                </td>
+                <td><span class="tag t-arch">已归档</span></td>
+                <td class="muted">11 月 09 日</td>
+                <td class="muted">—</td>
+                <td>
+                  <div class="acts">
+                    <button class="enter">进入 →</button>
+                    <button class="more">⋯</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== 基底 B：项目工作台 ===================== -->
+    <div class="base" id="base-ws">
+      <header class="ws-head">
+        <div>
+          <div class="crumb">项目工作台</div>
+          <h1>会员中心改版回归</h1>
+        </div>
+        <div class="right">
+          <button class="btn-ghost btn-sm">切换项目</button>
+          <button class="btn-main btn-sm">＋ 新建任务</button>
+        </div>
+      </header>
+
+      <!-- 顶部环境条（本批次新增） -->
+      <div class="envbar" id="envbar">
+        <div class="lead">
+          <i class="env-dot d-run" id="eb-dot"></i>
+          <b id="eb-env">测试环境</b>
+          <span class="url" id="eb-url">10.20.31.14:8080</span>
+        </div>
+        <div class="stat" id="eb-stat">
+          <span>页面 <b id="eb-pages">—</b></span>
+          <span>接口 <b id="eb-apis">—</b></span>
+          <span>登录 <b id="eb-login">—</b></span>
+        </div>
+        <div class="progress-line" id="eb-progress">
+          <span class="txt" id="eb-txt">正在建档 · 第 1 步 可达性探测</span>
+          <div class="bar"><i id="eb-bar" style="width:6%"></i></div>
+        </div>
+        <div class="grow"></div>
+        <div class="acts">
+          <button class="btn-ghost btn-sm" data-go="run">查看进度</button>
+          <button class="icon-btn plain" title="更多">⋯</button>
+        </div>
+      </div>
+
+      <div class="tabs" id="ws-tabs">
+        <button class="tab on">任务与节点<span>18</span></button>
+        <button class="tab">项目用例<span>96</span></button>
+        <button class="tab">缺陷清单<span>7</span></button>
+        <button class="tab">测试报告<span>4</span></button>
+      </div>
+
+      <div class="ws-body" id="ws-body">
+        <div class="stats">
+          <div class="stat-card"><div class="stat-ic">▦</div><div><b>3</b><span>工作空间</span></div></div>
+          <div class="stat-card"><div class="stat-ic">✓</div><div><b>18</b><span>测试任务</span></div></div>
+          <div class="stat-card"><div class="stat-ic">▤</div><div><b>96</b><span>用例数量</span></div></div>
+          <div class="stat-card"><div class="stat-ic">⚑</div><div><b>7</b><span>缺陷数量</span></div></div>
+          <div class="stat-card"><div class="stat-ic">▥</div><div><b>4</b><span>HTML 报告</span></div></div>
+        </div>
+        <p style="margin-top:18px;font-size:12px;color:var(--muted);line-height:1.7">
+          此屏只新增顶部<b style="color:var(--text)">环境条</b>，下方统计、标签页、列表均为现状，不改动。<br>
+          环境条是建档进度的长期入口：跑完自动变为「已建档 · 12 页 / 28 接口 / 图形验证码」，失败则是「建档失败 · 首页不可达」并给重试。
+        </p>
+      </div>
+
+      <!-- 项目资料内容（第 8 屏） -->
+      <div class="ws-body" id="ws-library" style="display:none">
+        <div class="lib-toolbar">
+          <div class="search"><span>⌕</span><input placeholder="搜索本项目资料"></div>
+          <select><option>全部类型</option></select>
+          <span class="count">共 9 项</span>
+          <button class="btn-ghost btn-sm">导入文件</button>
+          <button class="btn-main btn-sm">＋ 新建资料</button>
+        </div>
+
+        <div class="lib-grid">
+          <div class="lib-card">
+            <header><div class="ic3">▤</div><span class="nm">需求与设计</span><span class="cnt">3 项</span></header>
+            <ul>
+              <li><span class="fn">会员中心 3.2 需求说明书.md</span><span class="meta">修订 4</span></li>
+              <li><span class="fn">接口文档 v3.json</span><span class="meta">修订 2</span></li>
+              <li><span class="fn">改版原型说明.txt</span><span class="meta">修订 1</span></li>
+            </ul>
+            <div class="foot">下游：需求分析 · 测试点 · 用例</div>
+          </div>
+
+          <div class="lib-card">
+            <header><div class="ic3">◎</div><span class="nm">环境说明与白名单</span><span class="cnt">3 项</span></header>
+            <ul>
+              <li><span class="fn">建档报告 test-2026-11-17.md</span><span class="sys-tag">程序生成</span><span class="meta">只读</span></li>
+              <li><span class="fn">危险动作白名单.yaml</span><span class="meta">修订 1</span></li>
+              <li><span class="fn">登录策略说明.md</span><span class="meta">修订 2</span></li>
+            </ul>
+            <div class="foot">下游：环境探索 · Web 执行</div>
+          </div>
+
+          <div class="lib-card">
+            <header><div class="ic3">⚖</div><span class="nm">业务规则</span><span class="cnt">2 条</span></header>
+            <ul>
+              <li><span class="fn">积分抵扣上限为订单金额 30%</span><span class="tag t-green">生效 v2</span></li>
+              <li><span class="fn">退款需财务二次确认</span><span class="tag t-amber">待确认 1</span></li>
+            </ul>
+            <div class="foot">知识候选须业主确认才成为规则</div>
+          </div>
+
+          <div class="lib-card">
+            <header><div class="ic3">▥</div><span class="nm">交付物与台账</span><span class="cnt">1 项</span></header>
+            <ul>
+              <li><span class="fn">会员中心回归报告-1117.html</span><span class="sys-tag">程序生成</span><span class="meta">只读</span></li>
+            </ul>
+            <div class="empty">缺陷清单与用例台账在「项目视图」按任务聚合，不重复入库。</div>
+          </div>
+        </div>
+
+        <div class="lib-note">
+          <span>ⓘ</span>
+          <div>
+            <b>资料库不放结构化资产。</b>
+            模块地图、链路、接口映射、墙点这些由探索程序写入、给执行阶段读，它们在
+            <b data-go="map" style="color:var(--pri);cursor:pointer">项目环境 › 环境档案</b>里，按环境分片，不按项目混。
+            资料库只放<b>人写的和人导入的</b>内容，按修订管理。
+            程序生成的报告类产物（建档报告、测试报告）以只读快照出现，可「另存为资料」由人改成一份说明 ——
+            否则「谁改了这份报告」这个问题无解。
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== 环境档案：模块地图 + 未知与假设（第 9 / 10 屏） ===== -->
+      <div class="ws-body" id="ws-env" style="display:none">
+        <div class="kb-status">
+          <span class="kv"><i class="dot"></i>已建档 <b>12</b> 页 · <b>28</b> 接口 · 图形验证码</span>
+          <i class="dot"></i>
+          <span class="kv">已探索 <b>2</b> 轮 · <b>14</b> 模块 · <b>4</b> 条链路</span>
+          <i class="dot"></i>
+          <span class="kv">最近一轮 <b>17:18</b>（会话「探索 · 测试环境」）</span>
+          <span class="alert" data-go="unknown">⚠ 未探明 5 处 · 2 条假设待验证</span>
+        </div>
+
+        <div class="kb-sub" id="kb-sub">
+          <button class="on" data-go="map">模块地图<em>14</em></button>
+          <button data-go="unknown">未知与假设<em>5</em></button>
+          <div class="r">
+            <button class="btn-ghost btn-sm" data-go="supp">＋ 补充场景</button>
+            <button class="btn-main btn-sm" data-go="unknown">派发深度探索</button>
+          </div>
+        </div>
+
+        <div class="kb-grid" id="kb-map">
+          <div class="kb-tree">
+            <div class="th">模块<span class="sum">按入口层归类</span></div>
+            <div class="kb-node on"><span class="caret">▾</span><span class="nm">退款</span><span class="tag-i tag-open">部分</span><span class="cnt">3</span></div>
+            <div class="kb-node sub on">退款申请</div>
+            <div class="kb-node sub">退款详情</div>
+            <div class="kb-node sub" style="color:#b45309">退款审核 <span style="font-size:10.5px">未探明</span></div>
+            <div class="kb-node"><span class="caret">▸</span><span class="nm">会员</span><span class="tag-i tag-ok">已探明</span><span class="cnt">3</span></div>
+            <div class="kb-node"><span class="caret">▸</span><span class="nm">订单</span><span class="tag-i tag-ok">已探明</span><span class="cnt">4</span></div>
+            <div class="kb-node"><span class="caret">▸</span><span class="nm">结算</span><span class="tag-i tag-no">未探明</span><span class="cnt">0</span></div>
+            <div class="kb-node"><span class="caret">▸</span><span class="nm">报表</span><span class="tag-i tag-no">未探明</span><span class="cnt">0</span></div>
+            <div style="padding:9px 12px;border-top:1px solid var(--line2);font-size:11px;color:var(--muted);line-height:1.6">
+              树是<b style="color:var(--muted2)">程序写入</b>的，不在这里手改。人只能提假设（补场景），由下一轮探索改写。
+            </div>
+          </div>
+
+          <div class="kb-det">
+            <div class="dh">
+              <b>退款</b>
+              <span class="path">/refund/*</span>
+              <span class="tag-i tag-open">部分探明 3/5</span>
+              <div class="r">
+                <button class="btn-ghost btn-sm" data-go="supp">＋ 补充场景</button>
+                <button class="btn-ghost btn-sm">派发深度探索</button>
+              </div>
+            </div>
+
+            <div class="kb-sec">
+              <div class="st">入口 <span class="src">第 2 轮 · breadth</span></div>
+              <div class="kv-row"><span class="k">可见入口</span><span class="v">订单详情 → 「申请退款」按钮<br>首页 → 「售后」菜单 → 退款申请</span></div>
+              <div class="kv-row mono"><span class="k">地址</span><span class="v">/refund/apply · /refund/detail?id=</span></div>
+            </div>
+
+            <div class="kb-sec">
+              <div class="st">前置条件 <span class="src">灰=人提的假设 · 绿=已验证 · 红=被推翻</span></div>
+              <div class="kv-row"><span class="k">登录态</span><span class="v">已登录（图形验证码 <code style="font-family:ui-monospace,monospace">verifyCode</code>，登录链路 L0 已记录）<span class="tag-i tag-ok" style="margin-left:6px">程序探到</span></span></div>
+              <div class="kv-row"><span class="k">数据前置</span><span class="v">存在一笔<b>已支付</b>订单<span class="tag-i tag-ok" style="margin-left:6px">第 2 轮验证 · 来源 H-01</span></span></div>
+              <div class="kv-row"><span class="k">校验规则</span><span class="v">退款金额 ≤ 实付金额<span class="tag-i tag-no" style="margin-left:6px">第 2 轮推翻 · 来源 H-02</span><br><span style="font-size:11.5px;color:var(--muted)">实测可输入超额，提交时才报错 —— 断言要放在提交后的提示，不能放在输入框</span></span></div>
+              <div class="kv-row"><span class="k">选项来源</span><span class="v">退款原因 5 项<span class="tag-i tag-open" style="margin-left:6px">仍未探到</span><br><span style="font-size:11.5px;color:var(--muted)">下拉异步加载，广度探索不展开选择器</span></span></div>
+            </div>
+
+            <div class="kb-sec">
+              <div class="st">可用链路 <span class="src">下游用例按链路生成</span></div>
+              <div class="line-item"><span class="no">L1</span><div>订单列表 <span class="arrow">→</span> 订单详情 <span class="arrow">→</span> 申请退款 <span class="arrow">→</span> 填写原因与金额 <span class="arrow">→</span> <b style="color:#b45309">停在提交前</b></div></div>
+              <div class="line-item"><span class="no">L2</span><div>首页 <span class="arrow">→</span> 售后 <span class="arrow">→</span> 退款列表 <span class="arrow">→</span> 退款详情（只读）</div></div>
+            </div>
+
+            <div class="kb-sec">
+              <div class="st">接口映射 <span class="src">以开发文档为准，不抓流量</span></div>
+              <div class="kv-row mono"><span class="k">查询</span><span class="v">GET /api/refund/rule · GET /api/refund/detail</span></div>
+              <div class="kv-row mono"><span class="k">写入</span><span class="v">POST /api/refund/apply <span class="tag-i tag-no" style="margin-left:6px">危险动作 · 未执行</span></span></div>
+            </div>
+
+            <div class="kb-sec">
+              <div class="st">墙点 <span class="src">2 处</span></div>
+              <div class="wall-item"><span class="ic">⚑</span><div>提交按钮触发真实资金流，按白名单<b>不执行</b>，只验证到填写完成。</div></div>
+              <div class="wall-item"><span class="ic">⚑</span><div>退款审核需审批角色，当前账号无权限，页面直接 403。</div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 未知与假设 -->
+        <div class="unk-wrap" id="kb-unknown" style="display:none">
+          <div class="unk-list">
+            <div class="unk-item">
+              <div class="bd">
+                <div class="t1">结算模块 3 页 <span class="tag-i tag-gray">广度漏掉</span></div>
+                <div class="t2">入口藏在个人中心二级菜单，breadth 的 depth_limit=2 没铺到。属于<b>下一轮能自己补</b>的，不需要人介入。</div>
+              </div>
+              <div class="act"><span class="tag-i tag-open">待第 3 轮</span></div>
+            </div>
+            <div class="unk-item">
+              <div class="bd">
+                <div class="t1">报表 · 导出页 <span class="tag-i tag-gray">无权限</span></div>
+                <div class="t2">需 admin 角色，当前账号 403。程序无法自解，<b>缺测试账号</b>。</div>
+              </div>
+              <div class="act"><button class="btn-ghost btn-sm" data-go="supp">补账号</button></div>
+            </div>
+            <div class="unk-item">
+              <div class="bd">
+                <div class="t1">退款原因 5 项 <span class="tag-i tag-gray">异步加载</span></div>
+                <div class="t2">下拉要展开才请求，广度不展开选择器。<b>第 3 轮带 depth 指令时展开</b>即可。</div>
+              </div>
+              <div class="act"><span class="tag-i tag-open">待第 3 轮</span></div>
+            </div>
+            <div class="unk-item">
+              <div class="bd">
+                <div class="t1">等级调整审批流 <span class="tag-i tag-gray">无权限</span></div>
+                <div class="t2">需审批人账号，页面不可达。<b>缺第二个测试账号</b>。</div>
+              </div>
+              <div class="act"><button class="btn-ghost btn-sm" data-go="supp">补账号</button></div>
+            </div>
+            <div class="unk-item">
+              <div class="bd">
+                <div class="t1">优惠券叠加规则 <span class="tag-i tag-gray">业务常识</span></div>
+                <div class="t2">页面上没有任何入口或文案，纯业务约定。<b>只能人补假设</b>，再让下一轮去验。</div>
+              </div>
+              <div class="act"><button class="btn-main btn-sm" data-go="supp">补充场景</button></div>
+            </div>
+
+            <div class="loop-note" style="margin:0;border:none;border-top:1px solid var(--line2);border-radius:0">
+              <span class="n">i</span>
+              <div><b>未知不是失败，是这一轮的产出。</b>每一条都写清「为什么没探到」，下一轮才知道往哪使劲：能自己补的排进队列，不能的等人补账号或补假设。</div>
+            </div>
+          </div>
+
+          <div class="hyp-panel">
+            <div class="th">待验证假设<span class="sum">4 条 · 2 待验</span></div>
+            <div class="hyp">
+              <div class="hp">H-01 · 提出 test · 17:05</div>
+              <div class="ht">退款申请前必须有一笔已支付订单</div>
+              <div class="hr"><span class="tag-i tag-ok">第 2 轮已验证</span><b>链路 L1 走通，页面出现「选择订单」步骤</b></div>
+            </div>
+            <div class="hyp">
+              <div class="hp">H-02 · 提出 test · 17:05</div>
+              <div class="ht">退款金额不可超过实付金额</div>
+              <div class="hr"><span class="tag-i tag-no">第 2 轮推翻</span><b>可输入超额，提交时才校验</b></div>
+              <details class="hyp-hist">
+                <summary>判定历史 2 条（不覆盖）</summary>
+                <div class="hrow"><span class="r">第 2 轮</span><span>推翻 · 输入 999999 未拦，点提交才提示「超出可退金额」</span></div>
+                <div class="hrow"><span class="r">第 1 轮</span><span>待验证 · 提出时页面上无任何金额提示文案</span></div>
+              </details>
+            </div>
+            <div class="hyp">
+              <div class="hp">H-03 · 提出 test · 17:11</div>
+              <div class="ht">退款原因固定 5 项，不含「其他」</div>
+              <div class="hr"><span class="tag-i tag-open">仍未探到</span><b>下拉未展开，第 3 轮带 depth 指令</b></div>
+            </div>
+            <div class="hyp">
+              <div class="hp">H-04 · 提出 test · 17:12</div>
+              <div class="ht">结算页需普通会员以上才能进</div>
+              <div class="hr"><span class="tag-i tag-h">待验证</span><b>排在下一轮</b></div>
+            </div>
+            <div class="hyp-foot">
+              假设<b>不进知识库</b>，只有验证通过才由程序写进前置条件并标注来源。<br>
+              每轮判定<b>追加</b>一条记录、旧结论不覆盖 —— 被推翻的过程本身就是断言该放哪的依据。
+            </div>
+          </div>
+        </div>
+
+        <div class="loop-note" id="kb-loop" style="display:none">
+          <span class="n">↻</span>
+          <div>
+            <b>闭环：探到墙 → 人补假设 → 下一轮验证 → 写回。</b>
+            程序只承认「验证过」的结论；被推翻的假设保留记录，用来纠正断言位置。
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== 弹窗：新建项目 ===================== -->
+    <div class="mask" id="modal-create">
+      <div class="modal">
+        <header class="modal-head">
+          <h2>新建项目</h2>
+          <button class="icon-btn plain" data-go="list">✕</button>
+        </header>
+        <div class="modal-body">
+          <label class="row">
+            <span class="lbl">项目名称 <em>*</em></span>
+            <input type="text" value="会员中心改版回归">
+            <span class="field-count">8/80</span>
+          </label>
+
+          <div class="row">
+            <span class="lbl">Project id <em>*</em></span>
+            <div style="display:flex;gap:8px">
+              <input type="text" value="mmb-refactor" style="flex:1">
+              <button class="btn-ghost btn-sm" style="flex:none">✦ 用 AI 生成</button>
+            </div>
+            <p class="field-hint">仅写后缀：小写字母、数字、下划线、连字符；系统自动加账号命名空间。创建后不可修改，也可以从显示名生成。</p>
+          </div>
+
+          <label class="row">
+            <span class="lbl">项目简介</span>
+            <textarea placeholder="一句话说明项目背景（可选）">会员权益改版后的主流程回归，覆盖积分、等级与退款。</textarea>
+            <span class="field-count">28/500</span>
+          </label>
+
+          <div class="row">
+            <span class="lbl">来源</span>
+            <span class="tag t-manual">手动创建</span>
+          </div>
+
+          <div class="sep"></div>
+
+          <!-- 本批次新增：环境 -->
+          <div class="sub-head">
+            <span>项目环境</span>
+            <span class="tag" style="background:var(--grey-bg);color:var(--muted);font-weight:400">选填</span>
+          </div>
+
+          <label class="row">
+            <span class="lbl">环境地址</span>
+            <input type="text" placeholder="http://10.20.31.14:8080" value="http://10.20.31.14:8080" id="env-url-input">
+            <p class="field-hint">填了就在创建后立刻建档（约 3–10 秒），抓页面与接口；留空则先建项目，之后在环境里补。</p>
+          </label>
+
+          <div class="row" style="margin-top:10px">
+            <span class="lbl">环境名</span>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input type="text" value="test" style="flex:1;max-width:150px">
+              <span class="field-hint" style="margin:0">默认 <b>test</b>，地图落在 <code style="font-family:ui-monospace,Menlo,monospace;font-size:11.5px">maps/test/</code></span>
+            </div>
+          </div>
+
+          <div class="cheat">
+            <b>建档会做什么</b>
+            <p>读首页与 bundle，提取路由、登录表单与接口清单，写出页面地图与报告。<b>只发 GET，不改动被测系统。</b></p>
+          </div>
+        </div>
+        <footer class="modal-foot">
+          <button class="btn-ghost" data-go="list">取消</button>
+          <button class="btn-main" data-go="run">创建并进入</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- ===================== 弹窗：补充场景（第 11 屏） ===================== -->
+    <div class="mask" id="modal-supp">
+      <div class="modal" style="width:512px">
+        <header class="modal-head">
+          <h2>补充场景</h2>
+          <button class="icon-btn plain" data-go="unknown">✕</button>
+        </header>
+        <div class="modal-body">
+          <div class="cheat" style="margin:0 0 14px;border-color:#cfe0f3;background:#f7fbff">
+            <b>这不是在编辑知识库</b>
+            <p>你写下的是一条<strong style="font-weight:600;color:var(--text)">待验证假设</strong>。它不进模块地图，只作为下一轮探索的输入；探索跑完由程序判定「验证 / 推翻 / 仍未探到」，验证通过的才写回模块前置条件。</p>
+          </div>
+
+          <label class="row" style="margin-top:0">
+            <span class="lbl">针对模块 <em>*</em></span>
+            <div style="display:flex;gap:8px;align-items:center">
+              <select style="flex:1;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:13px;color:var(--text);background:#fff">
+                <option>退款 · /refund/apply</option>
+                <option>结算 · /settle</option>
+                <option>报表 · /report</option>
+              </select>
+              <span class="tag-i tag-open" style="flex:none">部分探明</span>
+            </div>
+          </label>
+
+          <label class="row">
+            <span class="lbl">场景 / 假设 <em>*</em></span>
+            <textarea id="hyp-text" style="min-height:56px">退款申请前必须存在一笔已支付的订单，否则「申请退款」按钮不可点</textarea>
+            <p class="field-hint">写成可被判定的句子。「退款流程很复杂」判不了，写成「必须先有 X 才能进 Y」才能验。</p>
+          </label>
+
+          <div class="row">
+            <span class="lbl">为什么探不到</span>
+            <select style="width:100%;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:13px;color:var(--text);background:#fff">
+              <option>业务常识 —— 页面上没有入口或文案</option>
+              <option>需要前置数据 —— 缺订单、缺余额</option>
+              <option>需要特定角色 —— 缺账号或权限</option>
+              <option>异步加载 —— 要展开/点击后才有</option>
+              <option>需要外部系统 —— 第三方回调、支付渠道</option>
+            </select>
+          </div>
+
+          <label class="row">
+            <span class="lbl">期望看到什么</span>
+            <textarea style="min-height:46px">进入 /refund/apply 时应先出现「选择订单」步骤，未选订单时提交按钮 disabled</textarea>
+            <p class="field-hint">这是给探索 Agent 的断言线索，它据此判断假设成立还是被推翻。</p>
+          </label>
+
+          <label class="row">
+            <span class="lbl">前置数据</span>
+            <input type="text" placeholder="订单号 20261117000123（已支付）">
+            <div style="display:flex;align-items:center;gap:7px;margin-top:7px;font-size:12px;color:var(--muted2)">
+              <input type="checkbox" id="mkdata" style="width:13px;height:13px">
+              <label for="mkdata">允许探索自行造数（<b style="color:#b45309;font-weight:600">默认关</b>，逐条放开；仅限本条假设，执行后清理）</label>
+            </div>
+          </label>
+        </div>
+        <footer class="modal-foot">
+          <button class="btn-ghost" data-go="unknown">取消</button>
+          <button class="btn-main" data-go="unknown">保存并派发第 3 轮</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- ===================== 抽屉容器 ===================== -->
+    <div class="drawer-wrap" id="drawer-wrap">
+      <div class="scrim" data-go="list"></div>
+
+      <!-- ① 建档中 -->
+      <aside class="drawer" id="dr-run" style="display:none">
+        <header class="dr-head">
+          <div style="flex:1;min-width:0">
+            <h2><i class="env-dot d-run"></i>测试环境 · 建档中</h2>
+            <div class="dr-sub">
+              <span>会员中心改版回归</span><span>·</span>
+              <span style="font-family:ui-monospace,Menlo,monospace">http://10.20.31.14:8080</span>
+            </div>
+          </div>
+          <button class="icon-btn plain" data-go="list">✕</button>
+        </header>
+        <div class="dr-body">
+          <div class="note" style="margin-bottom:16px">
+            <b>这是程序在跑，不是模型在点。</b>五步全部由确定性工具执行，零模型调用 —— 所以耗时和数字可以复现、可以写进报告。
+          </div>
+
+          <div class="sec-title">建档进度 <span class="cnt" id="run-pct">0%</span></div>
+          <div class="steps" id="steps-run">
+            <div class="step pend" data-step="1">
+              <div class="dot-s">1</div>
+              <div>
+                <div class="st-top"><span class="st-name">可达性探测</span><span class="st-meta">等待</span></div>
+                <div class="st-body">DNS → TCP → HTTP 三次探测，确认站点活着、字符集能解。</div>
+              </div>
+            </div>
+            <div class="step pend" data-step="2">
+              <div class="dot-s">2</div>
+              <div>
+                <div class="st-top"><span class="st-name">抓取前端骨架</span><span class="st-meta">等待</span></div>
+                <div class="st-body">首页 + 最多 12 个 JS bundle（单文件 2MB、总量 8MB 硬上限）。</div>
+              </div>
+            </div>
+            <div class="step pend" data-step="3">
+              <div class="dot-s">3</div>
+              <div>
+                <div class="st-top"><span class="st-name">提取路由</span><span class="st-meta">等待</span></div>
+                <div class="st-body">从 4 类来源提路由，并把 <code>/order/123</code> 归一化为 <code>/order/:id</code>。</div>
+              </div>
+            </div>
+            <div class="step pend" data-step="4">
+              <div class="dot-s">4</div>
+              <div>
+                <div class="st-top"><span class="st-name">探测登录与接口</span><span class="st-meta">等待</span></div>
+                <div class="st-body">找密码框与相邻字段、识别验证码形态、探 OpenAPI、扫危险文案。</div>
+              </div>
+            </div>
+            <div class="step pend" data-step="5">
+              <div class="dot-s">5</div>
+              <div>
+                <div class="st-top"><span class="st-name">生成环境档案</span><span class="st-meta">等待</span></div>
+                <div class="st-body">写 <code>maps/test/</code> 下的 pages.json、apis.json、login.json 与建档报告。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="upgrade">
+            <div class="ic2">?</div>
+            <div>
+              <b>这一步不会开一个会话</b>
+              <p>建档没有需要模型判断的地方，开会话只会让 3 秒的事变成 30 秒的对话。等你真的需要问「为什么这 5 页没扫到」，再从下面转成会话排查。</p>
+              <button class="btn-ghost" data-go="fail">了解「转会话排查」怎么开</button>
+            </div>
+          </div>
+        </div>
+        <footer class="dr-foot">
+          <span style="font-size:11.5px;color:var(--muted)">可以关掉，进度会在列表与工作台继续显示</span>
+          <div class="right">
+            <button class="btn-ghost btn-sm" data-go="list">后台运行</button>
+            <button class="btn-ghost btn-sm" id="replay">重新演练</button>
+          </div>
+        </footer>
+      </aside>
+
+      <!-- ② 已建档 -->
+      <aside class="drawer" id="dr-done" style="display:none">
+        <header class="dr-head">
+          <div style="flex:1;min-width:0">
+            <h2><i class="env-dot d-ok"></i>测试环境 · 已建档</h2>
+            <div class="dr-sub">
+              <span>会员中心改版回归</span><span>·</span>
+              <span style="font-family:ui-monospace,Menlo,monospace">http://10.20.31.14:8080</span>
+            </div>
+          </div>
+          <button class="icon-btn plain" data-go="list">✕</button>
+        </header>
+        <div class="dr-body">
+          <div class="addr-box">
+            <span class="k">地址</span>
+            <span class="v">http://10.20.31.14:8080</span>
+            <button class="edit">修改</button>
+          </div>
+
+          <div class="sec-title" style="margin-top:16px">建档结果 <span class="cnt">2026-11-17 16:42 · 用时 3.5 秒</span></div>
+          <div class="grid4">
+            <div class="gcell"><b>12<small>页</small></b><span>已登记页面</span></div>
+            <div class="gcell"><b>28<small>个</small></b><span>接口 / 6 模块</span></div>
+            <div class="gcell"><b>1<small>种</small></b><span>登录方式</span></div>
+            <div class="gcell warn"><b>3<small>页</small></b><span>待探索</span></div>
+          </div>
+
+          <div class="sec-title">关键发现</div>
+          <dl class="kv">
+            <dt>登录</dt><dd>用户名 + 密码 + 图形验证码（字段 <span style="font-family:ui-monospace,monospace;font-size:12px">username</span> / <span style="font-family:ui-monospace,monospace;font-size:12px">password</span> / <span style="font-family:ui-monospace,monospace;font-size:12px">verifyCode</span>）</dd>
+            <dt>接口</dt><dd>未公开 OpenAPI，从 bundle 反解出 28 个；模块：会员、积分、等级、订单、支付、退款</dd>
+            <dt>危险文案</dt><dd>命中 4 处（批量删除、发起退款、停用账号、导出全量）→ 已进执行白名单，默认禁止</dd>
+            <dt>页面地图</dt><dd class="mono">maps/test/pages.json</dd>
+            <dt>建档报告</dt><dd class="mono">reports/onboard/test-2026-11-17T16-42.md</dd>
+          </dl>
+
+          <div class="sec-title">建档报告（节选）</div>
+          <div class="report">
+            <div class="report-head">
+              <span class="fname">test-2026-11-17T16-42.md</span>
+              <span class="right">查看完整报告 →</span>
+            </div>
+            <pre># 建档报告 · test
+<b>目标</b>   http://10.20.31.14:8080   <b>用时</b> 3.5s   <b>模型调用</b> 0 次
+<b>页面</b>   12 条路由，9 条已登记，3 条待在探索队列
+<b>接口</b>   28 个，6 个模块；无 OpenAPI 文档
+<b>登录</b>   图形验证码（captcha.jpg），需人工首登或接打码
+<b>未建档</b> /member/level/:id   /order/:id   /refund/apply
+<b>下一步</b> ① 补登录凭据 ② 探索这 3 页 ③ 生成首批测试点</pre>
+          </div>
+
+          <div class="note warn" style="margin-top:16px">
+            <b>建档只回答「有哪些地址」。</b>
+            模块职责、前置条件、怎么点才走得到，只有探索能给 —— 派一张
+            <span style="font-family:ui-monospace,monospace">breadth</span> 指令给 Web 自动化 Agent，
+            回来的是模块地图、墙点与登录链路。建完档不自动跑探索，由你点。
+          </div>
+        </div>
+        <footer class="dr-foot">
+          <button class="btn-ghost btn-sm">重新建档</button>
+          <div class="right">
+            <button class="btn-ghost btn-sm" data-go="library">在项目资料中查看报告</button>
+            <button class="btn-main btn-sm">派发广度探索 →</button>
+          </div>
+        </footer>
+      </aside>
+
+      <!-- ③ 建档失败 -->
+      <aside class="drawer" id="dr-fail" style="display:none">
+        <header class="dr-head">
+          <div style="flex:1;min-width:0">
+            <h2><i class="env-dot d-fail"></i>测试环境 · 建档失败</h2>
+            <div class="dr-sub">
+              <span>老版报表中心</span><span>·</span>
+              <span style="font-family:ui-monospace,Menlo,monospace">http://10.20.31.20:8080</span>
+            </div>
+          </div>
+          <button class="icon-btn plain" data-go="list">✕</button>
+        </header>
+        <div class="dr-body">
+          <div class="addr-box">
+            <span class="k">地址</span>
+            <span class="v">http://10.20.31.20:8080</span>
+            <button class="edit">修改</button>
+          </div>
+
+          <div class="note bad" style="margin-top:14px">
+            <b>失败原因（程序原文）</b><br>
+            DNS 解析成功 → TCP 连接被拒绝 <span style="font-family:ui-monospace,monospace">ECONNREFUSED 10.20.31.20:8080</span>，8.4 秒后放弃。
+          </div>
+
+          <div class="sec-title">建档进度</div>
+          <div class="steps">
+            <div class="step fail">
+              <div class="dot-s">✕</div>
+              <div>
+                <div class="st-top"><span class="st-name">可达性探测</span><span class="st-meta bad">失败 · 8.4s</span></div>
+                <div class="st-body">连接被拒绝，没有拿到任何响应头。</div>
+                <div class="st-next">
+                  <b>可以这样处理：</b>确认服务已启动；若需要先连内网，连上 VPN 后点「重新建档」。不改地址也可以重试。
+                </div>
+              </div>
+            </div>
+            <div class="step pend">
+              <div class="dot-s">2</div>
+              <div><div class="st-top"><span class="st-name">抓取前端骨架</span><span class="st-meta">未执行</span></div></div>
+            </div>
+            <div class="step pend">
+              <div class="dot-s">3</div>
+              <div><div class="st-top"><span class="st-name">提取路由</span><span class="st-meta">未执行</span></div></div>
+            </div>
+            <div class="step pend">
+              <div class="dot-s">4</div>
+              <div><div class="st-top"><span class="st-name">探测登录与接口</span><span class="st-meta">未执行</span></div></div>
+            </div>
+            <div class="step pend">
+              <div class="dot-s">5</div>
+              <div><div class="st-top"><span class="st-name">生成环境档案</span><span class="st-meta">未执行</span></div></div>
+            </div>
+          </div>
+
+          <div class="note warn" style="margin-top:14px">
+            <b>页面数显示「—」，不是 0。</b>
+            0 会被读成「扫过了，确实没有页面」；没跑过就是没跑过，界面不能替程序猜。
+          </div>
+
+          <div class="upgrade">
+            <div class="ic2">✦</div>
+            <div>
+              <b>转为会话排查（只有你点它才会开会话）</b>
+              <p>把这次失败的结构化结果交给 Agent，它可以问你「是不是要走跳板机」「要不要试 https」，并给出下一步建议。到这一步才有推理需求。</p>
+              <button class="btn-ghost">在会话中排查这次失败 →</button>
+            </div>
+          </div>
+        </div>
+        <footer class="dr-foot">
+          <button class="btn-main btn-sm">重新建档</button>
+          <div class="right">
+            <button class="btn-ghost btn-sm">修改地址</button>
+            <button class="btn-ghost btn-sm" data-go="list">关闭</button>
+          </div>
+        </footer>
+      </aside>
+
+      <!-- ④ 项目详情侧栏 -->
+      <aside class="drawer" id="dr-detail" style="display:none">
+        <header class="dr-head">
+          <div style="flex:1;min-width:0">
+            <h2>会员中心改版回归</h2>
+            <div class="dr-sub"><span class="tag t-manual">手动创建</span><span class="tag t-active">进行中</span></div>
+          </div>
+          <button class="icon-btn plain" data-go="list">✕</button>
+        </header>
+        <div class="dr-body">
+          <section class="panel-sec">
+            <h3>基本信息</h3>
+            <div class="frow"><span class="k">项目简介</span><span class="v">会员权益改版后的主流程回归，覆盖积分、等级与退款。</span></div>
+            <div class="frow"><span class="k">项目编号</span><span class="v mono">mmb-refactor</span></div>
+            <div class="frow"><span class="k">创建者</span><span class="v">test</span></div>
+            <div class="frow"><span class="k">创建时间</span><span class="v">2026-11-10 14:22</span></div>
+            <div class="frow"><span class="k">最近活动</span><span class="v">2 小时前</span></div>
+          </section>
+
+          <!-- 本批次新增段 -->
+          <section class="panel-sec boxed">
+            <h3>项目环境 <span style="font-weight:400;color:var(--muted)">1 个</span></h3>
+            <div class="frow"><span class="k">默认环境</span><span class="v"><b>测试环境</b> <span class="tag t-green">已建档</span></span></div>
+            <div class="frow"><span class="k">地址</span><span class="v mono">http://10.20.31.14:8080</span></div>
+            <div class="frow"><span class="k">规模</span><span class="v">12 页 · 28 接口 · 1 种登录</span></div>
+            <div class="frow"><span class="k">建档时间</span><span class="v">2026-11-17 16:42</span></div>
+            <div style="display:flex;gap:6px;margin-top:10px">
+              <button class="btn-ghost btn-sm" data-go="done">查看档案</button>
+              <button class="btn-ghost btn-sm">重新建档</button>
+            </div>
+          </section>
+        </div>
+        <footer class="dr-foot">
+          <div class="right"><button class="btn-ghost btn-sm" data-go="list">关闭</button></div>
+        </footer>
+      </aside>
+    </div>
+
+    <div class="demo-tip" id="tip" style="display:none"></div>
+
+  </main>
+</div>
+
+<script>
+(function(){
+  var app = document.getElementById('app');
+  var baseList = document.getElementById('base-list');
+  var baseWs = document.getElementById('base-ws');
+  var modal = document.getElementById('modal-create');
+  var modalSupp = document.getElementById('modal-supp');
+  var drawerWrap = document.getElementById('drawer-wrap');
+  var drawers = { run:document.getElementById('dr-run'), done:document.getElementById('dr-done'),
+                  fail:document.getElementById('dr-fail'), detail:document.getElementById('dr-detail') };
+  var navList = document.getElementById('nav-list');
+  var navWs = document.getElementById('nav-ws');
+  var wsBody = document.getElementById('ws-body');
+  var wsLib = document.getElementById('ws-library');
+  var wsEnv = document.getElementById('ws-env');
+  var wsTabs = document.getElementById('ws-tabs');
+  var kbMap = document.getElementById('kb-map');
+  var kbUnknown = document.getElementById('kb-unknown');
+  var envbar = document.getElementById('envbar');
+  var tabs = document.getElementById('tabs');
+  var timer = null;
+  /* 每步的原始说明，重播时还原，避免第二次演练只剩结果没有解释 */
+  var ORIG_BODY = {};
+  Array.prototype.forEach.call(document.querySelectorAll('#steps-run .step'), function(s){
+    ORIG_BODY[s.getAttribute('data-step')] = s.querySelector('.st-body').innerHTML;
+  });
+
+  var SCENES = {
+    list:      { base:'list' },
+    create:    { base:'list', modal:'create' },
+    run:       { base:'ws',  drawer:'run' },
+    done:      { base:'list', drawer:'done' },
+    fail:      { base:'list', drawer:'fail' },
+    detail:    { base:'list', drawer:'detail' },
+    workspace: { base:'ws' },
+    library:   { base:'ws', lib:true },
+    map:       { base:'ws', env:true, sub:'map' },
+    unknown:   { base:'ws', env:true, sub:'unknown' },
+    supp:      { base:'ws', env:true, sub:'unknown', modal:'supp' }
+  };
+
+  function clearSteps(){
+    Array.prototype.forEach.call(document.querySelectorAll('#steps-run .step'), function(s){
+      s.className = 'step pend';
+      var dot = s.querySelector('.dot-s');
+      if (dot) dot.textContent = s.getAttribute('data-step');
+      var m = s.querySelector('.st-meta');
+      if (m) { m.textContent = '等待'; m.className = 'st-meta'; }
+      var extra = s.querySelector('.chips');
+      if (extra) extra.remove();
+      var body = s.querySelector('.st-body');
+      if (body && ORIG_BODY[s.getAttribute('data-step')]) body.innerHTML = ORIG_BODY[s.getAttribute('data-step')];
+    });
+    document.getElementById('run-pct').textContent = '0%';
+  }
+
+  var STEPS = [
+    { n:1, meta:'312ms', ok:true,
+      body:'200 OK · <code>text/html; charset=utf-8</code> · 三次探测全部通过',
+      chips:['TLS 未启用','响应 18KB'] },
+    { n:2, meta:'1.8s', ok:true,
+      body:'首页 + <code>7</code> 个 JS bundle，合计 3.2MB（未触发单文件 2MB 上限）',
+      chips:['main.9f3a.js','vendor.2c1d.js','+5'] },
+    { n:3, meta:'204ms', ok:true,
+      body:'识别 <code>12</code> 条路由；归一化 <code>4</code> 条动态路由：<code>/order/123 → /order/:id</code>',
+      chips:['静态 8','动态 4'] },
+    { n:4, meta:'1.1s', ok:true,
+      body:'登录：用户名 + 密码 + <b>图形验证码</b>；OpenAPI 未公开，从 bundle 解出 <code>28</code> 个接口',
+      chips:['verifyCode','captcha.jpg','危险文案 4 处'], chipHot:true },
+    { n:5, meta:'96ms', ok:true,
+      body:'已写 <code>maps/test/pages.json</code>、<code>apis.json</code>、<code>login.json</code> 与建档报告',
+      chips:['3 页待探索'], chipHot:true }
+  ];
+
+  function runSteps(){
+    clearSteps();
+    var pct = document.getElementById('run-pct');
+    var i = 0;
+    function tick(){
+      if (i >= STEPS.length){ pct.textContent = '完成 · 总用时 3.5 秒'; return; }
+      var s = STEPS[i];
+      var node = document.querySelector('#steps-run .step[data-step="' + s.n + '"]');
+      node.className = 'step run';
+      node.querySelector('.st-meta').textContent = '进行中…';
+      node.querySelector('.st-meta').className = 'st-meta';
+      timer = setTimeout(function(){
+        node.className = 'step done';
+        node.querySelector('.dot-s').textContent = '✓';
+        var m = node.querySelector('.st-meta');
+        m.textContent = '完成 · ' + s.meta; m.className = 'st-meta ok';
+        node.querySelector('.st-body').innerHTML = s.body;
+        if (s.chips){
+          var c = document.createElement('div');
+          c.className = 'chips';
+          s.chips.forEach(function(t){
+            var el = document.createElement('span');
+            el.className = 'chip' + (s.chipHot ? ' hot' : '');
+            el.textContent = t; c.appendChild(el);
+          });
+          node.querySelector('div:last-child').appendChild(c);
+        }
+        i++;
+        pct.textContent = Math.round(i / STEPS.length * 100) + '%';
+        syncEnvbar(i);
+        timer = setTimeout(tick, 420);
+      }, 620);
+    }
+    syncEnvbar(0);
+    timer = setTimeout(tick, 260);
+  }
+
+  function syncEnvbar(i){
+    var txt = document.getElementById('eb-txt');
+    var bar = document.getElementById('eb-bar');
+    var labels = ['正在建档 · 第 1 步 可达性探测','正在建档 · 第 2 步 抓取前端骨架','正在建档 · 第 3 步 提取路由','正在建档 · 第 4 步 探测登录与接口','正在建档 · 第 5 步 生成环境档案'];
+    if (i === 0){
+      txt.textContent = labels[0]; bar.style.width = '6%';
+      setStat('—','—','—');
+      return;
+    }
+    if (i < 5){
+      txt.textContent = labels[i] || labels[4];
+      bar.style.width = Math.round(i/5*100) + '%';
+      if (i >= 4) setStat('12','28','图形验证码');
+      else if (i >= 3) setStat('12','—','—');
+    } else {
+      txt.textContent = '已建档 · 用时 3.5 秒';
+      bar.style.width = '100%';
+      setStat('12','28','图形验证码');
+      document.getElementById('eb-dot').className = 'env-dot d-ok';
+    }
+  }
+  function setStat(p,a,l){
+    document.getElementById('eb-pages').textContent = p;
+    document.getElementById('eb-apis').textContent = a;
+    document.getElementById('eb-login').textContent = l;
+  }
+
+  function show(name){
+    var cfg = SCENES[name] || SCENES.list;
+    if (timer) { clearTimeout(timer); timer = null; }
+
+    // 基底
+    baseList.classList.toggle('on', cfg.base === 'list');
+    baseWs.classList.toggle('on', cfg.base === 'ws');
+    navList.style.display = cfg.base === 'list' ? '' : 'none';
+    navWs.style.display = cfg.base === 'ws' ? '' : 'none';
+
+    // 弹窗
+    modal.classList.toggle('on', cfg.modal === 'create');
+    modalSupp.classList.toggle('on', cfg.modal === 'supp');
+
+    // 抽屉
+    drawerWrap.classList.toggle('on', !!cfg.drawer);
+    Object.keys(drawers).forEach(function(k){ drawers[k].style.display = (cfg.drawer === k) ? '' : 'none'; });
+
+    // 工作台内部：项目视图 / 项目资料 / 环境档案 三选一
+    var envMode = !!cfg.env;
+    /* 任务与节点那排是「项目视图」的 tab，环境档案不是它的子页，不能挂在这排下面 */
+    wsTabs.style.display = envMode ? 'none' : '';
+    wsBody.style.display = (cfg.lib || envMode) ? 'none' : '';
+    wsLib.style.display = cfg.lib ? '' : 'none';
+    wsEnv.style.display = envMode ? '' : 'none';
+    kbMap.style.display = cfg.sub === 'map' ? '' : 'none';
+    kbUnknown.style.display = cfg.sub === 'unknown' ? '' : 'none';
+    document.getElementById('kb-loop').style.display = cfg.sub === 'unknown' ? 'flex' : 'none';
+    Array.prototype.forEach.call(document.querySelectorAll('#kb-sub button'), function(b){
+      b.classList.toggle('on', b.getAttribute('data-go') === (cfg.sub === 'unknown' ? 'unknown' : 'map'));
+    });
+    Array.prototype.forEach.call(navWs.querySelectorAll('.nav-item'), function(b){
+      var g = b.getAttribute('data-go');
+      b.classList.toggle('on', envMode ? (g === 'map') : !g);
+    });
+    envbar.style.display = 'flex';
+
+    document.getElementById('eb-env').textContent = '测试环境';
+    var ebBarBox = document.getElementById('eb-bar').parentElement;
+    if (name === 'run'){
+      ebBarBox.style.display = '';
+      document.getElementById('eb-dot').className = 'env-dot d-run';
+      setStat('—','—','—');
+      document.getElementById('eb-txt').textContent = '正在建档 · 第 1 步 可达性探测';
+      document.getElementById('eb-bar').style.width = '6%';
+    } else {
+      /* 已完成就不再画进度条：一条满格的进度条在读长句时只会变成干扰 */
+      ebBarBox.style.display = 'none';
+      document.getElementById('eb-dot').className = 'env-dot d-ok';
+      setStat('12','28','图形验证码');
+      document.getElementById('eb-txt').textContent = '2026-11-17 16:42 建档 · 用时 3.5 秒';
+    }
+
+    Array.prototype.forEach.call(tabs.children, function(b){
+      b.classList.toggle('on', b.getAttribute('data-go') === name);
+    });
+
+    if (name === 'run'){
+      runSteps();
+      document.getElementById('tip-txt').innerHTML = '<b>五步进度是真实动作</b>：每步都给耗时与发现，失败只标到出错那一步';
+    } else if (name === 'done'){
+      document.getElementById('tip-txt').innerHTML = '<b>已建档</b>：页面数、接口数、登录形态都是实测值；3 页待探索如实列出';
+    } else if (name === 'fail'){
+      document.getElementById('tip-txt').innerHTML = '<b>失败态</b>：只写到失败那一步，后面的显示「未执行」，页面数是「—」不是 0';
+    } else if (name === 'create'){
+      document.getElementById('tip-txt').innerHTML = '<b>环境地址选填</b>：填了创建后立刻建档，留空则进项目后再补';
+    } else if (name === 'library'){
+      document.getElementById('tip-txt').innerHTML = '<b>项目资料分四组</b>：程序产物只读，人写人导的才按修订管理';
+    } else if (name === 'detail'){
+      document.getElementById('tip-txt').innerHTML = '<b>详情侧栏</b>：新增「项目环境」一段，地址与规模都在环境上，不在项目上';
+    } else if (name === 'workspace'){
+      document.getElementById('tip-txt').innerHTML = '<b>工作台顶部环境条</b>：建档进度的长期入口，其余界面不动';
+    } else if (name === 'map'){
+      document.getElementById('tip-txt').innerHTML = '<b>模块地图</b>：树是程序写的，人只能提假设；前置条件标来源（探到 / 假设验证 / 被推翻）';
+    } else if (name === 'unknown'){
+      document.getElementById('tip-txt').innerHTML = '<b>未知也是产出</b>：每条写清为什么没探到——能自补的排队，不能的等人补账号或补假设';
+    } else if (name === 'supp'){
+      document.getElementById('tip-txt').innerHTML = '<b>补充场景 ≠ 编辑知识库</b>：写的是待验证假设，下一轮验证通过才写回前置条件';
+    } else {
+      document.getElementById('tip-txt').innerHTML = '<b>环境是一个字段，不是操作</b>：进度内嵌在列里，⋯ 菜单只放「重新建档」';
+    }
+  }
+
+  document.addEventListener('click', function(e){
+    var t = e.target.closest('[data-go]');
+    if (!t) return;
+    e.preventDefault();
+    show(t.getAttribute('data-go'));
+  });
+
+  document.getElementById('replay').addEventListener('click', function(e){
+    e.stopPropagation();
+    document.getElementById('eb-dot').className = 'env-dot d-run';
+    runSteps();
+  });
+
+  show('list');
+})();
+</script>
+</body>
+</html>
