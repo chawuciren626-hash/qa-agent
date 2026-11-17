@@ -6,6 +6,7 @@
     "product": "node scripts/product-entry.mjs",
     "product:contracts": "node scripts/run-engineering-tests.mjs tests/acceptance/product-installation.test.mjs",
     "check:static": "node scripts/engineering-preflight.mjs --static",
+    "check:types": "cd platform && pnpm gen:ifaces && pnpm --filter @prismshadow/penguin-server --filter @prismshadow/penguin-web typecheck",
     "check:production": "node scripts/verify-production-install.mjs",
     "check:installed": "node scripts/verify-product-installation.mjs",
     "doctor:read-only": "node scripts/engineering-preflight.mjs",

@@ -37,8 +37,7 @@
 3. **回归（每次提交前全跑）**：
    - `npm run ci:tools`（工具包冒烟）
    - `cd aitestharness-ir && python -m pytest tests -q`（契约校验器，114 用例）
-   - `cd platform/packages/server && npx tsc --noEmit -p .`
-   - `cd platform/packages/web && npx tsc --noEmit -p .`
+   - `npm run check:types`（= `cd platform && pnpm gen:ifaces && pnpm --filter @prismshadow/penguin-server --filter @prismshadow/penguin-web typecheck`，与 CI `platform-qa` job 的 typecheck 步骤同源；顺带解决 §6 第 2 条"陈旧 ifaces.json"）
    - 涉及运行时行为时加 `npm run test:core`
 4. **提交**：一条批次一个（或按逻辑分几个）commit，信息格式 `feat/fix/docs(域): 一句话说明`；推送自己的分支，交付 commit、变更清单、测试结果和真实运行回执。Codex 验收后合并到 `main`。
 5. **打卡**：在 §5 表格记录状态、分支和 commit；未合并时不能写成已交付。
@@ -50,7 +49,7 @@
 | 已完成的批次 1 基线 | 工具执行通道（`central-tools`/`tool-gate`）、阶段检查回执与后台追溯。后续批次在其上扩展，不得把 Node 检查冒称 Python v3 IR 已执行 |
 | 已由云端完成、勿回退 | 用户级模型配置（`user-models.ts`/`project-config-service` 共享模型机制）、渠道管理（`admin-channels-page.tsx`/`control-plane /channels`）、管理后台布局（`admin-layout.*`）、设置页模型卡片（`user-models-settings.tsx`） |
 | 批次 2U | Agent 设置页平台工具只读区块（见 `gap-inventory-20261116.md` 追加节） |
-| 无人认领可做 | CI tsc 门禁、e2e 冒烟三链、qa_* 索引清单（见 `db-table-audit-20261116.md` §A 档合并，动库前须用户点头） |
+| 无人认领可做 | e2e 冒烟三链、qa_* 索引清单（见 `db-table-audit-20261116.md` §A 档合并，动库前须用户点头）。**"CI tsc 门禁"一行已过期**：`.github/workflows/engineering-tests.yml` 的 `platform-qa` job 自 `eb633c4` 起就在跑 server/web 的 typecheck，本地对应命令收敛为 `npm run check:types` |
 
 ## 4. 后续批次开工卡
 
@@ -66,6 +65,12 @@
 | **4 可重放的 Web 执行 / WorkBuddy** | 浏览器 Driver、DSL/断言、页面资产库接线、执行预算与取证；先打通 Web 单类型，其他 Adapter 后排 | 授权站点的一条用例可固化、重放 N=3，结果及取证可对比；预算超限明确停止；未执行不得报通过；记录源码、隔离实例、已安装环境三层结果 | 1F、2、3 |
 | **5 回归与审核 / Qoder** | 变更影响来源、回归三闸、flaky 隔离、确认卡点三层 UI 与报告 draft/reviewing/approved；覆盖 M3、A3/A4 | 同一变更得到稳定选集；不稳定用例不进入可靠通过率；硬闸失败阻止报告批准；确认抽样可复现且报告审批留审计 | 4 |
 | **6 缺陷闭环与有效性基线 / WorkBuddy + 用户准备受控系统** | `defect.evidence` 的真实执行 IR、内置/外部提单、复测与知识回流；种子缺陷集单独保管 | 真实失败可取证、提单、复测、关闭，状态可追溯；在受控系统上记录召回、误报、错误通过率及样本分母；未建立种子集前不宣称有效性达标 | 4、5 |
+
+> **未派单缺口（2026-11-17 提出，待决策）**：批次 2 落地的是"建档"，下面两件目前**没有任何批次认领**，写在这里免得被当成已排期：
+> 1. **探索派发**（建会话 + 发 `breadth` 指令）：环境页现在只有"派发入口在批次 3 接通"的文案，没有真实入口。但批次 3 的范围是 A5/A6 来源条款化与上下文装配，不含探索派发。
+> 2. **`maps/<env>/` 目录结构**：现状仍是扁平 `maps-<env>.yaml`；批次 2 文档原写"等批次 3 一并定"，而批次 3 不在同一执行方手里。
+>
+> 这两项不派下去，"建档 → 探索 → 测试任务"这条链在环境页是断的，且会拖到批次 4 才被发现没人做。
 
 每批验收由 Codex 检查：范围与契约、回归结果、真实 run 的输入/输出哈希和失败路径、运行副本部署及回滚记录。仅合成 fixture 通过时标“工程验证通过”，不写“真实业务闭环”。Python v3 IR 适配须使用已归档字段，缺字段就保持待适配；客户端版本协商和其他三类 Adapter 在 Web 纵向链稳定后另立批次。
 
