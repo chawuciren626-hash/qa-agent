@@ -4,6 +4,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router";
 import type { AgentConfigResponse, AgentConfigUpdateRequest } from "@prismshadow/penguin-server/api";
 import { Button, ConfirmModal, CopyButton, HelpFold, HiddenFileInput, Input, Modal, PageFrame, PageHeader, SettingsEmpty, Skeleton, Textarea, ToggleRow } from "@prismshadow/penguin-ui";
 import { CentralAgentComponentTab } from "./central-agent-component-tabs";
+import { CentralAgentPlatformTools } from "./central-agent-platform-tools";
 import { agentDescription } from "./agent-description";
 import { controlRequest } from "../../api/control";
 import { S } from "../../lib/strings";
@@ -140,7 +141,7 @@ export function CentralAgentSettingsPage() {
         {tab === "overview" && <CentralOverview body={selected} data={data} resource={resource} editable={editable} busy={busy} save={save} updateKernel={updateKernel} importSnapshot={importSnapshot} snapshotVersion={viewingDraft ? "draft" : String(effectiveVersion)} />}
         {tab === "prompt" && <fieldset disabled={!editable}><PromptTab key={`${resourceId}:${requestedVersion}`} data={data} onSave={save} /></fieldset>}
         {tab === "runtime" && <fieldset disabled={!editable}><RuntimeTab key={`${resourceId}:${requestedVersion}`} data={data} onSave={save} projectId="" /></fieldset>}
-        {tab === "tools" && <fieldset disabled={!editable}><ToolsTab key={`${resourceId}:${requestedVersion}`} data={data} onSave={save} /></fieldset>}
+        {tab === "tools" && <div className="space-y-6"><fieldset disabled={!editable}><ToolsTab key={`${resourceId}:${requestedVersion}`} data={data} onSave={save} /></fieldset><CentralAgentPlatformTools agentId={String(payload.agentId ?? "")} /></div>}
         {(tab === "skills" || tab === "hooks") && <CentralAgentComponentTab key={`${resourceId}:${requestedVersion}:${tab}`} resourceId={resourceId} version={viewingDraft?"draft":String(effectiveVersion)} feature={tab} data={data} editable={editable} catalog={publishedCatalog} onSave={save} selectedIds={entries(tab === "skills"?"skillResources":"pluginResources")} onChange={ids=>saveReferences(tab === "skills"?"skillResources":"pluginResources",ids)} />}
         {tab === "plugins" && <ProfessionalAgentPluginTab resourceId={resourceId} onChanged={load} />}
         {tab === "workbenches" && <div className="space-y-4"><HelpFold label={S.agent.tabWorkbenches}>{S.workbenches.agentTabDesc}</HelpFold><SettingsEmpty>{S.workbenches.empty}</SettingsEmpty></div>}
