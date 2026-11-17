@@ -78,9 +78,9 @@ Python 每到一个真实边界就往 **stderr** 写一行 `@@step {"index":1,"s
 | `npx vitest run test/bootstrap-steps.test.ts` | 4 passed |
 | `npx vitest run test/project-environments-page.test.ts` | 4 passed（失败原文照抄 / 未探索空态 / 判定追加 / 造数默认关） |
 | `npx vitest run test/project-management-page.test.ts test/qa-project-pagination.test.ts` | 15 + 8 passed |
-| `npx vitest run test/managed-projects.test.ts test/project-rename.test.ts` | 9 passed / 1 skipped（原有 runIf 跳过） |
+| `npx vitest run test/managed-projects.test.ts test/project-rename.test.ts test/project-environments.test.ts test/environment-knowledge.test.ts` | 26 passed / 1 skipped（跳过的是原有 `runIf(AITEST_ENGINE_ROOT)` 用例） |
 
-新增用例覆盖：环境登记与"未建档≠0"、地址与环境名校验、失败不冒充成功、成功摘要落库、地址变更清空旧摘要、非成员 404；以及探索资产的层覆盖、key 去重、假设默认关造数、判定 append 不覆盖、按状态计数、环境不存在 404。
+新增用例覆盖：环境登记与"未建档≠0"、地址与环境名校验、失败不冒充成功、成功摘要落库、地址变更清空旧摘要、非成员 404；以及探索资产的层覆盖、key 去重、假设默认关造数、判定 append 不覆盖、按状态计数、环境不存在 404；老项目（建档功能上线前建的、没有环境）读出来 `environment` 为 `null`、环境接口回空列表 + `defaultEnv=null` 而不是 404。
 
 ## 6. 产品决策（2026-11-17 已确认）
 
