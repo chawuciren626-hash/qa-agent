@@ -26,6 +26,22 @@ export const MIN_SOLVE_CONFIDENCE = 0.9;
 export const loginSessionFile = 'execution/browser-login-session.json';
 export const loginSessionMetaFile = 'execution/browser-login-session.meta.json';
 
+// 截图识别回传协议：本地策略耗尽时把验证码元素截图与待识别状态受保护保存（0600、不进证据清单），
+// 由代理视觉读图后经一次性 login_recognize 回传答案。识别执行器是代理视觉，不是本地 OCR。
+export const AGENT_VISION_STRATEGY = 'agent_vision_return';
+export const loginCaptchaPendingFile = 'execution/browser-captcha-pending.json';
+export const loginCaptchaImageFile = requestId => `execution/browser-captcha-${requestId}.png`;
+
+// 项目配置声明图形码（captcha_image_target + captcha_input_target）且该图像元素确实存在时，
+// 覆盖 DOM 关键词误分类（如未激活的“短信登录”标签把图形码误判为 sms）。元素不存在则不覆盖，
+// 真正的短信/滑块等仍走人工分支。dom_captcha_type 保留原始 DOM 判定以便追溯。
+export function resolveCaptchaType(domType, config, imagePresent) {
+  if (config?.captcha_image_target && config?.captcha_input_target && domType !== 'image' && imagePresent) {
+    return { type: 'image', basis: 'project_config_declared', dom_captcha_type: domType };
+  }
+  return { type: domType, basis: 'dom_keyword_rules', dom_captcha_type: domType };
+}
+
 export async function collectLoginDom(page) {
   return page.evaluate(() => {
     const inputs = [...document.querySelectorAll('input')].slice(0, 50).map(e => ({
