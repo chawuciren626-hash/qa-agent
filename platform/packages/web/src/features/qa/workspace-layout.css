@@ -31,6 +31,22 @@
 .qp-refresh { border:1px solid var(--qa-border); border-radius:6px; width:32px; height:32px; font-size:22px; }
 .qp-refresh:disabled { opacity:.4; }
 .qp-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+/* 工作台环境条：一行只读摘要，超出的地址省略（完整地址在项目环境页） */
+.qp-env-strip {
+  display:flex; align-items:center; gap:10px;
+  border:1px solid var(--qa-border, #e6e9ef); border-radius:10px;
+  padding:9px 12px; font-size:12px; color:var(--qa-muted, #646a73); background:#fbfcfe;
+}
+.qp-env-strip b { font-size:12.5px; color:var(--qa-text, #1f2329); font-weight:600; flex:none; }
+.qp-env-strip-url { font-family:Consolas, ui-monospace, monospace; font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:340px; }
+.qp-env-strip-meta { font-size:11.5px; min-width:0; }
+.qp-env-strip-go { margin-left:auto; flex:none; color:#185fa5; font-size:12px; white-space:nowrap; }
+.qp-env-strip-go:hover { text-decoration:underline; }
+.qp-env-dot { width:6px; height:6px; border-radius:50%; background:#c9ced6; flex:none; display:inline-block; }
+.qp-env-dot.is-ok { background:#2ea36a; }
+.qp-env-dot.is-run { background:#185fa5; animation:qp-env-pulse 1.2s ease-in-out infinite; }
+.qp-env-dot.is-fail { background:#d45555; }
+@keyframes qp-env-pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
 .qp-stat { display:flex; align-items:center; gap:12px; padding:14px 16px; border:1px solid var(--qa-border); border-radius:10px; text-align:left; }
 .qp-stat:hover, .qp-task:hover { border-color:#aeb8c8; box-shadow:0 2px 8px #00000008; }
 .qp-stat[aria-pressed=true] { border-color:#3370ff; background:light-dark(#f0f5ff,#1d2e48); }

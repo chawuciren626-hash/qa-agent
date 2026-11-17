@@ -10,11 +10,16 @@
  */
 import type {
   CreateProjectInput,
+  EnvironmentKnowledge,
   EnvironmentView,
+  Hypothesis,
+  HypothesisStatus,
+  HypothesisSummary,
   ManagedProject,
   ProjectListQuery,
   ProjectListResult,
   UpdateProjectInput,
+  WhyUnknown,
 } from "./types";
 import { apiFetch } from "../../../api/client";
 
@@ -116,4 +121,50 @@ export async function bootstrapEnvironment(projectId: string, env: string): Prom
     body: {},
   });
   return response.environment;
+}
+
+// ---------------------------------------------------------------- 探索资产与假设
+
+/**
+ * 一次取回四层资产 + 假设计数。
+ * 分开请求会让首屏出现「地图有了、计数还是 0」的错帧，所以后端就配成一次返回。
+ */
+export async function getEnvironmentKnowledge(
+  projectId: string,
+  env: string,
+): Promise<{ knowledge: EnvironmentKnowledge; hypotheses: HypothesisSummary }> {
+  return apiFetch<{ knowledge: EnvironmentKnowledge; hypotheses: HypothesisSummary }>(
+    `${envItem(projectId, env)}/knowledge`,
+  );
+}
+
+export async function listHypotheses(
+  projectId: string,
+  env: string,
+  status?: HypothesisStatus,
+): Promise<{ hypotheses: Hypothesis[]; summary: HypothesisSummary }> {
+  return apiFetch<{ hypotheses: Hypothesis[]; summary: HypothesisSummary }>(
+    `${envItem(projectId, env)}/hypotheses`,
+    { query: status ? { status } : undefined },
+  );
+}
+
+/** 人提一条待验证假设（不进地图：验证通过后由探索程序写回）。 */
+export async function createHypothesis(
+  projectId: string,
+  env: string,
+  input: {
+    statement: string;
+    whyUnknown: WhyUnknown;
+    moduleKey?: string;
+    expectation?: string;
+    dataSetup?: string;
+    allowSeed?: boolean;
+  },
+): Promise<Hypothesis> {
+  const response = await apiFetch<{ hypothesis: Hypothesis }>(`${envItem(projectId, env)}/hypotheses`, {
+    method: "POST",
+    body: input,
+  });
+  return response.hypothesis;
 }

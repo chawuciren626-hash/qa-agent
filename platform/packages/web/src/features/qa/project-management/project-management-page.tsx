@@ -26,6 +26,7 @@ import {
 import { STATUS_LABEL, sourceText, timeText } from "./format";
 import { CreateProjectDialog } from "./create-project-dialog";
 import { EnvironmentCell } from "./environment-cell";
+import { BootstrapDrawer } from "./bootstrap-drawer";
 import { ProjectDetailPanel } from "./project-detail-panel";
 import { ProjectSettingsDialog } from "../../../components/layout/project-dialogs";
 import { ConfirmModal, toastError, toastSuccess } from "@prismshadow/penguin-ui";
@@ -101,6 +102,8 @@ export function ProjectManagementPage() {
   const [enteringId, setEnteringId] = useState<string | null>(null);
   /** 正在发起建档的项目（按钮 loading；与环境的 probing 状态不是一回事）。 */
   const [bootstrappingId, setBootstrappingId] = useState<string | null>(null);
+  /** 打开的是哪个项目的建档抽屉（抽屉自己轮询环境状态，列表只负责把它叫出来）。 */
+  const [envDrawer, setEnvDrawer] = useState<ManagedProject | null>(null);
   /** ⋯ 行内菜单。 */
   const [rowMenuId, setRowMenuId] = useState<string | null>(null);
   /** 详情侧栏（detail=<projectId> 可经 URL 恢复）。 */
@@ -221,12 +224,15 @@ export function ProjectManagementPage() {
 
   /**
    * 从列表直接建档：服务端立刻返回 probing，真实抓取在后台跑。
-   * 这里只负责发起 + 刷新，不等待结果——等会卡住 UI 两分钟。
+   * 这里只负责发起 + 打开抽屉 + 刷新，不等待结果——等会卡住 UI 两分钟。
    */
   const bootstrap = useCallback(async (project: ManagedProject) => {
     const env = project.environment;
     if (!env) return;
     setBootstrappingId(project.projectId);
+    // 先把抽屉打开：建档两分钟里用户最想看的是"现在跑到第几步"，而不是列表里
+    // 一个转圈的六个字。
+    setEnvDrawer(project);
     try {
       await bootstrapEnvironment(project.projectId, env.env);
       refresh();
@@ -245,6 +251,20 @@ export function ProjectManagementPage() {
       setCurrentProjectId(projectId);
       pendingEnterRef.current = null;
       navigate("/qa/project");
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "进入项目失败，请重试");
+    } finally {
+      setEnteringId(null);
+    }
+  }, [navigate, setCurrentProjectId]);
+
+  /** 去项目环境页：环境页在项目内，所以先按同一套校验进入项目，再切路由。 */
+  const openEnvironments = useCallback(async (project: ManagedProject) => {
+    setEnteringId(project.projectId);
+    try {
+      await enterProject(project.projectId);
+      setCurrentProjectId(project.projectId);
+      navigate("/qa/project/environments");
     } catch (e) {
       toastError(e instanceof Error ? e.message : "进入项目失败，请重试");
     } finally {
@@ -481,7 +501,7 @@ export function ProjectManagementPage() {
                         project={project}
                         busy={bootstrappingId === project.projectId}
                         onBootstrap={(target) => void bootstrap(target)}
-                        onOpen={(target) => openDetail(target.projectId)}
+                        onOpen={(target) => setEnvDrawer(target)}
                       />
                     </td>
                     <td>
@@ -540,6 +560,14 @@ export function ProjectManagementPage() {
         )}
       </div>
 
+      {envDrawer && (
+        <BootstrapDrawer
+          project={envDrawer}
+          onClose={() => setEnvDrawer(null)}
+          onChanged={refresh}
+        />
+      )}
+
       {detailId && (
         <ProjectDetailPanel
           projectId={detailId}
@@ -547,6 +575,7 @@ export function ProjectManagementPage() {
           editOnOpen={editOnOpen}
           onClose={() => setDetailId(null)}
           onSaveEdits={saveEdits}
+          onOpenEnvironments={(project) => void openEnvironments(project)}
         />
       )}
 
