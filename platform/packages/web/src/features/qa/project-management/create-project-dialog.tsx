@@ -42,6 +42,10 @@ export function CreateProjectDialog({
   const [name, setName] = useState("");
   const [idInput, setIdInput] = useState("");
   const [description, setDescription] = useState("");
+  /** 项目环境（选填）：填了地址就创建后立刻建档，留空则先建项目、之后在环境页补。 */
+  const [envUrl, setEnvUrl] = useState("");
+  const [envName, setEnvName] = useState("test");
+  const [envError, setEnvError] = useState<string | null>(null);
   const [nameError, setNameError] = useState<string | null>(null);
   const [idError, setIdError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -55,7 +59,7 @@ export function CreateProjectDialog({
   const idValid = prefix
     ? PROJECT_SUFFIX_PATTERN.test(suffix) && projectId.length <= PROJECT_ID_MAX_LENGTH
     : SEMANTIC_ID_PATTERN.test(projectId);
-  const dirty = name.trim() !== "" || suffix !== "" || description.trim() !== "";
+  const dirty = name.trim() !== "" || suffix !== "" || description.trim() !== "" || envUrl.trim() !== "";
   const busy = phase === "creating";
 
   /** 关闭：有修改先确认放弃；无修改直接关（§5）。 */
@@ -92,12 +96,30 @@ export function CreateProjectDialog({
       setIdError(suffix ? (prefix ? S.project.idSuffixHint : S.project.idHint) : "请填写 Project id");
       return;
     }
+    // 环境地址选填；填了就先在本地做形状校验，别等创建完才在服务端报错——那样会留下
+    // 「项目建好了但环境没建」的中间态。协议与内嵌凭据由服务端兜底再判一次。
+    const url = envUrl.trim();
+    if (url !== "" && !/^https?:\/\/[^\s]+$/i.test(url)) {
+      setEnvError("地址需以 http:// 或 https:// 开头");
+      return;
+    }
+    const envLabel = envName.trim();
+    if (url !== "" && envLabel !== "" && !/^[a-z][a-z0-9_-]{0,31}$/.test(envLabel)) {
+      setEnvError("环境名需以小写字母开头，只含小写字母、数字、下划线或连字符");
+      return;
+    }
     setNameError(null);
     setIdError(null);
+    setEnvError(null);
     setSubmitError(null);
     setPhase("creating");
     try {
-      const created = await onCreate({ projectId, name: trimmed, description: description.trim() });
+      const created = await onCreate({
+        projectId,
+        name: trimmed,
+        description: description.trim(),
+        ...(url === "" ? {} : { environment: { env: envLabel || "test", baseUrl: url } }),
+      });
       const entered = await onEnterAfterCreate(created.projectId);
       if (!entered) {
         setPhase("enterFailed");
@@ -192,6 +214,39 @@ export function CreateProjectDialog({
             <span>来源</span>
             <span className="qpm-tag qpm-tag-manual">手动创建</span>
           </div>
+
+          <div className="qpm-form-sep" role="separator" />
+          <div className="qpm-form-subhead">
+            <span>项目环境</span>
+            <span className="qpm-tag qpm-tag-manual">选填</span>
+          </div>
+          <label className="qpm-form-row">
+            <span>环境地址</span>
+            <input
+              value={envUrl}
+              placeholder="http://10.20.31.14:8080"
+              aria-label="环境地址"
+              aria-invalid={envError !== null}
+              aria-describedby={envError ? "qpm-create-env-error" : undefined}
+              disabled={busy || phase === "enterFailed"}
+              onChange={(e) => { setEnvUrl(e.target.value); if (envError) setEnvError(null); if (submitError) setSubmitError(null); }}
+            />
+            <p className="qpm-field-hint">
+              填了就在创建后立刻建档（约 3–10 秒）：只发 GET，抓页面与接口，不改动被测系统。留空则先建项目，之后在项目环境里补。
+            </p>
+            {envError && <p className="qpm-field-error" id="qpm-create-env-error" role="alert">{envError}</p>}
+          </label>
+          <label className="qpm-form-row">
+            <span>环境名</span>
+            <input
+              value={envName}
+              placeholder="test"
+              aria-label="环境名"
+              disabled={busy || phase === "enterFailed" || envUrl.trim() === ""}
+              onChange={(e) => { setEnvName(e.target.value); if (envError) setEnvError(null); }}
+            />
+            <p className="qpm-field-hint">默认 <b>test</b>，地图落在 maps/test/</p>
+          </label>
           {submitError && (
             <div className="qpm-error" role="alert">
               <p>{submitError}</p>

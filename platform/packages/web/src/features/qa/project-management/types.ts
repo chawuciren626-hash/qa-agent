@@ -14,6 +14,30 @@ export type ProjectSourceType = "manual" | "sync";
 /** 项目状态（不与测试任务的执行状态混用）。 */
 export type ProjectStatus = "active" | "archived" | "disabled";
 
+/** 环境建档状态：unregistered 没跑过 / probing 正在跑 / registered 成功 / failed 失败。 */
+export type EnvironmentStatus = "unregistered" | "probing" | "registered" | "failed";
+
+/**
+ * 项目环境：地址归环境，不归项目（一个项目可有多个环境，默认环境唯一）。
+ *
+ * pages / apis 为 null 表示"没跑过"，与 0（"跑过且确实没有页面"）是两种结论，
+ * 界面必须分别显示「—」和「0」——把失败或未跑写成 0 页会误导下游。
+ */
+export interface EnvironmentView {
+  env: string;
+  baseUrl: string;
+  isDefault: boolean;
+  status: EnvironmentStatus;
+  pages: { total: number; registered: number } | null;
+  apis: { total: number; modules: string[] } | null;
+  loginCaptcha: string | null;
+  probedAt: string | null;
+  lastError: string | null;
+  mapsPath: string | null;
+  reportPath: string | null;
+  revision: number;
+}
+
 /** 服务端返回的操作能力标志（§9 权限矩阵的前端消费形态）。 */
 export interface ProjectCapabilities {
   /** 能否进入项目（按项目状态与后端权限决定；false 时页面显示「不可进入」）。 */
@@ -67,6 +91,8 @@ export interface ManagedProject {
   capabilities: ProjectCapabilities;
   /** 并发更新标识；编辑保存需回传 expectedRevision，冲突时提示刷新。 */
   revision: number;
+  /** 默认环境摘要；null 表示这个项目还没连过环境（不是"环境没地址"）。 */
+  environment?: EnvironmentView | null;
 }
 
 /** 列表查询条件（搜索/筛选/排序/分页在适配层按真实接口语义实现）。 */
@@ -97,6 +123,11 @@ export interface CreateProjectInput {
   projectId: string;
   name: string;
   description?: string;
+  /**
+   * 选填：填了就在创建后立刻建档（抓页面与接口），留空则先建项目、之后在环境页补。
+   * 校验在服务端做（只放行 http/https、禁内嵌凭据、拦云元数据端点），前端只挡空串。
+   */
+  environment?: { env?: string; baseUrl: string };
 }
 
 /** 基本信息编辑的提交内容（同步项目的外部维护字段不在可编辑范围）。 */

@@ -10,6 +10,7 @@
  */
 import type {
   CreateProjectInput,
+  EnvironmentView,
   ManagedProject,
   ProjectListQuery,
   ProjectListResult,
@@ -76,4 +77,43 @@ export async function enterProject(projectId: string): Promise<void> {
 export async function quickSwitchProjects(currentProjectId: string | null): Promise<ManagedProject[]> {
   const result = await apiFetch<{ projects: ManagedProject[] }>(`${base}/quick-switch`, { query: { currentProjectId: currentProjectId ?? undefined } });
   return result.projects;
+}
+
+// ---------------------------------------------------------------- 项目环境
+
+const envBase = (projectId: string) => `/api/projects/${encodeURIComponent(projectId)}/environments`;
+const envItem = (projectId: string, env: string) => `${envBase(projectId)}/${encodeURIComponent(env)}`;
+
+/** 一个项目的全部环境；defaultEnv 为 null 表示还没连过环境。 */
+export async function listEnvironments(
+  projectId: string,
+): Promise<{ environments: EnvironmentView[]; defaultEnv: string | null }> {
+  return apiFetch<{ environments: EnvironmentView[]; defaultEnv: string | null }>(envBase(projectId));
+}
+
+/** 新增或修改一个环境（地址变更会清空旧建档摘要，不会出现旧站点的页面数描述新地址）。 */
+export async function saveEnvironment(
+  projectId: string,
+  input: { env?: string; baseUrl: string; isDefault?: boolean },
+): Promise<EnvironmentView> {
+  const response = await apiFetch<{ environment: EnvironmentView }>(envBase(projectId), { method: "POST", body: input });
+  return response.environment;
+}
+
+/** 读取单个环境（建档期间用于轮询 status）。 */
+export async function getEnvironment(projectId: string, env: string): Promise<EnvironmentView> {
+  const response = await apiFetch<{ environment: EnvironmentView }>(envItem(projectId, env));
+  return response.environment;
+}
+
+/**
+ * 触发建档：服务端立刻返回（status=probing），实际抓取在后台跑。
+ * 调用方按 getEnvironment 轮询，不要在这里等——建档最长两分钟。
+ */
+export async function bootstrapEnvironment(projectId: string, env: string): Promise<EnvironmentView> {
+  const response = await apiFetch<{ environment: EnvironmentView }>(`${envItem(projectId, env)}/bootstrap`, {
+    method: "POST",
+    body: {},
+  });
+  return response.environment;
 }
