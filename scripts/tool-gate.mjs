@@ -42,6 +42,8 @@ export const CALLABLE_STAGE_TOOL_IDS = Object.freeze([
  */
 export const TOOL_BINDINGS = {
   run_stage_tool: { conditional: parsed => parsed?.tool_id ? [parsed.tool_id] : [] },
+  extract_word: { requires: ['requirement.parse'] },
+  api_task: { conditional: parsed => ['start', 'resume'].includes(parsed?.operation?.type) ? ['exec.api_engine'] : [] },
   // —— 阶段状态机：建 run、排阶段、推进、确认、失效 ——
   create_run: { requires: ['plan.phases'] },
   plan_run: { requires: ['plan.phases'] },

@@ -67,6 +67,21 @@ test('阶段工具调用受对应工具开关约束，不把其他工具一并�
   });
 });
 
+test('接口引擎停用阻止启动，但保留收集已有结果的入口', () => {
+  withState(['exec.api_engine'], () => {
+    assert.match(gateAction(root, 'api_task', {operation:{type:'start'}}).blocked, /exec\.api_engine/);
+    assert.match(gateAction(root, 'api_task', {operation:{type:'resume'}}).blocked, /exec\.api_engine/);
+    assert.equal(gateAction(root, 'api_task', {operation:{type:'collect'}}).blocked, null);
+  });
+});
+
+test('需求解析停用时禁止 DOCX 解析，原文读取仍可用', () => {
+  withState(['requirement.parse'], () => {
+    assert.match(gateAction(root, 'extract_word', {}).blocked, /requirement\.parse/);
+    assert.equal(gateAction(root, 'read_source', {}).blocked, null);
+  });
+});
+
 test('软依赖停用 = 放行但标注降级，不许静默', () => {
   withState(['regression.select'], () => {
     const gate = gateAction(root, 'export_report', {});
@@ -143,7 +158,7 @@ test('绑定表覆盖全部关键 action，且没有指向不存在工具的孤�
   const known = new Set([
     'irval.check', 'assets.library', 'regression.select', 'plan.phases', 'agent.contract',
     'knowledge.incremental', 'dom.snapshot', 'expected.provenance', 'requirement.completeness',
-    'testpoint.coverage', 'm1.consistency',
+    'testpoint.coverage', 'm1.consistency', 'requirement.parse', 'exec.api_engine',
   ]);
   for (const [action, binding] of Object.entries(TOOL_BINDINGS)) {
     for (const name of [...(binding.requires ?? []), ...(binding.enhances ?? [])]) {

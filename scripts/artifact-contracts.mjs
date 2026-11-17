@@ -13,6 +13,7 @@ import { governedDefects, lifecycleReferences } from './defect-lifecycle.mjs';
 import { defectGateReasons, qualityGateStatus } from './quality-gate.mjs';
 import { severityProblems } from './defect-severity.mjs';
 import { inspectRequirementLedger } from './requirement-provenance.mjs';
+import { parseRequirementSource } from './requirement-source-parser.mjs';
 import { inspectCompleteness } from './requirement-completeness.mjs';
 import { inspectCoverage } from './coverage-split.mjs';
 import { inspectM1 } from './consistency-report.mjs';
@@ -51,6 +52,7 @@ const assert = (condition, message) => { if (!condition) throw new Error(message
 const sameSet = (a, b) => isDeepStrictEqual([...a].sort(), [...b].sort());
 const provenanceImplementationHash = createHash('sha256').update(readFileSync(new URL('./expected-provenance-check.mjs', import.meta.url))).digest('hex');
 const completenessImplementationHash = createHash('sha256').update(readFileSync(new URL('./requirement-completeness.mjs', import.meta.url))).digest('hex');
+const sourceParserImplementationHash = createHash('sha256').update(readFileSync(new URL('./requirement-source-parser.mjs', import.meta.url))).digest('hex');
 const coverageImplementationHash = createHash('sha256').update(readFileSync(new URL('./coverage-split.mjs', import.meta.url))).digest('hex');
 const pointCoverageImplementationHash = createHash('sha256').update(readFileSync(new URL('./test-point-diagnosis.mjs', import.meta.url))).digest('hex');
 const consistencyImplementationHash = createHash('sha256').update(readFileSync(new URL('./consistency-report.mjs', import.meta.url))).digest('hex');
@@ -296,6 +298,20 @@ export function inspectStageArtifacts(root, runId, stage, { mode = 'execute', ar
       if (existsSync(resolve(dir, 'analysis/api_contract.json'))) json('analysis/api_contract.json');
       assert(text(capture(required[0]).toString('utf8')), 'Empty analysis text');
       const { ledger } = inspectRequirementLedger(runId, capture);
+      const parserDisabled = readRuntimeState(root).disabled.has('requirement.parse');
+      for (const source of ledger.sources) {
+        const input = files.get(source.path);
+        const parsed = parserDisabled ? null : parseRequirementSource(source.path, capture(source.path).toString('utf8'));
+        toolChecks.push({ tool_id: 'requirement.parse', implementation: 'scripts/requirement-source-parser.mjs',
+          implementation_sha256: sourceParserImplementationHash,
+          status: parserDisabled ? 'skipped' : parsed.status,
+          input, source_id: source.id,
+          ...(parserDisabled ? { reason: 'tool_disabled' } : parsed.status === 'completed'
+            ? { section_count: parsed.sections.length, clause_count: parsed.clauses.length,
+                referenced_quotes: ledger.rules.flatMap(rule => rule.citations)
+                  .filter(citation => citation.source_id === source.id).length }
+            : { reason: parsed.reason }) });
+      }
       feedbackIncluded(ledger);
       assertAnalysisMarkdown(ledger, capture(required[0]));
       const completenessDisabled = readRuntimeState(root).disabled.has('requirement.completeness');

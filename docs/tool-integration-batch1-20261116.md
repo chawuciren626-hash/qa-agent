@@ -63,7 +63,19 @@
 
 这里的“可调用”仅表示实现、阶段权限和回执已接通。旧工程阶段产物与 v3 IR 字段不完全一致；无适配输入时不得把旧 JSON 直接提交给新校验器，也不得宣称该阶段已通过工具校验。
 
-## 尚未完成的第 1 批工作
+## 第 1 批收口判定与后续依赖
+
+本批的验收口径是：在**当前工程实际产物契约**下，需求、测试点、用例、Web 执行、接口执行、缺陷和报告各阶段至少有一个按场景自动触发的确定性工具；执行、跳过、部分结果及失败可从 run 和后台追溯；硬校验失败阻止相应交接。已完成的实际调用见上文和下述续建记录。这个判定只覆盖统一执行通道与现有产物，不等于中央登记的 33 个工具都已在任意项目执行，也不等于 v3 IR 契约已迁移。
+
+后续项目按下面的输入依赖推进；缺少对应场景或可信输入时保持 `pending`/`not_applicable`，不得将其计成成功调用：
+
+2026-11-17 续建：`read_source` 读取 `inputs/*.md|*.markdown|*.txt` 时会同时返回所选行中的章节与带原文行号的条款，供需求 Agent 在编写台账前使用。正式产物检查也会对已登记并校验引用的纯文本快照调用 Node `requirement.parse`，记录每份来源的哈希、章节数、条款数、引用数和实现哈希；停用或不支持的格式分别记为 `skipped`、`not_applicable`。它只识别原文结构，不生成或批准需求规则。其余文件格式、链接抓取与 `knowledge.incremental` 尚未接入，不能将这条来源检查称为完整来源适配。
+
+归档 DOCX 的 `extract_word` 成功后也记录 `requirement.parse` 回执，绑定原文件、定位元数据和提取文本的哈希；原件保持不变。该实现是工程已有的受控 Python 提取器，保留段落/表格定位并明确提示图片、页码和修订等限制；提取后的 `.docx.txt` 可继续按纯文本读取和引用。
+
+接口 `api_task collect` 现核对 Node API 引擎保存的设计、结果汇总、请求数量和每份请求证据哈希后，记录 `exec.api_engine` 的真实执行回执。只有封存且至少发出一次请求才计成功调用；部分结果和零请求分别标为 `partial`、`not_applicable`。此回执证明实际接口执行，不冒充 Python `exec/api_engine.py`，也不代表五闸、回归影响或资源池已运行。
+
+`export_report` 成功生成时记录 Node `report.reviewer` 回执，将封存结果、问题记录和生成的事实正文哈希绑定；复用既有封存导出不重复计数。这里审阅工具实际完成的是事实正文装配，不包含 Python v3 exec IR 的 `extract_facts` 或模型洞察。
 
 1. v3 IR 工具包与当前阶段 JSON 不是同一契约；`requirement.testability`、`plan.gates`、`report.reviewer` 等只有完整 IR 时才能调用。迁移旧产物为 v3 IR 是独立的契约升级工作，不能用空字段和模型臆造值伪适配。本批把这些标为 `ir_adapter_pending`，不宣称自动执行。
 2. `requirement.parse` / `knowledge.incremental` 的文档与链接来源适配、`testpoint.matrix` 的产品维度种子、`defect.evidence` 的真实 exec IR、回归影响的变更来源和 `release.probe` 的构建输入仍需相应场景的数据及接口。无触发条件时为不适用，不是遗漏执行。

@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { protectedInputs } from '../../scripts/protected-inputs.mjs';
 import { apiTask } from '../../scripts/api-task.mjs';
+import { inspectApiEngineCheck } from '../../scripts/api-engine-check.mjs';
 import { createApiSnapshotReport, verifySnapshotReport } from '../../scripts/api-snapshot.mjs';
 import { extendRunPlan } from '../../scripts/run-plan-extension.mjs';
 
@@ -208,7 +209,8 @@ for(const mismatch of [false,true]) test(mismatch?'structured worker and HTML re
       put('report/report-task.json',{run_id:snapshotReport.run_id,stage:'report',outcome:'partial',summary:'认证等待期间的时点报告',source_paths:['inputs/api-snapshot.json'],questions:[],limitations:['原接口任务仍在等待认证，未测部分不计通过']});
       put('report/reportable-results.json',{run_id:snapshotReport.run_id,cases:[],summary:{total:0,passed:0,failed:0,blocked:0,skipped:0}});
       put('report/issues.json',[]);put('report/test_report.md','# 接口部分报告\n截至快照时刻。');
-      await call({action:'export_report',run_id:snapshotReport.run_id});
+      const exportedSnapshot=await call({action:'export_report',run_id:snapshotReport.run_id});
+      assert.equal(JSON.parse(readFileSync(exportedSnapshot.action_receipt)).tool_checks?.find(check=>check.tool_id==='report.reviewer')?.status,'completed');
       const report=JSON.parse(readFileSync(resolve(reportDir,'report/reportable-results.json')));
       assert.equal(report.status,'partial');assert.equal(report.finished_at,null);assert.equal(report.snapshot_at,captured.snapshot_at);
       assert.deepEqual(report.cases[0].assertions,captured.cases[0].assertions);
@@ -240,7 +242,14 @@ for(const mismatch of [false,true]) test(mismatch?'structured worker and HTML re
     let state;for(let i=0;i<100;i++){state=(await action({type:'status'})).result;if(['completed','failed','interrupted'].includes(state.status))break;await new Promise(r=>setTimeout(r,100));}
     assert.equal(state.status,'completed',JSON.stringify(state));
     await action({type:'start'});assert.equal(calls.length,mismatch?3:2);assert.equal(calls[1].auth,'Bearer synthetic-private-token');
-    await action({type:'collect'});
+    const collected=await action({type:'collect'});
+    const engineCheck=JSON.parse(readFileSync(collected.action_receipt)).tool_checks?.find(check=>check.tool_id==='exec.api_engine');
+    assert.equal(engineCheck?.status,'completed');
+    assert.equal(engineCheck.request_count,mismatch?3:2);
+    const sealedRequest=resolve(dir,'execution/api/evidence/r1.json'),originalRequest=readFileSync(sealedRequest);
+    writeFileSync(sealedRequest,'{}');
+    assert.throws(()=>inspectApiEngineCheck(dir,run_id),/evidence changed/);
+    writeFileSync(sealedRequest,originalRequest);
     const results=JSON.parse(readFileSync(resolve(dir,'execution/api/test_results.json')));assert.equal(results.summary[mismatch?'failed':'passed'],1);
     if(snapshotReport){assert.equal(apiHash(readFileSync(resolve(snapshotReport.reportDir,'inputs/api-snapshot.json'))),snapshotReport.sourceHash);assert.equal(inspectIndependentArtifacts(root,snapshotReport.run_id,'report').status,'passed');}
     assert.equal(results.cases[0].assertions.find(a=>a.type==='content_type')?.status,'passed');

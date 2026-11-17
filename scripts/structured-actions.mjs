@@ -20,8 +20,10 @@ import { previewDraftRevision, reviseDraftStage, draftStageFiles } from './draft
 import { diagnoseTestPoints } from './test-point-diagnosis.mjs';
 import { diagnoseTestCases } from './test-case-diagnosis.mjs';
 import { revisedDispatchId } from './recovery-policy.mjs';
-import { gateAction, recordToolUsage, recordToolCheck } from './tool-gate.mjs';
+import { gateAction, readRuntimeState, recordToolUsage, recordToolCheck } from './tool-gate.mjs';
 import { runStageTool, stageToolCatalog, stageToolReceipts } from './stage-tool-runtime.mjs';
+import { inspectApiEngineCheck } from './api-engine-check.mjs';
+import { parseRequirementSource } from './requirement-source-parser.mjs';
 import { stageScenarioPrompt } from './stage-tool-scenarios.mjs';
 import { recordTrace } from './trace.mjs';
 import { setReviewMode } from './review-mode.mjs';
@@ -155,7 +157,7 @@ export function actionCatalog(root) {
       resolve_confirmation:{required:['run_id','stage','decision','reason'],optional:['source_text'],note:'Execution approval requires source_text copied exactly from an explicit USER message in this parent session. The initial request may be reused when it clearly authorizes the same target, actions and data impact; do not ask again for the unchanged snapshot. Harness notices, paraphrases and generic requests to analyze/plan are not approval. For an explicit USER request to modify analysis, use decision=revision_requested. Do not infer consent.'},
       create_run:{required:[],optional:['run_id'],note:'Prefer {"action":"create_run"}; the engine generates run_id. Repeated creation in the same user turn returns the existing run and preserves failures, never resets the task. Continue the same task with its run_id and extend_plan. A later user request for a new independent task can create a new run. After an unknown result inspect its receipt first.'},
       run_id:{pattern:'^run-[A-Za-z0-9-]+$',note:'Except create_run, copy the exact run_id returned by creation. No underscores, spaces, colons or non-ASCII letters.'},
-      read_source:{required:['run_id','path','start_line','end_line'],note:'Only run-relative inputs/ source text, for exact citations. Read execution/design/report artifacts with native read_file at the supplied absolute path instead. Read up to 200 consecutive lines; end_line is clamped to EOF, actual end_line and total_lines are returned. Original line endings are preserved.'},
+      read_source:{required:['run_id','path','start_line','end_line'],note:'Only run-relative inputs/ source text, for exact citations. Read execution/design/report artifacts with native read_file at the supplied absolute path instead. Read up to 200 consecutive lines; end_line is clamped to EOF, actual end_line and total_lines are returned. Original line endings are preserved. For md/markdown/txt, source_structure also returns clauses with original line numbers; these are source spans, not approved rules.'},
       complete:{required:['run_id','stage','dispatch_id','artifacts'],optional:['child_session'],note:'Omit child_session to resolve the unique returned professional child from parent trace. Never search files or guess session IDs.'},
       dispatch: {required:['run_id','stage','agent','skills'],optional:['mode'],mode:'Omit mode normally. Lifecycle URL testing uses mode="browser" with optional source_text containing the exact native user request authorizing the target and test scope (required for browser dispatch). No environment JSON or scripts. Script preparation remains mode="prepare". After a legacy browser pause only, use mode="resume_browser". human_protocol=1 uses the host human-action card and the original child session, never a new dispatch. Never use "default".'},
       lifecycle_browser:{note:'browser_task supports independent execution AND lifecycle execution dispatched with mode=browser. Lifecycle execution/defects/report use browser task artifacts, retain saved dependencies, and must preserve untested design coverage. Never synthesize script invocation records.'},
@@ -220,7 +222,13 @@ function readSource(root,r) {
   requireInput(r.start_line<=lines.length,`start_line exceeds source total_lines=${lines.length}`);
   const end=Math.min(r.end_line,lines.length);
   const quote=lines.slice(r.start_line-1,end).join('');
-  return {status:'completed',exit_code:0,execution_mode:'in_process',launches_child:false,result:{path:r.path,sha256:file.sha256,total_lines:lines.length,start_line:r.start_line,end_line:end,requested_end_line:r.end_line,truncated:end!==r.end_line,quote,quote_json:JSON.stringify(quote)}};
+  const structure=readRuntimeState(root).disabled.has('requirement.parse')
+    ? {status:'skipped',reason:'tool_disabled'} : parseRequirementSource(r.path,quote);
+  const source_structure=structure.status==='completed'
+    ? {status:'completed',sections:structure.sections.map(item=>({...item,line:item.line+r.start_line-1})),
+        clauses:structure.clauses.map(item=>({...item,line:item.line+r.start_line-1}))}
+    : {status:structure.status,reason:structure.reason};
+  return {status:'completed',exit_code:0,execution_mode:'in_process',launches_child:false,result:{path:r.path,sha256:file.sha256,total_lines:lines.length,start_line:r.start_line,end_line:end,requested_end_line:r.end_line,truncated:end!==r.end_line,quote,quote_json:JSON.stringify(quote),source_structure}};
 }
 export function actionCommand(request, session) {
   validate(request);
@@ -516,6 +524,10 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
       if(parsed.action==='api_task') {
         const rows=assertParentSession(root,parsed.run_id,session,agentRoot);
         const result=await apiTask(root,parsed.run_id,session,parsed.operation,{nativeMessages:nativeUserRequests(rows).map(r=>r.payload.text)});
+        if (parsed.operation.type === 'collect' && parsed.operation.partial !== true) {
+          receipt.stage = 'api_execution';
+          receipt.tool_checks = [inspectApiEngineCheck(runDirectory(root, parsed.run_id), parsed.run_id)];
+        }
         return {status:'completed',exit_code:0,execution_mode:'in_process',launches_child:false,result};
       }
       if(parsed.action==='browser_task') {
@@ -691,7 +703,27 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
         }
         return result;
       }
-      if (Object.hasOwn(draftArtifactActions, parsed.action)) return runDraftArtifactAction(root, session, parsed.action, parsed.run_id, { signal });
+      if (Object.hasOwn(draftArtifactActions, parsed.action)) {
+        const generated = await runDraftArtifactAction(root, session, parsed.action, parsed.run_id, { signal });
+        if (parsed.action === 'export_report' && generated.status === 'completed' && !generated.reused) {
+          const dir = runDirectory(root, parsed.run_id);
+          const issues = usesTaskArtifacts(root, parsed.run_id, 'report') ? 'report/issues.json' : 'defects/defect-records.json';
+          const inputs = ['report/reportable-results.json', issues].map(path => {
+            const file = readRunFile(dir, path); return { path: file.path, sha256: file.sha256 };
+          });
+          const report = readRunFile(dir, 'report/test_report.md');
+          receipt.stage = 'report';
+          receipt.tool_checks = [{ tool_id: 'report.reviewer',
+            implementation: 'scripts/report-fact-body.mjs + scripts/report-runtime-sections.mjs',
+            implementation_sha256: hash(Buffer.concat([
+              readFileSync(resolve(root, 'scripts/report-fact-body.mjs')),
+              readFileSync(resolve(root, 'scripts/report-runtime-sections.mjs'))])),
+            status: 'completed', input: inputs,
+            output: { path: report.path, sha256: report.sha256 },
+            scope: 'node_derived_facts_only' }];
+        }
+        return generated;
+      }
       if (parsed.action === 'analysis_summary') {
         try { return {status:'completed',exit_code:0,execution_mode:'in_process',launches_child:false,result:analysisSummary(root,parsed.run_id)}; }
         catch (error) { throw new CommandUsageError(`Analysis summary unavailable: ${error.message}. Do not invent a summary or rewrite source files; report the discrepancy to the analysis role.`); }
@@ -791,6 +823,19 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
         if(parsed.action==='create_run') writeJson(receipt.task_binding,{session_id:session,run_id:parsed.run_id,created_at:receipt.at});
         if(parsed.action==='create_run') output.input_context=captureUserInputs(root,parsed.run_id,session,agentRoot,assertParentSession(root,parsed.run_id,session,agentRoot));
         try { output.data=JSON.parse(output.output_tail); } catch { output.data=null; output.data_note='Read full command log; no inferred result'; }
+        if (parsed.action === 'extract_word' && output.data?.status === 'extracted') {
+          const dir = runDirectory(root, parsed.run_id);
+          const original = readRunFile(dir, parsed.path);
+          const text = readRunFile(dir, output.data.text_path);
+          const metadata = readRunFile(dir, output.data.metadata_path);
+          requireInput(original.sha256 === output.data.original_sha256, 'DOCX extraction source hash mismatch');
+          receipt.stage = 'analysis';
+          receipt.tool_checks = [{ tool_id: 'requirement.parse', implementation: 'scripts/extract-word-input.py',
+            implementation_sha256: hash(readFileSync(resolve(root, 'scripts/extract-word-input.py'))),
+            status: 'completed', input: {path: original.path, sha256: original.sha256},
+            output: [{path: text.path, sha256: text.sha256}, {path: metadata.path, sha256: metadata.sha256}],
+            block_count: output.data.block_count, warnings: output.data.warnings }];
+        }
         if (parsed.action === 'complete' && Array.isArray(output.data?.event?.evidence?.artifact_contract?.tool_checks))
           receipt.tool_checks = output.data.event.evidence.artifact_contract.tool_checks;
         if (['validate_artifacts', 'validate_analysis'].includes(parsed.action) && Array.isArray(output.data?.tool_checks))

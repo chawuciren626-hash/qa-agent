@@ -152,6 +152,18 @@ test('analysis stage runs completeness on the archived ledger and reports its li
   assert.deepEqual(assertArtifactContract(root, f.id, 'analysis').tool_checks, result.tool_checks);
 });
 
+test('analysis parses archived text sources as located clauses without inventing rules', () => {
+  const f = fixture();
+  const result = inspect(f, 'analysis');
+  assert.equal(result.status, 'passed', result.errors.join('; '));
+  const parsed = result.tool_checks.find(item => item.tool_id === 'requirement.parse');
+  assert.equal(parsed.status, 'completed');
+  assert.equal(parsed.input.sha256, readRunFile(f.dir, parsed.input.path).sha256);
+  assert.ok(parsed.clause_count > 0);
+  assert.match(parsed.implementation_sha256, /^[a-f0-9]{64}$/);
+  assert.equal(result.tool_checks.some(item => item.tool_id === 'knowledge.incremental'), false);
+});
+
 test('report stage runs coverage split from the sealed design and results', () => {
   const f = fixture(true);
   const result = inspect(f, 'report');

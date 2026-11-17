@@ -566,7 +566,7 @@ test('handoff rejects invalid artifacts and incomplete children without stopping
   writeFileSync(f.childFile,child);
   const completed=await f.execute(f.request);
   assert.equal(completed.exit_code,0);
-  assert.equal(JSON.parse(readFileSync(completed.action_receipt,'utf8')).tool_checks?.[0]?.tool_id,'requirement.completeness');
+  assert.ok(JSON.parse(readFileSync(completed.action_receipt,'utf8')).tool_checks?.some(check=>check.tool_id==='requirement.completeness'));
   assert.equal(readToolUsage(root).per_tool['requirement.completeness'],beforeCompleteness+1);
 });
 
@@ -1182,6 +1182,9 @@ test('Word input extracts real archived bytes and tables without overwriting ori
   const extracted=await f.execute(request);
   assert.equal(extracted.exit_code,0,JSON.stringify(extracted));
   assert.equal(extracted.data.text_path,'inputs/requirements.docx.txt');
+  const parseCheck=JSON.parse(readFileSync(extracted.action_receipt)).tool_checks?.find(check=>check.tool_id==='requirement.parse');
+  assert.equal(parseCheck?.status,'completed');
+  assert.equal(parseCheck.input.sha256,createHash('sha256').update(bytes).digest('hex'));
   assert.equal((await f.execute(request)).exit_code,0);
   const dir=resolve(root,'output/runs',f.run_id);
   assert.deepEqual(readFileSync(resolve(dir,'inputs/requirements.docx')),bytes);
@@ -1371,6 +1374,7 @@ test('source reader returns exact CRLF Unicode quotes and rejects traversal and 
   const result=await f.execute(request);
   assert.equal(result.exit_code,0);assert.equal(result.result.quote,'标题\r\n"quote": "\\n"\r\n');
   assert.equal(result.result.total_lines,3);
+  assert.deepEqual(result.result.source_structure.clauses.map(item=>item.line),[1,2]);
   const eof=await f.execute({...request,end_line:200});
   assert.equal(eof.exit_code,0);assert.equal(eof.result.end_line,3);assert.equal(eof.result.quote,raw);assert.equal(eof.result.truncated,true);
   assert.equal((await f.execute({...request,path:'inputs/../manifest.json'})).exit_code,2);

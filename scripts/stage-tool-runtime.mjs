@@ -24,7 +24,7 @@ export const STAGE_TOOLS = Object.freeze({
 });
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
-const NODE_STAGE_CHECK_IDS = new Set(['expected.provenance', 'requirement.completeness', 'testpoint.coverage', 'defects.cluster', 'coverage.split', 'm1.consistency']);
+const NODE_STAGE_CHECK_IDS = new Set(['requirement.parse', 'expected.provenance', 'requirement.completeness', 'testpoint.coverage', 'defects.cluster', 'coverage.split', 'm1.consistency']);
 function packageFingerprint(packageRoot) {
   const sourceRoot = resolve(packageRoot, 'aitestharness_tools');
   const files = [];
