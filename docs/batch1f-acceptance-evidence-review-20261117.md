@@ -55,14 +55,29 @@ run 2 的三段相位（`output/real-acceptance/r4-login-out.json`、`r4-rec-out
 
 因此 1F 目前的状态应记为：**工程部分已提交，真实场景验收未通过（结论 unknown），待重跑**。不应写成已交付。
 
-## 5. 一条可能的真实缺陷（建议 Qoder 重跑前先查）
+## 5. 已查明的三件事（含对上一版推测的更正）
 
-`captcha_type` 取的是项目配置声明（`basis=project_config_declared` → `image`），而同一时刻 DOM 探测结果是 `sms`。两者矛盾说明**至少一边是错的**：
+### 5.1 `dom_captcha_type=sms` 是 DOM 分类器误判，配置声明是对的
 
-- 若该登录入口实际是短信码，则配置条目写错，识别链路一直在解一张不存在的图形码；
-- 若配置对、DOM 探测错，则是 `dom_captcha_type` 的判定规则把短信登录页误判。
+同一 URL（`https://local.console.gov-bid.com/bbiao-admin/login`）在 19:20 那次的整页快照 `output/runs/run-5ad6b181…/execution/browser-evidence/r3-snap.png` 显示：
 
-这条不修，重跑只会再得到一次 unknown。建议先用同一次操作的 `execution/browser-captcha-r4-login.png` 与 `browser-network.json` 对照确认入口形态。
+- 页面标题「GOV个人中心管理端」，默认是**账号密码登录**；
+- 验证码区是一张**算术图形码**：`7 + 9 = ?`，旁边带刷新图标；
+- 页面底部有两个 tab：**「账号密码登录」/「手机短信登录」**。
+
+所以 `login-config.json` 里声明的 `captcha_image_target: form img` 与真实页面一致；`dom_captcha_type=sms` 的根因基本可以定位为**把底部「手机短信登录」tab 当成了验证码形态**。修的是 DOM 判定，不是配置。
+
+> 上一版文档把"配置写错"也列为可能，这里更正：配置没错。
+
+### 5.2 算术码下"本地算术识别"没命中，需要单独查
+
+`local_arithmetic_recognition` 报 `no_recognizable_arithmetic_expression`。但页面上的验证码**就是**一个算术式（`7 + 9 = ?`）——这正是该策略声称支持的形态。说明它读的多半不是这张图（例如去读 DOM 文本或读错了元素），而不是"本地不支持"。这条不查清，1F 的"本地能力"结论是站不住的。
+
+### 5.3 那次 0.95 置信度的答案没有可复核的证据
+
+`r4-login-out.json` / `browser-evidence/r4-login.json` 都声称截图在 `execution/browser-captcha-r4-login.png`，但该 run 的 `execution/` 目录下**没有任何 png**（只有 `browser-network.json(.jsonl)`、`browser-progress.json`、`browser-state.json`），`browser-evidence/` 也只有 `r4-start.json`、`r4-login.json`、`r4-rec.json`。
+
+也就是说：协议要求"读受保护的验证码图再回传"，实际**没有留下可审计的图**，却接受了一个 `confidence=0.95` 的答案 `"7"`。结合 19:20 那次的表达式是 `7+9=?`，`7` 恰好是左操作数——这**不能直接判为错答案**（每次加载随机），但没有截图就无法证明它对。这是 1F 自身的证据链缺口，不只是"结果 unknown"。
 
 ## 6. 遗留进程（未处置）
 
@@ -76,4 +91,5 @@ output/real-acceptance/r4-login-out.json        相位 1/2 + 本地三路策略�
 output/real-acceptance/r4-rec-out.json          回传识别 + 提交 unknown
 output/runs/run-e8c7f00f…/execution/            截图、网络、会话证据
 output/controller-command-sessions/<session>/state.json   会话状态与 owner
+output/runs/run-5ad6b181…/execution/browser-evidence/r3-snap.png   同 URL 的整页快照（算术码形态的实物证据）
 ```
