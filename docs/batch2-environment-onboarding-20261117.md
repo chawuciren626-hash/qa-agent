@@ -10,7 +10,8 @@
 | B1 环境一等实体（表 / 状态机 / 默认环境） | ✅ 已完成 |
 | A1 建档入口的服务端侧（创建即登记环境、地址校验） | ✅ 已完成 |
 | 建档执行入口（`runtime_cli onboard.bootstrap`） | ✅ 已完成 |
-| A1 前端（新建弹窗地址行、工作台环境条、环境页） | ⛔ 未动，等原型确认 |
+| 建档五步进度流式（`spawn` + `@@step` + `steps_json`） | ✅ 已完成（§4.1） |
+| A1 前端：新建弹窗地址行、环境列、建档抽屉、项目环境页、工作台环境条、详情侧栏环境段 | ✅ 已完成 |
 | 真实 gatewayadmin 场景跑一次建档 | ⏸ 待有授权地址与可达网络后执行 |
 
 ## 2. 数据模型
@@ -51,6 +52,18 @@
 
 服务端 `project-environment-service.ts` 以子进程调用它（cwd=`AITEST_ENGINE_ROOT`，注入 PYTHONPATH，超时 120s），结果写回同一行。
 
+### 4.1 五步进度怎么来的（`steps_json`）
+
+Python 每到一个真实边界就往 **stderr** 写一行 `@@step {"index":1,"status":"running"}`，stdout 始终只保留一个纯 JSON 信封（混进日志会让调用方解析失败）。
+
+- 服务端用 **`spawn` 而不是 `execFile`**：`execFile` 要等进程结束才拿到 buffer，五步进度会退化成"结束瞬间五条一起到"，抽屉里就只剩假动画。`spawn` 逐行读 stderr，按 `\r?\n` 切（一行可能被拆包，半个 JSON 不解析也不丢）。
+- 每收到一个事件就合并进 `project_environments.steps_json`（固定五行，按 index 合并），**不动 `revision`**：进度是过程量，不是配置版本；前端本来就按 `status` 轮询整行。
+- 未知 index 的事件直接丢弃（不凭空多一行）；坏 JSON 行丢弃（进度可丢，不值得让整次建档失败）；写库失败也吞掉，不中断建档。
+- 收尾 `finalizeSteps`：把"结束那一刻还挂在 running 的步骤"落定成 done/failed（失败时把 `last_error` 写进这步的 detail），避免进程死在半路留下永远转的圈。
+- 失败不写 0 页：`pages_total` 仍是 NULL，UI 显示「—」。
+
+联调实测（`http://127.0.0.1:1/` 拒绝连接）：`steps[0] = failed / 3053ms / "ConnectionError: ... 由于目标计算机积极拒绝"`，其余四步 idle，环境 `status=failed`。
+
 **为什么不挂到 `stage-tool-runtime.mjs` / `tool-gate.mjs`**：那两个是"run 内、有 active stage"的通道，`runStageTool` 会校验 `manifest.stages[stage] === 'in_progress'`。建档发生在任何 run 之前，挂上去要么伪造一个 stage，要么让入口永远 409。因此本批没有改动批次 1 的工具通道文件面，也未动 `STAGE_TOOLS` 的断言。若 Codex 认为必须统一入口，建议另立一个"run 外工具通道"，而不是复用阶段工具。
 
 ## 5. 回归结果（2026-11-17 本机 Windows）
@@ -59,10 +72,11 @@
 |---|---|
 | `npm run ci:tools` | ALL PASS（含新增 `test_onboard_runtime_cli`） |
 | `cd aitestharness-ir && python -m pytest tests -q` | 114 passed |
-| `cd platform/packages/server && npx tsc --noEmit -p .` | 0 错误 |
+| `cd platform/packages/server && npx tsc --noEmit -p .` | 0 错误（顺带修掉 `environment-knowledge.test.ts` 一处先前就存在的 `verdicts[0]` 越界断言） |
 | `cd platform/packages/web && npx tsc --noEmit -p .` | 0 错误 |
-| `npx vitest run test/project-environments.test.ts` | 6 passed |
-| `npx vitest run test/environment-knowledge.test.ts` | 7 passed |
+| `npx vitest run test/project-environments.test.ts test/environment-knowledge.test.ts` | 9 + 7 passed |
+| `npx vitest run test/bootstrap-steps.test.ts` | 4 passed |
+| `npx vitest run test/project-management-page.test.ts test/qa-project-pagination.test.ts` | 15 + 8 passed |
 | `npx vitest run test/managed-projects.test.ts test/project-rename.test.ts` | 9 passed / 1 skipped（原有 runIf 跳过） |
 
 新增用例覆盖：环境登记与"未建档≠0"、地址与环境名校验、失败不冒充成功、成功摘要落库、地址变更清空旧摘要、非成员 404；以及探索资产的层覆盖、key 去重、假设默认关造数、判定 append 不覆盖、按状态计数、环境不存在 404。
@@ -75,6 +89,22 @@
 4. **建档完成后不自动跑探索**：探索会开有头浏览器占机器，给按钮由人触发；触发后系统代建会话。
 
 原型：`prototype/batch2-onboarding-v2.html`（11 屏）。
+
+## 6.2 前端落地（路由 / 组件 / 谁调谁）
+
+| 位置 | 文件 | 职责 |
+|---|---|---|
+| 列表行「环境」列 | `project-management/environment-cell.tsx` | 四态 chip；NULL 显示「—」；未建档点击 = 立刻建档 + 开抽屉 |
+| 建档抽屉 | `project-management/bootstrap-drawer.tsx` | 三态（建档中/已建档/失败）共用一个容器；只在 `probing` 时 1.2s 轮询；失败原因照抄程序原文 |
+| 五步展示 | `project-management/bootstrap-steps.tsx` | 抽屉与环境页共用；没有任何按时间推进的逻辑 |
+| 项目环境页 | `project-management/project-environments-page.tsx`，路由 `/qa/project/environments` | 左环境列表 + 右档案（探索资产四层 / 未知与假设）；「补充场景」开假设弹窗 |
+| 左侧导航 | `penguin/ui/workspace-ui.mjs` | 项目视图下面加一级「项目环境」（路径挂在 `/qa/project` 前缀下以复用 `projects` 模块权限） |
+| 工作台环境条 | `features/qa/project-view.tsx` + `workspace-layout.css` | 只读摘要 + 跳转；建档/探索不在这里发起 |
+| 详情侧栏环境段 | `project-management/project-detail-panel.tsx` | 默认环境状态/地址/建档结果；「打开项目环境」先按同一套校验进入项目再切路由 |
+
+接口层（`project-management/api.ts`）新增 `getEnvironmentKnowledge` / `listHypotheses` / `createHypothesis`；`EnvironmentView` 增加 `steps: BootstrapStep[]`。
+
+诚实边界的落地：环境页在 `lastRound === 0` 时显示「这个环境还没探索过」并解释建档不回答流程问题，**不把空地图画成 0 个模块**；假设区写清「假设不进探索资产，判定是追加的」；造数开关默认关并写明它会真写被测系统。
 
 ## 6.1 三层职责（别再混）
 
@@ -94,11 +124,10 @@
 
 ## 8. 未做（明确留空，不当已完成）
 
-- 前端全部改动。
-- 真实环境的建档 run 回执（需要授权地址 + 该地址从服务端可达）。
+- 真实环境的建档 run 回执（需要授权地址 + 该地址从服务端可达）。本批只用「端口拒绝连接」验证了 spawn→`@@step`→`steps_json`→UI 这条链，没验过真实站点抓 12 个 bundle 时的耗时分布。
 - maps 落盘目录仍是扁平文件名 `maps-<env>.yaml`（Python `write_bundle` 现状）。设计文档写的是 `maps/{env}/`；本批把目录定在 `<projectDir>/maps/<env>/`，文件名未改。要不要改成 `maps/<env>/pages.json|apis.json`，等批次 3 来源条款化时一并定，避免两次改落盘格式。
 - `kb/<env>/` 目录本身（modules.yaml / flows / walls 的落盘）未做：本批只落了 DB 索引与接口，文件由探索 Agent 回传后再写，属批次 4 的产物。
-- 前端环境档案页（模块地图 / 未知与假设 / 补充场景）只有原型，未改真实代码。
+- 环境档案页的「派发探索」入口：本批只有入口文案与空态说明，真正的派发（建会话 + 发 `breadth` 指令）在批次 3。页面上不放假按钮，只写"派发入口在批次 3 接通"。
 
 ## 9. 探索资产与假设闭环（本批新增，Codex 请重点复核第 2 条）
 
