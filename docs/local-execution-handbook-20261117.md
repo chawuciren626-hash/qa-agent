@@ -1,20 +1,20 @@
 # 本地执行交接手册（云端 Agent → 本地 Agent，2026-11-17）
 
-> 背景：规划与验收由 Codex 负责（批次清单），执行由 WorkBuddy 本地实例负责。本手册给**本地执行的 Agent**：拿到批次清单后按此开工，不必重新探索仓库。
-> 仓库：`https://github.com/chawuciren626-hash/qa-agent.git`（云端工作已于 `d8fbec1` 全部推送，本地 clone 即最新）。
+> 背景：规划与验收由 Codex 负责，执行由 WorkBuddy、Qoder 等本地 Agent 按批次负责。本手册给**本地执行的 Agent**：拿到开工卡后按此开工。
+> 仓库：`https://github.com/chawuciren626-hash/qa-agent.git`。开工前以远端 `main` 为基线，核对本批次的依赖提交。
 > 本地机参考环境：Windows（`E:\AITestHarness\...`），Node + Python 双栈。
 
 ## 0. 角色与节奏
 
 - **Codex**：列待执行批次、定验收标准、最终验收。
-- **本地 Agent**：按批次执行（编码 + 回归 + 提交推送），每批次完成后在本文档 §5 打卡。
+- **本地 Agent**：按开工卡在独立分支执行（编码 + 回归 + 提交推送），提交验收证据后由 Codex 审核并合并；每批次完成后在本文档 §5 打卡。
 - **用户**：只在批次边界做决策（如渠道密钥策略、页签栏这类产品拍板）。
 
 ## 1. 环境准备（一次性）
 
 | 项 | 要求 | 验证命令 |
 |---|---|---|
-| Node | ≥ 22 | `node -v` |
+| Node | ≥ 20.11（推荐 22） | `node -v` |
 | Python | 3.11+，pytest 可用 | `python -m pytest --version`（Windows 无 `python3`，用 `python`/`py`） |
 | Python 依赖 | 仓库根 `requirements-ci.txt` | `pip install -r requirements-ci.txt` |
 | Playwright 浏览器 | Chromium（`playwright.config.ts` 已指定本机路径，Windows 下按需改 `executablePath`） | `npx playwright install chromium` |
@@ -24,7 +24,7 @@
 
 ## 2. 每批次固定工作流
 
-1. **开工前**：`git pull origin main` 确认与远端一致；读该批次的开工卡（§4 或 Codex 另发）。
+1. **开工前**：`git fetch origin main`，从最新 `origin/main` 创建独立分支；读该批次的开工卡。不得在共享工作树直接切换或覆盖他人的未提交改动。
 2. **执行**：只动开工卡列出的文件面；边界外文件出现冲突迹象立即停下问用户。
 3. **回归（每次提交前全跑）**：
    - `npm run ci:tools`（工具包冒烟）
@@ -32,29 +32,46 @@
    - `cd platform/packages/server && npx tsc --noEmit -p .`
    - `cd platform/packages/web && npx tsc --noEmit -p .`
    - 涉及运行时行为时加 `npm run test:core`
-4. **提交**：一条批次一个（或按逻辑分几个）commit，信息格式 `feat/fix/docs(域): 一句话说明`；推送 `main`。
-5. **打卡**：在 §5 表格勾完成、贴 commit hash。
+4. **提交**：一条批次一个（或按逻辑分几个）commit，信息格式 `feat/fix/docs(域): 一句话说明`；推送自己的分支，交付 commit、变更清单、测试结果和真实运行回执。Codex 验收后合并到 `main`。
+5. **打卡**：在 §5 表格记录状态、分支和 commit；未合并时不能写成已交付。
 
 ## 3. 冲突边界（不许主动触碰的文件面）
 
 | 归属 | 文件/机制 |
 |---|---|
-| Codex 批次 1-5 | 工具执行通道（central-tools/tool-gate）、onboard 建档、plan.gates/irval 接入、装配器/条款化、缺陷闭环 |
+| 已完成的批次 1 基线 | 工具执行通道（`central-tools`/`tool-gate`）、阶段检查回执与后台追溯。后续批次在其上扩展，不得把 Node 检查冒称 Python v3 IR 已执行 |
 | 已由云端完成、勿回退 | 用户级模型配置（`user-models.ts`/`project-config-service` 共享模型机制）、渠道管理（`admin-channels-page.tsx`/`control-plane /channels`）、管理后台布局（`admin-layout.*`）、设置页模型卡片（`user-models-settings.tsx`） |
-| 挂起等批次 1 | Agent 设置页平台工具只读区块（见 `gap-inventory-20261116.md` 追加节） |
+| 批次 2U | Agent 设置页平台工具只读区块（见 `gap-inventory-20261116.md` 追加节） |
 | 无人认领可做 | CI tsc 门禁、e2e 冒烟三链、qa_* 索引清单（见 `db-table-audit-20261116.md` §A 档合并，动库前须用户点头） |
 
-## 4. 待执行批次清单（Codex 填写）
+## 4. 后续批次开工卡
 
-> Codex 列出后逐条追加到这里；每条含：目标 / 文件面 / 验收命令 / DoD。
+这张表接续 `docs/refactor-batches-v3.md` 已完成的 B1~B12，批次 1 指本轮统一工具通道。负责人是建议分工，用户可调整；同一文件面不要让两个 Agent 同时修改。每批先做确定性单测，再做一条真实场景；源码通过、构建部署和已安装实例验收分别记录。未具备环境或可信输入的能力记为 `pending`/`not_applicable`，不得伪造成功回执。
 
-（待填）
+| 批次 / 建议负责人 | 目标与主要文件面 | 完成条件（DoD） | 依赖 |
+|---|---|---|---|
+| **1 统一工具通道 / Codex** | 已在 `codex/stage-tool-integration` 完成阶段场景映射、真实产物触发、运行回执与后台追溯；见 `docs/tool-integration-batch1-20261116.md` | 定向回归通过；合入 `main` 后复核代码与提交；验证码自动登录不算本批完成 | 基线 |
+| **1F 图形验证码自动登录 / Qoder** | `scripts/browser-task.mjs`、`scripts/structured-actions.mjs`、`scripts/login-captcha-chain.mjs` 及对应测试；详见 `docs/captcha-auto-login-followup-20261117.md` | 同一受控浏览器完成识别、填码、提交、成功判定与会话复用；低置信度和未知提交结果不盲重试；扫码/短信走人工；真实 gatewayadmin 场景有产品 run 回执，测试数据清理 | 1；可与 2 的非浏览器部分并行 |
+| **2 环境与建档 / WorkBuddy** | 项目/环境数据模型、建档动作、`onboard.bootstrap` 受控调用、项目创建与环境页；覆盖 `gap-inventory` 的 B1/A1 | 地址归属环境实体；一次建档从授权地址产生可追溯 maps/页面与接口摘要；失败或无权限不生成成功状态；新旧项目兼容，真实环境演示可复跑 | 1 |
+| **2U Agent 工具只读展示 / Qoder** | Agent 设置的工具标签与现有工具查询接口；只展示平台工具绑定、权限和启停，不在设置页修改授权 | 与工具管理的绑定一致，未授权不可见；保留内置工具区；前端测试和一条管理页面验收 | 1；与 2 分文件面并行 |
+| **3 来源条款化与上下文装配 / Qoder** | 来源归档/版本、`knowledge.extract`/`knowledge.incremental`、`context_assembler` 到项目资料及对话注入；覆盖 A5/A6 | 原文位置、版本 diff、引用反查可见；对话只注入授权的相关片段并记录截断/预算；同一输入结果可复现，敏感内容不进普通日志 | 2 的环境/项目标识稳定后 |
+| **4 可重放的 Web 执行 / WorkBuddy** | 浏览器 Driver、DSL/断言、页面资产库接线、执行预算与取证；先打通 Web 单类型，其他 Adapter 后排 | 授权站点的一条用例可固化、重放 N=3，结果及取证可对比；预算超限明确停止；未执行不得报通过；记录源码、隔离实例、已安装环境三层结果 | 1F、2、3 |
+| **5 回归与审核 / Qoder** | 变更影响来源、回归三闸、flaky 隔离、确认卡点三层 UI 与报告 draft/reviewing/approved；覆盖 M3、A3/A4 | 同一变更得到稳定选集；不稳定用例不进入可靠通过率；硬闸失败阻止报告批准；确认抽样可复现且报告审批留审计 | 4 |
+| **6 缺陷闭环与有效性基线 / WorkBuddy + 用户准备受控系统** | `defect.evidence` 的真实执行 IR、内置/外部提单、复测与知识回流；种子缺陷集单独保管 | 真实失败可取证、提单、复测、关闭，状态可追溯；在受控系统上记录召回、误报、错误通过率及样本分母；未建立种子集前不宣称有效性达标 | 4、5 |
+
+每批验收由 Codex 检查：范围与契约、回归结果、真实 run 的输入/输出哈希和失败路径、运行副本部署及回滚记录。仅合成 fixture 通过时标“工程验证通过”，不写“真实业务闭环”。Python v3 IR 适配须使用已归档字段，缺字段就保持待适配；客户端版本协商和其他三类 Adapter 在 Web 纵向链稳定后另立批次。
 
 ## 5. 执行打卡
 
 | 批次 | 状态 | commit | 备注 |
 |---|---|---|---|
-| （待填） | | | |
+| 1 统一工具通道 | 待合入 `main` | `codex/stage-tool-integration` / `612a432` | 阶段回执与后台查询已实现；验证码闭环另列 1F |
+| 1F | 未开始 | | |
+| 2 / 2U | 未开始 | | |
+| 3 | 未开始 | | |
+| 4 | 未开始 | | |
+| 5 | 未开始 | | |
+| 6 | 未开始 | | |
 
 ## 6. 已知坑（云端踩过，本地同样注意）
 
