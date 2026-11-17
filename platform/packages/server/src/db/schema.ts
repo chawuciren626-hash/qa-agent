@@ -100,6 +100,58 @@ CREATE TABLE IF NOT EXISTS project_environments (
   revision         INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (project_id, env)
 );
+
+-- 环境级探索资产：三张表跟着 project_environments 走，不跟着 qa_ 主区（那里是项目级、
+-- 人产出物）。原因：模块地图按环境分片——预发常比生产少几个模块，混成一张项目级图会
+-- 让下游拿预发的模块去生产跑。primary key 必带 env，这不是冗余，是正确性的前提。
+CREATE TABLE IF NOT EXISTS qa_environment_knowledge (
+  project_id TEXT NOT NULL,
+  env        TEXT NOT NULL,
+  layer      TEXT NOT NULL CHECK(layer IN ('module','flow','wall','interface')),
+  entry_key  TEXT NOT NULL,               -- 模块名 / 链路 id / 墙点 id（层内唯一）
+  summary    TEXT,                        -- 列表页直接读这个，不用打开文件
+  rel_path   TEXT,                        -- kb/<env>/ 下的文件位置，供下游取全量
+  round      INTEGER NOT NULL DEFAULT 1,  -- 第几轮探索写入的
+  source_session_id TEXT,                 -- 哪个会话跑出来的（可回溯到现场）
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, env, layer, entry_key),
+  FOREIGN KEY (project_id, env) REFERENCES project_environments(project_id, env) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_env_knowledge_env ON qa_environment_knowledge(project_id, env);
+
+-- 人提的待验证假设。它不进 qa_environment_knowledge：那里是程序验证过的结论，
+-- 这里是还没验的猜想。混在一张表里就分不清"看到过"和"猜的"。
+CREATE TABLE IF NOT EXISTS qa_exploration_hypotheses (
+  hypothesis_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  env        TEXT NOT NULL,
+  module_key TEXT,                        -- 关联到哪一层模块（可空：全局假设）
+  statement  TEXT NOT NULL,               -- 必须是可判定的句子，不是"流程很复杂"
+  why_unknown TEXT NOT NULL CHECK(why_unknown IN ('business','data','role','async','external')),
+  expectation TEXT,                       -- 期望看到什么（给探索 Agent 的断言线索）
+  data_setup  TEXT,                       -- 前置数据说明
+  allow_seed  INTEGER NOT NULL DEFAULT 0, -- 造数授权：逐条放开，默认关
+  status     TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','verified','refuted','unreachable')),
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (project_id, env) REFERENCES project_environments(project_id, env) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_env_hypotheses ON qa_exploration_hypotheses(project_id, env, status);
+
+-- 判定记录：append-only。假设表上的 status 只是"最新一版"的快照，这里才是全过程。
+-- 为什么必须留旧结论：被推翻的假设决定了断言该放哪（示例：退款超额是提交时才校验，
+-- 断言放输入框就会误报）。只存最新状态，这个信息就永久丢了。
+CREATE TABLE IF NOT EXISTS qa_hypothesis_verdicts (
+  verdict_id TEXT PRIMARY KEY,
+  hypothesis_id TEXT NOT NULL REFERENCES qa_exploration_hypotheses(hypothesis_id) ON DELETE CASCADE,
+  round      INTEGER NOT NULL,
+  verdict    TEXT NOT NULL CHECK(verdict IN ('verified','refuted','unreachable')),
+  evidence   TEXT,                        -- 实际观察到什么
+  session_id TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hypothesis_verdicts ON qa_hypothesis_verdicts(hypothesis_id, round);
 CREATE TABLE IF NOT EXISTS project_management_prefs (
   user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
