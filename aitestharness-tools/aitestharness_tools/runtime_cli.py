@@ -46,6 +46,34 @@ def invoke(tool_id: str, payload: dict) -> object:
     if tool_id == "regression.select":
         from .regression.selector import select_regression
         return select_regression(payload["cases"], payload.get("tier", "smoke"), payload.get("budget_s"))
+    if tool_id == "knowledge.extract":
+        # 条款化：先把资料切成带原文位置（file+line+章节路径）的条款，再把外部抽取的
+        # 知识项按条款回填位置。没有位置的知识项一律丢弃并计数——不可定位即不可信。
+        from .knowledge.extract import split_clauses, build_knowledge
+        source = payload.get("source") or "doc.md"
+        clauses = split_clauses(payload["text"], source)
+        knowledge = build_knowledge(
+            payload["project"], payload.get("items") or [], clauses,
+            version=int(payload.get("version") or 1),
+            actor=payload.get("actor") or "agent:requirement_agent",
+        )
+        return {"clauses": clauses, "knowledge": knowledge}
+    if tool_id == "knowledge.diff":
+        # 版本对账：四类结果分开报。wording_only 不得触发重算，否则增量机制等于全量。
+        from .knowledge.incremental import diff_knowledge
+        return diff_knowledge(payload.get("old") or {}, payload.get("new") or {},
+                              float(payload.get("rename_threshold") or 0.86))
+    if tool_id == "knowledge.references":
+        # 引用反查：资料改了，哪些用例可能受影响。宁可多报，不能漏报。
+        from .knowledge.extract import find_references
+        hits = find_references(payload.get("text") or "", payload.get("knowledge") or {})
+        return {"hits": hits, "count": len(hits)}
+    if tool_id == "context.assemble":
+        # 装配：按 scope 切片 + 预算裁剪 + 记账。被裁掉的项必须出现在 dropped 里。
+        from .common.context_assembler import assemble
+        return assemble(payload.get("scope") or {}, payload.get("knowledge") or {},
+                        payload.get("maps") or {}, int(payload.get("budget_tokens") or 8000),
+                        payload.get("extra") or [])
     if tool_id == "onboard.bootstrap":
         # 建档不是 run 内的阶段工具（没有 run/stage），所以它是本入口里唯一
         # 允许"产出文件"的分支：给 out 就落 maps + 报告，不给就只回结构。

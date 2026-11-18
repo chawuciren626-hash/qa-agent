@@ -1227,6 +1227,64 @@ def test_onboard_runtime_cli():
     srv.shutdown()
 
 
+def test_knowledge_runtime_cli():
+    """批次 3 的四个入口走 runtime_cli：条款化 / 版本 diff / 引用反查 / 上下文装配。
+
+    服务端只需要一个"能 spawn 的确定性入口"，不需要理解 Python 侧数据形状；
+    这里把四条契约钉死：没有原文位置的知识项必须被丢弃、表述变更不得触发重算、
+    引用反查要给出知识项身份、装配被裁掉的项必须出现在 dropped 里。
+    """
+    from aitestharness_tools.runtime_cli import invoke
+
+    text = "# 退款\n\n## 上限\n\n单笔退款不超过 500 元。\n\n- 已支付订单才可退款\n"
+    extracted = invoke("knowledge.extract", {
+        "project": "proj-kb", "source": "退款规则.md", "text": text,
+        "items": [
+            {"type": "rule", "name": "退款上限", "statement": "单笔退款不超过 500 元", "clause_id": "c0001"},
+            {"type": "rule", "name": "无位置", "statement": "这条没有原文位置"},   # 必须丢弃
+            {"type": "bogus", "name": "x", "statement": "类型不合法"},              # 必须丢弃
+        ],
+    })
+    clauses, knowledge = extracted["clauses"], extracted["knowledge"]
+    assert [c["clause_id"] for c in clauses] == ["c0001", "c0002"]
+    assert clauses[0]["location"] == {"file": "退款规则.md", "line": 5}
+    assert [it["name"] for it in knowledge["items"]] == ["退款上限"]
+    assert knowledge["items"][0]["source"] == {"file": "退款规则.md", "line": 5}
+    assert knowledge["stats"]["dropped"] == 2, "不可定位的知识项必须计入 dropped，不能静默进库"
+
+    old = {"items": [{"id": "kb-1", "type": "rule", "name": "退款上限",
+                      "statement": "单笔退款不超过 500 元", "fingerprint": "fp-a"}]}
+    same_semantics = {"items": [{"id": "kb-1", "type": "rule", "name": "退款上限",
+                                 "statement": "单笔退款 不超过 500 元", "fingerprint": "fp-a"}]}
+    wording = invoke("knowledge.diff", {"old": old, "new": same_semantics})
+    assert wording["stats"]["wording_only"] == 1 and wording["triggers_recompute"] is False, \
+        "只改了空格/表述就触发重算，增量机制等于没有"
+
+    changed = invoke("knowledge.diff", {"old": old, "new": {"items": [
+        {"id": "kb-1", "type": "rule", "name": "退款上限",
+         "statement": "单笔退款不超过 200 元", "fingerprint": "fp-b"}]}})
+    assert changed["stats"]["semantic_changed"] == 1 and changed["triggers_recompute"] is True
+    assert changed["semantic_changed"][0]["change_ratio"] > 0.8
+
+    refs = invoke("knowledge.references", {"text": "验证退款上限这条规则", "knowledge": knowledge})
+    assert refs["count"] == 1 and refs["hits"][0]["knowledge_id"] == knowledge["items"][0]["id"]
+
+    # 预算压到装不下两条：必须只装高优先级的 rule，并把裁掉的项记在 dropped 里
+    big = {"content_hash": "abc", "_build_meta": {"version": 3}, "items": [
+        {"id": "kb-rule-1", "type": "rule", "name": "退款上限", "statement": "单笔退款不超过 500 元",
+         "tags": ["退款"], "fingerprint": "f1"},
+        {"id": "kb-flow-1", "type": "flow", "name": "退款流转", "statement": "退款审批后 3 个工作日到账，"
+         "超时需人工介入并记录到台账，以免客户重复催办", "tags": ["退款"], "fingerprint": "f2"},
+    ]}
+    packed = invoke("context.assemble", {"scope": {"keywords": ["退款"]}, "knowledge": big,
+                                        "budget_tokens": 30})
+    assert packed["tokens_est"] <= packed["budget"]
+    assert packed["context_refs"]["knowledge"]["version"] == 3
+    assert packed["context_refs"]["knowledge"]["total"] == 2
+    assert packed["context_refs"]["knowledge"]["loaded"] == 1, packed["context_refs"]
+    assert len(packed["dropped"]) == 1 and packed["dropped"][0]["reason"], "被裁掉的项必须给出原因"
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
