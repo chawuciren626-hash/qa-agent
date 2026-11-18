@@ -17,38 +17,62 @@ import { apiErrorText } from "../../lib/api-error";
 import { useAuth } from "../../state/auth";
 import { projectDisplayName, useProject } from "../../state/project";
 import {
+  assemblerLabel,
+  buildSummaryLine,
   candidateOriginLabel,
   candidateStatusLabel,
   canEditKnowledge,
+  clauseAt,
+  diffVerdictLine,
+  diffEntries,
   documentFormatLabel,
   documentSourceLabel,
   documentStatusLabel,
+  dropReasonLabel,
   evidenceLine,
   knowledgeErrorHint,
+  knowledgeTypeLabel,
   ruleStatusLabel,
   shortHash,
   timeLabel,
   type CandidateStatus,
   type CandidateView,
+  type ContextLedgerView,
   type DocumentDetailView,
   type DocumentFormat,
   type DocumentStatus,
   type DocumentView,
+  type KnowledgeBuildSummary,
+  type KnowledgeBuildView,
+  type KnowledgeDiffKind,
+  type KnowledgeDiffView,
+  type KnowledgeItemView,
+  type KnowledgeReferencesView,
   type RevisionView,
   type RuleStatus,
   type RuleView,
   type RuleVersionView,
 } from "./project-knowledge-model";
 
-type Tab = "documents" | "candidates" | "rules";
+type Tab = "documents" | "candidates" | "rules" | "clauses";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "documents", label: "资料" },
   { id: "candidates", label: "知识候选" },
   { id: "rules", label: "正式规则" },
+  { id: "clauses", label: "知识条款" },
 ];
 
 const FORMATS: DocumentFormat[] = ["markdown", "text", "json", "csv", "html"];
+
+/** 版本对比的五组，顺序就是人判断"要不要重算"的顺序：先看语义，再看措辞。 */
+const DIFF_GROUPS: { kind: KnowledgeDiffKind; label: string; tone: string; empty: string }[] = [
+  { kind: "semanticChanged", label: "语义变更", tone: "red", empty: "没有语义变更。" },
+  { kind: "wordingOnly", label: "仅措辞", tone: "amber", empty: "没有措辞变化。" },
+  { kind: "renamed", label: "重命名", tone: "blue", empty: "没有重命名。" },
+  { kind: "added", label: "新增", tone: "green", empty: "没有新增。" },
+  { kind: "removed", label: "移除", tone: "grey", empty: "没有移除。" },
+];
 
 function errorText(error: unknown): string {
   const code = error instanceof ApiError ? error.code : undefined;
@@ -101,6 +125,71 @@ function Field({
       <span className="mb-1 block opacity-70">{label}</span>
       {children}
     </label>
+  );
+}
+
+/**
+ * 一条知识项，以及它的原文位置。
+ *
+ * 位置不是"跳个链接"就够：人判断的是"这条结论到底是不是资料说的那件事"，所以展开后
+ * 要能看到所在条款的整段原文，并把被引用的那一行标出来。找不到对应条款时如实说明，
+ * 不拿相邻条款顶替——那会把假证据做得和真证据一样像。
+ */
+function KnowledgeItemRow({
+  item,
+  build,
+  open,
+  onToggle,
+}: {
+  item: KnowledgeItemView;
+  build: KnowledgeBuildView;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const located = clauseAt(build.clauses, item.source.file, item.source.line);
+  const documentTitle =
+    build.sources.find((source) => source.documentId === item.source.file)?.title ?? item.source.file;
+  return (
+    <div className="rounded border border-[var(--border)] p-2 text-xs">
+      <div className="flex items-start gap-2">
+        <span className="qa-k-tag blue">{knowledgeTypeLabel(item.type)}</span>
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">{item.name}</p>
+          <p className="mt-1 opacity-80">{item.statement}</p>
+          <p className="mt-1 opacity-60">
+            原文 {documentTitle} 第 {item.source.line} 行
+            {item.section ? ` · ${item.section}` : ""} · 指纹 {item.fingerprint}
+            {item.tags.length > 0 ? ` · ${item.tags.join(" / ")}` : ""}
+          </p>
+        </div>
+        <Button size="sm" variant="ghost" onClick={onToggle}>
+          {open ? "收起原文" : "看原文"}
+        </Button>
+      </div>
+      {open &&
+        (located === null ? (
+          <p className="mt-2 rounded border border-amber-400 p-2">
+            条款切分里找不到这一行，原文位置待核；这条结论先按"未核实"看待。
+          </p>
+        ) : (
+          <div className="mt-2 rounded border border-[var(--border)] p-2 font-mono text-[11px] leading-5">
+            {located.lines.map((line, index) => (
+              <div
+                key={index}
+                className={`flex gap-2 ${index === located.relativeLine ? "bg-amber-200/70 text-black" : ""}`}
+              >
+                <span className="w-8 shrink-0 select-none text-right opacity-50">
+                  {located.clause.location.line + index}
+                </span>
+                <span className="whitespace-pre-wrap break-words">{line || " "}</span>
+              </div>
+            ))}
+            {located.clause.section_path ? (
+              <p className="mt-1 opacity-60">所属章节：{located.clause.section_path}</p>
+            ) : null}
+          </div>
+        ))}
+    </div>
   );
 }
 
@@ -160,6 +249,19 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
   const [ruleDraftStatement, setRuleDraftStatement] = useState("");
   const [ruleDraftNote, setRuleDraftNote] = useState("");
 
+  // Knowledge builds (A6)：版本列表只拿摘要，选中哪版再拉详情（含条款与知识项）。
+  const [builds, setBuilds] = useState<KnowledgeBuildSummary[] | null>(null);
+  const [buildVersion, setBuildVersion] = useState<number | null>(null);
+  const [build, setBuild] = useState<KnowledgeBuildView | null>(null);
+  const [openClauseFor, setOpenClauseFor] = useState<string | null>(null);
+  const [ledger, setLedger] = useState<ContextLedgerView | null>(null);
+  const [ledgerTried, setLedgerTried] = useState(false);
+  const [diffRequest, setDiffRequest] = useState<{ from: number; to: number } | null>(null);
+  const [diff, setDiff] = useState<KnowledgeDiffView | null>(null);
+  const [refsOpen, setRefsOpen] = useState(false);
+  const [refsText, setRefsText] = useState("");
+  const [refs, setRefs] = useState<KnowledgeReferencesView | null>(null);
+
   const fail = useCallback((failure: unknown) => {
     setError(errorText(failure));
     setNotice(null);
@@ -191,13 +293,29 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
         .catch((failure: unknown) => {
           if (alive) fail(failure);
         });
-    } else {
+    } else if (tab === "rules") {
       setRules(null);
       apiFetch<{ rules: RuleView[] }>(`${base}/knowledge/rules`, {
         query: ruleStatus === "all" ? {} : { status: ruleStatus },
       })
         .then((answer) => {
           if (alive) setRules(answer.rules);
+        })
+        .catch((failure: unknown) => {
+          if (alive) fail(failure);
+        });
+    } else {
+      setBuilds(null);
+      apiFetch<{ builds: KnowledgeBuildSummary[] }>(`${base}/knowledge/builds`)
+        .then((answer) => {
+          if (!alive) return;
+          setBuilds(answer.builds);
+          // 默认停在最新一版：人点进来第一件想知道的就是"现在用的是哪版"。
+          setBuildVersion((current) =>
+            current !== null && answer.builds.some((entry) => entry.version === current)
+              ? current
+              : (answer.builds[0]?.version ?? null),
+          );
         })
         .catch((failure: unknown) => {
           if (alive) fail(failure);
@@ -249,6 +367,51 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
       alive = false;
     };
   }, [selectedRuleId, base, reload, fail]);
+
+  useEffect(() => {
+    if (buildVersion === null) {
+      setBuild(null);
+      return;
+    }
+    let alive = true;
+    setBuild(null);
+    setOpenClauseFor(null);
+    apiFetch<{ build: KnowledgeBuildView }>(
+      `${base}/knowledge/builds/${encodeURIComponent(String(buildVersion))}`,
+    )
+      .then((answer) => {
+        if (alive) setBuild(answer.build);
+      })
+      .catch((failure: unknown) => {
+        if (alive) fail(failure);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [buildVersion, base, reload, fail]);
+
+  // 对账只在人要看的当下算：四分类 diff 是确定性输出，但没必要为没人打开的版本预先算。
+  useEffect(() => {
+    if (!diffRequest) {
+      setDiff(null);
+      return;
+    }
+    let alive = true;
+    setDiff(null);
+    apiFetch<{ from: number; to: number; diff: KnowledgeDiffView }>(
+      `${base}/knowledge/builds/${encodeURIComponent(String(diffRequest.to))}/diff`,
+      { query: { from: String(diffRequest.from) } },
+    )
+      .then((answer) => {
+        if (alive) setDiff(answer.diff);
+      })
+      .catch((failure: unknown) => {
+        if (alive) fail(failure);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [diffRequest, base, fail]);
 
   const selectedCandidate = useMemo(
     () => candidates?.find((candidate) => candidate.candidateId === selectedCandidateId) ?? null,
@@ -554,6 +717,29 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
+  /**
+   * 引用反查：这段文本（用例、需求、缺陷描述）用到了哪些知识项。
+   *
+   * `version: 0` 表示项目还没有任何知识版本——这和"没命中"是两件事，页面照实分开说。
+   */
+  async function lookUpReferences() {
+    if (busy || !refsText.trim()) return;
+    setBusy(true);
+    setError(null);
+    setRefs(null);
+    try {
+      const answer = await apiFetch<KnowledgeReferencesView>(`${base}/knowledge/references`, {
+        method: "POST",
+        body: { text: refsText },
+      });
+      setRefs(answer);
+    } catch (failure) {
+      fail(failure);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const statusLine = useMemo(() => {
     if (!currentProject) return "尚未选择项目";
     return owner
@@ -572,19 +758,21 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
   return (
     <main className={`flex h-full flex-col gap-4 overflow-hidden p-6 ${embedded ? "qa-knowledge-embedded" : ""}`}>
       <header className="shrink-0">
-        <h1 className="text-xl font-semibold">{embedded ? { documents: "项目参考资料", candidates: "待确认知识", rules: "正式规则" }[tab] : "项目资料与知识"}</h1>
+        <h1 className="text-xl font-semibold">{embedded ? { documents: "项目参考资料", candidates: "待确认知识", rules: "正式规则", clauses: "知识条款" }[tab] : "项目资料与知识"}</h1>
         <p className="mt-1 text-sm opacity-70">
           {projectDisplayName(currentProject!)} · {embedded ? {
             documents: "管理当前项目的参考文本及历史版本。可在我的资料中选择“用于项目任务”，确认后纳入。",
             candidates: "查看候选结论及来源依据，由项目所有者确认后生成正式规则。",
             rules: "查看已确认的业务规则，支持版本追溯、修订和停用。",
-          }[tab] : "资料按修订保存；候选必须由项目所有者明确确认才会成为正式规则。"}
+            clauses: "资料切成的条款与由条款构建的知识版本。",
+          }[tab] : "资料按修订保存；候选必须由项目所有者明确确认才会成为正式规则；知识版本按条款构建，带原文位置。"}
         </p>
         <p className="mt-2 text-xs opacity-70" role="status">
           {statusLine}
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {!embedded && <div className="flex rounded border border-[var(--border)]" role="tablist">
+            {/* 嵌入任务面板时页签由外壳固定为资料/候选/规则三种，条款页只在独立的资料页出现。 */}
             {TABS.map((entry) => (
               <button
                 key={entry.id}
@@ -699,6 +887,28 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
             <span className="qa-k-total">{rules === null ? "" : `共 ${rules.length} 条规则`}</span>
           </>
         )}
+        {tab === "clauses" && (
+          <>
+            <span className="qa-k-total">
+              {builds === null ? "" : `共 ${builds.length} 个知识版本`}
+            </span>
+            <span className="qa-k-spacer" />
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy || builds === null || builds.length === 0}
+              onClick={() => {
+                setRefs(null);
+                setRefsOpen(true);
+              }}
+            >
+              引用反查
+            </Button>
+            <span className="qa-k-total">
+              版本由任务执行时按条款构建；本页只读，不会凭空造出一版空知识。
+            </span>
+          </>
+        )}
       </div>
 
       <div className="qa-k-split">
@@ -797,6 +1007,43 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
                       {rule.sourceCandidateId ? ` · 来源候选 ${rule.sourceCandidateId}` : ""}
                     </span>
                     <span className="qa-k-li-excerpt">{rule.statement}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+
+          {tab === "clauses" && (
+            <div className="qa-k-list-scroll">
+              {builds === null ? (
+                <p className="qa-k-empty-list">正在读取知识版本…</p>
+              ) : builds.length === 0 ? (
+                <p className="qa-k-empty-list">
+                  还没有知识版本。资料被用于任务时，Agent 会先把资料切成带行号的条款，再从条款里认出知识项，
+                  构建出第一版；页面上不提供"一键构建"，因为抽知识这一步需要模型，纯界面构建只会产出一版空知识。
+                </p>
+              ) : (
+                builds.map((entry) => (
+                  <button
+                    key={entry.version}
+                    className={`qa-k-li${buildVersion === entry.version ? " sel" : ""}`}
+                    onClick={() => setBuildVersion(entry.version)}
+                  >
+                    <span className="qa-k-li-top">
+                      <span className="qa-k-li-name">知识版本 v{entry.version}</span>
+                      <span className="qa-k-right">内容 {shortHash(entry.contentHash)}</span>
+                    </span>
+                    <span className="qa-k-li-tags">
+                      {Object.entries(entry.stats?.by_type ?? {}).map(([type, count]) => (
+                        <span key={type} className="qa-k-tag blue">
+                          {knowledgeTypeLabel(type)} {count}
+                        </span>
+                      ))}
+                    </span>
+                    <span className="qa-k-li-excerpt">{buildSummaryLine(entry)}</span>
+                    <span className="qa-k-li-sub">
+                      构建 {entry.createdBy} · {timeLabel(entry.createdAt)}
+                    </span>
                   </button>
                 ))
               )}
@@ -1076,6 +1323,104 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
                 </>
               )
             )}
+
+            {tab === "clauses" && (
+              build === null ? (
+                <div className="qa-k-empty">
+                  <span>📐</span>
+                  <p>{buildVersion === null ? "从左侧选择一个知识版本，查看它的条款来源与知识项。" : "正在读取版本详情…"}</p>
+                </div>
+              ) : (
+                <>
+                  <div className="qa-k-detail-head">
+                    <div className="qa-k-detail-headmain">
+                      <h2 className="qa-k-detail-title">知识版本 v{build.version}</h2>
+                      <p className="qa-k-detail-id">
+                        {buildSummaryLine(build)} · 内容 {shortHash(build.contentHash)}
+                      </p>
+                      <p className="qa-k-detail-id">
+                        构建 {build.createdBy}（{build.meta.actor}）· {timeLabel(build.createdAt)} · 语义指纹{" "}
+                        {shortHash(build.meta.semanticHash)}
+                      </p>
+                    </div>
+                    <div className="qa-k-acts">
+                      <Button
+                        size="sm"
+                        disabled={busy || build.version <= 1}
+                        title={build.version <= 1 ? "首版没有可对比的上一版" : undefined}
+                        onClick={() => setDiffRequest({ from: build.version - 1, to: build.version })}
+                      >
+                        与 v{build.version - 1} 对比
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setRefs(null);
+                          setRefsOpen(true);
+                        }}
+                      >
+                        引用反查
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="qa-k-detail-body">
+                    {build.meta.dropped.length > 0 && (
+                      <p className="qa-k-meta-lines">
+                        <b>{build.meta.dropped.length} 条知识项没有原文位置，已丢弃</b>：
+                        {Object.entries(
+                          build.meta.dropped.reduce<Record<string, number>>((tally, entry) => {
+                            tally[entry.reason] = (tally[entry.reason] ?? 0) + 1;
+                            return tally;
+                          }, {}),
+                        )
+                          .map(([reason, count]) => `${reason} ${count} 条`)
+                          .join("、")}
+                        。不可定位的结论不入库，避免下游拿它当证据。
+                      </p>
+                    )}
+                    <div className="qa-k-sec-title">
+                      资料快照
+                      <span className="qa-k-cnt">{build.sources.length} 份</span>
+                    </div>
+                    <ul className="qa-k-cite-list">
+                      {build.sources.map((source) => (
+                        <li key={source.documentId} className="qa-k-cite">
+                          {source.title} · 修订 {source.revision}
+                          <span className="opacity-60"> · {source.documentId}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="qa-k-sec-title" style={{ marginTop: 18 }}>
+                      知识项
+                      <span className="qa-k-cnt">
+                        {build.items.length} 条 · 条款 {build.clauses.length} 段
+                      </span>
+                    </div>
+                    {build.items.length === 0 ? (
+                      <p className="qa-k-meta-lines">
+                        这一版没有收录任何知识项。资料切出了 {build.clauses.length} 段条款，但没有条款被判为知识；
+                        若资料里确实有业务规则，说明抽取这一步需要重跑。
+                      </p>
+                    ) : (
+                      <div className="flex flex-col gap-2">
+                        {build.items.map((item) => (
+                          <KnowledgeItemRow
+                            key={item.id}
+                            item={item}
+                            build={build}
+                            open={openClauseFor === item.id}
+                            onToggle={() =>
+                              setOpenClauseFor((current) => (current === item.id ? null : item.id))
+                            }
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )
+            )}
           </section>
         </div>
       </div>
@@ -1260,6 +1605,128 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
             </p>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={diffRequest !== null}
+        title={diffRequest ? `知识版本对比 v${diffRequest.from} → v${diffRequest.to}` : "知识版本对比"}
+        onClose={() => {
+          if (!busy) {
+            setDiffRequest(null);
+            setDiff(null);
+          }
+        }}
+        footer={
+          <Button
+            size="sm"
+            onClick={() => {
+              setDiffRequest(null);
+              setDiff(null);
+            }}
+          >
+            关闭
+          </Button>
+        }
+      >
+        <div className="space-y-3 text-xs">
+          {diff === null ? (
+            <p>正在计算差异…</p>
+          ) : (
+            <>
+              <p className="rounded border border-[var(--border)] p-2">{diffVerdictLine(diff)}</p>
+              {DIFF_GROUPS.map((group) => {
+                const rows = diffEntries(diff, group.kind);
+                return (
+                  <div key={group.kind}>
+                    <div className="flex items-center gap-2">
+                      <span className={`qa-k-tag ${group.tone}`}>{group.label}</span>
+                      <span className="opacity-60">{rows.length} 条</span>
+                    </div>
+                    {rows.length === 0 ? (
+                      <p className="mt-1 opacity-50">{group.empty}</p>
+                    ) : (
+                      <ul className="mt-1 flex flex-col gap-1">
+                        {rows.map((row, index) => (
+                          <li key={`${group.kind}-${index}`} className="rounded border border-[var(--border)] p-2">
+                            <p className="font-mono break-all">{row.id}</p>
+                            {row.before ? <p className="mt-1 opacity-60 line-through">{row.before}</p> : null}
+                            {row.after ? <p className="mt-1">{row.after}</p> : null}
+                            {row.note ? <p className="mt-1 opacity-50">{row.note}</p> : null}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </div>
+      </Modal>
+
+      <Modal
+        open={refsOpen}
+        title="引用反查"
+        onClose={() => {
+          if (!busy) setRefsOpen(false);
+        }}
+        footer={
+          <>
+            <Button size="sm" disabled={busy} onClick={() => setRefsOpen(false)}>
+              关闭
+            </Button>
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={busy || refsText.trim() === ""}
+              onClick={() => void lookUpReferences()}
+            >
+              {busy ? "正在反查…" : "开始反查"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3 text-xs">
+          <p className="opacity-70">
+            粘一段用例、需求或缺陷描述，查出它引用了哪一版知识的哪些条目。这是「资料一改，哪些用例要重算」的入口。
+          </p>
+          <textarea
+            className="min-h-24 w-full rounded border bg-transparent p-2 font-mono text-xs"
+            aria-label="反查文本"
+            placeholder="例如：连续五次登录失败后账户锁定，锁定时长…"
+            value={refsText}
+            onChange={(event) => setRefsText(event.target.value)}
+          />
+          {refs !== null &&
+            (refs.version === 0 ? (
+              <p className="rounded border border-amber-400 p-2">
+                项目还没有任何知识版本，无从反查。这和"没命中知识"是两件不同的事。
+              </p>
+            ) : refs.hits.length === 0 ? (
+              <p className="rounded border border-[var(--border)] p-2">
+                在 v{refs.version} 里没有命中任何知识项；这段文本可能引用了别处（需求、口头约定）的规则。
+              </p>
+            ) : (
+              <>
+                <p className="opacity-70">
+                  在 v{refs.version} 命中 {refs.hits.length} 条：
+                </p>
+                <ul className="flex flex-col gap-1">
+                  {refs.hits.map((hit) => (
+                    <li key={hit.knowledgeId} className="rounded border border-[var(--border)] p-2">
+                      <div className="flex items-center gap-2">
+                        <span className="qa-k-tag blue">{knowledgeTypeLabel(hit.type)}</span>
+                        <span className="font-medium">{hit.name}</span>
+                      </div>
+                      <p className="mt-1 opacity-60 font-mono">
+                        {hit.knowledgeId} · 原文第 {hit.source.line} 行 · 装配优先级 {hit.priority}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ))}
+        </div>
       </Modal>
     </main>
   );
