@@ -63,5 +63,11 @@ export function validateExecutionPlan(plan) {
     const value = plan.execution_policy?.[key] ?? fallback;
     if (!Number.isSafeInteger(value) || value < min || value > max) errors.push(`${key} must be an integer between ${min} and ${max}`);
   }
+  const replays = plan.execution_policy?.replays;
+  if (replays !== undefined && (!Number.isSafeInteger(replays) || replays < 1 || replays > 5)) errors.push("execution_policy.replays 必须是 1..5 的整数（重放是拿一致性，不是拿算力堆通过率）。");
+  const deadline = plan.execution_policy?.replay_deadline_ms;
+  if (deadline !== undefined && (!Number.isSafeInteger(deadline) || deadline < 1000 || deadline > 86400000)) errors.push("execution_policy.replay_deadline_ms 必须是 1000..86400000 的整数。");
+  const tier = plan.execution_policy?.target_tier;
+  if (tier !== undefined && !['source', 'isolated', 'installed'].includes(tier)) errors.push("execution_policy.target_tier 必须是 source / isolated / installed 之一。");
   return errors;
 }
