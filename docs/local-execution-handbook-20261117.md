@@ -58,12 +58,12 @@
 | 批次 / 建议负责人 | 目标与主要文件面 | 完成条件（DoD） | 依赖 |
 |---|---|---|---|
 | **1 统一工具通道 / Codex** | 已在 `main` 完成阶段场景映射、真实产物触发、运行回执与后台追溯；见 `docs/tool-integration-batch1-20261116.md` | 定向回归通过并合入 `main`；验证码自动登录不算本批完成，运行副本仍需单独核验 | 基线 |
-| **1F 图形验证码自动登录 / Qoder** | `scripts/browser-task.mjs`、`scripts/structured-actions.mjs`、`scripts/login-captcha-chain.mjs` 及对应测试；详见 `docs/captcha-auto-login-followup-20261117.md` | 同一受控浏览器完成识别、填码、提交、成功判定与会话复用；低置信度和未知提交结果不盲重试；扫码/短信走人工；真实 gatewayadmin 场景有产品 run 回执，测试数据清理 | 1；可与 2 的非浏览器部分并行 |
+| **1F 图形验证码自动登录 / WorkBuddy（原 Qoder，已交接）** | `scripts/browser-task.mjs`、`scripts/structured-actions.mjs`、`scripts/login-captcha-chain.mjs` 及对应测试；详见 `docs/captcha-auto-login-followup-20261117.md` | 同一受控浏览器完成识别、填码、提交、成功判定与会话复用；低置信度和未知提交结果不盲重试；扫码/短信走人工；真实 gatewayadmin 场景有产品 run 回执，测试数据清理 | 1；可与 2 的非浏览器部分并行 |
 | **2 环境与建档 / WorkBuddy** | 项目/环境数据模型、建档动作、`onboard.bootstrap` 受控调用、项目创建与环境页；覆盖 `gap-inventory` 的 B1/A1 | 地址归属环境实体；一次建档从授权地址产生可追溯 maps/页面与接口摘要；失败或无权限不生成成功状态；新旧项目兼容，真实环境演示可复跑 | 1 |
 | **2U Agent 工具只读展示 / Qoder** | Agent 设置的工具标签与现有工具查询接口；只展示平台工具绑定、权限和启停，不在设置页修改授权 | 与工具管理的绑定一致，未授权不可见；保留内置工具区；前端测试和一条管理页面验收 | 1；与 2 分文件面并行 |
-| **3 来源条款化与上下文装配 / Qoder** | 来源归档/版本、`knowledge.extract`/`knowledge.incremental`、`context_assembler` 到项目资料及对话注入；覆盖 A5/A6 | 原文位置、版本 diff、引用反查可见；对话只注入授权的相关片段并记录截断/预算；同一输入结果可复现，敏感内容不进普通日志 | 2 的环境/项目标识稳定后 |
+| **3 来源条款化与上下文装配 / WorkBuddy（原 Qoder，已交接）** | 来源归档/版本、`knowledge.extract`/`knowledge.incremental`、`context_assembler` 到项目资料及对话注入；覆盖 A5/A6 | 原文位置、版本 diff、引用反查可见；对话只注入授权的相关片段并记录截断/预算；同一输入结果可复现，敏感内容不进普通日志 | 2 的环境/项目标识稳定后 |
 | **4 可重放的 Web 执行 / WorkBuddy** | 浏览器 Driver、DSL/断言、页面资产库接线、执行预算与取证；先打通 Web 单类型，其他 Adapter 后排 | 授权站点的一条用例可固化、重放 N=3，结果及取证可对比；预算超限明确停止；未执行不得报通过；记录源码、隔离实例、已安装环境三层结果 | 1F、2、3 |
-| **5 回归与审核 / Qoder** | 变更影响来源、回归三闸、flaky 隔离、确认卡点三层 UI 与报告 draft/reviewing/approved；覆盖 M3、A3/A4 | 同一变更得到稳定选集；不稳定用例不进入可靠通过率；硬闸失败阻止报告批准；确认抽样可复现且报告审批留审计 | 4 |
+| **5 回归与审核 / WorkBuddy（原 Qoder，已交接）** | 变更影响来源、回归三闸、flaky 隔离、确认卡点三层 UI 与报告 draft/reviewing/approved；覆盖 M3、A3/A4 | 同一变更得到稳定选集；不稳定用例不进入可靠通过率；硬闸失败阻止报告批准；确认抽样可复现且报告审批留审计 | 4 |
 | **6 缺陷闭环与有效性基线 / WorkBuddy + 用户准备受控系统** | `defect.evidence` 的真实执行 IR、内置/外部提单、复测与知识回流；种子缺陷集单独保管 | 真实失败可取证、提单、复测、关闭，状态可追溯；在受控系统上记录召回、误报、错误通过率及样本分母；未建立种子集前不宣称有效性达标 | 4、5 |
 
 > **未派单缺口（2026-11-17 提出，待决策）**：批次 2 落地的是"建档"，下面两件目前**没有任何批次认领**，写在这里免得被当成已排期：
@@ -79,13 +79,13 @@
 | 批次 | 状态 | commit | 备注 |
 |---|---|---|---|
 | 1 统一工具通道 | 已合入 `main`，运行副本待核验 | `6635ac9`（含 `89978ab`、`29e4cee`、`612a432`） | 阶段回执与后台查询已实现；验证码闭环另列 1F |
-| 1F | **工程部分已提交，真实验收未通过（unknown）** | `7e2e750`、`20bd3e0`（分支 `qoder/batch-2u-20261117`，独立 clone `collaboration/qoder-20261117`） | 两次真实 run 均无成功回执；旁证与三条待修点见 `docs/batch1f-acceptance-evidence-review-20261117.md`（WorkBuddy 核查，非执行方打卡） |
-| 2 环境与建档（WorkBuddy） | 本地已提交，**待 Codex 验收合并**；真实站点建档回执未做 | 分支 `workbuddy/batch2-env-onboarding`，`2e90f58`…`60f1f44`（10 个 commit，按用户要求暂未推送） | B1/A1 服务端 + 五步进度流式 + 前端五处落地；详见 `docs/batch2-environment-onboarding-20261117.md` |
-| 2U Agent 工具只读展示（Qoder） | 未开始 | | |
-| 3 | 未开始 | | |
-| 4 | 未开始 | | |
-| 5 | 未开始 | | |
-| 6 | 未开始 | | |
+| 1F 图形验证码自动登录 | **工程部分已合入整合分支；真实验收仍未通过（unknown）** | `7e2e750`、`20bd3e0`（原 Qoder 分支 `qoder/batch-2u-20261117`，已合入 `workbuddy/batch2-env-onboarding`） | 工程验证通过：`browser_task` 新增 `login_probe`/`login`/`login_recognize`，同一受控会话分类→识别→填码→提交→成功断言；本地策略耗尽且配置声明图形码时走截图识别回传协议（受保护截图 0600 + 指纹绑定 + 置信度≥0.9 + 一次性消费 + 受限重试）；配置声明图形码且元素存在时覆盖 DOM 关键词误分类。专项测试 19/19、browser 104/104、core 1080/1088（4 失败为基线既有）。真实站点两次 run 均无成功回执，旁证见 `docs/batch1f-acceptance-evidence-review-20261117.md`。**待办**：失败探测时序缺陷（错误 toast ~3s 自愈，failure_check 在 8s 成功等待之后才探）+ 真实闭环重跑 |
+| 2 环境与建档 | 本地已提交，**待验收合并**；真实站点建档回执未做 | 分支 `workbuddy/batch2-env-onboarding`，`2e90f58`…`60f1f44`（按用户要求暂未推送） | B1/A1 服务端 + 五步进度流式 + 前端五处落地；详见 `docs/batch2-environment-onboarding-20261117.md` |
+| 2U Agent 工具只读展示 | 已合入整合分支（未合并 `main`、未推送） | `03392d3`（原 Qoder 分支，已合入） | 工程验证通过：新增前端测试 6/6；ci:tools、irval 114、server/web tsc 均通过；web 全量 4306 通过/46 失败为基线既有。管理页面真实验收待部署核验 |
+| 3 来源条款化与上下文装配 | WorkBuddy 进行中 | | 2026-11-18 起由 WorkBuddy 接手（原建议负责人 Qoder 已无额度） |
+| 4 可重放的 Web 执行 | 排队（依赖 1F、2、3） | | 同上 |
+| 5 回归与审核 | 排队（依赖 4） | | 同上 |
+| 6 缺陷闭环与有效性基线 | 排队（依赖 4、5 + 用户准备受控系统与种子缺陷集） | | 同上 |
 
 ## 6. 已知坑（云端踩过，本地同样注意）
 

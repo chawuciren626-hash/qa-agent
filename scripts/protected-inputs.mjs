@@ -104,7 +104,7 @@ export function createProtectedInputs(base,{wrap=bytes=>dpapi(bytes),unwrap=byte
         const sensitiveFill=node.type==='fill' && (node.secret===true || /password|密码|口令/i.test(JSON.stringify(node.target ?? {})));
         // Register all explicit sensitive fields before scanning sibling free text.
         const replaced=new Map();
-        for(const [k,v] of Object.entries(node)) if(typeof v==='string' && v && (/^(?:password|passwd|api[_-]?key|access[_-]?token|client[_-]?secret)$/i.test(k) || (/^authorization$/i.test(k) && /^(?:Bearer|Basic)\s+\S+$/i.test(v)) || (sensitiveFill && k==='value'))) replaced.set(k,this.put(owner,v));
+        for(const [k,v] of Object.entries(node)) if(typeof v==='string' && v && (/^(?:password|passwd|api[_-]?key|access[_-]?token|client[_-]?secret|answer)$/i.test(k) || (/^authorization$/i.test(k) && /^(?:Bearer|Basic)\s+\S+$/i.test(v)) || (sensitiveFill && k==='value'))) replaced.set(k,this.put(owner,v));
         const structural=new Set(['request_id','run_id','session_id','invocation_id','dispatch_id','tool_call_id','command_id','id','name','type','role','status','file_path','path','source_path','agent_id','owner_session_id','process_id','sha256','request_sha256','target','cmd','url']);
         return Object.fromEntries(Object.entries(node).map(([k,v])=>[k,replaced.has(k)?replaced.get(k):structural.has(k)?v:visit(v,depth+1)]));
       };
