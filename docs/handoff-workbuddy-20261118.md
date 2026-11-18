@@ -1,6 +1,6 @@
 # WorkBuddy → Codex 交接文档（2026-11-18）
 
-> 交接人：WorkBuddy（GLM Agent）。本文档覆盖 2026-11-18 09:06 合入 Qoder 批次 2U/1F 之后、由 WorkBuddy 独立完成的全部工作。
+> 交接人：WorkBuddy（GLM Agent）。本文档覆盖两段工作：**Qoder 在 11-17 完成的批次 2/2U/1F**（11-18 09:06 经 `4e800ea` 合入本分支），以及 **WorkBuddy 在 11-18 接手后完成的批次 3/4/5 与真实环境验收**。
 > 交接对象：codex，用于后续整合、验收与推进剩余批次。
 > 详细执行记录见 `docs/local-execution-handbook-20261117.md`（打卡至批次 5 全部落地）。
 
@@ -12,7 +12,50 @@
 |---|---|
 | 分支 | `workbuddy/batch2-env-onboarding`（本地分支，**全部未推送**） |
 | 领先 origin/main | 43 个提交 |
-| 提交归属边界 | `4e800ea`（merge Qoder 批次 2U/1F）之前 = Qoder 的工作；`3b18759`（11-18 09:54）起 20 个提交 = WorkBuddy 的工作 |
+| 提交归属边界 | `origin/main..4e800ea` 的 22 个提交 = Qoder 的工作（11-17 ~ 11-18 上午）；`3b18759`（11-18 09:54）起 20 个提交 = WorkBuddy 的工作；`4e800ea` 本身是 WorkBuddy 做的合并 |
+
+---
+
+## 2. Qoder 已完成事项（前置交接，22 个提交）
+
+> Qoder 额度耗尽后由 WorkBuddy 接手。以下是其完成内容，整合时请与 WorkBuddy 部分一并核对——两段工作在同一分支上连续演進，部分文件（`runtime_cli.py`、`schema.ts`、`router.tsx`、`project-view.tsx`）被双方先后改动。
+
+### 2.1 批次 2U：Agent 工具只读展示 ✅
+
+- Agent 设置页工具标签新增**平台工具只读区块**（`03392d3`）：只展示平台工具绑定、权限和启停，不在设置页修改授权；未授权不可见，保留内置工具区。
+- 文件面：`platform/packages/web/src/features/admin/central-agent-platform-tools.tsx`、`central-agent-settings-page.tsx`；测试 `web/test/central-agent-platform-tools.test.ts`。
+
+### 2.2 批次 2：环境与建档（工程侧）✅
+
+- **环境升为一等实体**（`2e90f58`）：`qa_environments` 相关 schema、`project-environment-service.ts`、路由 `project-environments.ts` / `managed-projects.ts` / `projects.ts`，接通建档执行入口。
+- **探索资产与假设闭环**（`90b53c9`）：判定 append 不覆盖；`environment-knowledge-service.ts`。
+- **建档五步走真实边界**（`c0ccba1`、`b2266ba`）：五步进度由真实事件流驱动，不再按时间猜；引擎侧 `onboard/bootstrap.py` + `runtime_cli.py` 接 `onboard.bootstrap` 受控调用。
+- **前端**（`153f1ad`、`ba67592`）：建档抽屉（`bootstrap-drawer.tsx` / `bootstrap-steps.tsx`）、项目环境页（`project-environments-page.tsx`）、工作台环境条接真实数据、新建弹窗加环境地址、列表加环境列；原型 v2 十一屏（`prototype/batch2-onboarding-v2.html`）。
+- **测试**：server `environment-knowledge` / `project-environments` / `managed-projects` 三套 + web `bootstrap-steps` / `project-environments-page`，并补了「老项目无环境」兼容断言（`8ad69a2`，DoD 原本没有这条证据）。
+- **诚实边界钉死**（`60f1f44`）：环境页四条边界进测试——失败或无权限不生成成功状态。
+- 注：批次 2 的**真实验收闭环**（真实服务建档 + 项目视图）是 WorkBuddy 接手后于 11-18 完成的（见 §3.5），Qoder 阶段为工程侧提交待验收状态。
+
+### 2.3 批次 1F：图形验证码自动登录（工程侧完成，真实验收未闭环）
+
+- **策略链接入浏览器任务**（`7e2e750`）：`scripts/browser-task.mjs`、`scripts/structured-actions.mjs`。
+- **截图识别回传协议**（`20bd3e0`）：`scripts/login-captcha-chain.mjs`（456 行）+ `tests/acceptance/login-captcha-chain.test.mjs`（456 行测试）——同一受控浏览器完成识别、填码、提交、成功判定与会话复用；低置信度和未知提交结果不盲重试；扫码/短信走人工。
+- **真实站点验收记录**（诚实结论）：旁证核查的结论是 **unknown，不是通过**（`e9c99c4`）；用整页快照定死三件事、更正「配置可能写错」的推测（`f313908`）；打卡记录见 `0d9fac0`。**后续由 WorkBuddy 在真实 gateway-admin 环境跑通登录链并闭环**（见 §3.5）。
+
+### 2.4 基础设施
+
+- 类型检查收敛成一条命令 `npm run check:types`（`6e7058b`），并更正手册里过期的「CI tsc 门禁」条目（`.github/workflows/engineering-tests.yml` 的 `platform-qa` job 自 `eb633c4` 起就跑双端 typecheck）。
+- `requirements-ci.txt`、`.gitignore` 更新、`package.json` 调整。
+
+### 2.5 Qoder 留下的缺口（后由 WorkBuddy 补齐或仍开放）
+
+| 缺口 | 现状 |
+|---|---|
+| 批次 3 条款化/装配 | Qoder 未开工，WorkBuddy 完成（§3.1） |
+| 批次 4 重放层 | WorkBuddy 完成（§3.2） |
+| 批次 5 回归与审核 | WorkBuddy 完成（§3.4） |
+| 未派单缺口 1：**探索派发入口**（环境页建会话 + 发 `breadth` 指令） | 能力侧已由 WorkBuddy `5a6cc82` 补上并在真实环境跑通；**平台内派发入口仍开放，待决策派单** |
+| 未派单缺口 2：`maps/<env>/` 目录结构（现为扁平 `maps-<env>.yaml`） | **仍开放，未动** |
+| 1F 真实验收 | 当时结论 unknown；WorkBuddy 已在真实 gateway-admin 闭环（§3.5），测试数据已清理 |
 | 工作区 | 干净（仅若干未跟踪的历史杂物：tar 包、dump.rdb、qa-server-results-*.json 等，与本次工作无关） |
 | `docs/` 注意 | 被 `.gitignore` 忽略，新增文档需 `git add -f` |
 
@@ -43,9 +86,9 @@ f18b6ee feat(server): A3/A4 确认卡点+审批服务端（按已确认原型落
 
 ---
 
-## 2. 各批次完成内容
+## 3. WorkBuddy 各批次完成内容
 
-### 2.1 批次 3：知识条款化与上下文装配（A5/A6）✅
+### 3.1 批次 3：知识条款化与上下文装配（A5/A6）✅
 
 - **引擎侧**：`aitestharness-tools/.../knowledge/extract.py` + `runtime_cli.py` 新增条款化/版本 diff/引用反查/上下文装配子命令。
 - **平台侧**：
@@ -55,7 +98,7 @@ f18b6ee feat(server): A3/A4 确认卡点+审批服务端（按已确认原型落
   - 前端：`project-knowledge-page.tsx`（知识条款页签）、`context-ledger-card.tsx`（装配账目卡，接入 task-detail）
 - 测试：server 3 个测试文件 + web 3 个测试文件全绿；web 全量 4378 过 / 43 败（当时基线）。
 
-### 2.2 批次 4：执行重放层 ✅（核心）/ ⚠️（真实三层回执未做）
+### 3.2 批次 4：执行重放层 ✅（核心）/ ⚠️（真实三层回执未做）
 
 - **`scripts/execution-replay.mjs`**：读 `execution/replay-comparison.json`，对同一计划重放 N 次（1..5 + `replay_deadline_ms` 预算）逐案对比。
   - completed 门槛 = 次数齐 + 每次 attempt 都是封存终态（blocked 不因次数凑够算完成）
@@ -66,12 +109,12 @@ f18b6ee feat(server): A3/A4 确认卡点+审批服务端（按已确认原型落
 - 测试：`tests/acceptance/execution-replay.test.mjs` 7/7，既有 execution 28 用例回归通过。
 - **未做**：真实三层环境（源码/隔离实例/已安装）各跑一轮的回执——VM 与已安装实例尚未准备。
 
-### 2.3 批次 4→5 桥：flaky 隔离 ✅
+### 3.3 批次 4→5 桥：flaky 隔离 ✅
 
 - `scripts/regression-sampling.mjs` 新增 `flakyIsolation(comparison)`：只认 `kind:'replay-comparison'`；unstable 用例 → 采样器 `history='flaky'`，下一轮自动进 flaky 敏感集 always×3；partial 下的失败照样出怀疑名单但 coverage 明说执行不完整；CLI `node scripts/regression-sampling.mjs isolate <run_id>`。
 - 测试：`regression-sampling.test.mjs` 15/15。
 
-### 2.4 批次 5：回归与审核 ✅（全部落地）
+### 3.4 批次 5：回归与审核 ✅（全部落地）
 
 **① 变更影响选集稳定化（`5dd3669`）**
 - `scripts/regression-impact.mjs`：移植参考实现 `impact.py` 的五触发源选集（显式/需求变更/代码变更/片段依赖/历史相似），每条选中带可解释理由。
@@ -103,7 +146,7 @@ f18b6ee feat(server): A3/A4 确认卡点+审批服务端（按已确认原型落
 
 **与引擎侧的硬闸分工**：重放四条硬闸归引擎侧 `scripts/report-approval.mjs` 所有；平台侧批准时按同一口径评估任务报告带来的执行证据，缺证据直接闸死。已写进手册。
 
-### 2.5 真实环境验收闭环 ✅
+### 3.5 真实环境验收闭环 ✅
 
 - 起真实服务（7377 端口，tsx 直启，数据根 `~/.penguin/real-acceptance`）→ 登录 → 建项目 `gateway_admin_accept` → 建环境 → bootstrap/wait 五步全 done → 浏览器探索 key-card 页 → 四层知识经真实 API 写入（module 1 / flow 1 / wall 2 / interface 10），项目视图成形。
 - **静态 vs 行为验证分层实证**：静态建档猜验证码类型 `sms`，浏览器实测发现是算术验证码——wall 层写入真相。
@@ -115,7 +158,7 @@ f18b6ee feat(server): A3/A4 确认卡点+审批服务端（按已确认原型落
 
 ---
 
-## 3. 测试与门禁状态
+## 4. 测试与门禁状态
 
 | 套件 | 结果 |
 |---|---|
@@ -127,7 +170,7 @@ f18b6ee feat(server): A3/A4 确认卡点+审批服务端（按已确认原型落
 
 ---
 
-## 4. 未完成事项（按优先级）
+## 5. 未完成事项（按优先级）
 
 1. **批次 4 真实三层回执**：源码/隔离实例/已安装环境各跑一轮重放——VM 与已安装实例等用户准备。
 2. **批次 6**：等用户准备受控系统与种子缺陷集，未开工。
@@ -136,7 +179,7 @@ f18b6ee feat(server): A3/A4 确认卡点+审批服务端（按已确认原型落
 
 ---
 
-## 5. 给 codex 的操作注意事项（踩坑实录）
+## 6. 给 codex 的操作注意事项（踩坑实录）
 
 以下坑都在本机 Windows + Git Bash 环境实测踩过，手册 `docs/local-execution-handbook-20261117.md` 亦有记录：
 
@@ -154,9 +197,18 @@ f18b6ee feat(server): A3/A4 确认卡点+审批服务端（按已确认原型落
 
 ---
 
-## 6. 关键文件索引
+## 7. 关键文件索引
 
-**引擎侧（scripts/tests）**
+**Qoder 部分（批次 2 / 2U / 1F）**
+- `scripts/login-captcha-chain.mjs` + `tests/acceptance/login-captcha-chain.test.mjs` — 1F 验证码识别回传协议
+- `scripts/browser-task.mjs` / `scripts/structured-actions.mjs` — 1F 策略链接入浏览器任务
+- `aitestharness-tools/.../onboard/bootstrap.py` + `runtime_cli.py`（onboard 子命令）— 建档五步引擎侧
+- server：`services/{project-environment-service,environment-knowledge-service}.ts`、`http/routes/{project-environments,managed-projects,projects}.ts`
+- web：`features/admin/central-agent-platform-tools.tsx`（2U）、`features/qa/project-management/`（建档抽屉/环境页/事件流）
+- 测试：`server/test/{environment-knowledge,project-environments,managed-projects}.test.ts`、`web/test/{bootstrap-steps,project-environments-page,central-agent-platform-tools}.test.ts`
+- 原型：`prototype/batch2-onboarding-v2.html`（十一屏）
+
+**WorkBuddy 部分（批次 3 / 4 / 5 + 探索固化）**
 - `scripts/execution-replay.mjs` — 批次 4 重放层
 - `scripts/regression-impact.mjs` — 五触发源选集 + 稳定指纹
 - `scripts/report-approval.mjs` — 审批流三态 + 硬闸 + 审计
