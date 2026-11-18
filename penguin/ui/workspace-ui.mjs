@@ -872,52 +872,6 @@ export function createWorkspaceUI(deps) {
         h("button", {type:"button",className:"qa-workspace-create",onClick:()=>{setOpen(false);setCreating(true)}},h(Icon,{name:"plus",size:14}),"新建工作空间工作空间")),
       h(ProjectModal,{open:creating,onClose:()=>{setCreating(false);trigger.current?.focus()},onCreated:project=>{setCreating(false);choose(project)}}));
   }
-  function FirstRunGuide({controlRef}) {
-    const {currentProject,agents=[]}=useProject();
-    const {user}=useAuth();
-    const {sessions=[]}=useSessions();
-    const navigate=useNavigate(),projectId=currentProject?.projectId;
-    const completed=qaFirstRunCompleted(projectId,user?.userId,sessions);
-    const base=projectId?`/api/projects/${encodeURIComponent(projectId)}`:null;
-    const scope=JSON.stringify([base,user?.userId??null]);
-    const [state,setState]=R.useState({scope:null,status:'loading'}),[expanded,setExpanded]=R.useState(true);
-    const epoch=R.useRef(0),busy=R.useRef(false);
-    const roleIds=['test_agent','requirement_analysis_agent','test_point_agent','test_case_agent','automation_execution_agent','api_automation_agent','defect_analysis_agent','test_report_agent'];
-    const count=roleIds.filter(id=>agents.some(a=>a.agentId===id&&a.enabled!==false)).length;
-    async function refresh(){
-      const ticket=++epoch.current;busy.current=false;setState({scope,status:'loading'});
-      if(!base)return;
-      try{const [models,config]=await Promise.all([deps.request(base+'/models'),deps.request(base+'/agents/test_agent/config')]);if(epoch.current===ticket)setState({scope,status:'loaded',model:qaModelSetup(models,config)});}
-      catch{if(epoch.current===ticket)setState({scope,status:'load_failed'});}
-    }
-    R.useEffect(()=>{
-      if(completed) qaCompleteFirstRun(projectId,user?.userId);
-      else refresh();
-      return()=>{epoch.current++;busy.current=false;};
-    },[scope,completed]);
-    const current=state.scope===scope?state:{status:'loading'};
-    async function probe(){
-      if(busy.current||!base)return;busy.current=true;const ticket=++epoch.current;
-      setState(s=>({...s,status:'checking'}));
-      try{const result=await qaProbeConfiguredModel(deps.request,base);if(epoch.current===ticket)setState({scope,...result});}
-      catch{if(epoch.current===ticket)setState({scope,status:'failed'});}
-      finally{if(epoch.current===ticket)busy.current=false;}
-    }
-    const messages={loading:'正在读取初始化与模型配置…',load_failed:'无法读取配置，请重试；项目访问权限也可能影响读取。',loaded:current.model?.status==='missing_model'?'请先在模型库配置模型。':'连接尚未验证。没有密钥的本地服务也可以尝试验证。',checking:'正在验证总控模型连接…',connected:'总控模型连接通过。专业角色和完整测试流程仍需实际任务验证。',failed:'连接未通过。请在模型库检查服务地址、凭据、余额和项目权限后重试。',changed:'验证期间模型配置发生变化，请重新验证。',missing_model:'请先在模型库配置并选择默认模型。'};
-    if(completed)return null;
-    return h('section',{className:'qa-first-run','aria-label':'开始使用'},
-      h('div',{className:'qa-first-run-heading'},h('strong',null,'开始使用'),h('button',{type:'button','aria-expanded':expanded,onClick:()=>setExpanded(!expanded)},expanded?'收起':'展开')),
-      expanded&&h(R.Fragment,null,
-        h('p',null,`测试角色：${count}/${roleIds.length} 就绪。`,count<roleIds.length?' 尚未全部就绪，请等待初始化或检查智能体列表。':''),
-        h('p',null,'总控模型：',current.model?.label||'待读取。'),
-        h('p',{role:'status'},messages[current.status]||'请验证当前配置。'),
-        h('div',{className:'qa-first-run-actions'},
-          h('button',{type:'button',onClick:()=>navigate('/models')},'1. 配置模型'),
-          h('button',{type:'button',disabled:!base||current.status==='checking'||current.status==='loading'||count<roleIds.length,onClick:probe},'2. 验证连接'),
-          h('button',{type:'button',disabled:count<roleIds.length,onClick:()=>controlRef.current?.fillPrompt(qaFirstTaskPrompt,[])},'3. 填写示例任务'),
-          h('button',{type:'button',disabled:current.status==='checking',onClick:refresh},'刷新配置')),
-        h('small',null,'连接验证会发送一次小型模型请求，可能产生少量费用。示例仅填入输入框，由你确认发送；可用自己的模型账号配置，不附带模型额度。')));
-  }
   function Hero({
     controlRef,
     scene,
@@ -938,7 +892,6 @@ export function createWorkspaceUI(deps) {
       "div",
       { className: "qa-hero" },
       h("h1", null, "AITestHarness, 我帮你"),
-      h(FirstRunGuide,{controlRef}),
       qaScenesEnabled && h(
         "div",
         { className: "qa-scenes", role: "group", "aria-label": "测试场景" },
