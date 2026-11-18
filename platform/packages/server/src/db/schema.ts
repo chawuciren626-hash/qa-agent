@@ -686,6 +686,19 @@ CREATE TABLE IF NOT EXISTS qa_context_ledger ( -- append-only context assembly r
   created_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_qa_context_ledger_session ON qa_context_ledger(project_id, session_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS qa_confirm_batches ( -- A3 三层确认卡点批次；每批一条文档记录（items/audit 内嵌 JSON）
+  batch_id          TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  title             TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'draft',  -- draft / reviewing / approved
+  seed              TEXT NOT NULL,                  -- 抽样种子；同种子名单可复现（指纹可对）
+  items_json        TEXT NOT NULL,                  -- 确认项 [{id,type,text,risk,changed,st}]
+  audit_json        TEXT NOT NULL DEFAULT '[]',     -- 审批留痕 append-only [{seq,at,action,actor,note?,gateFailures?}]
+  created_by        TEXT NOT NULL,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_qa_confirm_batches_project ON qa_confirm_batches(project_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS qa_knowledge_builds ( -- immutable knowledge builds; one row per version
   build_id          TEXT PRIMARY KEY,
   project_id        TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
