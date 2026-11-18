@@ -30,6 +30,8 @@
 .qp-head p, .qp-note { color:var(--qa-muted, #8f959e); font-size:12px; margin-top:6px; }
 .qp-refresh { border:1px solid var(--qa-border); border-radius:6px; width:32px; height:32px; font-size:22px; }
 .qp-refresh:disabled { opacity:.4; }
+.qp-head-actions { display:flex; align-items:center; gap:12px; }
+.qp-head-actions .qp-env-strip-go { margin-left:0; }
 .qp-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
 /* 工作台环境条：一行只读摘要，超出的地址省略（完整地址在项目环境页） */
 .qp-env-strip {

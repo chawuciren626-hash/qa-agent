@@ -151,7 +151,10 @@ export function QaProjectView() {
       <div className="qp-fixed space-y-6">
       <header className="qp-head">
         <div><h1>项目视图</h1><p>{currentProject ? projectDisplayName(currentProject) : "未选择项目"} · 跨工作空间汇总测试任务及已有产物</p></div>
-        <button className="qp-refresh" aria-label="刷新项目视图" title="刷新" disabled={!id || (!data && !error)} onClick={() => setRevision(n => n + 1)}>↻</button>
+        <div className="qp-head-actions">
+          <button className="qp-env-strip-go" onClick={() => navigate("/qa/project/confirm")}>确认卡点 →</button>
+          <button className="qp-refresh" aria-label="刷新项目视图" title="刷新" disabled={!id || (!data && !error)} onClick={() => setRevision(n => n + 1)}>↻</button>
+        </div>
       </header>
       <div className="qp-env-strip" aria-label="项目环境">
         {environment ? (

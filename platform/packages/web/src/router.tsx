@@ -48,6 +48,7 @@ import { QaSectionPage } from "./features/qa/workspace-ui";
 import { QaProjectView } from "./features/qa/project-view";
 import { ProjectManagementPage } from "./features/qa/project-management/project-management-page";
 import { ProjectEnvironmentsPage } from "./features/qa/project-management/project-environments-page";
+import { ConfirmGatePage } from "./features/qa/confirm-gate-page";
 import { QaTaskDetail } from "./features/qa/task-detail";
 import { QualityTraceabilityPage } from "./features/qa/quality-traceability-page";
 import { PersonalSkillsPage } from "./features/qa/personal-skills-page";
@@ -254,6 +255,9 @@ function appRoutes(admin = false) {
         {/* 项目环境：项目内的一级页（左侧导航「项目环境」）。路径挂在 /qa/project 前缀下，
             以便模块权限沿用 projects（module-permissions 的 /qa/project 前缀规则）。 */}
         <Route path="/qa/project/environments" element={<ProjectEnvironmentsPage />} />
+        {/* 确认卡点（A3 三层卡点 + A4 报告审批）：项目内的一级页，模块权限同样沿用
+            projects 的 /qa/project 前缀规则。 */}
+        <Route path="/qa/project/confirm" element={<ConfirmGatePage />} />
         {/* 项目管理（外壳状态 A / 品牌态）：跨项目页面，不依赖已进入项目；
             模块权限沿用 projects（module-permissions 的 /qa/project 前缀规则覆盖 /qa/projects）。 */}
         <Route path="/qa/projects" element={<ProjectManagementPage />} />
