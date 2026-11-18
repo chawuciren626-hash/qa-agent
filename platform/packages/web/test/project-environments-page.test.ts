@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createElement as h } from "react";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { button, click, mount, settle, unmountAll, waitFor } from "./helpers/dom";
+import { button, click, hasButton, mount, settle, type, unmountAll, waitFor } from "./helpers/dom";
 import { ProjectEnvironmentsPage } from "../src/features/qa/project-management/project-environments-page";
 import type { EnvironmentKnowledge, EnvironmentView, Hypothesis } from "../src/features/qa/project-management/types";
 
@@ -29,11 +29,26 @@ const fixture = vi.hoisted(() => {
       facts: {},
     })),
   };
-  return { env };
+  const explorationSteps = [
+    { index: 1, name: "准备配置", status: "done" as const, detail: "登录配置与凭据已就位" },
+    { index: 2, name: "拉起浏览器", status: "done" as const, detail: "无头浏览器已启动" },
+    { index: 3, name: "登录", status: "running" as const, detail: "打开登录页" },
+    { index: 4, name: "采集页面", status: "idle" as const, detail: null },
+    { index: 5, name: "采集接口", status: "idle" as const, detail: null },
+    { index: 6, name: "合并回写", status: "idle" as const, detail: null },
+  ];
+  const state = {
+    envStatus: "failed" as EnvironmentView["status"],
+    env: env as EnvironmentView,
+    explorations: [] as unknown[],
+    started: null as unknown,
+    answeredWith: [] as string[],
+  };
+  return { env, explorationSteps, state };
 });
 
 vi.mock("../src/features/qa/project-management/api", () => ({
-  listEnvironments: async () => ({ environments: [fixture.env], defaultEnv: "test" }),
+  listEnvironments: async () => ({ environments: [{ ...fixture.env, status: fixture.state.envStatus }], defaultEnv: "test" }),
   getEnvironment: async () => fixture.env,
   saveEnvironment: async () => fixture.env,
   bootstrapEnvironment: async () => fixture.env,
@@ -67,6 +82,14 @@ vi.mock("../src/features/qa/project-management/api", () => ({
     summary: { open: 1, verified: 0, refuted: 1, unreachable: 0, total: 2 },
   }),
   createHypothesis: async () => ({ hypothesisId: "hyp-2" }),
+  listExplorations: async () => ({ explorations: fixture.state.explorations, latest: fixture.state.explorations[0] ?? null }),
+  startExploration: async () => fixture.state.started,
+  answerExplorationCaptcha: async (_p: string, _e: string, _id: string, answer: string) => {
+    fixture.state.answeredWith.push(answer);
+    return { ...(fixture.state.explorations[0] as Record<string, unknown>), status: "running", captcha: null };
+  },
+  abortExploration: async () => ({ ...(fixture.state.explorations[0] as Record<string, unknown>), status: "aborted" }),
+  explorationCaptchaUrl: () => "/api/projects/proj-1/environments/test/explore/x/captcha",
 }));
 
 vi.mock("../src/state/project", () => ({
@@ -79,7 +102,13 @@ vi.mock("../src/state/project", () => ({
   projectDisplayName: (p: { name?: string; projectId: string }) => p.name ?? p.projectId,
 }));
 
-afterEach(async () => { await unmountAll(); });
+afterEach(async () => {
+  await unmountAll();
+  fixture.state.envStatus = "failed";
+  fixture.state.explorations = [];
+  fixture.state.started = null;
+  fixture.state.answeredWith = [];
+});
 
 async function renderPage() {
   const mounted = await mount(
@@ -134,5 +163,80 @@ describe("project environments page", () => {
     expect(checkbox).not.toBeNull();
     expect(checkbox?.checked).toBe(false);
     expect(document.body.textContent).toContain("允许探索时自动造前置数据");
+  });
+});
+
+describe("exploration dispatch", () => {
+  it("only offers 派发探索 on a registered environment", async () => {
+    await renderPage();
+    // 建档失败的环境没有地图可探：按钮不出现（页面上不放一个点了会 409 的假入口）。
+    // 注意空态文案里本来就有「点右上角『派发探索』」这句说明，所以按按钮断，不按文本断。
+    expect(hasButton("▶ 派发探索")).toBe(false);
+
+    fixture.state.envStatus = "registered";
+    await renderPage();
+    expect(hasButton("▶ 派发探索")).toBe(true);
+  });
+
+  it("dispatches a round from the dialog and shows the running panel", async () => {
+    fixture.state.envStatus = "registered";
+    fixture.state.started = {
+      explorationId: "expl-1", round: 1, status: "running",
+      targetUrl: "http://10.20.31.14:8080", loginUrl: null, loginMode: "public",
+      steps: fixture.explorationSteps, summary: null, lastError: null,
+      startedAt: "2026-11-18T11:00:00.000Z", finishedAt: null, captcha: null,
+    };
+    const root = await renderPage();
+    await click(button("▶ 派发探索"));
+    await settle();
+    expect(document.body.textContent).toContain("派发探索 · test 环境");
+    expect(document.body.textContent).toContain("全程只读");
+    await click(button("确认派发"));
+    await settle();
+    const text = root.textContent ?? "";
+    expect(text).toContain("第 1 轮探索");
+    expect(text).toContain("探索中");
+    expect(text).toContain("公开页探索");
+    // 凭据只在派发时填，不回显、不落库——弹窗关掉即不再出现密码框。
+    expect(document.querySelector('.qpm-modal input[type="password"]')).toBeNull();
+  });
+
+  it("parks on the captcha card and submits the operator answer", async () => {
+    fixture.state.envStatus = "registered";
+    fixture.state.explorations = [{
+      explorationId: "expl-2", round: 1, status: "waiting_human",
+      targetUrl: "http://10.20.31.14:8080/login", loginUrl: "http://10.20.31.14:8080/login", loginMode: "authenticated",
+      steps: fixture.explorationSteps, summary: null, lastError: null,
+      startedAt: "2026-11-18T11:00:00.000Z", finishedAt: null,
+      captcha: { available: true, strategies: ["test_bypass_code", "local_arithmetic_recognition", "captcha_service"] },
+    }];
+    const root = await renderPage();
+    const text = root.textContent ?? "";
+    expect(text).toContain("等验证码");
+    expect(text).toContain("图形验证码需要人工填答");
+    expect(text).toContain("已尝试：测试后门码 → 本地算术识别 → 打码服务");
+    expect(root.querySelector('img[alt="目标站验证码"]')).not.toBeNull();
+
+    const input = root.querySelector('input[aria-label="验证码答案"]') as HTMLInputElement;
+    await type(input, "62");
+    await settle();
+    await click(button("提交答案"));
+    await settle();
+    expect(fixture.state.answeredWith).toEqual(["62"]);
+  });
+
+  it("states a failed round writes no assets", async () => {
+    fixture.state.envStatus = "registered";
+    fixture.state.explorations = [{
+      explorationId: "expl-3", round: 1, status: "failed",
+      targetUrl: "http://10.20.31.14:8080", loginUrl: "http://10.20.31.14:8080/login", loginMode: "authenticated",
+      steps: fixture.explorationSteps.map((step, offset) => ({ ...step, status: offset === 2 ? "failed" : step.status })),
+      summary: null, lastError: "登录未成功（验证码错误），不重试提交",
+      startedAt: "2026-11-18T11:00:00.000Z", finishedAt: "2026-11-18T11:02:00.000Z", captcha: null,
+    }];
+    const root = await renderPage();
+    const text = root.textContent ?? "";
+    expect(text).toContain("本轮失败（未回写任何探索资产，四层保持上一轮）");
+    expect(text).toContain("登录未成功（验证码错误），不重试提交");
   });
 });

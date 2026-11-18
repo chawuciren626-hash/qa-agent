@@ -156,6 +156,34 @@ CREATE TABLE IF NOT EXISTS qa_hypothesis_verdicts (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_hypothesis_verdicts ON qa_hypothesis_verdicts(hypothesis_id, round);
+
+-- 探索派发：一轮一条，append-only。探索与建档分工：建档回答「有哪些地址」（零浏览器、
+-- 零模型），探索回答「地址怎么走通」（开真浏览器登录后采集页面/接口）。
+--
+-- 为什么单开一张表而不是复用 project_environments 的状态列：建档只有"最近一次"有意义，
+-- 探索是逐轮演进（第 2 轮要对照第 1 轮、失败轮也要占号），覆盖写会丢掉轮次账目。
+-- status 五态：running 执行中 / waiting_human 等验证码答案 / succeeded 完成且已回写 /
+-- failed 失败（不写任何探索资产）/ aborted 人工中止（已采部分如实封存）。
+-- 失败轮与中止轮都保留行：round 号不回退，第 N 轮失败 ≠ 第 N 轮为空。
+CREATE TABLE IF NOT EXISTS qa_environment_explorations (
+  exploration_id TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL,
+  env            TEXT NOT NULL,
+  round          INTEGER NOT NULL,
+  status         TEXT NOT NULL CHECK(status IN ('running','waiting_human','succeeded','failed','aborted')),
+  target_url     TEXT NOT NULL,           -- 本轮探的页面（默认环境根地址）
+  login_url      TEXT,                    -- 登录页地址；NULL=按公开页走
+  login_mode     TEXT NOT NULL CHECK(login_mode IN ('authenticated','public')),
+  steps_json     TEXT,                    -- 六步进度（与建档同样的 @@step 合并规则）
+  summary_json   TEXT,                    -- {pages, apis, controls, maps, receipt, captchaStrategy, limitations[]}
+  last_error     TEXT,
+  started_at     TEXT NOT NULL,
+  finished_at    TEXT,
+  updated_at     TEXT NOT NULL,
+  FOREIGN KEY (project_id, env) REFERENCES project_environments(project_id, env) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_env_explorations ON qa_environment_explorations(project_id, env, round);
+
 CREATE TABLE IF NOT EXISTS project_management_prefs (
   user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,

@@ -39,6 +39,57 @@ export interface EnvironmentKnowledge {
   lastRound: number;
 }
 
+/** 探索六步：前五步由脚本上报，第六步是服务端合并回写后落定。 */
+export type ExplorationStepStatus = "idle" | "running" | "done" | "failed";
+
+export interface ExplorationStep {
+  index: number;
+  name: string;
+  status: ExplorationStepStatus;
+  detail: string | null;
+}
+
+export type ExplorationStatus = "running" | "waiting_human" | "succeeded" | "failed" | "aborted";
+
+export interface ExplorationSummary {
+  targetUrl: string;
+  controls: number | null;
+  tables: number | null;
+  apis: number | null;
+  structureDigest: string | null;
+  sessionReused: boolean | null;
+  mapsPath: string | null;
+  knowledgeLayers: KnowledgeLayer[];
+  captchaStrategy: string | null;
+  limitations: string[];
+}
+
+/**
+ * 一轮探索。append-only：失败轮/中止轮都留着（round 号不回退），
+ * waiting_human 时 captcha.available 才为真——截图只在那一刻可看。
+ */
+export interface ExplorationView {
+  explorationId: string;
+  round: number;
+  status: ExplorationStatus;
+  targetUrl: string;
+  loginUrl: string | null;
+  loginMode: "authenticated" | "public";
+  steps: ExplorationStep[];
+  summary: ExplorationSummary | null;
+  lastError: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  captcha: { available: boolean; strategies: string[] } | null;
+}
+
+export interface StartExplorationInput {
+  targetUrl?: string;
+  loginUrl?: string;
+  username?: string;
+  password?: string;
+}
+
 /** 探不到的五类原因：决定下一轮是自补（async）还是等人补账号/补假设。 */
 export type WhyUnknown = "business" | "data" | "role" | "async" | "external";
 

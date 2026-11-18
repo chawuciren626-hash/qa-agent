@@ -4,7 +4,16 @@
  * 只负责"把服务端给的五步画出来"：没有任何按时间推进的逻辑——每个字都来自
  * Python `@@step` 的真实上报，前端不替程序补进度。
  */
-import type { BootstrapStep } from "./types";
+import type { BootstrapStep, BootstrapStepStatus } from "./types";
+
+/** 展示件只依赖这一小块：建档五步与探索六步共用同一套进度视觉。 */
+export interface StepLike {
+  index: number;
+  name: string;
+  status: BootstrapStepStatus;
+  detail: string | null;
+  ms?: number | null;
+}
 
 /** 五步的固定说明（与 Python 的 STEP_NAMES 对应；文案只解释"这步在做什么"）。 */
 export const STEP_HINTS: Record<number, string> = {
@@ -15,7 +24,7 @@ export const STEP_HINTS: Record<number, string> = {
   5: "写 maps/<env>/ 下的 pages、apis、login 与建档报告。",
 };
 
-const DOT: Record<BootstrapStep["status"], string> = {
+const DOT: Record<BootstrapStepStatus, string> = {
   idle: "",
   running: "",
   done: "✓",
@@ -28,13 +37,13 @@ export function msText(ms: number | null): string {
 }
 
 /** 已落定步数 / 百分比（"完成"与"走到一半失败"都算落定，进度条不会停在中间骗人）。 */
-export function stepProgress(steps: BootstrapStep[]): { settled: number; percent: number } {
+export function stepProgress(steps: StepLike[]): { settled: number; percent: number } {
   const settled = steps.filter((step) => step.status === "done" || step.status === "failed").length;
   return { settled, percent: steps.length === 0 ? 0 : Math.round((settled / steps.length) * 100) };
 }
 
 /** 进度条：宽度只跟随已落定步数，不做按时间的补间。 */
-export function StepBar({ steps, failed }: { steps: BootstrapStep[]; failed?: boolean }) {
+export function StepBar({ steps, failed }: { steps: StepLike[]; failed?: boolean }) {
   const { percent } = stepProgress(steps);
   return (
     <div className="qpm-bar" aria-hidden="true">
@@ -44,12 +53,12 @@ export function StepBar({ steps, failed }: { steps: BootstrapStep[]; failed?: bo
 }
 
 /** 单步一行：左侧圆点（数字/✓/✕），右侧名称 + 状态 + 结论。 */
-export function StepRow({ step }: { step: BootstrapStep }) {
+export function StepRow({ step }: { step: StepLike }) {
   const hint = STEP_HINTS[step.index];
   const meta =
     step.status === "running" ? "进行中…"
-      : step.status === "done" ? `已完成${step.ms === null ? "" : ` · ${msText(step.ms)}`}`
-        : step.status === "failed" ? `失败${step.ms === null ? "" : ` · ${msText(step.ms)}`}`
+      : step.status === "done" ? `已完成${step.ms == null ? "" : ` · ${msText(step.ms)}`}`
+        : step.status === "failed" ? `失败${step.ms == null ? "" : ` · ${msText(step.ms)}`}`
           : "等待";
   return (
     <li className={`qpm-step is-${step.status}`}>
@@ -66,6 +75,6 @@ export function StepRow({ step }: { step: BootstrapStep }) {
   );
 }
 
-export function StepRows({ steps }: { steps: BootstrapStep[] }) {
+export function StepRows({ steps }: { steps: StepLike[] }) {
   return <ol className="qpm-steps">{steps.map((step) => <StepRow key={step.index} step={step} />)}</ol>;
 }

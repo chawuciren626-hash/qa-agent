@@ -8,21 +8,33 @@
  * 三条纪律：
  *   1. 只采"结构性事实"：控件的标签/角色/CSS、表格列、接口路径与字段名。
  *      不采响应体、不采字段值——业务数据进环境地图只会变成新的泄露面。
- *   2. 验证码走"图片 → @@AWAIT_ANSWER → 答案文件"的人工/视觉握手；等不到答案就失败，
- *      不猜、不重试提交（重试会撞锁定策略）。
+ *   2. 验证码走策略链：`--captcha-strategy auto` 时先试项目测试码、再试本地算术识别
+ *      （读验证码元素的文本/alt/title，严格文法解析，置信度≥0.9 才采纳），都拿不下
+ *      才落"图片 → @@AWAIT_ANSWER → 答案文件"的人工握手；等不到答案就失败，不猜、
+ *      不重试提交（重试会撞锁定策略）。默认 `manual`，与已验证的验收链保持一致。
  *   3. 只读：除登录表单外不提交任何业务表单。写操作按钮只登记，永不点击。
+ *
+ * 登录配置两种给法：
+ *   a) `--config <login-config.json>`：显式选择器（人工确认过的那种，最稳）；
+ *   b) `--discover-login`：不给配置，登录页渲染后按 DOM 自动识别用户名/密码/验证码/
+ *      提交按钮，识别不到用户名或密码就直接失败——不猜、不盲填。
+ *
+ * 进度走 stderr 的 @@ 行（与建档同约定，stdout 保持探索日志）：
+ *   @@step {"index":2,"name":"拉起浏览器","status":"running|done|failed","detail":"..."}
+ *   @@captcha {"status":"waiting|auto_solved|answered", ...}
  *
  * 用法：
  *   node scripts/explore-authenticated.mjs \
  *     --login-url https://host/admin/login \
  *     --target-url https://host/admin/user/key-card/index \
- *     --config <login-config.json> --creds <credentials.json> --out <dir> [--session <state.json>]
+ *     --config <login-config.json> --creds <credentials.json> --out <dir> [--session <state.json>] \
+ *     [--captcha-strategy auto|manual] [--discover-login]
  */
 import { chromium } from '@playwright/test';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { validateLoginConfig } from './login-captcha-chain.mjs';
+import { confidenceGate, parseArithmetic, validateLoginConfig } from './login-captcha-chain.mjs';
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) {
@@ -39,16 +51,25 @@ const need = (name) => {
 const outDir = resolve(need('out'));
 const loginUrl = need('login-url');
 const targetUrl = need('target-url');
-const configPath = resolve(need('config'));
+const configPath = args.get('config') ? resolve(args.get('config')) : null;
+const discoverLogin = args.has('discover-login');
+if (!configPath && !discoverLogin) throw new Error('Missing --config （或 --discover-login）');
 const credsPath = resolve(need('creds'));
 const sessionPath = args.get('session') ? resolve(args.get('session')) : resolve(outDir, 'session.json');
 const answerPath = resolve(outDir, 'answer.json');
 const shotsDir = resolve(outDir, 'shots');
 mkdirSync(shotsDir, { recursive: true });
 
-const log = (msg, data) => console.log(JSON.stringify({ at: new Date().toISOString(), msg, ...(data ? { data } : {}) }));
+const captchaStrategy = args.get('captcha-strategy') ?? 'manual';
+/** 公开页模式：不登录、不填表，只采目标页（站点无需登录时用）。 */
+const publicMode = args.has('public');
+if (!['auto', 'manual'].includes(captchaStrategy)) throw new Error('--captcha-strategy 只接受 auto / manual');
 
-const config = validateLoginConfig(JSON.parse(readFileSync(configPath, 'utf8')));
+const log = (msg, data) => console.log(JSON.stringify({ at: new Date().toISOString(), msg, ...(data ? { data } : {}) }));
+/** 进度播报：stderr 的 @@ 行，可丢、可被平台解析；不影响探索结论。 */
+const emit = (channel, data) => process.stderr.write(`@@${channel} ${JSON.stringify(data)}\n`);
+
+let config = configPath ? validateLoginConfig(JSON.parse(readFileSync(configPath, 'utf8'))) : null;
 const creds = JSON.parse(readFileSync(credsPath, 'utf8'));
 if (typeof creds.username !== 'string' || typeof creds.password !== 'string') {
   throw new Error('凭据文件需要 username / password 两个字段');
@@ -72,7 +93,84 @@ function locatorFor(page, target) {
   }
 }
 
+/**
+ * 不给登录配置时按 DOM 识别登录表单。识别不到用户名或密码就抛错——不猜选择器，
+ * 也不盲填（盲填会把错误凭据提交给真实系统）。
+ */
+async function discoverLoginConfig() {
+  const shape = await page.evaluate(() => {
+    const { visible, pathOf } = (() => {
+      const visible = (el) => {
+        const box = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      const pathOf = (el) => {
+        const id = el.id;
+        if (id && !/^el-id-\d+-\d+$/.test(id)) return `#${CSS.escape(id)}`;
+        const name = el.getAttribute('name');
+        if (name) return `${el.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`;
+        const placeholder = el.getAttribute('placeholder');
+        if (placeholder) return `${el.tagName.toLowerCase()}[placeholder="${CSS.escape(placeholder)}"]`;
+        const parts = [];
+        let node = el;
+        while (node && node.nodeType === 1 && node !== document.body && parts.length < 5) {
+          let part = node.tagName.toLowerCase();
+          const siblings = node.parentElement ? [...node.parentElement.children].filter((x) => x.tagName === node.tagName) : [];
+          if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(node) + 1})`;
+          parts.unshift(part);
+          node = node.parentElement;
+        }
+        return parts.join(' > ');
+      };
+      return { visible, pathOf };
+    })();
+    const inputs = [...document.querySelectorAll('input,textarea')].filter(visible);
+    const pwd = inputs.find((el) => (el.getAttribute('type') ?? '').toLowerCase() === 'password') ?? null;
+    const user = inputs.find((el) => el !== pwd && /^(text|tel|email|)$/i.test(el.getAttribute('type') ?? '')) ?? null;
+    const captchaImg = [...document.querySelectorAll('img,canvas')]
+      .filter(visible)
+      .find((el) => /captcha|yzm|verify|validate|code/i.test(`${el.getAttribute('src') ?? ''} ${el.getAttribute('alt') ?? ''} ${typeof el.className === 'string' ? el.className : ''}`)) ?? null;
+    const captchaInput = inputs.find((el) => el !== pwd && el !== user
+      && /验证码|captcha|code|yzm/i.test(`${el.getAttribute('placeholder') ?? ''} ${el.getAttribute('name') ?? ''} ${el.id}`)) ?? null;
+    const buttons = [...document.querySelectorAll('button,[role="button"],input[type="submit"]')].filter(visible);
+    const submit = buttons.find((el) => /登录|登 录|login|sign\s*in/i.test(`${el.textContent ?? ''} ${el.getAttribute('value') ?? ''}`)) ?? null;
+    return {
+      user: user && pathOf(user),
+      pwd: pwd && pathOf(pwd),
+      captchaImage: captchaImg && pathOf(captchaImg),
+      captchaInput: captchaInput && pathOf(captchaInput),
+      submit: submit && pathOf(submit),
+      usernameLike: inputs.filter((el) => el !== pwd).map((el) => el.getAttribute('placeholder') ?? ''),
+    };
+  });
+  if (!shape.user || !shape.pwd) {
+    throw new Error(`登录页未识别到用户名/密码输入框（用户=${shape.user ?? '无'}，密码=${shape.pwd ?? '无'}）：请提供登录配置 JSON 后重试`);
+  }
+  const built = {
+    project: 'discovered',
+    username_target: { by: 'css', value: shape.user },
+    password_target: { by: 'css', value: shape.pwd },
+    submit_target: { by: 'css', value: shape.submit ?? 'button[type="submit"]' },
+    ...(shape.captchaImage && shape.captchaInput
+      ? { captcha_image_target: { by: 'css', value: shape.captchaImage }, captcha_input_target: { by: 'css', value: shape.captchaInput } }
+      : {}),
+    // 成功判定用"密码框数量归零"：等价于"已离开登录页"，不冒充业务可用性。
+    success_check: {
+      target: { by: 'css', value: shape.pwd },
+      condition: 'count',
+      value: 0,
+      case_id: 'EXPLORE-LOGIN-01',
+      title: '提交登录后离开登录页',
+      expected: '登录页密码框不再存在（以登录页消失判定，不代表权限范围）',
+    },
+  };
+  log('login_config_discovered', { user: shape.user, pwd: shape.pwd, captcha: !!(shape.captchaImage && shape.captchaInput), submit: shape.submit });
+  return validateLoginConfig(built);
+}
+
 const browser = await chromium.launch({ channel: process.env.QA_BROWSER_CHANNEL ?? 'chrome', headless: true });
+emit('step', { index: 2, name: '拉起浏览器', status: 'done', detail: '无头浏览器已启动' });
 const context = await browser.newContext({
   viewport: { width: 1440, height: 900 },
   ignoreHTTPSErrors: true,
@@ -178,12 +276,51 @@ async function structure() {
   });
 }
 
-/** 登录：填表 → 验证码握手 → 提交 → 判定。返回是否已登录。 */
+/** 读验证码元素的文本线索：显式文本框 > 图片 alt/title。读不到按"无法识别"处理。 */
+async function readCaptchaText() {
+  try {
+    if (config.captcha_text_target) return (await locatorFor(page, config.captcha_text_target).textContent({ timeout: 2000 }))?.trim() || null;
+    if (config.captcha_image_target) {
+      const img = locatorFor(page, config.captcha_image_target);
+      return (await img.getAttribute('alt', { timeout: 2000 }))?.trim() || (await img.getAttribute('title', { timeout: 2000 }))?.trim() || null;
+    }
+  } catch {
+    // 读失败 = 无法识别，不猜测
+  }
+  return null;
+}
+
+/**
+ * 验证码策略链：测试后门码 → 本地算术识别（置信度≥0.9）→ 打码服务（未接线）→ 人工。
+ * 自动成功时不写 answer.json、不暂停；全失败才落人工握手。
+ */
+async function solveCaptchaByStrategy() {
+  const attempts = [];
+  if (config.test_code) {
+    attempts.push({ strategy: 'test_bypass_code', accepted: true, basis: 'project_configured_test_code' });
+    return { answer: config.test_code, attempts };
+  }
+  attempts.push({ strategy: 'test_bypass_code', accepted: false, reason: 'not_configured' });
+  const parsed = parseArithmetic(await readCaptchaText());
+  const gate = confidenceGate(parsed);
+  if (gate.accepted) {
+    attempts.push({ strategy: 'local_arithmetic_recognition', accepted: true, confidence: parsed.confidence, basis: parsed.basis });
+    return { answer: parsed.answer, attempts };
+  }
+  attempts.push({ strategy: 'local_arithmetic_recognition', accepted: false, reason: parsed ? 'low_confidence' : 'no_recognizable_arithmetic_expression' });
+  attempts.push({ strategy: 'captcha_service', accepted: false, reason: 'service_not_configured' });
+  return { answer: null, attempts };
+}
+
+/** 登录：填表 → 验证码策略链 → 提交 → 判定。返回是否已登录。 */
 async function login() {
+  emit('step', { index: 3, name: '登录', status: 'running', detail: '打开登录页' });
   await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(800);
+  if (!config) config = await discoverLoginConfig();
   if (!/login/i.test(page.url()) && (await locatorFor(page, config.password_target).count()) === 0) {
     log('login_skipped_already_authenticated', { url: page.url() });
+    emit('step', { index: 3, name: '登录', status: 'done', detail: '已存在登录态，跳过登录' });
     return true;
   }
   await locatorFor(page, config.username_target).fill(creds.username);
@@ -195,23 +332,32 @@ async function login() {
     await image.waitFor({ state: 'visible', timeout: 15000 });
     const captchaPath = resolve(shotsDir, 'captcha.png');
     await image.screenshot({ path: captchaPath });
-    writeFileSync(answerPath, JSON.stringify({ pending: true }));
-    console.log(`@@AWAIT_ANSWER ${captchaPath}`);
     let answer = null;
-    for (let i = 0; i < 360; i += 1) {
-      await page.waitForTimeout(500);
-      try {
-        const parsed = JSON.parse(readFileSync(answerPath, 'utf8'));
-        if (typeof parsed?.answer === 'string' && parsed.answer.trim()) {
-          answer = parsed.answer.trim();
-          break;
-        }
-        if (parsed?.abort) throw new Error('aborted by operator');
-      } catch (error) {
-        if (String(error?.message).includes('aborted by operator')) throw error;
-      }
+    if (captchaStrategy === 'auto') {
+      const solved = await solveCaptchaByStrategy();
+      emit('captcha', { status: solved.answer ? 'auto_solved' : 'unresolved', attempts: solved.attempts, path: captchaPath });
+      if (solved.answer) answer = solved.answer;
     }
-    if (!answer) throw new Error('等待验证码答案超时（180s），未提交登录');
+    if (!answer) {
+      writeFileSync(answerPath, JSON.stringify({ pending: true }));
+      emit('captcha', { status: 'waiting', path: captchaPath, strategy: captchaStrategy });
+      console.log(`@@AWAIT_ANSWER ${captchaPath}`);
+      for (let i = 0; i < 360; i += 1) {
+        await page.waitForTimeout(500);
+        try {
+          const parsed = JSON.parse(readFileSync(answerPath, 'utf8'));
+          if (typeof parsed?.answer === 'string' && parsed.answer.trim()) {
+            answer = parsed.answer.trim();
+            break;
+          }
+          if (parsed?.abort) throw new Error('aborted by operator');
+        } catch (error) {
+          if (String(error?.message).includes('aborted by operator')) throw error;
+        }
+      }
+      if (!answer) throw new Error('等待验证码答案超时（180s），未提交登录');
+      emit('captcha', { status: 'answered' });
+    }
     await locatorFor(page, config.captcha_input_target).fill(answer);
   }
 
@@ -221,6 +367,7 @@ async function login() {
     const stillLogin = (await locatorFor(page, config.password_target).count()) > 0;
     if (!stillLogin) {
       await page.screenshot({ path: resolve(shotsDir, 'after-login.png'), fullPage: true });
+      emit('step', { index: 3, name: '登录', status: 'done', detail: '登录成功，已离开登录页' });
       return true;
     }
     if (config.failure_check) {
@@ -233,11 +380,18 @@ async function login() {
     }
   }
   await page.screenshot({ path: resolve(shotsDir, 'login-failed.png'), fullPage: true });
+  emit('step', { index: 3, name: '登录', status: 'failed', detail: '登录未成功（不重试提交，防锁定）' });
   return false;
 }
 
 async function main() {
-  let reused = existsSync(sessionPath);
+  // 不给配置时先登录页渲染一次做识别：后面的会话复用判定也要用 config。
+  if (!config && !publicMode) {
+    await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 60000 });
+    await page.waitForTimeout(800);
+    config = await discoverLoginConfig();
+  }
+  let reused = existsSync(sessionPath) && !publicMode;
   if (reused) {
     await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
     if (/login/i.test(page.url()) || (await locatorFor(page, config.password_target).count()) > 0) {
@@ -246,20 +400,25 @@ async function main() {
     }
   }
   if (!reused) {
-    if (!(await login())) throw new Error('登录未成功，已截图 login-failed.png');
+    if (publicMode) {
+      log('public_mode', { note: '公开页模式：不提交登录表单' });
+    } else if (!(await login())) throw new Error('登录未成功，已截图 login-failed.png');
   }
 
+  emit('step', { index: 4, name: '采集页面', status: 'running', detail: '打开目标页并采集控件/表格' });
   await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2000);
   await page.screenshot({ path: resolve(shotsDir, 'target.png'), fullPage: true });
   const seen = await structure();
   writeFileSync(resolve(outDir, 'structure.json'), JSON.stringify(seen, null, 2));
+  emit('step', { index: 4, name: '采集页面', status: 'done', detail: `${seen.interactive.length} 控件 · ${seen.tables.length} 表格` });
 
   await context.storageState({ path: sessionPath });
   const apiList = [...apis.values()]
     .map((entry) => ({ method: entry.method, path: entry.path, status: entry.status, calls: entry.calls, request_fields: [...entry.request_fields].sort() }))
     .sort((a, b) => a.path.localeCompare(b.path));
   writeFileSync(resolve(outDir, 'apis.json'), JSON.stringify(apiList, null, 2));
+  emit('step', { index: 5, name: '采集接口', status: 'done', detail: `${apiList.length} 条接口` });
 
   // 结构指纹只算稳定事实：随机 id、类名里的构建哈希都不能进来，否则同一页面
   // 两次探索永远"不同"，maps diff 会天天报变化，可比性就成了一句空话。

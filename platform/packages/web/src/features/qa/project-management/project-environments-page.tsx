@@ -3,7 +3,7 @@
  *
  * 三件事分工要清楚，别混：
  *   建档   maps/<env>/   有哪些地址      —— 确定性脚本，零模型，三步门禁都过了
- *   探索   kb/<env>/     地址怎么走通    —— 开浏览器跑，有 run 有会话（批次 3 派发）
+ *   探索   kb/<env>/     地址怎么走通    —— 服务端派发一轮，本机开浏览器登录后采集（确定性任务，不是空会话）
  *   假设                 探不到的为什么  —— 人提，下一轮由程序验证
  *
  * 所以本页在"没探索过"时只显示建档结果与一句实话（建档不回答流程问题），
@@ -15,19 +15,25 @@ import { useProject, projectDisplayName } from "../../../state/project";
 import type {
   EnvironmentKnowledge,
   EnvironmentView,
+  ExplorationView,
   Hypothesis,
   HypothesisSummary,
   KnowledgeLayer,
   WhyUnknown,
 } from "./types";
 import {
+  abortExploration,
+  answerExplorationCaptcha,
   bootstrapEnvironment,
   createHypothesis,
+  explorationCaptchaUrl,
   getEnvironment,
   getEnvironmentKnowledge,
   listEnvironments,
+  listExplorations,
   listHypotheses,
   saveEnvironment,
+  startExploration,
 } from "./api";
 import { fullTimeText } from "./format";
 import { StepBar, StepRows, stepProgress } from "./bootstrap-steps";
@@ -35,6 +41,22 @@ import { toastError, toastSuccess } from "@prismshadow/penguin-ui";
 import "./project-management.css";
 
 const POLL_MS = 1200;
+const EXPLORE_POLL_MS = 1500;
+
+const EXPLORATION_STATUS_LABEL: Record<ExplorationView["status"], string> = {
+  running: "探索中",
+  waiting_human: "等验证码",
+  succeeded: "已完成",
+  failed: "失败",
+  aborted: "已中止",
+};
+
+const CAPTCHA_STRATEGY_LABEL: Record<string, string> = {
+  test_bypass_code: "测试后门码",
+  local_arithmetic_recognition: "本地算术识别",
+  captcha_service: "打码服务",
+  manual: "人工填答",
+};
 
 const LAYER_LABEL: Record<KnowledgeLayer, string> = {
   module: "模块",
@@ -104,6 +126,10 @@ export function ProjectEnvironmentsPage() {
   const [busy, setBusy] = useState(false);
   const [addingOpen, setAddingOpen] = useState(false);
   const [hypothesisOpen, setHypothesisOpen] = useState(false);
+  const [exploration, setExploration] = useState<ExplorationView | null>(null);
+  const [dispatchOpen, setDispatchOpen] = useState(false);
+  const [captchaAnswer, setCaptchaAnswer] = useState("");
+  const [captchaBusy, setCaptchaBusy] = useState(false);
 
   const current = useMemo(
     () => environments.find((env) => env.env === selected) ?? environments[0] ?? null,
@@ -162,6 +188,68 @@ export function ProjectEnvironmentsPage() {
       .catch(() => { if (alive) setHypotheses([]); });
     return () => { alive = false; };
   }, [projectId, current]);
+
+  const loadExploration = useCallback(async (env: string) => {
+    if (!projectId) return;
+    try {
+      const result = await listExplorations(projectId, env);
+      setExploration(result.latest);
+    } catch {
+      // 轮次读取失败不遮蔽环境本身：界面退回「没有探索记录」而不是报错清屏。
+      setExploration(null);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    setCaptchaAnswer("");
+    if (!current) { setExploration(null); return; }
+    void loadExploration(current.env);
+  }, [current, loadExploration]);
+
+  /* 探索进行中轮询：状态一变就整轮重取；完成后顺带刷新四层资产（回写是最后一步）。 */
+  const explorationActive = exploration !== null
+    && (exploration.status === "running" || exploration.status === "waiting_human");
+  useEffect(() => {
+    if (!projectId || !current || !explorationActive) return;
+    const timer = setTimeout(() => {
+      void listExplorations(projectId, current.env)
+        .then((result) => {
+          setExploration(result.latest);
+          if (result.latest?.status === "succeeded") {
+            void getEnvironmentKnowledge(projectId, current.env).then((next) => setKnowledge(next.knowledge)).catch(() => undefined);
+            void listHypotheses(projectId, current.env).then((next) => { setHypotheses(next.hypotheses); setSummary(next.summary); }).catch(() => undefined);
+          }
+        })
+        .catch(() => undefined);
+    }, EXPLORE_POLL_MS);
+    return () => clearTimeout(timer);
+  }, [projectId, current, explorationActive, exploration]);
+
+  const submitCaptcha = async () => {
+    if (!projectId || !current || !exploration) return;
+    const answer = captchaAnswer.trim();
+    if (!answer) return;
+    setCaptchaBusy(true);
+    try {
+      const next = await answerExplorationCaptcha(projectId, current.env, exploration.explorationId, answer);
+      setExploration(next);
+      setCaptchaAnswer("");
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "提交失败，请重试");
+    } finally {
+      setCaptchaBusy(false);
+    }
+  };
+
+  const stopExploration = async () => {
+    if (!projectId || !current || !exploration) return;
+    try {
+      const next = await abortExploration(projectId, current.env, exploration.explorationId);
+      setExploration(next);
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "中止失败，请重试");
+    }
+  };
 
   const startBootstrap = async () => {
     if (!projectId || !current) return;
@@ -272,6 +360,16 @@ export function ProjectEnvironmentsPage() {
                       >
                         {current.status === "probing" ? "建档中…" : current.status === "registered" ? "重新建档" : "开始建档"}
                       </button>
+                      {current.status === "registered" && (
+                        <button
+                          type="button"
+                          className={explorationActive ? "qpm-btn-ghost" : "qpm-btn-main"}
+                          disabled={explorationActive}
+                          onClick={() => setDispatchOpen(true)}
+                        >
+                          {explorationActive ? `${EXPLORATION_STATUS_LABEL[exploration.status]}…` : exploration ? "▶ 再次派发" : "▶ 派发探索"}
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -313,6 +411,94 @@ export function ProjectEnvironmentsPage() {
                     </div>
                   )}
 
+                  {exploration && (
+                    <section className="qpm-explore" aria-label="探索轮次">
+                      <header className="qpm-explore-head">
+                        <div>
+                          <h3>
+                            第 {exploration.round} 轮探索
+                            <span className={`qpm-explore-status is-${exploration.status}`}>
+                              {EXPLORATION_STATUS_LABEL[exploration.status]}
+                            </span>
+                          </h3>
+                          <p className="qpm-panel-note">
+                            {exploration.loginMode === "authenticated" ? "登录后探索" : "公开页探索"} · 目标页{" "}
+                            <span className="qpm-mono">{exploration.targetUrl}</span>
+                            {exploration.finishedAt ? ` · 结束于 ${fullTimeText(exploration.finishedAt)}` : ""}
+                          </p>
+                        </div>
+                        {explorationActive && (
+                          <button type="button" className="qpm-btn-ghost" onClick={() => void stopExploration()}>中止</button>
+                        )}
+                      </header>
+
+                      <StepBar steps={exploration.steps} failed={exploration.status === "failed"} />
+                      <StepRows steps={exploration.steps} />
+
+                      {exploration.status === "waiting_human" && exploration.captcha && (
+                        <div className="qpm-captcha">
+                          {exploration.captcha.available ? (
+                            <img
+                              className="qpm-captcha-img"
+                              src={explorationCaptchaUrl(projectId, current.env, exploration.explorationId)}
+                              alt="目标站验证码"
+                            />
+                          ) : (
+                            <div className="qpm-captcha-img qpm-captcha-img-empty">截图不可用</div>
+                          )}
+                          <div className="qpm-captcha-form">
+                            <b>图形验证码需要人工填答</b>
+                            <p className="qpm-panel-note">
+                              自动策略链（测试后门码 → 本地算术识别 → 打码服务）都没拿下来，才停在这里。
+                              填错不会自动重试——本轮直接结束，防触发目标站锁定。
+                            </p>
+                            <div className="qpm-captcha-row">
+                              <input
+                                value={captchaAnswer}
+                                maxLength={64}
+                                onChange={(e) => setCaptchaAnswer(e.target.value)}
+                                placeholder="填入验证码结果"
+                                aria-label="验证码答案"
+                              />
+                              <button type="button" className="qpm-btn-main" disabled={captchaBusy || !captchaAnswer.trim()} onClick={() => void submitCaptcha()}>
+                                {captchaBusy ? "提交中…" : "提交答案"}
+                              </button>
+                            </div>
+                            {exploration.captcha.strategies.length > 0 && (
+                              <p className="qpm-panel-note">
+                                已尝试：{exploration.captcha.strategies.map((key) => CAPTCHA_STRATEGY_LABEL[key] ?? key).join(" → ")}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {exploration.status === "failed" && exploration.lastError && (
+                        <div className="qpm-env-error" role="alert">
+                          <b>本轮失败（未回写任何探索资产，四层保持上一轮）</b>
+                          <p className="qpm-mono">{exploration.lastError}</p>
+                        </div>
+                      )}
+
+                      {exploration.status === "aborted" && (
+                        <p className="qpm-panel-note">操作员中止：已采到的部分随本轮封存，未回写知识层。轮次号照样占着，不重排。</p>
+                      )}
+
+                      {exploration.status === "succeeded" && exploration.summary && (
+                        <div className="qpm-explore-sum">
+                          <span className="qpm-tag qpm-tag-sync">控件 {exploration.summary.controls ?? "—"}</span>
+                          <span className="qpm-tag qpm-tag-sync">表格 {exploration.summary.tables ?? "—"}</span>
+                          <span className="qpm-tag qpm-tag-sync">接口 {exploration.summary.apis ?? "—"}</span>
+                          <span className="qpm-tag qpm-tag-manual">已回写：{exploration.summary.knowledgeLayers.map((layer) => LAYER_LABEL[layer]).join(" / ") || "无"}</span>
+                          {exploration.summary.sessionReused && <span className="qpm-tag qpm-tag-manual">复用了登录态</span>}
+                          {exploration.summary.limitations.map((item) => (
+                            <span key={item} className="qpm-explore-limit">{item}</span>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  )}
+
                   <div className="qpm-tabs" role="tablist" aria-label="环境档案分区">
                     <button
                       type="button"
@@ -341,7 +527,8 @@ export function ProjectEnvironmentsPage() {
                           <p className="qpm-empty-title">这个环境还没探索过</p>
                           <p className="qpm-empty-sub">
                             建档只回答「有哪些地址」。模块职责、前置条件、怎么点才走得到，只有探索能给——
-                            探索以会话发起，派发入口在批次 3 接通。探不到的业务常识（例如"退款要先有已支付订单"）
+                            点右上角「派发探索」跑第一轮：服务端派发确定性任务，本机拉起浏览器登录后采集页面与接口，
+                            完成后四层资产自动回写。探不到的业务常识（例如"退款要先有已支付订单"）
                             请到「未知与假设」里写下来，下一轮探索会带着它去验。
                           </p>
                         </div>
@@ -452,6 +639,19 @@ export function ProjectEnvironmentsPage() {
             setAddingOpen(false);
             setSelected(env.env);
             void loadEnvironments();
+          }}
+        />
+      )}
+
+      {dispatchOpen && projectId && current && (
+        <ExplorationDialog
+          projectId={projectId}
+          environment={current}
+          onClose={() => setDispatchOpen(false)}
+          onStarted={(started) => {
+            setDispatchOpen(false);
+            setExploration(started);
+            toastSuccess(`第 ${started.round} 轮探索已派发，浏览器正在本机启动`);
           }}
         />
       )}
@@ -645,6 +845,125 @@ function HypothesisDialog({
           <button type="button" className="qpm-btn-ghost" onClick={onClose} disabled={saving}>取消</button>
           <button type="button" className="qpm-btn-main" onClick={() => void submit()} disabled={saving}>
             {saving ? "保存中…" : "记录假设"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * 派发一轮探索：只收「探哪儿、怎么登录」。
+ *
+ * 凭据只用于当次派发（服务端写 0600 临时文件、进程结束即删），不进库、不回显——
+ * 每次派发都要重新填密码，这是有意的：密码一旦进库就多一个泄露面。
+ */
+function ExplorationDialog({
+  projectId,
+  environment,
+  onClose,
+  onStarted,
+}: {
+  projectId: string;
+  environment: EnvironmentView;
+  onClose: () => void;
+  onStarted: (exploration: ExplorationView) => void;
+}) {
+  const [targetUrl, setTargetUrl] = useState(environment.baseUrl);
+  const [loginUrl, setLoginUrl] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    const login = loginUrl.trim();
+    if (login && (!username.trim() || !password)) {
+      setError("填了登录页地址就要同时给用户名和密码；只探公开页请把登录页地址留空");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const started = await startExploration(projectId, environment.env, {
+        targetUrl: targetUrl.trim() || environment.baseUrl,
+        loginUrl: login || undefined,
+        username: login ? username.trim() : undefined,
+        password: login ? password : undefined,
+      });
+      onStarted(started);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "派发失败，请重试");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="qpm-modal-mask" role="presentation" onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
+      <div className="qpm-modal" role="dialog" aria-modal="true" aria-label="派发探索">
+        <div className="qpm-modal-head">
+          <h2>派发探索 · {environment.env} 环境</h2>
+          <button type="button" className="qpm-icon-btn" aria-label="关闭" onClick={onClose} disabled={saving}>✕</button>
+        </div>
+        <div className="qpm-modal-body">
+          <label className="qpm-form-row">
+            <span>目标页地址</span>
+            <input
+              value={targetUrl}
+              onChange={(e) => setTargetUrl(e.target.value)}
+              placeholder={environment.baseUrl}
+              className="font-mono"
+              spellCheck={false}
+            />
+            <span className="qpm-field-hint">本轮探这一个页面。留空就是环境根地址。</span>
+          </label>
+          <label className="qpm-form-row">
+            <span>登录页地址（选填）</span>
+            <input
+              value={loginUrl}
+              onChange={(e) => setLoginUrl(e.target.value)}
+              placeholder="https://demo.example.com/admin/login"
+              className="font-mono"
+              spellCheck={false}
+            />
+            <span className="qpm-field-hint">留空 = 公开页模式，不提交任何登录表单。</span>
+          </label>
+          {loginUrl.trim() && (
+            <>
+              <label className="qpm-form-row">
+                <span>用户名</span>
+                <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" maxLength={200} />
+              </label>
+              <label className="qpm-form-row">
+                <span>密码</span>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="new-password"
+                  maxLength={500}
+                />
+                <span className="qpm-field-hint">只用于本次派发：写临时文件、进程结束即删，不进库、不回显。</span>
+              </label>
+            </>
+          )}
+          <div className="qpm-explore-discipline">
+            <b>开始前你需要知道的</b>
+            <ul>
+              <li>会在本机拉起无头浏览器，约 3~8 分钟；期间可正常使用机器。</li>
+              <li>登录表单自动识别；验证码先走策略链（测试码 → 本地算术识别 → 打码服务），都不行才暂停等你填。</li>
+              <li>全程只读：除登录表单外不提交任何业务表单，写操作按钮只登记、永不点击。</li>
+              <li>失败轮不写任何探索资产，轮次号照样占着——「第 N 轮失败」不等于「没探过」。</li>
+            </ul>
+          </div>
+          {error && <p className="qpm-field-error" role="alert">{error}</p>}
+        </div>
+        <div className="qpm-modal-foot">
+          <button type="button" className="qpm-btn-ghost" onClick={onClose} disabled={saving}>取消</button>
+          <button type="button" className="qpm-btn-main" onClick={() => void submit()} disabled={saving}>
+            {saving ? "派发中…" : "确认派发"}
           </button>
         </div>
       </div>

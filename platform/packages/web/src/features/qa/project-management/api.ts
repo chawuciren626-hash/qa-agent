@@ -15,8 +15,10 @@ import type {
   Hypothesis,
   HypothesisStatus,
   HypothesisSummary,
+  ExplorationView,
   ManagedProject,
   ProjectListQuery,
+  StartExplorationInput,
   ProjectListResult,
   UpdateProjectInput,
   WhyUnknown,
@@ -121,6 +123,66 @@ export async function bootstrapEnvironment(projectId: string, env: string): Prom
     body: {},
   });
   return response.environment;
+}
+
+// ---------------------------------------------------------------- 探索派发
+
+/** 轮次列表 + 最近一轮；探索进行中由页面轮询这个接口。 */
+export async function listExplorations(
+  projectId: string,
+  env: string,
+): Promise<{ explorations: ExplorationView[]; latest: ExplorationView | null }> {
+  return apiFetch<{ explorations: ExplorationView[]; latest: ExplorationView | null }>(
+    `${envItem(projectId, env)}/explorations`,
+  );
+}
+
+/**
+ * 派发一轮探索：服务端立刻返回（status=running），浏览器脚本在后台跑。
+ * 凭据只用于当次派发，不落库——下次派发的密码框一律重新填。
+ */
+export async function startExploration(
+  projectId: string,
+  env: string,
+  input: StartExplorationInput,
+): Promise<ExplorationView> {
+  const response = await apiFetch<{ exploration: ExplorationView }>(`${envItem(projectId, env)}/explore`, {
+    method: "POST",
+    body: input,
+  });
+  return response.exploration;
+}
+
+/** 人工填答验证码（只在 waiting_human 的那一轮有效）。 */
+export async function answerExplorationCaptcha(
+  projectId: string,
+  env: string,
+  explorationId: string,
+  answer: string,
+): Promise<ExplorationView> {
+  const response = await apiFetch<{ exploration: ExplorationView }>(
+    `${envItem(projectId, env)}/explore/${encodeURIComponent(explorationId)}/answer`,
+    { method: "POST", body: { answer } },
+  );
+  return response.exploration;
+}
+
+/** 中止：已采部分随本轮封存，不算成功也不算失败。 */
+export async function abortExploration(
+  projectId: string,
+  env: string,
+  explorationId: string,
+): Promise<ExplorationView> {
+  const response = await apiFetch<{ exploration: ExplorationView }>(
+    `${envItem(projectId, env)}/explore/${encodeURIComponent(explorationId)}/abort`,
+    { method: "POST", body: {} },
+  );
+  return response.exploration;
+}
+
+/** 验证码截图地址（<img src> 直接用；后端不缓存）。 */
+export function explorationCaptchaUrl(projectId: string, env: string, explorationId: string): string {
+  return `${envItem(projectId, env)}/explore/${encodeURIComponent(explorationId)}/captcha`;
 }
 
 // ---------------------------------------------------------------- 探索资产与假设

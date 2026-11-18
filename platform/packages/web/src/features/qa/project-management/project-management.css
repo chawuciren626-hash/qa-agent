@@ -405,3 +405,30 @@
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
+
+/* ---------- 探索派发（环境页一轮探索：进度 / 验证码 / 摘要） ---------- */
+.qpm-explore { border: 1px solid #e6e9ef; border-radius: 10px; padding: 12px 13px; margin-bottom: 12px; background: #fbfcfd; }
+.qpm-explore-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.qpm-explore-head h3 { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.qpm-explore-head .qpm-panel-note { margin-bottom: 0; }
+.qpm-explore-status { font-size: 11px; font-weight: 400; padding: 1.5px 8px; border-radius: 99px; background: #eef2f7; color: #646a73; }
+.qpm-explore-status.is-running { background: #eaf2fb; color: #185fa5; }
+.qpm-explore-status.is-waiting_human { background: #fdf3e3; color: #b8781a; }
+.qpm-explore-status.is-succeeded { background: #e8f6ef; color: #2e9e6b; }
+.qpm-explore-status.is-failed { background: #fdeeee; color: #d45555; }
+.qpm-explore-status.is-aborted { background: #eef2f7; color: #646a73; }
+
+.qpm-captcha { display: flex; gap: 12px; align-items: center; border: 1px solid #f3d7b8; background: #fffaf3; border-radius: 9px; padding: 11px 13px; margin: 10px 0; }
+.qpm-captcha-img { width: 130px; height: 46px; flex: none; border: 1px solid #e6e9ef; border-radius: 7px; background: #fff; object-fit: contain; }
+.qpm-captcha-img-empty { display: grid; place-items: center; font-size: 11px; color: #8f959e; }
+.qpm-captcha-form { flex: 1; min-width: 0; }
+.qpm-captcha-form b { font-size: 12.5px; }
+.qpm-captcha-form .qpm-panel-note { margin: 3px 0 6px; }
+.qpm-captcha-row { display: flex; gap: 8px; }
+.qpm-captcha-row input { flex: 1; min-width: 0; border: 1px solid #e6e9ef; border-radius: 7px; padding: 6px 10px; font-size: 12.5px; background: #fff; }
+
+.qpm-explore-sum { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+.qpm-explore-limit { font-size: 11px; color: #8f959e; }
+.qpm-explore-discipline { border-radius: 9px; background: #fdf3e3; color: #7c5210; padding: 9px 11px; margin: 4px 0 8px; }
+.qpm-explore-discipline b { font-size: 12px; display: block; margin-bottom: 4px; }
+.qpm-explore-discipline ul { margin: 0 0 0 16px; font-size: 11.5px; line-height: 1.7; }

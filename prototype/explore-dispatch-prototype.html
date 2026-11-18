@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>探索派发入口原型（环境页 → 建会话 → 登录式探索 → 四层回写）</title>
+<style>
+  :root{
+    --text:#1f2329; --muted:#8f959e; --muted2:#646a73; --line:#e6e9ef; --line2:#eef0f4;
+    --hover:#f1f3f6; --pri:#185fa5; --pri-bg:#eaf2fb; --pri-line:#cfe0f3;
+    --green:#2e9e6b; --green-bg:#e8f6ef; --red:#d45555; --red-bg:#fdeeee;
+    --amber:#b8781a; --amber-bg:#fdf3e3; --grey-bg:#f2f3f5; --bg:#fff;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:#f5f6f8;color:var(--text);font-size:13.5px;-webkit-font-smoothing:antialiased}
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+  input,select{font:inherit;color:inherit}
+
+  .pg-bar{height:46px;display:flex;align-items:center;gap:10px;padding:0 16px;background:#0f172a;color:#cbd5e1;
+    font-size:12px;position:sticky;top:0;z-index:100}
+  .pg-bar b{color:#fff;font-weight:600;font-size:12.5px}
+  .pg-tab{padding:5px 12px;border-radius:7px;color:#94a3b8;font-size:12px;white-space:nowrap}
+  .pg-tab:hover{background:#1e293b;color:#e2e8f0}
+  .pg-tab.on{background:#185fa5;color:#fff;font-weight:600}
+  .pg-hint{margin-left:auto;color:#7c8ba1;font-size:11.5px;max-width:44%;text-align:right;line-height:1.5}
+  .pg-hint b{color:#e2e8f0;font-weight:600}
+
+  .app{position:relative;display:flex;height:calc(100vh - 46px);min-height:680px;background:var(--bg);
+    max-width:1560px;margin:0 auto;overflow:hidden;box-shadow:0 0 0 1px var(--line)}
+  .side{width:232px;flex:none;border-right:1px solid var(--line);display:flex;flex-direction:column;background:#fff}
+  .brand{display:flex;align-items:center;gap:10px;padding:18px 16px 14px}
+  .brand-logo{width:32px;height:32px;border-radius:7px;background:#185fa5;color:#fff;display:grid;place-items:center;
+    font-weight:700;font-size:16px;position:relative;flex:none}
+  .brand-logo::after{content:"";position:absolute;left:7px;right:7px;bottom:7px;height:2px;border-radius:2px;background:#5dcaa5}
+  .brand-txt b{display:block;font-size:15.5px;font-weight:700;letter-spacing:-.2px}
+  .brand-txt small{display:block;font-size:10.5px;color:var(--muted);letter-spacing:.3px}
+  .nav{padding:8px 10px}
+  .nav-item{display:flex;align-items:center;gap:9px;width:100%;min-height:36px;padding:7px 10px;border-radius:8px;
+    color:var(--muted2);text-align:left;white-space:nowrap;font-size:13.5px}
+  .nav-item.on{background:var(--pri-bg);color:var(--pri);font-weight:600}
+  .side-foot{margin-top:auto;padding:12px 14px;border-top:1px solid var(--line);display:flex;align-items:center;gap:9px}
+  .avatar{width:28px;height:28px;border-radius:50%;background:var(--pri);color:#fff;display:grid;place-items:center;
+    font-size:12px;font-weight:600;flex:none}
+  .who b{display:block;font-size:12.5px}
+  .who small{font-size:11px;color:var(--muted)}
+
+  .main{flex:1;min-width:0;position:relative;display:flex;flex-direction:column;overflow:hidden}
+  .scroll{flex:1;min-height:0;overflow-y:auto;padding:22px 28px 60px}
+  .screen{display:none}
+  .screen.on{display:block}
+
+  .head{display:flex;align-items:flex-start;gap:12px}
+  .head h1{font-size:19px;letter-spacing:-.2px}
+  .head p{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.6}
+  .tag{display:inline-block;margin-left:8px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600;
+    background:var(--amber-bg);color:var(--amber);vertical-align:2px}
+
+  /* ===== 环境页骨架（复刻现行布局） ===== */
+  .env-wrap{display:flex;gap:16px;margin-top:18px;align-items:flex-start}
+  .env-list{width:250px;flex:none;border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden}
+  .env-item{padding:12px 14px;border-bottom:1px solid var(--line2);cursor:pointer}
+  .env-item:last-child{border-bottom:none}
+  .env-item:hover{background:var(--hover)}
+  .env-item.on{background:var(--pri-bg)}
+  .env-item b{display:flex;align-items:center;gap:7px;font-size:13px}
+  .env-item small{display:block;color:var(--muted);font-size:11.5px;margin-top:4px;word-break:break-all}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none}
+  .dot.ok{background:var(--green)} .dot.err{background:var(--red)} .dot.idle{background:#c4c9d4}
+  .env-item .st{margin-left:auto;font-size:11px;font-weight:600}
+  .st.ok{color:var(--green)} .st.err{color:var(--red)} .st.idle{color:var(--muted)}
+
+  .env-detail{flex:1;min-width:0;border:1px solid var(--line);border-radius:10px;background:#fff;position:relative}
+  .ed-head{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line)}
+  .ed-head h2{font-size:15px}
+  .ed-head .addr{font-family:var(--mono);font-size:11.5px;color:var(--muted2);background:var(--grey-bg);
+    padding:3px 8px;border-radius:6px}
+  .ed-actions{margin-left:auto;display:flex;gap:8px}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:8px;font-size:12.5px;font-weight:600}
+  .btn-main{background:var(--pri);color:#fff}
+  .btn-main:hover{background:#134c86}
+  .btn-ghost{border:1px solid var(--line);color:var(--muted2);background:#fff}
+  .btn-ghost:hover{background:var(--hover)}
+  .btn-green{background:var(--green);color:#fff}
+  .ed-body{padding:16px 18px 20px}
+
+  .sec-title{font-size:12px;font-weight:700;color:var(--muted2);letter-spacing:.4px;margin-bottom:10px;
+    display:flex;align-items:center;gap:8px}
+  .sec-title .r{margin-left:auto;font-weight:500;color:var(--muted);font-size:11.5px}
+
+  .empty{border:1px dashed var(--line);border-radius:10px;padding:26px 20px;text-align:center;background:#fafbfc}
+  .empty h3{font-size:13.5px;font-weight:600}
+  .empty p{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.7;max-width:520px;margin-left:auto;margin-right:auto}
+  .empty .btn{margin-top:14px}
+
+  /* 四层知识卡（完成态） */
+  .layers{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .layer-card{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fff}
+  .layer-card header{display:flex;align-items:center;gap:8px;padding:9px 13px;border-bottom:1px solid var(--line2);
+    background:#fafbfc;font-size:12.5px;font-weight:700}
+  .layer-card header .n{margin-left:auto;font-size:11px;font-weight:600;color:var(--muted2);
+    background:var(--grey-bg);border-radius:12px;padding:2px 9px}
+  .layer-card ul{list-style:none;padding:6px 0}
+  .layer-card li{display:flex;align-items:center;gap:8px;padding:6px 13px;font-size:12.5px}
+  .layer-card li+li{border-top:1px solid var(--line2)}
+  .layer-card li code{font-family:var(--mono);font-size:11px;color:var(--muted2)}
+  .kchip{flex:none;font-size:10.5px;padding:1px 7px;border-radius:10px;background:var(--pri-bg);color:var(--pri);font-weight:600}
+  .kchip.warn{background:var(--amber-bg);color:var(--amber)}
+  .kchip.ok{background:var(--green-bg);color:var(--green)}
+  .hypo{border-top:1px dashed var(--line);margin-top:12px;padding-top:12px}
+  .hypo-row{display:flex;align-items:center;gap:8px;padding:6px 2px;font-size:12.5px}
+
+  /* 标注气泡 */
+  .anno{position:absolute;z-index:5;display:flex;gap:7px;align-items:flex-start;max-width:250px}
+  .anno .pin{flex:none;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;
+    display:grid;place-items:center;font-size:11px;font-weight:700;box-shadow:0 0 0 3px rgba(212,85,85,.18)}
+  .anno .tip{background:#fff2f0;border:1px solid #f3c1bc;color:#8c3832;border-radius:8px;padding:7px 10px;
+    font-size:11.5px;line-height:1.6;box-shadow:0 4px 14px rgba(31,35,41,.08)}
+  .anno .tip b{font-weight:700}
+  .glow{outline:2px solid var(--red);outline-offset:3px;border-radius:9px;animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{0%,100%{outline-color:rgba(212,85,85,.9)}50%{outline-color:rgba(212,85,85,.35)}}
+
+  /* 弹窗 */
+  .mask{position:absolute;inset:0;background:rgba(15,23,42,.42);z-index:20;display:flex;align-items:center;justify-content:center}
+  .modal{width:520px;max-width:92%;background:#fff;border-radius:14px;box-shadow:0 24px 60px rgba(15,23,42,.28);overflow:hidden}
+  .modal>header{display:flex;align-items:center;gap:10px;padding:15px 20px;border-bottom:1px solid var(--line)}
+  .modal>header b{font-size:14.5px}
+  .modal>header .x{margin-left:auto;color:var(--muted);font-size:16px;padding:2px 6px;border-radius:6px}
+  .modal>header .x:hover{background:var(--hover)}
+  .modal .bd{padding:16px 20px}
+  .modal .ft{display:flex;justify-content:flex-end;gap:9px;padding:13px 20px;border-top:1px solid var(--line);background:#fafbfc}
+  .kv{display:grid;grid-template-columns:96px 1fr;gap:7px 10px;font-size:12.5px;margin-bottom:14px}
+  .kv dt{color:var(--muted);text-align:right;padding-top:1px}
+  .kv dd{min-width:0;word-break:break-all}
+  .kv dd code{font-family:var(--mono);font-size:11.5px;background:var(--grey-bg);padding:2px 6px;border-radius:5px}
+  .notice{border-radius:9px;padding:10px 12px;font-size:12px;line-height:1.7}
+  .notice.amber{background:var(--amber-bg);color:#7c5210}
+  .notice.red{background:var(--red-bg);color:#8c3832}
+  .notice.grey{background:var(--grey-bg);color:var(--muted2)}
+  .notice b{font-weight:700}
+  .notice ul{margin:4px 0 0 18px}
+  .notice li+li{margin-top:2px}
+
+  /* 进度 */
+  .steps{display:grid;grid-template-columns:repeat(6,1fr);gap:0;margin:6px 0 4px}
+  .step{position:relative;text-align:center;padding-top:26px;font-size:11.5px;color:var(--muted)}
+  .step::before{content:"";position:absolute;top:9px;left:-50%;right:50%;height:2px;background:var(--line);z-index:0}
+  .step:first-child::before{display:none}
+  .step::after{content:"";position:absolute;top:4px;left:50%;transform:translateX(-50%);width:13px;height:13px;
+    border-radius:50%;background:#fff;border:2px solid #c4c9d4;z-index:1}
+  .step .ic{position:absolute;top:3px;left:50%;transform:translateX(-50%);z-index:2;width:15px;height:15px;
+    display:none;place-items:center;border-radius:50%;font-size:9px;color:#fff}
+  .step.done::before{background:var(--green)}
+  .step.done::after{border-color:var(--green);background:var(--green)}
+  .step.done .ic{display:grid}
+  .step.run{color:var(--pri);font-weight:700}
+  .step.run::after{border-color:var(--pri);animation:blink 1.2s ease-in-out infinite}
+  @keyframes blink{0%,100%{box-shadow:0 0 0 0 rgba(24,95,165,.35)}50%{box-shadow:0 0 0 6px rgba(24,95,165,0)}}
+  .step.fail::after{border-color:var(--red);background:var(--red)}
+  .run-card{border:1px solid var(--line);border-radius:10px;background:#fff;margin-top:14px;overflow:hidden}
+  .run-card>header{display:flex;align-items:center;gap:10px;padding:11px 15px;border-bottom:1px solid var(--line2);
+    font-size:12.5px;font-weight:700}
+  .run-card>header .meta{margin-left:auto;font-weight:500;color:var(--muted);font-size:11.5px;display:flex;gap:10px;align-items:center}
+  .run-body{padding:14px 15px}
+  .run-log{font-family:var(--mono);font-size:11px;line-height:1.9;color:var(--muted2);background:#fafbfc;
+    border:1px solid var(--line2);border-radius:8px;padding:10px 12px;margin-top:12px}
+  .run-log .hl{color:var(--pri);font-weight:600}
+  .run-log .ok{color:var(--green)} .run-log .er{color:var(--red)}
+  .link{color:var(--pri);text-decoration:none;border-bottom:1px solid var(--pri-line)}
+  .live{display:inline-flex;align-items:center;gap:5px;color:var(--pri);font-weight:700;font-size:11px}
+  .live::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--pri);animation:blink 1.2s infinite}
+
+  /* 验证码卡 */
+  .captcha{display:flex;gap:14px;align-items:center;border:1px solid #f3c1bc;background:#fff9f7;border-radius:10px;
+    padding:13px 15px;margin-top:13px}
+  .cap-img{width:132px;height:44px;flex:none;border:1px solid var(--line);border-radius:7px;background:#fff;
+    display:grid;place-items:center;font-family:var(--mono);font-size:19px;font-weight:700;letter-spacing:2px;
+    color:#243041;position:relative;overflow:hidden}
+  .cap-img::before{content:"";position:absolute;inset:0;background:
+    linear-gradient(115deg,transparent 46%,rgba(90,130,190,.18) 47%,rgba(90,130,190,.18) 49%,transparent 50%),
+    linear-gradient(65deg,transparent 30%,rgba(190,110,90,.16) 31%,rgba(190,110,90,.16) 33%,transparent 34%)}
+  .cap-form{flex:1;min-width:0}
+  .cap-form b{font-size:12.5px}
+  .cap-form p{font-size:11.5px;color:var(--muted);margin-top:3px;line-height:1.6}
+  .cap-row{display:flex;gap:8px;margin-top:9px}
+  .cap-row input{flex:1;min-width:0;border:1px solid var(--line);border-radius:7px;padding:7px 10px;font-size:13px}
+  .cap-row input:focus{outline:2px solid var(--pri-line);border-color:var(--pri)}
+  .cap-count{font-family:var(--mono);font-size:11px;color:var(--amber);margin-top:7px}
+  .cap-count.hot{color:var(--red);font-weight:700}
+
+  /* 通用小件 */
+  .chips{display:flex;gap:7px;flex-wrap:wrap}
+  .chip{font-size:11px;padding:3px 10px;border-radius:14px;font-weight:600;background:var(--grey-bg);color:var(--muted2)}
+  .chip.blue{background:var(--pri-bg);color:var(--pri)}
+  .chip.green{background:var(--green-bg);color:var(--green)}
+  .chip.red{background:var(--red-bg);color:var(--red)}
+  .chip.amber{background:var(--amber-bg);color:var(--amber)}
+  .rules{border:1px solid var(--line);border-radius:10px;background:#fff;margin-top:26px;overflow:hidden}
+  .rules>header{padding:11px 16px;border-bottom:1px solid var(--line2);background:#fafbfc;font-size:12.5px;font-weight:700}
+  .rules table{width:100%;border-collapse:collapse;font-size:12.5px}
+  .rules td{padding:9px 16px;border-top:1px solid var(--line2);vertical-align:top;line-height:1.65}
+  .rules td:first-child{width:220px;color:var(--muted2);font-weight:600;white-space:nowrap}
+  .foot-note{margin-top:18px;font-size:11.5px;color:var(--muted);line-height:1.7}
+</style>
+</head>
+<body>
+
+<div class="pg-bar">
+  <b>探索派发 · 界面原型</b>
+  <button class="pg-tab on" data-s="s1">① 入口与空态</button>
+  <button class="pg-tab" data-s="s2">② 派发确认弹窗</button>
+  <button class="pg-tab" data-s="s3">③ 探索进行中</button>
+  <button class="pg-tab" data-s="s4">④ 验证码人工介入</button>
+  <button class="pg-tab" data-s="s5">⑤ 完成态·四层回写</button>
+  <button class="pg-tab" data-s="s6">⑥ 失败态·诚实边界</button>
+  <span class="pg-hint">单文件原型，仅示意布局与交互状态，<b>确认后才落真实代码</b>。⑥ 屏串起一次派发的完整生命周期。</span>
+</div>
+
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="brand-logo">A</div>
+      <div class="brand-txt"><b>AITestHarness</b><small>QA 测试工作台</small></div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item">▦ 项目管理</button>
+      <button class="nav-item on">prus 项目环境</button>
+      <button class="nav-item">✓ 项目视图</button>
+      <button class="nav-item">▤ 资料库</button>
+      <button class="nav-item">⚑ 质量追溯</button>
+    </nav>
+    <div class="side-foot">
+      <div class="avatar">QA</div>
+      <div class="who"><b>qa-operator</b><small>普通成员</small></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="scroll">
+
+      <div class="head">
+        <div>
+          <h1>项目环境<span class="tag">原型</span></h1>
+          <p>项目：<b>API网关管理</b> · 本页左侧为环境列表，右侧为环境档案（建档状态 / 探索资产 / 未知与假设）。<br>
+            原型重点：<b>「派发探索」按钮的位置与点击后的完整状态流</b>——其余区块均为现行实现，仅作上下文。</p>
+        </div>
+      </div>
+
+      <!-- ============ ① 入口与空态 ============ -->
+      <section class="screen on" id="s1">
+        <div class="env-wrap">
+          <div class="env-list">
+            <div class="env-item on">
+              <b><span class="dot ok"></span>test 环境 <span class="st ok">已建档</span></b>
+              <small>https://local.console.gov-bid.com</small>
+            </div>
+            <div class="env-item">
+              <b><span class="dot idle"></span>pre 环境 <span class="st idle">未建档</span></b>
+              <small>https://pre.console.gov-bid.com</small>
+            </div>
+            <div class="env-item">
+              <b><span class="dot err"></span>staging <span class="st err">建档失败</span></b>
+              <small>https://staging.console.gov-bid.com</small>
+            </div>
+          </div>
+
+          <div class="env-detail">
+            <div class="ed-head">
+              <h2>test 环境</h2>
+              <span class="addr">https://local.console.gov-bid.com</span>
+              <div class="ed-actions">
+                <button class="btn btn-ghost">重新建档</button>
+                <button class="btn btn-main glow" id="dispatchBtn">▶ 派发探索</button>
+              </div>
+            </div>
+            <div class="ed-body">
+              <div class="sec-title">探索资产 <span class="r">第 0 轮 · 未探索</span></div>
+              <div class="empty">
+                <h3>这个环境还没探索过</h3>
+                <p>建档只回答「有哪些地址」。模块职责、前置条件、怎么点才走得到，只有探索能给。</p>
+                <p>点右上角<b style="color:var(--pri)">「派发探索」</b>：系统代建一个会话并向探索智能体下发任务，本机拉起浏览器登录后逐页采集。探不到的业务常识（例如「退款要先有已支付订单」）请到「未知与假设」里写下来，下一轮探索会带着它去验。</p>
+                <button class="btn btn-main">▶ 派发探索</button>
+              </div>
+
+              <div class="sec-title" style="margin-top:18px">未知与假设</div>
+              <div class="hypo">
+                <div class="hypo-row"><span class="chip amber">待验证</span>卡池列表需先选择「启用中」套餐才能看到数据</div>
+                <div class="hypo-row"><span class="chip ok">已验证</span>导出按钮仅管理员可见（第 1 轮验证）</div>
+              </div>
+            </div>
+
+            <!-- 标注 -->
+            <div class="anno" style="right:26px;top:-14px;">
+              <span class="pin">1</span>
+              <span class="tip"><b>入口位置 ×2</b>：抽屉操作区主按钮 + 空态内 CTA。未建档/建档失败的环境不显示（没有 maps 无从探起）。</span>
+            </div>
+            <div class="anno" style="right:26px;bottom:-16px;">
+              <span class="pin">2</span>
+              <span class="tip">按钮文案用「派发探索」，与旧构建残留的「派发探索资产」无关；点它是<b>创建真实会话</b>，不是假按钮。</span>
+            </div>
+          </div>
+        </div>
+        <p class="foot-note">说明：建档中（probing）的环境同样隐藏派发按钮；探索进行中的环境按钮变为「查看进度」——状态都跟着环境走，不在别处另设入口。</p>
+      </section>
+
+      <!-- ============ ② 派发确认弹窗 ============ -->
+      <section class="screen" id="s2">
+        <div class="env-wrap" style="filter:blur(1.5px);opacity:.5">
+          <div class="env-list">
+            <div class="env-item on"><b><span class="dot ok"></span>test 环境 <span class="st ok">已建档</span></b><small>https://local.console.gov-bid.com</small></div>
+          </div>
+          <div class="env-detail"><div class="ed-head"><h2>test 环境</h2></div><div class="ed-body" style="height:300px"></div></div>
+        </div>
+        <div class="mask">
+          <div class="modal">
+            <header><b>派发探索 · test 环境</b><span class="chip blue">将创建真实会话</span><button class="x">✕</button></header>
+            <div class="bd">
+              <dl class="kv">
+                <dt>探索范围</dt><dd>登录后可导航到的页面，<b>本轮只探菜单可达页</b>（广度优先）</dd>
+                <dt>目标站点</dt><dd><code>https://local.console.gov-bid.com</code></dd>
+                <dt>登录配置</dt><dd><span class="chip green">已登记</span> 用户名/密码/图形验证码（img.captcha-img）</dd>
+                <dt>凭据来源</dt><dd>项目凭据库 · <code>admin</code>（回执中只出掩码）</dd>
+                <dt>会话</dt><dd>系统代建，名称「探索 · test · 第 1 轮」，可在项目视图查看 Trace</dd>
+              </dl>
+              <div class="notice amber">
+                <b>开始前你需要知道的</b>
+                <ul>
+                  <li>会在<b>本机</b>拉起一个无头浏览器，全程约 3~8 分钟，期间机器可正常使用；</li>
+                  <li>图形验证码<b>先走自动策略链</b>（测试后门码 → OCR ≥0.9 采纳 → 打码服务），自动都不可用时才暂停等人填（180 秒内）；</li>
+                  <li>全程<b>只读</b>：除登录表单外不提交任何业务表单，写操作按钮只登记、永不点击。</li>
+                </ul>
+              </div>
+            </div>
+            <footer class="ft">
+              <button class="btn btn-ghost">取消</button>
+              <button class="btn btn-main">确认派发</button>
+            </footer>
+          </div>
+        </div>
+        <p class="foot-note">诚实边界：登录配置<b>未登记</b>时，弹窗里「登录配置」显示「仅公开页可探」灰字提示，派发仍可用，但登录后页面一律进「未知与假设」让你人工补，绝不虚构登录后内容。</p>
+      </section>
+
+      <!-- ============ ③ 探索进行中 ============ -->
+      <section class="screen" id="s3">
+        <div class="env-wrap">
+          <div class="env-list">
+            <div class="env-item on">
+              <b><span class="dot ok"></span>test 环境 <span class="st" style="color:var(--pri)">探索中</span></b>
+              <small>https://local.console.gov-bid.com</small>
+            </div>
+          </div>
+          <div class="env-detail">
+            <div class="ed-head">
+              <h2>test 环境</h2>
+              <span class="addr">https://local.console.gov-bid.com</span>
+              <div class="ed-actions"><button class="btn btn-ghost">查看进度</button></div>
+            </div>
+            <div class="ed-body">
+              <div class="steps">
+                <div class="step done"><span class="ic">✓</span>建会话</div>
+                <div class="step done"><span class="ic">✓</span>拉起浏览器</div>
+                <div class="step done"><span class="ic">✓</span>登录</div>
+                <div class="step run">页面采集</div>
+                <div class="step">接口采集</div>
+                <div class="step">合并回写</div>
+              </div>
+              <div class="run-card">
+                <header>
+                  <span class="live">探索进行中</span>
+                  <span class="meta">
+                    <span>已运行 02:41</span>
+                    <a class="link" href="#">会话 sess-explore-01 →</a>
+                    <button class="btn btn-ghost" style="padding:4px 10px;font-size:11.5px">中止</button>
+                  </span>
+                </header>
+                <div class="run-body">
+                  <div class="chips">
+                    <span class="chip blue">已到 6 页</span>
+                    <span class="chip">采到接口 14 条</span>
+                    <span class="chip">登记写操作 2 个（未点击）</span>
+                    <span class="chip amber">待验证假设带入 1 条</span>
+                  </div>
+                  <div class="run-log">
+                    <div><span class="ok">✓</span> 12:03:11 会话创建 sess-explore-01（round=1）</div>
+                    <div><span class="ok">✓</span> 12:03:12 Chromium 无头启动（channel=chrome，pid=41221）</div>
+                    <div><span class="ok">✓</span> 12:03:15 登录页可达，命中已登记登录配置</div>
+                    <div><span class="ok">✓</span> 12:03:40 验证码已由操作员填答，登录成功 →「卡池管理」可见</div>
+                    <div><span class="ok">✓</span> 12:04:02 菜单树采集完成：12 个路由</div>
+                    <div><span class="hl">▶</span> 12:05:03 逐页渲染采集 6/12（gateway-admin/user/key-card/index …）</div>
+                    <div>· 12:05:04 接口监听中（xhr/fetch，只记 method/path/字段名）</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="foot-note">状态机：环境在探索期间显示「探索中」，按钮变「查看进度」（跳到本屏）；页签轮询刷新，不用手动 F5。「中止」会封存已采到的部分并如实落盘，不冒充完成。</p>
+      </section>
+
+      <!-- ============ ④ 验证码人工介入 ============ -->
+      <section class="screen" id="s4">
+        <div class="env-wrap">
+          <div class="env-list">
+            <div class="env-item on">
+              <b><span class="dot" style="background:var(--amber)"></span>test 环境 <span class="st" style="color:var(--amber)">等验证码</span></b>
+              <small>https://local.console.gov-bid.com</small>
+            </div>
+          </div>
+          <div class="env-detail">
+            <div class="ed-head">
+              <h2>test 环境</h2>
+              <div class="ed-actions"><button class="btn btn-ghost">查看进度</button></div>
+            </div>
+              <div class="ed-body">
+                <div class="steps">
+                  <div class="step done"><span class="ic">✓</span>建会话</div>
+                  <div class="step done"><span class="ic">✓</span>拉起浏览器</div>
+                  <div class="step run">登录 · 验证码</div>
+                  <div class="step">页面采集</div>
+                  <div class="step">接口采集</div>
+                  <div class="step">合并回写</div>
+                </div>
+                <div class="cap-chain" style="display:flex;gap:7px;align-items:center;margin-top:13px;flex-wrap:wrap">
+                  <span style="font-size:11.5px;font-weight:700;color:var(--muted2)">自动策略链：</span>
+                  <span class="chip">① 测试后门码 <b style="color:var(--muted)">未声明</b></span>
+                  <span class="chip">② OCR 置信度 0.62 &lt; 0.9 不采纳</span>
+                  <span class="chip">③ 打码服务 <b style="color:var(--muted)">未配置</b></span>
+                  <span class="chip amber">→ 兜底：人工填答</span>
+                </div>
+                <div class="captcha" style="border-color:#f3c1bc;background:#fff9f7">
+                  <div class="cap-img">37 + 25 = ?</div>
+                  <div class="cap-form">
+                    <b>自动策略没拿下，才轮到你（兜底档）</b>
+                    <p>只有策略链全部不可用/失败时才暂停等人。自动识别成功时本屏一闪而过，你只会看到「登录 ✓」。<b>填错导致登录失败时本轮直接结束</b>，不重试——防触发目标站锁定策略。</p>
+                  <div class="cap-row">
+                    <input placeholder="填入算式结果，如 62" value="62">
+                    <button class="btn btn-main">提交答案</button>
+                    <button class="btn btn-ghost">放弃本轮</button>
+                  </div>
+                  <div class="cap-count">剩余 02:07 / 180 秒，超时本轮按失败封存</div>
+                </div>
+              </div>
+                  <div class="run-log">
+                    <div><span class="ok">✓</span> 12:03:15 登录页可达，命中已登记登录配置</div>
+                    <div><span class="ok">✓</span> 12:03:16 用户名/密码已填（回执中掩码），验证码元素已截图</div>
+                    <div>· 12:03:16 策略链：test_bypass_code 未声明 → OCR 0.62 低于采纳线 → 打码服务未配置</div>
+                    <div><span class="hl">⏸</span> 12:03:16 落入 manual 兜底，暂停等操作员填答 @@AWAIT_ANSWER（与脚本链同协议）</div>
+                  </div>
+            </div>
+          </div>
+        </div>
+        <p class="foot-note">如果平台部署在 VM/远端，截图经服务端取回显示在这里，答案回传走同一握手文件——你在哪台机器上开界面，就能在哪台机器上答题。验证码图<b>不进</b>普通回执与证据清单（受保护文件）。</p>
+      </section>
+
+      <!-- ============ ⑤ 完成态 ============ -->
+      <section class="screen" id="s5">
+        <div class="env-wrap">
+          <div class="env-list">
+            <div class="env-item on">
+              <b><span class="dot ok"></span>test 环境 <span class="st ok">已建档</span></b>
+              <small>https://local.console.gov-bid.com</small>
+            </div>
+          </div>
+          <div class="env-detail">
+            <div class="ed-head">
+              <h2>test 环境</h2>
+              <span class="addr">https://local.console.gov-bid.com</span>
+              <div class="ed-actions">
+                <button class="btn btn-ghost">重新建档</button>
+                <button class="btn btn-main">▶ 再次派发（第 2 轮）</button>
+              </div>
+            </div>
+            <div class="ed-body">
+              <div class="notice grey" style="margin-bottom:14px">
+                第 1 轮探索于 12:08 完成，会话 <a class="link" href="#">sess-explore-01 →</a> · 历时 4 分 52 秒 ·
+                <span class="chip green" style="margin-left:4px">12 页</span>
+                <span class="chip green" style="margin-left:4px">28 接口</span>
+                <span class="chip green" style="margin-left:4px">1 条假设已验证</span>
+                <span class="chip amber" style="margin-left:4px">3 处未探到（原因已注明）</span>
+              </div>
+
+              <div class="sec-title">探索资产 <span class="r">第 1 轮 · 12:08 更新 · 每轮整层覆盖</span></div>
+              <div class="layers">
+                <div class="layer-card">
+                  <header>① 模块 <span class="n">5</span></header>
+                  <ul>
+                    <li><span class="kchip">菜单</span>卡池管理 <code>/user/key-card/index</code></li>
+                    <li><span class="kchip">菜单</span>套餐配置 <code>/user/package/index</code></li>
+                    <li><span class="kchip">菜单</span>渠道管理 <code>/user/channel/index</code></li>
+                    <li><span class="kchip warn">路由可达·未采控件</span>审计日志 <code>/user/audit/page</code>（需翻页加载）</li>
+                  </ul>
+                </div>
+                <div class="layer-card">
+                  <header>② 链路 <span class="n">4</span></header>
+                  <ul>
+                    <li>登录 → 卡池列表 <span class="kchip ok">已验证</span></li>
+                    <li>套餐筛选 → 卡池联动 <span class="kchip ok">已验证（带入假设）</span></li>
+                    <li>新建卡池 → 提交 <span class="kchip warn">只登记未触发</span></li>
+                    <li>导出 → 下载 <span class="kchip warn">未探到（管理员菜单不可见）</span></li>
+                  </ul>
+                </div>
+                <div class="layer-card">
+                  <header>③ 墙 <span class="n">3</span></header>
+                  <ul>
+                    <li>未登录访问任意业务页 → 重定向登录页 <span class="kchip ok">已验证</span></li>
+                    <li>图形验证码（img.captcha-img） <span class="kchip ok">策略链已登记</span></li>
+                    <li>导出权限仅管理员 <span class="kchip warn">假设待第 2 轮验证</span></li>
+                  </ul>
+                </div>
+                <div class="layer-card">
+                  <header>④ 接口映射 <span class="n">28</span></header>
+                  <ul>
+                    <li><code>POST /gateway-admin/sysMenu/list</code> <span class="kchip">字段 3</span></li>
+                    <li><code>POST /gateway-admin/user/keyCard/page</code> <span class="kchip">字段 6</span></li>
+                    <li><code>GET /gateway-admin/captchaImage</code> <span class="kchip">—</span></li>
+                    <li>… 其余 25 条 <span class="kchip">只含 method/path/字段名，无业务数据</span></li>
+                  </ul>
+                </div>
+              </div>
+
+              <div class="hypo">
+                <div class="sec-title" style="margin-bottom:6px">未知与假设 <span class="r">程序判定三态，只有「已验证」进前置条件</span></div>
+                <div class="hypo-row"><span class="chip ok">已验证</span>卡池列表需先选「启用中」套餐（第 1 轮 · sess-explore-01）</div>
+                <div class="hypo-row"><span class="chip amber">待验证</span>导出按钮仅管理员可见</div>
+                <div class="hypo-row"><span class="chip red">仍未探到</span>批量导入入口（广度未覆盖：菜单折叠区，第 2 轮定向补探）</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="foot-note">完成态即现行「探索资产」视图的正常内容——本原型重点在于：它不再是永远空着，而是每次派发后被真实数据填上；「未探到」如实标注原因，不画成 0 个模块。</p>
+      </section>
+
+      <!-- ============ ⑥ 失败态 ============ -->
+      <section class="screen" id="s6">
+        <div class="env-wrap">
+          <div class="env-list">
+            <div class="env-item on">
+              <b><span class="dot err"></span>test 环境 <span class="st err">探索失败</span></b>
+              <small>https://local.console.gov-bid.com</small>
+            </div>
+          </div>
+          <div class="env-detail">
+            <div class="ed-head">
+              <h2>test 环境</h2>
+              <div class="ed-actions">
+                <button class="btn btn-ghost">查看会话</button>
+                <button class="btn btn-main">▶ 重新派发</button>
+              </div>
+            </div>
+            <div class="ed-body">
+              <div class="steps">
+                <div class="step done"><span class="ic">✓</span>建会话</div>
+                <div class="step done"><span class="ic">✓</span>拉起浏览器</div>
+                <div class="step fail">登录</div>
+                <div class="step">页面采集</div>
+                <div class="step">接口采集</div>
+                <div class="step">合并回写</div>
+              </div>
+              <div class="notice red" style="margin-top:14px">
+                <b>本轮失败：登录被拒绝（验证码答案不正确）</b><br>
+                失败发生在「登录」步，未进入任何页面采集。<b>没有产出任何探索资产</b>——本轮四层知识保持第 0 轮状态，不写「已探索 0 页」这种冒充成功的记录。失败详情与会话 Trace：<a class="link" href="#">sess-explore-02 →</a>
+              </div>
+              <div class="run-log" style="margin-top:12px">
+                <div><span class="ok">✓</span> 14:20:31 会话创建 sess-explore-02（round=1）</div>
+                <div><span class="ok">✓</span> 14:20:32 Chromium 无头启动（channel=chrome，pid=41390）</div>
+                <div><span class="ok">✓</span> 14:20:58 操作员填答提交（第 1 次提交）</div>
+                <div><span class="er">✗</span> 14:21:02 登录失败：.el-message--error「验证码错误」</div>
+                <div><span class="er">✗</span> 14:21:02 按红线不再重试提交（防锁定），本轮封存为 failed</div>
+              </div>
+              <div class="notice grey" style="margin-top:12px">
+                <b>其他失败形态（同样处理）</b>
+                <ul>
+                  <li>验证码 180 秒未答 → 超时失败，答案文件握手关闭；</li>
+                  <li>目标站不可达 → 失败在「拉起浏览器」步，提示先检查地址连通性；</li>
+                  <li>登录配置缺失且站点需登录 → 失败于登录步，提示先在环境里登记登录配置。</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="foot-note">失败可「重新派发」，轮次号不回退：失败轮也占 round，保证「每轮覆盖」的账目可对（第 N 轮失败 ≠ 第 N 轮存在但为空）。</p>
+      </section>
+
+      <!-- ============ 交互规则 ============ -->
+      <section class="rules">
+        <header>本原型的硬规则（落码时照此验收）</header>
+        <table>
+          <tr><td>只读红线</td><td>除登录表单外不提交任何业务表单；写操作按钮只登记不点击——复用 <code>explore-authenticated.mjs</code> 既有纪律，不新写一套。</td></tr>
+          <tr><td>验证码策略链</td><td>图形码先走批次 1F 既有策略链：<code>test_bypass_code → ocr（≥0.9 采纳）→ captcha_service → manual</code>，按项目成功率排序；自动拿不下才暂停等人，180 秒超时即失败；不猜、提交最多 1+1 次（防锁号）。人工填答与脚本链走同一 answer 文件协议。</td></tr>
+          <tr><td>会话必建</td><td>探索是 run，run 必挂会话（readTaskRuns 结构约束）；派发 = 服务端代建会话 + 下发 breadth 指令，全程可在项目视图看 Trace。</td></tr>
+          <tr><td>失败不冒充</td><td>失败轮不写任何探索资产，四层保持上一轮状态；失败轮占 round 号；部分采到的数据随中止封存并如实标注。</td></tr>
+          <tr><td>知识回写</td><td>只由探索产物合并服务写四层（PUT /:layer 整层覆盖），前端不写；「未探到」标注原因，不画成 0。</td></tr>
+          <tr><td>本地执行</td><td>会话、浏览器、产物都在平台服务所在机器（安装版即本机）；部署到 VM 时链路不变、位置随服务走。</td></tr>
+        </table>
+      </section>
+
+      <p class="foot-note" style="margin-bottom:6px">原型批次：探索派发入口（原批次 3 计划项，现为未派单缺口 1）。范围仅「环境页入口 + 确认弹窗 + 进度/验证码/完成/失败四态」；登录配置管理、假设编辑等沿用现行页面，不在本批改动。</p>
+    </div>
+  </main>
+</div>
+
+<script>
+  const tabs=[...document.querySelectorAll('.pg-tab')];
+  const screens=[...document.querySelectorAll('.screen')];
+  tabs.forEach(t=>t.addEventListener('click',()=>{
+    tabs.forEach(x=>x.classList.toggle('on',x===t));
+    screens.forEach(s=>s.classList.toggle('on',s.id===t.dataset.s));
+  }));
+  // ①②③④ 屏的「派发/确认」按钮互跳，模拟点击流
+  const jump=(sel,target)=>{const el=document.querySelector(sel);if(el)el.addEventListener('click',()=>tabs.find(t=>t.dataset.s===target).click());};
+  jump('#dispatchBtn','s2');
+  jump('#s2 .btn-main','s3');
+  jump('#s4 .cap-row .btn-main','s3');
+  // 倒计时示意
+  let left=127;const el=document.querySelector('.cap-count');
+  setInterval(()=>{if(!el.isConnected)return;left=Math.max(0,left-1);
+    el.textContent=`剩余 ${String(Math.floor(left/60)).padStart(2,'0')}:${String(left%60).padStart(2,'0')} / 180 秒，超时本轮按失败封存`;
+    el.classList.toggle('hot',left<30);},1000);
+</script>
+</body>
+</html>

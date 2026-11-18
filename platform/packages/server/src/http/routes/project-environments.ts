@@ -1,10 +1,11 @@
 /**
  * 环境路由：/api/projects/:projectId/environments
  *
- * 七个动作：列、建/改、看单个、触发建档、等建档；以及探索资产的两组
- * （knowledge 读/覆盖、hypotheses 提/判）。建档是后台任务（202 + 轮询），
- * 失败一律落在该环境的 status/lastError 上，不会伪造成功。
+ * 三组动作：环境（列、建/改、看单个、触发建档、等建档）；探索资产（knowledge 读/覆盖、
+ * hypotheses 提/判）；探索派发（派发一轮、看轮次、等验证码答案、中止、取验证码截图）。
+ * 建档与探索都是后台任务（202 + 轮询），失败一律如实落态，不伪造成功。
  */
+import { readFile } from "node:fs/promises";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { projectDir } from "@prismshadow/penguin-core";
@@ -32,6 +33,17 @@ import {
   startBootstrap,
   upsertEnvironment,
 } from "../../services/project-environment-service.js";
+import {
+  abortExploration,
+  answerCaptcha,
+  captchaImagePath,
+  latestExploration,
+  listExplorations,
+  startExploration,
+  type ExplorationDeps,
+  type ExplorationMerge,
+  type ExplorationRun,
+} from "../../services/project-exploration-service.js";
 import { HttpError } from "../errors.js";
 import { readJson, requireValidId } from "../validate.js";
 
@@ -44,6 +56,9 @@ export interface ProjectEnvironmentDeps {
   engineRoot?: string;
   /** 测试注入：替换子进程执行器。 */
   run?: Parameters<typeof startBootstrap>[0]["run"];
+  /** 测试注入：替换探索脚本执行器与 maps 合并器。 */
+  explorationRun?: ExplorationRun;
+  explorationMerge?: ExplorationMerge;
 }
 
 export function projectEnvironmentsRoutes(deps: ProjectEnvironmentDeps): Hono<AppEnv> {
@@ -63,6 +78,13 @@ export function projectEnvironmentsRoutes(deps: ProjectEnvironmentDeps): Hono<Ap
     projectDir: projectDir(deps.root, projectId),
     engineRoot: deps.engineRoot,
     run: deps.run,
+  });
+  const explorationDeps = (projectId: string): ExplorationDeps => ({
+    db: deps.db,
+    projectDir: projectDir(deps.root, projectId),
+    engineRoot: deps.engineRoot,
+    run: deps.explorationRun,
+    merge: deps.explorationMerge,
   });
 
   app.get("/", async (c) => {
@@ -111,6 +133,78 @@ export function projectEnvironmentsRoutes(deps: ProjectEnvironmentDeps): Hono<Ap
     const environment = await awaitBootstrap(bootstrapDeps(projectId), projectId, env);
     c.header("Cache-Control", "no-store");
     return c.json({ environment });
+  });
+
+  /**
+   * 探索轮次：列表 + 最近一轮。探索是 append-only 的轮次账目，不覆盖历史——
+   * 失败轮也要看得见，否则「第 2 轮失败」会被误读成「从来没探过」。
+   */
+  app.get("/:env/explorations", async (c) => {
+    const projectId = scoped(c);
+    const env = requireEnv(projectId, c.req.param("env") ?? "");
+    c.header("Cache-Control", "no-store");
+    return c.json({
+      explorations: listExplorations(deps.db, projectId, env),
+      latest: latestExploration(deps.db, projectId, env),
+    });
+  });
+
+  /** 派发一轮探索：立即 202，前端轮询 GET /:env/explorations 看进度。 */
+  app.post("/:env/explore", async (c) => {
+    const projectId = owned(c);
+    const env = requireEnv(projectId, c.req.param("env") ?? "");
+    const body = await readJson(c);
+    const exploration = startExploration(explorationDeps(projectId), projectId, env, {
+      targetUrl: body.targetUrl,
+      loginUrl: body.loginUrl,
+      username: body.username,
+      password: body.password,
+      loginConfig: body.loginConfig,
+    });
+    c.header("Cache-Control", "no-store");
+    return c.json({ exploration }, 202);
+  });
+
+  /** 人工验证码答案：只在 waiting_human 的那一轮可用。 */
+  app.post("/:env/explore/:explorationId/answer", async (c) => {
+    const projectId = owned(c);
+    const env = requireEnv(projectId, c.req.param("env") ?? "");
+    const body = await readJson(c);
+    const exploration = await answerCaptcha(
+      explorationDeps(projectId),
+      projectId,
+      env,
+      c.req.param("explorationId") ?? "",
+      body.answer,
+    );
+    c.header("Cache-Control", "no-store");
+    return c.json({ exploration });
+  });
+
+  /** 中止：封存已采部分，round 号照样占着。 */
+  app.post("/:env/explore/:explorationId/abort", async (c) => {
+    const projectId = owned(c);
+    const env = requireEnv(projectId, c.req.param("env") ?? "");
+    const exploration = abortExploration(
+      explorationDeps(projectId),
+      projectId,
+      env,
+      c.req.param("explorationId") ?? "",
+    );
+    c.header("Cache-Control", "no-store");
+    return c.json({ exploration });
+  });
+
+  /** 验证码截图：只在等待人工时取得到；不缓存、不落证据清单。 */
+  app.get("/:env/explore/:explorationId/captcha", async (c) => {
+    const projectId = scoped(c);
+    const env = requireEnv(projectId, c.req.param("env") ?? "");
+    const file = captchaImagePath(explorationDeps(projectId), projectId, env, c.req.param("explorationId") ?? "");
+    if (!file) throw new HttpError(404, "captcha_not_pending", "当前没有等待填答的验证码");
+    const image = await readFile(file);
+    c.header("Cache-Control", "no-store");
+    c.header("Content-Type", "image/png");
+    return c.body(new Uint8Array(image));
   });
 
   /** 环境存在性校验：所有探索资产都挂在环境上，环境不在就没有地方写。 */
