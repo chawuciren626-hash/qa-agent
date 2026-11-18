@@ -263,11 +263,23 @@ async function main() {
 
   // 结构指纹只算稳定事实：随机 id、类名里的构建哈希都不能进来，否则同一页面
   // 两次探索永远"不同"，maps diff 会天天报变化，可比性就成了一句空话。
+  //
+  // 表格数据行里的操作按钮是**模板结构**：同一个"查看 Key"会随行数出现 1 次或 10 次。
+  // 行数是数据状态不是页面骨架——真实环境验收时表从 1 行涨到 2 行，控件 14→16，
+  // 指纹就变了。指纹按"连续重复归并"只算骨架种类；行数记进 exploration 事实，不进指纹。
+  const collapse = (items) => {
+    const merged = [];
+    for (const key of items) {
+      if (merged.length && JSON.stringify(merged[merged.length - 1]) === JSON.stringify(key)) continue;
+      merged.push(key);
+    }
+    return merged;
+  };
   const stable = {
     breadcrumb: seen.breadcrumb,
     headings: seen.headings,
-    controls: seen.interactive.map((item) => [item.tag, item.type, item.name, item.text, item.role, item.testid, item.disabled]),
-    tables: seen.tables.map((table) => [table.headers, table.row_count]),
+    controls: collapse(seen.interactive.map((item) => [item.tag, item.type, item.name, item.text, item.role, item.testid, item.disabled])),
+    tables: seen.tables.map((table) => [table.headers]),
   };
   const facts = {
     target_url: targetUrl,
