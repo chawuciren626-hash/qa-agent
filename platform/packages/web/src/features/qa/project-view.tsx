@@ -15,6 +15,8 @@ import { DEFECT_SEVERITY_ORDER, severityLabel, severitySummary } from "./quality
 import { breakNumberedItems } from "./structured-text";
 import "./task-detail.css";
 import { qaRead, qaScope, qaProjectForSession, qaTaskStatus, qaWorkspaceGroups } from "../../../../../../penguin/ui/workspace-ui.mjs";
+import { listEnvironments } from "./project-management/api";
+import type { EnvironmentView } from "./project-management/types";
 
 type CaseResult = { case_id: string; title: string; status: string; expected: string; actual_result: string; evidence_paths: string[] };
 type ProjectCase = { id: string; title: string; type: string; status: string; module?: string; priority?: string; expected?: string; results?: CaseResult[] };
@@ -132,14 +134,50 @@ export function QaProjectView() {
   useEffect(() => { if (scrollArea.current) scrollArea.current.scrollTop = 0; }, [currentPage, id, tab, filter, statusFilter, query, pageSize]);
   const open = (task: Task) => { setCurrentAgentId(task.session.agentId); navigate(`/chat/${encodeURIComponent(task.session.sessionId)}`); };
   const detail = (task: Task) => navigate(`/qa/project/tasks/${encodeURIComponent(task.session.sessionId)}`);
+  // 工作台环境条：只读展示默认环境的建档状态。建档/探索都不在这里发起——
+  // 它们是环境级的动作，点进「项目环境」页再做，避免在工作台上误触发两分钟的抓取。
+  const [environment, setEnvironment] = useState<EnvironmentView | null>(null);
+  useEffect(() => {
+    let alive = true;
+    if (!id) { setEnvironment(null); return; }
+    void listEnvironments(id)
+      .then(result => { if (alive) setEnvironment(result.environments.find(env => env.isDefault) ?? result.environments[0] ?? null); })
+      .catch(() => { if (alive) setEnvironment(null); });
+    return () => { alive = false; };
+  }, [id, revision]);
   if (!projectsLoading && currentProject === null) return <Navigate to="/qa/projects" replace />;
   return <main className="qa-project-view h-full min-h-0 min-w-0 overflow-hidden p-5 md:p-8" aria-label="项目视图">
     <div className="qp-layout mx-auto">
       <div className="qp-fixed space-y-6">
       <header className="qp-head">
         <div><h1>项目视图</h1><p>{currentProject ? projectDisplayName(currentProject) : "未选择项目"} · 跨工作空间汇总测试任务及已有产物</p></div>
-        <button className="qp-refresh" aria-label="刷新项目视图" title="刷新" disabled={!id || (!data && !error)} onClick={() => setRevision(n => n + 1)}>↻</button>
+        <div className="qp-head-actions">
+          <button className="qp-env-strip-go" onClick={() => navigate("/qa/project/confirm")}>确认卡点 →</button>
+          <button className="qp-refresh" aria-label="刷新项目视图" title="刷新" disabled={!id || (!data && !error)} onClick={() => setRevision(n => n + 1)}>↻</button>
+        </div>
       </header>
+      <div className="qp-env-strip" aria-label="项目环境">
+        {environment ? (
+          <>
+            <i className={`qp-env-dot ${environment.status === "probing" ? "is-run" : environment.status === "registered" ? "is-ok" : environment.status === "failed" ? "is-fail" : ""}`} aria-hidden="true" />
+            <b>{environment.env}</b>
+            <span className="qp-env-strip-url">{environment.baseUrl}</span>
+            <span className="qp-env-strip-meta">
+              {environment.status === "probing" ? "建档中"
+                : environment.status === "registered" ? `${environment.pages === null ? "—" : environment.pages.total} 页 · ${environment.apis === null ? "—" : environment.apis.total} 接口`
+                  : environment.status === "failed" ? `建档失败：${environment.lastError ?? "原因未记录"}`
+                    : "未建档"}
+            </span>
+            <button type="button" className="qp-env-strip-go" onClick={() => navigate("/qa/project/environments")}>项目环境 →</button>
+          </>
+        ) : (
+          <>
+            <i className="qp-env-dot" aria-hidden="true" />
+            <span className="qp-env-strip-meta">这个项目还没连环境地址：建档与探索都需要先有地址。</span>
+            <button type="button" className="qp-env-strip-go" onClick={() => navigate("/qa/project/environments")}>连接环境 →</button>
+          </>
+        )}
+      </div>
       <div className="qp-stats">
         {[["工作空间", groups.projects.length, "▦", "workspaces"], ["测试任务", tasks.length, "✓", "tasks"], ["用例数量", count(tasks, "caseCount"), "▤", "cases"], ["缺陷数量", count(tasks, "defectCount"), "⚑", "defects"], ["HTML 报告", countFiles(tasks, "reports"), "▥", "reports"]].map(([label, value, icon, target]) => <button key={label} className="qp-stat" aria-pressed={tab === target} onClick={() => { if (target === "workspaces") { workspaceSelect.current?.focus(); } else { setTab(String(target)); setFilter(""); setStatusFilter(""); setQuery(""); } }}><span className={"qp-stat-icon qp-icon-" + target}>{icon}</span><span><strong>{data?.projectId === id ? value : "—"}</strong><small>{label}</small></span></button>)}
       </div>

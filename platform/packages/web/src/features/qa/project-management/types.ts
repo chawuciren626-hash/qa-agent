@@ -14,6 +14,164 @@ export type ProjectSourceType = "manual" | "sync";
 /** 项目状态（不与测试任务的执行状态混用）。 */
 export type ProjectStatus = "active" | "archived" | "disabled";
 
+/** 环境建档状态：unregistered 没跑过 / probing 正在跑 / registered 成功 / failed 失败。 */
+export type EnvironmentStatus = "unregistered" | "probing" | "registered" | "failed";
+
+/** 探索资产四层：模块 / 链路 / 墙点 / 接口（与 Python 侧 kb/<env>/ 的落盘分类一致）。 */
+export type KnowledgeLayer = "module" | "flow" | "wall" | "interface";
+
+export interface KnowledgeEntry {
+  layer: KnowledgeLayer;
+  key: string;
+  summary: string | null;
+  relPath: string | null;
+  /** 第几轮探索写入的；同一 key 被新结论覆盖时这个数字变大。 */
+  round: number;
+  sourceSessionId: string | null;
+  updatedAt: string;
+}
+
+export interface EnvironmentKnowledge {
+  env: string;
+  layers: Record<KnowledgeLayer, KnowledgeEntry[]>;
+  counts: Record<KnowledgeLayer, number>;
+  /** 0 = 这个环境从没探索过（不是"探索过但没有模块"）。 */
+  lastRound: number;
+}
+
+/** 探索六步：前五步由脚本上报，第六步是服务端合并回写后落定。 */
+export type ExplorationStepStatus = "idle" | "running" | "done" | "failed";
+
+export interface ExplorationStep {
+  index: number;
+  name: string;
+  status: ExplorationStepStatus;
+  detail: string | null;
+}
+
+export type ExplorationStatus = "running" | "waiting_human" | "succeeded" | "failed" | "aborted";
+
+export interface ExplorationSummary {
+  targetUrl: string;
+  controls: number | null;
+  tables: number | null;
+  apis: number | null;
+  structureDigest: string | null;
+  sessionReused: boolean | null;
+  mapsPath: string | null;
+  knowledgeLayers: KnowledgeLayer[];
+  captchaStrategy: string | null;
+  limitations: string[];
+}
+
+/**
+ * 一轮探索。append-only：失败轮/中止轮都留着（round 号不回退），
+ * waiting_human 时 captcha.available 才为真——截图只在那一刻可看。
+ */
+export interface ExplorationView {
+  explorationId: string;
+  round: number;
+  status: ExplorationStatus;
+  targetUrl: string;
+  loginUrl: string | null;
+  loginMode: "authenticated" | "public";
+  steps: ExplorationStep[];
+  summary: ExplorationSummary | null;
+  lastError: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  captcha: { available: boolean; strategies: string[] } | null;
+}
+
+export interface StartExplorationInput {
+  targetUrl?: string;
+  loginUrl?: string;
+  username?: string;
+  password?: string;
+}
+
+/** 探不到的五类原因：决定下一轮是自补（async）还是等人补账号/补假设。 */
+export type WhyUnknown = "business" | "data" | "role" | "async" | "external";
+
+export type Verdict = "verified" | "refuted" | "unreachable";
+
+export type HypothesisStatus = "open" | Verdict;
+
+export interface HypothesisVerdict {
+  verdictId: string;
+  round: number;
+  verdict: Verdict;
+  evidence: string | null;
+  sessionId: string | null;
+  createdAt: string;
+}
+
+export interface Hypothesis {
+  hypothesisId: string;
+  moduleKey: string | null;
+  statement: string;
+  whyUnknown: WhyUnknown;
+  expectation: string | null;
+  dataSetup: string | null;
+  /** 造数为 0 时探索不得写被测数据；默认 false，逐条放开。 */
+  allowSeed: boolean;
+  status: HypothesisStatus;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  /** 从旧到新；空数组表示还没验过（status 只是最新快照）。 */
+  verdicts: HypothesisVerdict[];
+}
+
+export interface HypothesisSummary {
+  open: number;
+  verified: number;
+  refuted: number;
+  unreachable: number;
+  total: number;
+}
+
+/**
+ * 建档五步的进度状态：idle 还没到 / running 正在做 / done 做完 / failed 在这步失败。
+ *
+ * 这些字全部来自 Python 侧 `@@step` 的真实上报，前端不按时间推算——按时间推的
+ * 进度条会在第 3 步抓 12 个 bundle 时走到 80% 然后停住，比不显示更糟。
+ */
+export type BootstrapStepStatus = "idle" | "running" | "done" | "failed";
+
+export interface BootstrapStep {
+  index: number;
+  name: string;
+  status: BootstrapStepStatus;
+  /** 已结束步骤的耗时；没有上报就是 null（不写 0 冒充"瞬间完成"）。 */
+  ms: number | null;
+  detail: string | null;
+  facts: Record<string, unknown>;
+}
+
+/**
+ * 项目环境：地址归环境，不归项目（一个项目可有多个环境，默认环境唯一）。
+ *
+ * pages / apis 为 null 表示"没跑过"，与 0（"跑过且确实没有页面"）是两种结论，
+ * 界面必须分别显示「—」和「0」——把失败或未跑写成 0 页会误导下游。
+ */
+export interface EnvironmentView {
+  env: string;
+  baseUrl: string;
+  isDefault: boolean;
+  status: EnvironmentStatus;
+  pages: { total: number; registered: number } | null;
+  apis: { total: number; modules: string[] } | null;
+  loginCaptcha: string | null;
+  probedAt: string | null;
+  lastError: string | null;
+  mapsPath: string | null;
+  reportPath: string | null;
+  /** 固定五行（没跑过的步骤 status=idle）：建档抽屉按它渲染真实进度。 */
+  steps: BootstrapStep[];
+  revision: number;
+}
+
 /** 服务端返回的操作能力标志（§9 权限矩阵的前端消费形态）。 */
 export interface ProjectCapabilities {
   /** 能否进入项目（按项目状态与后端权限决定；false 时页面显示「不可进入」）。 */
@@ -67,6 +225,8 @@ export interface ManagedProject {
   capabilities: ProjectCapabilities;
   /** 并发更新标识；编辑保存需回传 expectedRevision，冲突时提示刷新。 */
   revision: number;
+  /** 默认环境摘要；null 表示这个项目还没连过环境（不是"环境没地址"）。 */
+  environment?: EnvironmentView | null;
 }
 
 /** 列表查询条件（搜索/筛选/排序/分页在适配层按真实接口语义实现）。 */
@@ -97,6 +257,11 @@ export interface CreateProjectInput {
   projectId: string;
   name: string;
   description?: string;
+  /**
+   * 选填：填了就在创建后立刻建档（抓页面与接口），留空则先建项目、之后在环境页补。
+   * 校验在服务端做（只放行 http/https、禁内嵌凭据、拦云元数据端点），前端只挡空串。
+   */
+  environment?: { env?: string; baseUrl: string };
 }
 
 /** 基本信息编辑的提交内容（同步项目的外部维护字段不在可编辑范围）。 */

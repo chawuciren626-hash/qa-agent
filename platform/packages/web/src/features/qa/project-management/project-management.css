@@ -225,7 +225,171 @@
 .qpm-form-row input:disabled, .qpm-form-row textarea:disabled { background: #f6f8fb; }
 .qpm-count { font-size: 11px; color: var(--qa-muted, #8f959e); text-align: right; }
 .qpm-field-error { color: #d45555; font-size: 12px; }
+/* 环境段：与项目基本信息分开，避免读成"环境地址是项目的一个属性" */
+.qpm-form-sep { height: 1px; background: var(--qa-border, #e6e9ef); margin: 4px 0 12px; }
+.qpm-form-subhead {
+  display: flex; align-items: center; gap: 7px; margin-bottom: 10px;
+  font-size: 12.5px; font-weight: 600; color: var(--qa-text, #1f2329);
+}
+.qpm-form-subhead .qpm-tag { font-weight: 400; }
+.qpm-field-hint { font-size: 11.5px; color: var(--qa-muted, #8f959e); line-height: 1.6; }
+.qpm-field-hint b { color: var(--qa-muted, #646a73); font-weight: 600; }
 .qpm-modal-foot { display: flex; justify-content: flex-end; gap: 9px; padding: 8px 20px 18px; }
+
+/* ============ 环境列：进度是字段，不是弹窗 ============ */
+.qpm-env-cell {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  padding: 2px 6px; border-radius: 6px; border: 1px solid transparent;
+  background: none; font-size: 12px; color: var(--qa-text, #1f2329); cursor: pointer;
+}
+.qpm-env-cell:hover { background: #f1f3f6; border-color: var(--qa-border, #e6e9ef); }
+.qpm-env-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.qpm-env-dot.is-ok { background: #2ea36a; }
+.qpm-env-dot.is-run { background: #185fa5; animation: qpm-env-pulse 1.2s ease-in-out infinite; }
+.qpm-env-dot.is-fail { background: #d45555; }
+@keyframes qpm-env-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.qpm-env-main { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qpm-env-meta { font-size: 11px; color: var(--qa-muted, #8f959e); white-space: nowrap; }
+.qpm-env-add {
+  display: inline-flex; align-items: center; font-size: 11.5px; color: #185fa5;
+  border: 1px dashed #cfe0f3; border-radius: 5px; padding: 1px 7px; background: #f7fbff;
+}
+.qpm-env-add:hover { background: #eaf2fb; }
+.qpm-env-add:disabled { opacity: .6; cursor: default; }
+.qpm-env-none { font-size: 12px; color: var(--qa-muted, #8f959e); }
+
+/* ============ 建档抽屉：五步进度 + 建档结果 ============ */
+.qpm-panel-title h2 { display: flex; align-items: center; gap: 7px; }
+.qpm-env-url { font-size: 11.5px; color: var(--qa-muted, #8f959e); overflow-wrap: anywhere; }
+
+/* 进度条：宽度只跟随已落定的步骤数，不做补间动画 */
+.qpm-bar { height: 4px; border-radius: 999px; background: #eef1f5; overflow: hidden; margin-bottom: 14px; }
+.qpm-bar-fill { display: block; height: 100%; background: #185fa5; transition: width .25s ease; }
+.qpm-bar-fill.is-fail { background: #d45555; }
+
+.qpm-steps { list-style: none; margin: 0 0 18px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.qpm-step { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid #f2f4f7; }
+.qpm-step:last-child { border-bottom: none; }
+.qpm-step-dot {
+  flex: none; width: 20px; height: 20px; margin-top: 1px;
+  border-radius: 50%; display: grid; place-items: center;
+  font-size: 11px; font-weight: 600;
+  background: #f1f3f6; color: var(--qa-muted, #8f959e);
+  border: 1px solid var(--qa-border, #e6e9ef);
+}
+.qpm-step.is-running .qpm-step-dot {
+  background: #eaf2fb; color: #185fa5; border-color: #cfe0f3;
+  animation: qpm-env-pulse 1.2s ease-in-out infinite;
+}
+.qpm-step.is-done .qpm-step-dot { background: #eaf7f0; color: #2ea36a; border-color: #cdebdb; }
+.qpm-step.is-failed .qpm-step-dot { background: #fdeeee; color: #d45555; border-color: #f5d2d2; }
+.qpm-step-main { flex: 1; min-width: 0; }
+.qpm-step-top { display: flex; align-items: baseline; gap: 8px; }
+.qpm-step-name { font-size: 13px; font-weight: 600; }
+.qpm-step.is-idle .qpm-step-name { color: var(--qa-muted, #646a73); font-weight: 500; }
+.qpm-step-meta { margin-left: auto; font-size: 11px; color: var(--qa-muted, #8f959e); white-space: nowrap; }
+.qpm-step.is-done .qpm-step-meta { color: #2ea36a; }
+.qpm-step.is-failed .qpm-step-meta { color: #d45555; }
+.qpm-step.is-running .qpm-step-meta { color: #185fa5; }
+.qpm-step-body { font-size: 11.5px; line-height: 1.65; color: var(--qa-muted, #8f959e); margin-top: 3px; overflow-wrap: anywhere; }
+
+/* 建档结果的小格子：数字在前，标签在后 */
+.qpm-facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 10px; }
+.qpm-fact { border: 1px solid var(--qa-border, #e6e9ef); border-radius: 9px; padding: 9px 11px; }
+.qpm-fact b { display: block; font-size: 17px; font-weight: 700; letter-spacing: -0.3px; }
+.qpm-fact b small { font-size: 11px; font-weight: 500; color: var(--qa-muted, #8f959e); }
+.qpm-fact span { display: block; font-size: 11px; color: var(--qa-muted, #8f959e); margin-top: 2px; }
+.qpm-kv { display: grid; grid-template-columns: 76px 1fr; gap: 5px 10px; font-size: 12px; margin-top: 6px; }
+.qpm-kv dt { color: var(--qa-muted, #8f959e); }
+.qpm-kv dd { margin: 0; overflow-wrap: anywhere; }
+
+/* 失败原因：程序原文照抄，不做润色 */
+.qpm-env-error { border: 1px solid #f5d2d2; background: #fdf7f7; border-radius: 9px; padding: 11px 13px; margin-bottom: 16px; }
+.qpm-env-error b { font-size: 12px; color: #d45555; display: block; margin-bottom: 4px; }
+.qpm-env-error p { font-size: 11.5px; line-height: 1.6; color: #8a3b3b; margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+
+.qpm-panel-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 12px 18px; border-top: 1px solid var(--qa-border, #e6e9ef);
+  background: #fff;
+}
+.qpm-panel-foot-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+
+.qpm-field-value .qpm-env-dot { margin-right: 2px; }
+.qpm-env-open { margin-top: 8px; }
+
+/* ============ 项目环境页：左侧环境列表 + 右侧档案 ============ */
+.qpm-env-layout { display: grid; grid-template-columns: 268px minmax(0, 1fr); gap: 18px; margin-top: 18px; align-items: start; }
+@media (max-width: 980px) { .qpm-env-layout { grid-template-columns: 1fr; } }
+
+.qpm-env-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.qpm-env-item {
+  width: 100%; text-align: left; display: flex; flex-direction: column; gap: 5px;
+  border: 1px solid var(--qa-border, #e6e9ef); border-radius: 10px; padding: 11px 12px; background: #fff;
+}
+.qpm-env-item:hover { background: #f7f9fc; }
+.qpm-env-item.is-active { border-color: #cfe0f3; background: #f4f9ff; }
+.qpm-env-item-top { display: flex; align-items: center; gap: 6px; }
+.qpm-env-item-top b { font-size: 13px; font-weight: 600; }
+.qpm-env-item-status { margin-left: auto; font-size: 11px; color: var(--qa-muted, #8f959e); }
+.qpm-env-item-url { font-size: 11px; color: var(--qa-muted, #646a73); overflow-wrap: anywhere; }
+.qpm-env-item-meta { font-size: 11px; color: var(--qa-muted, #8f959e); }
+
+.qpm-env-detail { border: 1px solid var(--qa-border, #e6e9ef); border-radius: 12px; padding: 16px 18px; background: #fff; min-width: 0; }
+.qpm-env-detail-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 12px; }
+.qpm-env-detail-title { min-width: 0; }
+.qpm-env-detail-title h2 { display: flex; align-items: center; gap: 7px; font-size: 14.5px; font-weight: 700; }
+.qpm-env-detail-title .qpm-count { display: block; text-align: left; margin: 4px 0 0; }
+.qpm-env-detail-acts { margin-left: auto; display: flex; gap: 8px; flex: none; }
+.qpm-env-steps-box { border: 1px solid var(--qa-border, #e6e9ef); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+.qpm-env-steps-box h3 { font-size: 12px; color: var(--qa-muted, #8f959e); font-weight: 600; margin-bottom: 8px; }
+
+/* 档案分区 tab */
+.qpm-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--qa-border, #e6e9ef); margin: 16px 0 14px; }
+.qpm-tab {
+  padding: 7px 12px; font-size: 12.5px; color: var(--qa-muted, #646a73);
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.qpm-tab:hover { color: var(--qa-text, #1f2329); }
+.qpm-tab.is-active { color: #185fa5; border-bottom-color: #185fa5; font-weight: 600; }
+.qpm-tab-body { min-height: 120px; }
+
+/* 四层资产 */
+.qpm-layers { display: flex; flex-direction: column; gap: 14px; }
+.qpm-layer h4 { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; }
+.qpm-layer h4 .qpm-count { margin-left: auto; }
+.qpm-layer-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.qpm-layer-list li { border: 1px solid var(--qa-border, #e6e9ef); border-radius: 8px; padding: 8px 10px; }
+.qpm-layer-key { font-size: 12px; font-weight: 600; }
+.qpm-layer-summary { font-size: 12px; color: var(--qa-muted, #646a73); margin-top: 2px; overflow-wrap: anywhere; }
+.qpm-layer-meta { font-size: 10.5px; color: var(--qa-muted, #8f959e); margin-top: 3px; }
+
+/* 未知与假设 */
+.qpm-hyp-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.qpm-hyp-summary { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--qa-muted, #8f959e); }
+.qpm-hyp-summary b { color: var(--qa-text, #1f2329); font-weight: 600; }
+.qpm-hyp-head .qpm-btn-main { margin-left: auto; }
+.qpm-hyp-list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.qpm-hyp { border: 1px solid var(--qa-border, #e6e9ef); border-radius: 10px; padding: 10px 12px; }
+.qpm-hyp.is-verified { border-color: #cdebdb; background: #f8fdfa; }
+.qpm-hyp.is-refuted { border-color: #f5d2d2; background: #fdf9f9; }
+.qpm-hyp-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.qpm-hyp-status.is-open { background: #fff7e6; color: #b7791f; }
+.qpm-hyp-status.is-verified { background: #eaf7f0; color: #2ea36a; }
+.qpm-hyp-status.is-refuted { background: #fdeeee; color: #d45555; }
+.qpm-hyp-status.is-unreachable { background: #f1f3f6; color: #646a73; }
+.qpm-hyp-why { font-size: 11px; color: var(--qa-muted, #8f959e); }
+.qpm-hyp-statement { font-size: 12.5px; margin: 6px 0 0; overflow-wrap: anywhere; }
+.qpm-hyp-sub { font-size: 11.5px; color: var(--qa-muted, #646a73); margin: 3px 0 0; }
+.qpm-verdicts { list-style: none; margin: 7px 0 0; padding: 6px 0 0; border-top: 1px dashed var(--qa-border, #e6e9ef); display: flex; flex-direction: column; gap: 3px; }
+.qpm-verdicts li { font-size: 11px; color: var(--qa-muted, #646a73); }
+
+.qpm-check-row > span:first-child { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--qa-text, #1f2329); }
+.qpm-empty-inline { margin-top: 6px; }
+.qpm-form-row select {
+  width: 100%; border: 1px solid var(--qa-border, #e6e9ef); border-radius: 8px;
+  padding: 8px 11px; font-size: 13px; background: #fff; color: var(--qa-text, #1f2329);
+}
 
 /* ============ 响应式：1024px 隐藏次要列，主操作不挤出 ============ */
 @media (max-width: 1180px) {
@@ -241,3 +405,30 @@
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
+
+/* ---------- 探索派发（环境页一轮探索：进度 / 验证码 / 摘要） ---------- */
+.qpm-explore { border: 1px solid #e6e9ef; border-radius: 10px; padding: 12px 13px; margin-bottom: 12px; background: #fbfcfd; }
+.qpm-explore-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.qpm-explore-head h3 { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.qpm-explore-head .qpm-panel-note { margin-bottom: 0; }
+.qpm-explore-status { font-size: 11px; font-weight: 400; padding: 1.5px 8px; border-radius: 99px; background: #eef2f7; color: #646a73; }
+.qpm-explore-status.is-running { background: #eaf2fb; color: #185fa5; }
+.qpm-explore-status.is-waiting_human { background: #fdf3e3; color: #b8781a; }
+.qpm-explore-status.is-succeeded { background: #e8f6ef; color: #2e9e6b; }
+.qpm-explore-status.is-failed { background: #fdeeee; color: #d45555; }
+.qpm-explore-status.is-aborted { background: #eef2f7; color: #646a73; }
+
+.qpm-captcha { display: flex; gap: 12px; align-items: center; border: 1px solid #f3d7b8; background: #fffaf3; border-radius: 9px; padding: 11px 13px; margin: 10px 0; }
+.qpm-captcha-img { width: 130px; height: 46px; flex: none; border: 1px solid #e6e9ef; border-radius: 7px; background: #fff; object-fit: contain; }
+.qpm-captcha-img-empty { display: grid; place-items: center; font-size: 11px; color: #8f959e; }
+.qpm-captcha-form { flex: 1; min-width: 0; }
+.qpm-captcha-form b { font-size: 12.5px; }
+.qpm-captcha-form .qpm-panel-note { margin: 3px 0 6px; }
+.qpm-captcha-row { display: flex; gap: 8px; }
+.qpm-captcha-row input { flex: 1; min-width: 0; border: 1px solid #e6e9ef; border-radius: 7px; padding: 6px 10px; font-size: 12.5px; background: #fff; }
+
+.qpm-explore-sum { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+.qpm-explore-limit { font-size: 11px; color: #8f959e; }
+.qpm-explore-discipline { border-radius: 9px; background: #fdf3e3; color: #7c5210; padding: 9px 11px; margin: 4px 0 8px; }
+.qpm-explore-discipline b { font-size: 12px; display: block; margin-bottom: 4px; }
+.qpm-explore-discipline ul { margin: 0 0 0 16px; font-size: 11.5px; line-height: 1.7; }

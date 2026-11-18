@@ -254,10 +254,20 @@ export class AccountClient {
     const contentSnapshot=await this.snapshots.capture(definition,{userId:pin.userId,projectId,sessionId,engineRoot:process.env.AITEST_ENGINE_ROOT});
     return {...definition,memoryInstructions:JSON.stringify(Object.fromEntries(memory)),contentSnapshotId:contentSnapshot.snapshotId};
   }
-  /** Re-read grants for the fixed bundle, including dependencies, on every model/tool call. */
+  /** Per-invocation authorization for shared (published) sessions: re-read grants for the fixed bundle, including dependencies, on every model/tool call. */
   async authorizeSessionInvocation(projectId: string, agentId: string, sessionId: string): Promise<void> {
     const pin = this.publishedPins.get(sessionId);
-    if (!pin) throw new HttpError(403, "session_unpinned", "此会话尚未绑定已验证的服务端发布，请创建新任务。");
+    if (!pin) {
+      // Not every Session on an account-connected server is a published shared-Agent
+      // session. Local agents never receive a pin — only the shared publish flow pins
+      // (at Session creation, and creation itself fails without it) — and gating every
+      // local Session's model/tool call behind a pin made them unusable: the first
+      // planning request died with session_unpinned. A shared Agent is marked on disk
+      // (agent_state/shared-agent.json), so "no pin" is only legitimate for a
+      // non-shared agent; anything else still fails closed below.
+      if (!(await this.isSharedAgent(projectId, agentId))) return;
+      throw new HttpError(403, "session_unpinned", "此会话尚未绑定已验证的服务端发布，请创建新任务。");
+    }
     if (pin.projectId !== projectId || pin.agentId !== agentId) throw new HttpError(403, "session_forbidden", "会话归属不匹配。");
     const identity = { userId: pin.userId, projectId, agentId, sessionId };
     const ownership = await this.guard.authorizeInvocation(identity, { kind: "session", id: sessionId }, "resume");
@@ -268,6 +278,21 @@ export class AccountClient {
     if (bundle.resources.some(resource => !policy.resourceIds.includes(resource.id))) {
       this.guard.cancelUser(pin.userId);
       throw new HttpError(403, "resource_revoked", "此任务所用资源已下架或授权已收回。");
+    }
+  }
+
+  /**
+   * Whether the Agent is managed by the shared service, per the same on-disk marker the
+   * Session-creation flow consults (agent_state/shared-agent.json, written when the agent
+   * is published from the admin console). Absent marker ⇒ a local agent: its Sessions are
+   * never pinned, and invocation authorization has no fixed bundle to re-read.
+   */
+  private async isSharedAgent(projectId: string, agentId: string): Promise<boolean> {
+    if (!projectId || !agentId) return false;
+    try {
+      return fs.statSync(path.join(this.deps.config.root, projectId, "agents", agentId, "agent_state", "shared-agent.json")).isFile();
+    } catch {
+      return false;
     }
   }
   /** Per-invocation authorization used by sessions, connectors and plugin tools. */

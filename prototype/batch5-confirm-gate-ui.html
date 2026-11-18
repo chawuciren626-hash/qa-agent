@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>批次 5 · 确认卡点三层 + 报告审批（A3/A4 原型）</title>
+<style>
+  :root{
+    --text:#1f2329; --muted:#8f959e; --muted2:#646a73; --line:#e6e9ef; --line2:#eef0f4;
+    --hover:#f1f3f6; --pri:#185fa5; --pri-bg:#eaf2fb; --pri-line:#cfe0f3;
+    --green:#2e9e6b; --green-bg:#e8f6ef; --red:#d45555; --red-bg:#fdeeee;
+    --amber:#b8781a; --amber-bg:#fdf3e3; --grey-bg:#f2f3f5; --bg:#fff;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:#f5f6f8;color:var(--text);font-size:13.5px;-webkit-font-smoothing:antialiased}
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+  input,select{font:inherit;color:inherit}
+
+  .pg-bar{height:46px;display:flex;align-items:center;gap:14px;padding:0 16px;background:#0f172a;color:#cbd5e1;
+    font-size:12px;position:sticky;top:0;z-index:100}
+  .pg-bar b{color:#fff;font-weight:600;font-size:12.5px}
+  .pg-hint{margin-left:auto;color:#7c8ba1;font-size:11.5px;max-width:52%;text-align:right;line-height:1.5}
+  .pg-hint b{color:#e2e8f0;font-weight:600}
+
+  .app{position:relative;display:flex;height:calc(100vh - 46px);min-height:700px;background:var(--bg);
+    max-width:1560px;margin:0 auto;overflow:hidden;box-shadow:0 0 0 1px var(--line)}
+  .side{width:232px;flex:none;border-right:1px solid var(--line);display:flex;flex-direction:column;background:#fff}
+  .brand{display:flex;align-items:center;gap:10px;padding:18px 16px 14px}
+  .brand-logo{width:32px;height:32px;border-radius:7px;background:#185fa5;color:#fff;display:grid;place-items:center;
+    font-weight:700;font-size:16px;position:relative;flex:none}
+  .brand-logo::after{content:"";position:absolute;left:7px;right:7px;bottom:7px;height:2px;border-radius:2px;background:#5dcaa5}
+  .brand-txt b{display:block;font-size:15.5px;font-weight:700;letter-spacing:-.2px}
+  .brand-txt small{display:block;font-size:10.5px;color:var(--muted);letter-spacing:.3px}
+  .nav{padding:8px 10px}
+  .nav-item{display:flex;align-items:center;gap:9px;width:100%;min-height:36px;padding:7px 10px;border-radius:8px;
+    color:var(--muted2);text-align:left;white-space:nowrap;font-size:13.5px}
+  .nav-item:hover:not(.on){background:var(--hover)}
+  .nav-item.on{background:var(--pri-bg);color:var(--pri);font-weight:600}
+  .side-foot{margin-top:auto;padding:12px 14px;border-top:1px solid var(--line);display:flex;align-items:center;gap:9px}
+  .avatar{width:28px;height:28px;border-radius:50%;background:var(--pri);color:#fff;display:grid;place-items:center;
+    font-size:12px;font-weight:600;flex:none}
+  .who b{display:block;font-size:12.5px}
+  .who small{font-size:11px;color:var(--muted)}
+
+  .main{flex:1;min-width:0;position:relative;display:flex;flex-direction:column;overflow:hidden}
+  .scroll{flex:1;min-height:0;overflow-y:auto;padding:22px 28px 48px}
+
+  .head{display:flex;align-items:flex-start;gap:12px}
+  .head h1{font-size:19px;font-weight:700;letter-spacing:-.2px}
+  .head p{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.6}
+  .head .tag{display:inline-block;margin-left:8px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600;
+    background:var(--amber-bg);color:var(--amber);vertical-align:2px}
+
+  /* 三层规则卡 */
+  .layers{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin:16px 0 6px}
+  .layer{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:#fff;position:relative;overflow:hidden}
+  .layer::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px}
+  .layer.l-diff::before{background:var(--pri)}
+  .layer.l-sample::before{background:var(--green)}
+  .layer.l-risk::before{background:var(--red)}
+  .layer h3{font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:8px}
+  .layer .num{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font-size:11px;font-weight:700;color:#fff;flex:none}
+  .l-diff .num{background:var(--pri)} .l-sample .num{background:var(--green)} .l-risk .num{background:var(--red)}
+  .layer p{font-size:12px;color:var(--muted2);margin-top:7px;line-height:1.65}
+  .layer .stat{margin-top:9px;display:flex;gap:6px;flex-wrap:wrap}
+  .chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:14px;font-size:11.5px;font-weight:600}
+  .chip.blue{background:var(--pri-bg);color:var(--pri)} .chip.green{background:var(--green-bg);color:var(--green)}
+  .chip.red{background:var(--red-bg);color:var(--red)} .chip.amber{background:var(--amber-bg);color:var(--amber)}
+  .chip.grey{background:var(--grey-bg);color:var(--muted2)}
+
+  /* 抽样面板 */
+  .sample-panel{border:1px solid var(--pri-line);border-radius:10px;background:var(--pri-bg);
+    padding:13px 16px;margin:14px 0 4px;display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap}
+  .sample-panel .lbl{font-size:12px;font-weight:700;color:var(--pri);flex:none;padding-top:3px}
+  .seed-box{display:flex;align-items:center;gap:8px}
+  .seed-box label{font-size:11.5px;color:var(--muted2)}
+  .seed-box input{width:110px;padding:5px 9px;border:1px solid var(--pri-line);border-radius:7px;background:#fff;font-family:var(--mono);font-size:12px}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 13px;border-radius:8px;font-size:12.5px;font-weight:600;border:1px solid transparent}
+  .btn-pri{background:var(--pri);color:#fff} .btn-pri:hover{background:#124d87}
+  .btn-out{border-color:var(--line);color:var(--muted2);background:#fff} .btn-out:hover{border-color:#c9ced6;color:var(--text)}
+  .btn-green{background:var(--green);color:#fff} .btn-red{background:var(--red);color:#fff}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .sample-meta{font-size:11.5px;color:var(--muted2);line-height:1.7}
+  .sample-meta code{font-family:var(--mono);font-size:11px;background:#fff;border:1px solid var(--line);padding:1px 6px;border-radius:5px}
+  .retro-banner{display:none;margin:12px 0 2px;padding:10px 14px;border-radius:9px;background:var(--red-bg);
+    border:1px solid #f3c8c8;color:var(--red);font-size:12.5px;font-weight:600;line-height:1.6}
+  .retro-banner.show{display:block}
+
+  /* 条目表 */
+  .toolbar{display:flex;align-items:center;gap:8px;margin:16px 0 8px;flex-wrap:wrap}
+  .toolbar h2{font-size:14.5px;font-weight:700}
+  .fbtn{padding:4px 11px;border-radius:16px;font-size:11.5px;font-weight:600;border:1px solid var(--line);color:var(--muted2);background:#fff}
+  .fbtn:hover{border-color:#c9ced6}
+  .fbtn.on{background:var(--text);color:#fff;border-color:var(--text)}
+  .toolbar .right{margin-left:auto;font-size:11.5px;color:var(--muted)}
+
+  table.items{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .items-wrap{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fff}
+  table{width:100%;border-collapse:collapse}
+  th{font-size:11px;font-weight:600;color:var(--muted);text-align:left;padding:9px 12px;background:#fafbfc;
+    border-bottom:1px solid var(--line);white-space:nowrap;letter-spacing:.3px}
+  td{padding:9px 12px;border-bottom:1px solid var(--line2);font-size:12.5px;vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  tr:hover td{background:#fafbfd}
+  tr.inherit-row td{color:var(--muted)}
+  tr.force-row td:first-child{box-shadow:inset 3px 0 0 var(--red)}
+  tr.sampled-row td:first-child{box-shadow:inset 3px 0 0 var(--green)}
+  td .cid{font-family:var(--mono);font-size:11.5px;color:var(--muted2)}
+  .diff-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:1px}
+  .diff-dot.changed{background:var(--amber)} .diff-dot.same{background:#c9ced6}
+  .risk-tag{display:inline-block;padding:1.5px 8px;border-radius:12px;font-size:10.5px;font-weight:700}
+  .risk-P0{background:var(--red-bg);color:var(--red)} .risk-P1{background:var(--pri-bg);color:var(--pri)}
+  .risk-P2{background:var(--grey-bg);color:var(--muted2)} .risk-unknown{background:#fff;border:1px dashed var(--line);color:var(--muted)}
+  .risk-money{background:#fdf0f5;color:#c2447e} .risk-perm{background:#f3ecfd;color:#7a4bc2}
+  .st-chip{display:inline-block;padding:2px 10px;border-radius:13px;font-size:11px;font-weight:600}
+  .st-todo{background:var(--amber-bg);color:var(--amber)} .st-pass{background:var(--green-bg);color:var(--green)}
+  .st-problem{background:var(--red-bg);color:var(--red)} .st-inherit{background:var(--grey-bg);color:var(--muted)}
+  .row-act{display:flex;gap:5px}
+  .mini{padding:3px 9px;border-radius:6px;font-size:11px;font-weight:600;border:1px solid var(--line);color:var(--muted2);background:#fff}
+  .mini:hover{border-color:#c9ced6;color:var(--text)}
+  .mini.ok:hover{border-color:var(--green);color:var(--green)} .mini.bad:hover{border-color:var(--red);color:var(--red)}
+
+  /* 审批条 */
+  .approval{margin-top:18px;border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden}
+  .approval-head{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line2)}
+  .approval-head h2{font-size:14px;font-weight:700}
+  .st-flow{display:flex;align-items:center;gap:6px;margin-left:6px}
+  .st-node{padding:3px 12px;border-radius:14px;font-size:11.5px;font-weight:700;background:var(--grey-bg);color:var(--muted)}
+  .st-node.cur{background:var(--pri);color:#fff}
+  .st-node.done{background:var(--green-bg);color:var(--green)}
+  .st-node.block{background:var(--red-bg);color:var(--red)}
+  .st-arrow{color:var(--line);font-size:12px}
+  .approval-body{display:grid;grid-template-columns:1fr 1fr;gap:0}
+  .gates{padding:13px 16px;border-right:1px solid var(--line2)}
+  .gates h4,.audit h4{font-size:11.5px;font-weight:700;color:var(--muted2);letter-spacing:.4px;margin-bottom:9px}
+  .gate-row{display:flex;align-items:flex-start;gap:8px;padding:5px 0;font-size:12px;line-height:1.55}
+  .gate-ic{width:16px;height:16px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:700;flex:none;margin-top:1px}
+  .gate-ic.pass{background:var(--green-bg);color:var(--green)} .gate-ic.fail{background:var(--red-bg);color:var(--red)}
+  .gate-name{font-weight:600;flex:none}
+  .gate-detail{color:var(--muted2);font-size:11.5px}
+  .audit{padding:13px 16px;max-height:220px;overflow-y:auto}
+  .audit-row{display:flex;gap:9px;padding:4.5px 0;font-size:11.5px;line-height:1.5;border-bottom:1px dashed var(--line2)}
+  .audit-row:last-child{border-bottom:none}
+  .audit-seq{font-family:var(--mono);color:var(--muted);flex:none;width:22px}
+  .audit-act{font-weight:700;flex:none;width:118px}
+  .audit-act.blocked{color:var(--red)} .audit-act.ok{color:var(--green)}
+  .audit-note{color:var(--muted2)}
+  .approval-foot{padding:11px 16px;border-top:1px solid var(--line2);display:flex;align-items:center;gap:10px;background:#fafbfc}
+  .approval-foot .msg{font-size:12px;color:var(--muted2)}
+  .blocked-msg{display:none;padding:10px 14px;margin:0 16px;border-radius:8px;background:var(--red-bg);border:1px solid #f3c8c8;
+    color:var(--red);font-size:12px;line-height:1.6}
+  .blocked-msg.show{display:block}
+
+  .proto-note{margin-top:14px;padding:10px 14px;border-radius:9px;background:var(--grey-bg);font-size:11.5px;
+    color:var(--muted2);line-height:1.7}
+  .proto-note b{color:var(--muted2)}
+</style>
+</head>
+<body>
+
+<div class="pg-bar">
+  <b>原型 · 仅确认用，非最终 UI</b>
+  <span style="color:#475569">|</span>
+  <span>批次 5 · A3 确认卡点三层（差异聚焦 / 抽样审核 / 风险加权）+ A4 报告审批</span>
+  <div class="pg-hint">
+    依据 <b>v3 §23.2 第 5 条（评审 P2-2 已定稿）</b>：卡点太密等于没有卡点——三层省时间但<b>绕不过</b>：
+    风险强制项不受省略、抽样同种子可复现、问题率超阈值退回全审、审批硬闸失败阻止批准
+  </div>
+</div>
+
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="brand-logo">A</div>
+      <div class="brand-txt"><b>AITestHarness</b><small>确认工作台 · 原型</small></div>
+    </div>
+    <nav class="nav">
+      <div class="nav-item on">✅ 确认卡点（三层）</div>
+      <div class="nav-item" style="opacity:.5">📋 需求清单</div>
+      <div class="nav-item" style="opacity:.5">🧪 测试点矩阵</div>
+      <div class="nav-item" style="opacity:.5">📄 报告草稿</div>
+      <div class="nav-item" style="opacity:.5">审计日志</div>
+    </nav>
+    <div class="side-foot">
+      <div class="avatar">审</div>
+      <div class="who"><b>审核人 · 张工</b><small>reviewer 角色</small></div>
+    </div>
+  </aside>
+
+  <main class="main"><div class="scroll">
+
+    <div class="head">
+      <div>
+        <h1>确认卡点 <span class="tag">原型 · 等确认后落真实代码</span></h1>
+        <p>本批：登录模块改版 —— 27 条确认项（需求 4 / 测试点 6 / 用例 17）。三层规则按方案原文逐条落成可计算状态，右下角审批条与硬闸联动。</p>
+      </div>
+    </div>
+
+    <!-- 三层规则卡 -->
+    <div class="layers">
+      <div class="layer l-diff">
+        <h3><span class="num">1</span>差异聚焦</h3>
+        <p>只强制审「与上一版不同」的部分；未变的默认继承。没有上一版时全部按新增审，不假装能继承。</p>
+        <div class="stat" id="diff-stats"></div>
+      </div>
+      <div class="layer l-sample">
+        <h3><span class="num">2</span>抽样审核</h3>
+        <p>每批随机 10% 深审，其余过。抽样用<b>确定性伪随机（seed + id 哈希）</b>，同一种子抽出的名单可复现、可审计。</p>
+        <div class="stat" id="sample-stats"></div>
+      </div>
+      <div class="layer l-risk">
+        <h3><span class="num">3</span>风险加权</h3>
+        <p>P0 / 涉资字段 / 权限变更 → 强制全审；P2 → 仅抽样。<b>风险强制项不受 1、2 省略</b>；未标风险的按强制全审处理。</p>
+        <div class="stat" id="risk-stats"></div>
+      </div>
+    </div>
+
+    <!-- 抽样面板 -->
+    <div class="sample-panel">
+      <div class="lbl">抽样</div>
+      <div class="seed-box">
+        <label>种子</label>
+        <input id="seed" value="20261118">
+        <button class="btn btn-out" id="btn-redraw">按此种子重抽</button>
+        <button class="btn btn-out" id="btn-reseed">换一个种子</button>
+      </div>
+      <div class="sample-meta">
+        抽样率 10% · 本批应抽 <b id="sample-n">0</b> 条（小批 &lt;10 条无统计意义 → 自动升级全审）<br>
+        名单指纹 <code id="sample-fp">—</code> · 同种子重抽指纹必须一致（可复现）
+      </div>
+      <div class="sample-meta" style="margin-left:auto;text-align:right">
+        已深审 <b id="sample-done">0/0</b><br>
+        问题率 <b id="sample-rate">—</b> / 阈值 10%
+      </div>
+    </div>
+    <div class="retro-banner" id="retro-banner"></div>
+
+    <!-- 条目表 -->
+    <div class="toolbar">
+      <h2>确认项</h2>
+      <button class="fbtn on" data-f="all">全部</button>
+      <button class="fbtn" data-f="must">必审（差异+风险）</button>
+      <button class="fbtn" data-f="sampled">抽样名单</button>
+      <button class="fbtn" data-f="todo">待处理</button>
+      <button class="fbtn" data-f="inherit">已继承</button>
+      <span class="right">左侧红条 = 风险强制 · 绿条 = 抽中深审</span>
+    </div>
+    <div class="items-wrap">
+      <table>
+        <thead><tr>
+          <th style="width:90px">编号</th><th style="width:56px">类型</th>
+          <th>内容</th>
+          <th style="width:130px">风险</th><th style="width:96px">与上版</th>
+          <th style="width:92px">状态</th><th style="width:150px">处置</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+
+    <!-- 审批条 -->
+    <div class="approval">
+      <div class="approval-head">
+        <h2>回归报告审批</h2>
+        <div class="st-flow" id="st-flow"></div>
+        <span style="margin-left:auto;font-size:11.5px;color:var(--muted)">硬闸引用批次 4 产物：execution/replay-comparison.json</span>
+      </div>
+      <div class="approval-body">
+        <div class="gates"><h4>硬闸（全部通过才允许批准）</h4><div id="gates"></div></div>
+        <div class="audit"><h4>审计留痕（append-only · seq 连续）</h4><div id="audit"></div></div>
+      </div>
+      <div class="blocked-msg" id="blocked-msg"></div>
+      <div class="approval-foot">
+        <button class="btn btn-pri" id="btn-submit">提交送审</button>
+        <button class="btn btn-green" id="btn-approve" disabled>批准</button>
+        <button class="btn btn-out" id="btn-reject" disabled>退回修改</button>
+        <span class="msg" id="approval-msg">确认全部完成后才能送审；硬闸失败时批准会被阻止并留痕。</span>
+      </div>
+    </div>
+
+    <div class="proto-note">
+      <b>原型说明（待确认的交互决策）</b>：
+      ① 三层叠加规则——必审集 = 差异项 ∪ 风险强制项，抽样名单从「非强制、非差异」的普通项里抽，避免同一条被两层重复打扰；
+      ② 抽样名单用 seed + id 哈希排序，页面上展示名单指纹供复现比对；
+      ③ 抽样问题率超 10% → 该批退回全审，横幅常驻直到该批全部人工审完；
+      ④ 审批条硬闸实时取自批次 4 重放产物（此处用真实字段名模拟），闸失败 → 批准按钮保持禁用并在审计里记 approve_blocked。
+      确认或调整这四点后，再按此原型接真实数据。
+    </div>
+
+  </div></main>
+</div>
+
+<script>
+/* ── 数据 ─────────────────────────────────────────────── */
+const RISK = {
+  P0:{cls:'risk-P0',label:'P0'}, P1:{cls:'risk-P1',label:'P1'}, P2:{cls:'risk-P2',label:'P2'},
+  money:{cls:'risk-money',label:'涉资字段'}, perm:{cls:'risk-perm',label:'权限变更'},
+  unknown:{cls:'risk-unknown',label:'未标风险'},
+};
+let items = [
+  {id:'REQ-201',type:'需求', text:'登录失败 5 次锁定 10 分钟', risk:'P0',        changed:true,  st:'todo'},
+  {id:'REQ-202',type:'需求', text:'支持短信验证码登录',           risk:'money',    changed:true,  st:'todo'},
+  {id:'REQ-203',type:'需求', text:'密码强度提示文案',             risk:'P2',        changed:true,  st:'todo'},
+  {id:'REQ-204',type:'需求', text:'账号命名规则不变',             risk:'P1',        changed:false, st:'inherit'},
+  {id:'TP-311', type:'测试点',text:'锁定后倒计时展示',            risk:'P1',        changed:true,  st:'todo'},
+  {id:'TP-312', type:'测试点',text:'验证码 60s 重发间隔',         risk:'P1',        changed:true,  st:'todo'},
+  {id:'TP-313', type:'测试点',text:'验证码错误提示位置',          risk:'P2',        changed:true,  st:'todo'},
+  {id:'TP-314', type:'测试点',text:'账号密码登录主路径',          risk:'P1',        changed:false, st:'inherit'},
+  {id:'TP-315', type:'测试点',text:'记住登录态有效期',            risk:'perm',      changed:false, st:'todo'},
+  {id:'TP-316', type:'测试点',text:'登录页视觉走查',              risk:'P2',        changed:false, st:'inherit'},
+  {id:'C-401',  type:'用例',  text:'正确账密登录成功',            risk:'P0',        changed:true,  st:'todo'},
+  {id:'C-402',  type:'用例',  text:'错误密码 5 次触发锁定',       risk:'P0',        changed:true,  st:'todo'},
+  {id:'C-403',  type:'用例',  text:'锁定期间正确密码被拒',        risk:'P0',        changed:true,  st:'todo'},
+  {id:'C-404',  type:'用例',  text:'短信验证码正确登录',          risk:'money',     changed:true,  st:'todo'},
+  {id:'C-405',  type:'用例',  text:'验证码过期重试',              risk:'P1',        changed:true,  st:'todo'},
+  {id:'C-406',  type:'用例',  text:'60s 内重复发送被限流',        risk:'P1',        changed:false, st:'inherit'},
+  {id:'C-407',  type:'用例',  text:'登录页品牌图加载',            risk:'P2',        changed:false, st:'inherit'},
+  {id:'C-408',  type:'用例',  text:'登出后回跳登录页',            risk:'P2',        changed:false, st:'inherit'},
+  {id:'C-409',  type:'用例',  text:'多端同时在线踢出策略',        risk:'unknown',   changed:false, st:'todo'},
+  {id:'C-410',  type:'用例',  text:'登录接口错误码字典',          risk:'P1',        changed:false, st:'inherit'},
+  {id:'C-411',  type:'用例',  text:'登录页无障碍标签',            risk:'P2',        changed:false, st:'inherit'},
+  {id:'C-412',  type:'用例',  text:'国际化文案缺翻译回退',        risk:'P2',        changed:false, st:'inherit'},
+  {id:'C-413',  type:'用例',  text:'登录页埋点上报',              risk:'P1',        changed:false, st:'inherit'},
+  {id:'C-414',  type:'用例',  text:'会话超时自动登出',            risk:'P1',        changed:false, st:'inherit'},
+  {id:'C-415',  type:'用例',  text:'浏览器后退不重复提交',        risk:'P2',        changed:false, st:'inherit'},
+  {id:'C-416',  type:'用例',  text:'登录日志留存字段',            risk:'P1',        changed:false, st:'inherit'},
+  {id:'C-417',  type:'用例',  text:'页面标题与 favicon',          risk:'P2',        changed:false, st:'inherit'},
+];
+
+/* ── 三层规则 ─────────────────────────────────────────── */
+const isForce = it => ['P0','money','perm','unknown'].includes(it.risk); // 风险强制（含未标）
+const isDiff  = it => it.changed === true;
+const isMust  = it => isForce(it) || isDiff(it);                          // 必审 = 1∪3
+const isSmallBatch = items.filter(it => !isMust(it)).length < 10;         // 小批抽样无统计意义
+
+/* ── 确定性抽样：seed + id 哈希排序（与 confirm-gate.mjs 同口径） ── */
+function hash32(str){let h=2166136261;for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619)}return h>>>0}
+function drawSample(seed){
+  const pool = items.filter(it => !isMust(it)).map(it=>it.id);
+  if (isSmallBatch) return []; // 小批升级全审：不抽样
+  const n = Math.max(1, Math.ceil(pool.length*0.1));
+  return pool.map(id=>({id,k:hash32(seed+'|'+id)})).sort((a,b)=>a.k-b.k).slice(0,n).map(o=>o.id);
+}
+function sampleFingerprint(seed, ids){
+  return hash32(seed+'#'+ids.join(',')).toString(16).padStart(8,'0').slice(0,8);
+}
+
+/* ── 状态 ─────────────────────────────────────────────── */
+let seed='20261118', sampledIds=[], fp='—', filter='all', reseedCount=0;
+let approval={status:'draft', audit:[], blocked:null};
+function auditAdd(action, note, cls){ approval.audit.push({seq:approval.audit.length+1, action, note, cls}); }
+
+/* ── 渲染 ─────────────────────────────────────────────── */
+const $=id=>document.getElementById(id);
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+function stats(){
+  const must=items.filter(isMust), force=items.filter(isForce), diff=items.filter(isDiff);
+  const inherit=items.filter(it=>it.st==='inherit').length;
+  $('diff-stats').innerHTML =
+    `<span class="chip blue">差异强制 ${diff.length}</span><span class="chip grey">未变继承 ${items.length-diff.length}</span>`;
+  $('risk-stats').innerHTML =
+    `<span class="chip red">强制全审 ${force.length}</span><span class="chip amber">未标风险按强制 ${items.filter(it=>it.risk==='unknown').length}</span>`;
+  const done=sampledIds.filter(id=>{const it=items.find(x=>x.id===id);return it.st==='pass'||it.st==='problem'}).length;
+  const problems=sampledIds.filter(id=>items.find(x=>x.id===id).st==='problem').length;
+  $('sample-stats').innerHTML = isSmallBatch
+    ? `<span class="chip amber">本批仅 ${items.filter(it=>!isMust(it)).length} 条普通项 → 升级全审</span>`
+    : `<span class="chip green">抽中 ${sampledIds.length}</span><span class="chip grey">已深审 ${done}/${sampledIds.length}</span>` +
+      (problems? `<span class="chip red">问题 ${problems}</span>`:'');
+  $('sample-n').textContent = isSmallBatch?0:Math.max(1,Math.ceil(items.filter(it=>!isMust(it)).length*0.1));
+  $('sample-fp').textContent = fp;
+  $('sample-done').textContent = sampledIds.length?`${done}/${sampledIds.length}`:'0/0';
+  const rate = sampledIds.length? (problems/sampledIds.length*100).toFixed(1)+'%' : '—';
+  $('sample-rate').textContent = rate;
+  $('sample-rate').style.color = sampledIds.length && problems/sampledIds.length>0.1 ? 'var(--red)':'var(--text)';
+  // 退回全审横幅
+  const over = sampledIds.length>0 && problems/sampledIds.length>0.1;
+  $('retro-banner').className='retro-banner'+(over?' show':'');
+  if(over) $('retro-banner').innerHTML =
+    `⚠️ 抽样问题率 ${rate} 超过阈值 10% —— 本批<b>退回全审</b>：普通项的「抽样通过」状态全部作废，需逐条人工审完才能送审。`;
+  return {over};
+}
+
+function rows(){
+  const tb=$('rows'); tb.innerHTML='';
+  const list = items.filter(it=>{
+    if(filter==='all') return true;
+    if(filter==='must') return isMust(it);
+    if(filter==='sampled') return sampledIds.includes(it.id);
+    if(filter==='todo') return it.st==='todo';
+    if(filter==='inherit') return it.st==='inherit';
+    return true;
+  });
+  for(const it of list){
+    const r=RISK[it.risk];
+    const stMap={todo:['st-todo','待审'],pass:['st-pass','通过'],problem:['st-problem','发现问题'],inherit:['st-inherit','继承上版']};
+    const [sc,sl]=stMap[it.st];
+    const cls = isForce(it)?'force-row':(sampledIds.includes(it.id)?'sampled-row':(it.st==='inherit'?'inherit-row':''));
+    const act = it.st==='inherit'
+      ? '<button class="mini" onclick="review(\''+it.id+'\')">改为人工审</button>'
+      : it.st==='todo'
+        ? '<div class="row-act"><button class="mini ok" onclick="review(\''+it.id+'\')">通过</button><button class="mini bad" onclick="markProblem(\''+it.id+'\')">问题</button></div>'
+        : '<span style="font-size:11px;color:var(--muted)">已处置'+(isMust(it)?'（必审）':'')+'</span>';
+    tb.insertAdjacentHTML('beforeend',`<tr class="${cls}">
+      <td><span class="cid">${it.id}</span></td>
+      <td>${it.type}</td><td>${esc(it.text)}</td>
+      <td><span class="risk-tag ${r.cls}">${r.label}</span></td>
+      <td><span class="diff-dot ${it.changed?'changed':'same'}"></span>${it.changed?'有差异':'与上版一致'}</td>
+      <td><span class="st-chip ${sc}">${sl}</span></td>
+      <td>${act}</td></tr>`);
+  }
+}
+
+function gates(){
+  const replay={pass:false,detail:'重放状态 partial（stop_reason: replay_budget_exhausted）——批次 4 预算到点'};
+  const unstable={pass:true,detail:'per_case 无 unstable；隔离名单已落盘'};
+  const notrun={pass:false,detail:'2 条用例 not_run（预算截断）——未执行不得进任何通过结论'};
+  const confirm={pass:mustDone()&&!statsOver(),detail:mustDone()&&!statsOver()?'必审集全部处置完成':(mustDone()?'抽样问题率超阈值，待全审':'必审集尚有未处置项')};
+  return [
+    {name:'replay_complete',...replay},{name:'no_unstable_in_pass',...unstable},
+    {name:'no_unexecuted_pass',...notrun},{name:'confirm_done',...confirm},
+  ];
+}
+let statsOver=false;
+function mustDone(){return items.every(it=>it.st!=='todo')}
+
+function renderApproval(){
+  const flow=['draft','reviewing','approved'], label={draft:'draft',reviewing:'reviewing',approved:'approved'};
+  $('st-flow').innerHTML = flow.map(s=>{
+    const i=flow.indexOf(approval.status), j=flow.indexOf(s);
+    const c = approval.status==='reviewing'&&s==='draft'?'block':(j<i?'done':(j===i?'cur':''));
+    return (j>0?'<span class="st-arrow">→</span>':'')+`<span class="st-node ${c}">${label[s]}</span>`;
+  }).join('');
+  $('gates').innerHTML = gates().map(g=>
+    `<div class="gate-row"><span class="gate-ic ${g.pass?'pass':'fail'}">${g.pass?'✓':'✗'}</span>
+     <span class="gate-name">${g.name}</span><span class="gate-detail">${esc(g.detail)}</span></div>`).join('');
+  $('audit').innerHTML = approval.audit.map(a=>
+    `<div class="audit-row"><span class="audit-seq">${a.seq}</span>
+     <span class="audit-act ${a.cls||''}">${a.action}</span><span class="audit-note">${esc(a.note||'')}</span></div>`).join('')
+    || '<div style="font-size:11.5px;color:var(--muted)">（暂无记录）</div>';
+  const ready = mustDone()&&!statsOver();
+  $('btn-submit').disabled = approval.status!=='draft'||!ready;
+  $('btn-approve').disabled = approval.status!=='reviewing';
+  $('btn-reject').disabled = approval.status!=='reviewing';
+  $('approval-msg').textContent = approval.status==='draft'
+    ? (ready?'必审集已全部处置，可提交送审。':'必审集未完成或抽样退回全审中，暂不能送审。')
+    : approval.status==='reviewing'?'送审中。注意：演示数据里重放为 partial、有 not_run —— 批准会被硬闸阻止并记 approve_blocked。'
+    : '已批准。审计留痕 seq 连续，可导出。';
+}
+
+function renderAll(){stats();rows();renderApproval()}
+
+/* ── 交互 ─────────────────────────────────────────────── */
+window.review=id=>{const it=items.find(x=>x.id===id);it.st='pass';renderAll()};
+window.markProblem=id=>{const it=items.find(x=>x.id===id);it.st='problem';recalcOver();renderAll()};
+function recalcOver(){
+  const problems=sampledIds.filter(id=>items.find(x=>x.id===id).st==='problem').length;
+  statsOver = sampledIds.length>0 && problems/sampledIds.length>0.1;
+}
+
+function applySeed(newSeed,silent){
+  seed=newSeed||('seed-'+(++reseedCount)+Math.floor(Math.random()*900+100));
+  $('seed').value=seed;
+  sampledIds=drawSample(seed);
+  fp=sampleFingerprint(seed,sampledIds);
+  // 新名单抽出：之前「抽样通过」的结论只对仍在名单内的有效；名单变化的旧结论作废
+  for(const it of items) if(it.st==='pass'&&!isMust(it)&&!sampledIds.includes(it.id)) it.st='todo';
+  recalcOver(); renderAll();
+  if(!silent) toast(`已按种子 ${seed} 重抽：名单指纹 ${fp}（同种子重抽指纹一致，可复现）`);
+}
+function toast(msg){$('approval-msg').textContent=msg}
+
+document.querySelectorAll('.fbtn').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.fbtn').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); filter=b.dataset.f; rows();
+});
+$('btn-redraw').onclick=()=>applySeed($('seed').value.trim());
+$('btn-reseed').onclick=()=>applySeed(null);
+
+$('btn-submit').onclick=()=>{
+  approval.status='reviewing'; approval.blocked=null;
+  auditAdd('submitted','批次确认完成，送审回归报告');
+  renderAll();
+};
+$('btn-approve').onclick=()=>{
+  const failed=gates().filter(g=>!g.pass);
+  if(failed.length){
+    approval.blocked=failed;
+    auditAdd('approve_blocked','硬闸失败：'+failed.map(f=>f.name).join(', '),'blocked');
+    $('blocked-msg').className='blocked-msg show';
+    $('blocked-msg').innerHTML='⛔ 批准被硬闸阻止：<b>'+failed.map(f=>f.name).join('</b>、<b>')+'</b>。'+failed.map(f=>f.detail).join(' ');
+    toast('硬闸失败，批准被阻止（已记 approve_blocked）。修数据或退回修改后再试。');
+  }else{
+    approval.status='approved'; auditAdd('approved','硬闸全过，报告生效','ok');
+    $('blocked-msg').className='blocked-msg';
+  }
+  renderApproval();
+};
+$('btn-reject').onclick=()=>{
+  approval.status='draft'; auditAdd('rejected','退回修改：报告需补充重放指纹');
+  $('blocked-msg').className='blocked-msg'; approval.blocked=null;
+  renderApproval();
+};
+
+/* ── 启动演示 ─────────────────────────────────────────── */
+auditAdd('created','确认批次建立（登录模块改版，27 项）');
+applySeed('20261118',true);
+// 演示：预先处置几条，让用户看到层叠效果
+review('C-401'); review('REQ-201');
+// 抽中名单里标一条问题 → 问题率 50% 超阈值，演示「退回全审」横幅
+if (sampledIds.length) markProblem(sampledIds[0]);
+renderAll();
+</script>
+</body>
+</html>

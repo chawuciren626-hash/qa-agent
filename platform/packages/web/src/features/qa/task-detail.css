@@ -52,3 +52,30 @@
 .qtd-preview-content th,.qtd-preview-content td{padding:8px 10px;border:1px solid light-dark(#dfe5ee,#475569);vertical-align:top}
 .qtd-execution-table{min-width:1250px!important}
 .qtd-execution-cell{min-width:170px;max-width:360px;max-height:110px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+
+/* 上下文装配账目（A5）：装了什么、裁了什么、为什么裁，都要能当场核对。 */
+.qtd-ledger{margin:0 clamp(12px,2vw,28px) 14px;border:1px solid light-dark(#e6eaf0,#374151);border-radius:10px;background:light-dark(#fbfcfe,#1b2432);flex:none}
+.qtd-ledger>summary{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;list-style:none;flex-wrap:wrap}
+.qtd-ledger>summary::-webkit-details-marker{display:none}
+.qtd-ledger>summary::before{content:"▸";color:light-dark(#8b95a1,#9ca3af);font-size:11px}
+.qtd-ledger[open]>summary::before{content:"▾"}
+.qtd-ledger-title{font-weight:650}
+.qtd-ledger-statement{color:light-dark(#57606a,#cbd5e1);font-size:12px}
+.qtd-ledger-badge{margin-left:auto;padding:1px 8px;border-radius:999px;font-size:11px;border:1px solid transparent}
+.qtd-ledger-badge-warn{border-color:#e7c07a;background:#fdf6e7;color:#8a5a00}
+.qtd-ledger-badge-bad{border-color:#e0a09b;background:#fdeceb;color:#a3342d}
+.qtd-ledger-body{display:grid;gap:10px;padding:4px 14px 14px}
+.qtd-ledger-empty{margin:0 clamp(12px,2vw,28px) 14px;padding:12px 14px;border:1px dashed light-dark(#dbe2ec,#3b4d66);border-radius:10px;color:light-dark(#57606a,#9ca3af);font-size:12px}
+.qtd-ledger-error{color:#d54941}
+.qtd-ledger-budget{display:flex;align-items:center;gap:10px;font-size:12px;color:light-dark(#57606a,#cbd5e1);flex-wrap:wrap}
+.qtd-ledger-bar{flex:1;min-width:120px;height:6px;border-radius:999px;background:light-dark(#e9eef6,#2b3a50);overflow:hidden}
+.qtd-ledger-bar-fill{display:block;height:100%;background:#2b6de8}
+.qtd-ledger-assembler{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:light-dark(#8b95a1,#9ca3af)}
+.qtd-ledger-stats{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:light-dark(#46566b,#c2d5f0)}
+.qtd-ledger-note{margin:0;font-size:12px;line-height:1.6;color:light-dark(#57606a,#cbd5e1)}
+.qtd-ledger-table-wrap{overflow-x:auto}
+.qtd-ledger-table{width:100%;border-collapse:collapse;font-size:12px;text-align:left;min-width:520px}
+.qtd-ledger-table th{padding:7px 10px;font-weight:500;color:light-dark(#57606a,#cbd5e1);background:light-dark(#f4f7fb,#222f41);border-bottom:1px solid light-dark(#e6eaf0,#374151)}
+.qtd-ledger-table td{padding:7px 10px;border-bottom:1px solid light-dark(#eef2f7,#31405a);color:light-dark(#46566b,#cbd5e1);vertical-align:top}
+.qtd-ledger-ref{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+@media(max-width:720px){.qtd-ledger{margin:0 12px 12px}.qtd-ledger-empty{margin:0 12px 12px}}

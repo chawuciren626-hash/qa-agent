@@ -15,6 +15,7 @@ import { useLocation, useNavigate } from "react-router";
 import type { ManagedProject, ProjectListQuery, ProjectListResult } from "./types";
 import {
   archiveProject,
+  bootstrapEnvironment,
   createProject,
   enterProject,
   listProjects,
@@ -24,6 +25,8 @@ import {
 } from "./api";
 import { STATUS_LABEL, sourceText, timeText } from "./format";
 import { CreateProjectDialog } from "./create-project-dialog";
+import { EnvironmentCell } from "./environment-cell";
+import { BootstrapDrawer } from "./bootstrap-drawer";
 import { ProjectDetailPanel } from "./project-detail-panel";
 import { ProjectSettingsDialog } from "../../../components/layout/project-dialogs";
 import { ConfirmModal, toastError, toastSuccess } from "@prismshadow/penguin-ui";
@@ -97,6 +100,10 @@ export function ProjectManagementPage() {
   /** 单项操作中：对应按钮 loading，防重复，不锁整个列表。 */
   const [pinningId, setPinningId] = useState<string | null>(null);
   const [enteringId, setEnteringId] = useState<string | null>(null);
+  /** 正在发起建档的项目（按钮 loading；与环境的 probing 状态不是一回事）。 */
+  const [bootstrappingId, setBootstrappingId] = useState<string | null>(null);
+  /** 打开的是哪个项目的建档抽屉（抽屉自己轮询环境状态，列表只负责把它叫出来）。 */
+  const [envDrawer, setEnvDrawer] = useState<ManagedProject | null>(null);
   /** ⋯ 行内菜单。 */
   const [rowMenuId, setRowMenuId] = useState<string | null>(null);
   /** 详情侧栏（detail=<projectId> 可经 URL 恢复）。 */
@@ -190,6 +197,17 @@ export function ProjectManagementPage() {
       });
   }, [debouncedKeyword, sourceType, status, sort, page, pageSize]);
 
+  /**
+   * 有环境正在建档时自动轮询：建档在服务端后台跑（最长两分钟），列表不刷新的话
+   * 「建档中」会永远停在那里。没有 probing 环境时不留定时器。
+   */
+  useEffect(() => {
+    const probing = (result?.projects ?? []).some(project => project.environment?.status === "probing");
+    if (!probing) return;
+    const timer = setTimeout(refresh, 3000);
+    return () => clearTimeout(timer);
+  }, [result, refresh]);
+
   /** 置顶切换：失败回退并提示（§7.1）；置顶不触发行跳转。 */
   const togglePin = useCallback(async (project: ManagedProject) => {
     setPinningId(project.projectId);
@@ -204,6 +222,27 @@ export function ProjectManagementPage() {
     }
   }, [refresh]);
 
+  /**
+   * 从列表直接建档：服务端立刻返回 probing，真实抓取在后台跑。
+   * 这里只负责发起 + 打开抽屉 + 刷新，不等待结果——等会卡住 UI 两分钟。
+   */
+  const bootstrap = useCallback(async (project: ManagedProject) => {
+    const env = project.environment;
+    if (!env) return;
+    setBootstrappingId(project.projectId);
+    // 先把抽屉打开：建档两分钟里用户最想看的是"现在跑到第几步"，而不是列表里
+    // 一个转圈的六个字。
+    setEnvDrawer(project);
+    try {
+      await bootstrapEnvironment(project.projectId, env.env);
+      refresh();
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "发起建档失败，请重试");
+    } finally {
+      setBootstrappingId(null);
+    }
+  }, [refresh]);
+
   /** 进入项目：校验（适配层）→ 复用现有项目上下文切换；失败停留原位置。 */
   const enter = useCallback(async (projectId: string) => {
     setEnteringId(projectId);
@@ -212,6 +251,20 @@ export function ProjectManagementPage() {
       setCurrentProjectId(projectId);
       pendingEnterRef.current = null;
       navigate("/qa/project");
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "进入项目失败，请重试");
+    } finally {
+      setEnteringId(null);
+    }
+  }, [navigate, setCurrentProjectId]);
+
+  /** 去项目环境页：环境页在项目内，所以先按同一套校验进入项目，再切路由。 */
+  const openEnvironments = useCallback(async (project: ManagedProject) => {
+    setEnteringId(project.projectId);
+    try {
+      await enterProject(project.projectId);
+      setCurrentProjectId(project.projectId);
+      navigate("/qa/project/environments");
     } catch (e) {
       toastError(e instanceof Error ? e.message : "进入项目失败，请重试");
     } finally {
@@ -361,7 +414,7 @@ export function ProjectManagementPage() {
             <table>
               <thead>
                 <tr>
-                  <th className="qpm-col-pin" /><th>项目</th><th>来源</th><th>状态</th>
+                  <th className="qpm-col-pin" /><th>项目</th><th>来源</th><th>环境</th><th>状态</th>
                   <th className="qpm-col-aux">最近活动</th>
                   <th className="qpm-col-aux">运行中任务</th><th className="qpm-col-acts">操作</th>
                 </tr>
@@ -369,8 +422,8 @@ export function ProjectManagementPage() {
               <tbody>
                 {Array.from({ length: 8 }, (_, i) => (
                   <tr key={i}>
-                    {Array.from({ length: 7 }, (_, c) => (
-                      <td key={c} className={c === 4 || c === 5 ? "qpm-col-aux" : undefined}>
+                    {Array.from({ length: 8 }, (_, c) => (
+                      <td key={c} className={c === 5 || c === 6 ? "qpm-col-aux" : undefined}>
                         <span className="qpm-skeleton" />
                       </td>
                     ))}
@@ -408,6 +461,7 @@ export function ProjectManagementPage() {
                   <th className="qpm-col-pin"><span className="sr-only">置顶</span></th>
                   <th>项目</th>
                   <th>来源</th>
+                  <th>环境</th>
                   <th>状态</th>
                   <th className="qpm-col-aux">最近活动</th>
                   <th className="qpm-col-aux">运行中任务</th>
@@ -441,6 +495,14 @@ export function ProjectManagementPage() {
                     </td>
                     <td>
                       <span className={`qpm-tag ${project.sourceType === "sync" ? "qpm-tag-sync" : "qpm-tag-manual"}`}>{sourceText(project)}</span>
+                    </td>
+                    <td>
+                      <EnvironmentCell
+                        project={project}
+                        busy={bootstrappingId === project.projectId}
+                        onBootstrap={(target) => void bootstrap(target)}
+                        onOpen={(target) => setEnvDrawer(target)}
+                      />
                     </td>
                     <td>
                       <span className={`qpm-tag qpm-status-${project.status}`}>{STATUS_LABEL[project.status]}</span>
@@ -498,6 +560,14 @@ export function ProjectManagementPage() {
         )}
       </div>
 
+      {envDrawer && (
+        <BootstrapDrawer
+          project={envDrawer}
+          onClose={() => setEnvDrawer(null)}
+          onChanged={refresh}
+        />
+      )}
+
       {detailId && (
         <ProjectDetailPanel
           projectId={detailId}
@@ -505,6 +575,7 @@ export function ProjectManagementPage() {
           editOnOpen={editOnOpen}
           onClose={() => setDetailId(null)}
           onSaveEdits={saveEdits}
+          onOpenEnvironments={(project) => void openEnvironments(project)}
         />
       )}
 
@@ -523,7 +594,17 @@ export function ProjectManagementPage() {
       {creatingOpen && (
         <CreateProjectDialog
           onClose={() => setCreatingOpen(false)}
-          onCreate={async input => { const created = await createProject(input); await reloadProjects(); refresh(); return created; }}
+          onCreate={async input => {
+            const created = await createProject(input);
+            // 带地址就在创建后立刻建档：服务端已返回 202，这里不 await 结果。
+            // 失败不吞——它写在该环境的 status/lastError 上，列表轮询时变成「建档失败」。
+            if (input.environment?.baseUrl) {
+              void bootstrapEnvironment(created.projectId, input.environment.env ?? "test").catch(() => {});
+            }
+            await reloadProjects();
+            refresh();
+            return created;
+          }}
           onEnterAfterCreate={enterAfterCreate}
           retryEnter={async () => {
             const id = pendingEnterRef.current;

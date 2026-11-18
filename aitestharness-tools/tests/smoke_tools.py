@@ -1174,6 +1174,161 @@ def test_bootstrap_1010():
     srv.shutdown()
 
 
+def test_onboard_runtime_cli():
+    """onboard.bootstrap 走 runtime_cli：这是产品建档按钮唯一的执行入口。
+
+    产品侧（服务端环境服务）spawn 的就是 `runtime_cli onboard.bootstrap`，
+    所以这里必须验证"给 out 落盘、不给 out 只回结构、失败不落盘"三条契约——
+    少任何一条，建档按钮都会要么写不出 maps，要么在失败时留下半份产物。
+    """
+    import json, threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from aitestharness_tools.runtime_cli import invoke
+
+    html = ("<html><body><form><input type='text' name='u'>"
+            "<input type='password' name='p'><img src='/captcha.jpg'></form></body></html>")
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            body = html.encode() if self.path == "/" else b""
+            if not body:
+                self.send_response(404); self.end_headers(); return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+
+    # 1) 给 out：落盘 maps + 报告，路径回传
+    out = tempfile.mkdtemp(prefix="bootstrap-cli-")
+    result = invoke("onboard.bootstrap", {"project": "proj-cli", "env": "uat",
+                                          "target_url": base, "out": out})
+    assert result["ok"] is True and result["maps"]["env"] == "uat"
+    assert os.path.exists(result["paths"]["maps"]) and os.path.exists(result["paths"]["report"])
+    assert result["paths"]["maps"].endswith("maps-uat.yaml")
+
+    # 2) 不给 out：只回结构，不写任何文件（run 内调用不留散落产物）
+    bare = invoke("onboard.bootstrap", {"project": "proj-cli", "env": "uat", "target_url": base})
+    assert bare["ok"] is True and "paths" not in bare
+
+    # 3) 失败不落盘：地址不可达时 ok=False 且没有 paths，不能留半份 maps
+    failed = invoke("onboard.bootstrap", {"project": "proj-cli", "env": "uat",
+                                          "target_url": "http://127.0.0.1:9/",
+                                          "out": tempfile.mkdtemp(prefix="bootstrap-cli-bad-")})
+    assert failed["ok"] is False and failed["paths"] is None and failed["maps"] is None
+    srv.shutdown()
+
+
+def test_knowledge_runtime_cli():
+    """批次 3 的四个入口走 runtime_cli：条款化 / 版本 diff / 引用反查 / 上下文装配。
+
+    服务端只需要一个"能 spawn 的确定性入口"，不需要理解 Python 侧数据形状；
+    这里把四条契约钉死：没有原文位置的知识项必须被丢弃、表述变更不得触发重算、
+    引用反查要给出知识项身份、装配被裁掉的项必须出现在 dropped 里。
+    """
+    from aitestharness_tools.runtime_cli import invoke
+
+    text = "# 退款\n\n## 上限\n\n单笔退款不超过 500 元。\n\n- 已支付订单才可退款\n"
+    extracted = invoke("knowledge.extract", {
+        "project": "proj-kb", "source": "退款规则.md", "text": text,
+        "items": [
+            {"type": "rule", "name": "退款上限", "statement": "单笔退款不超过 500 元", "clause_id": "c0001"},
+            {"type": "rule", "name": "无位置", "statement": "这条没有原文位置"},   # 必须丢弃
+            {"type": "bogus", "name": "x", "statement": "类型不合法"},              # 必须丢弃
+        ],
+    })
+    clauses, knowledge = extracted["clauses"], extracted["knowledge"]
+    assert [c["clause_id"] for c in clauses] == ["c0001", "c0002"]
+    assert clauses[0]["location"] == {"file": "退款规则.md", "line": 5}
+    assert [it["name"] for it in knowledge["items"]] == ["退款上限"]
+    assert knowledge["items"][0]["source"] == {"file": "退款规则.md", "line": 5}
+    assert knowledge["stats"]["dropped"] == 2, "不可定位的知识项必须计入 dropped，不能静默进库"
+
+    old = {"items": [{"id": "kb-1", "type": "rule", "name": "退款上限",
+                      "statement": "单笔退款不超过 500 元", "fingerprint": "fp-a"}]}
+    same_semantics = {"items": [{"id": "kb-1", "type": "rule", "name": "退款上限",
+                                 "statement": "单笔退款 不超过 500 元", "fingerprint": "fp-a"}]}
+    wording = invoke("knowledge.diff", {"old": old, "new": same_semantics})
+    assert wording["stats"]["wording_only"] == 1 and wording["triggers_recompute"] is False, \
+        "只改了空格/表述就触发重算，增量机制等于没有"
+
+    changed = invoke("knowledge.diff", {"old": old, "new": {"items": [
+        {"id": "kb-1", "type": "rule", "name": "退款上限",
+         "statement": "单笔退款不超过 200 元", "fingerprint": "fp-b"}]}})
+    assert changed["stats"]["semantic_changed"] == 1 and changed["triggers_recompute"] is True
+    assert changed["semantic_changed"][0]["change_ratio"] > 0.8
+
+    refs = invoke("knowledge.references", {"text": "验证退款上限这条规则", "knowledge": knowledge})
+    assert refs["count"] == 1 and refs["hits"][0]["knowledge_id"] == knowledge["items"][0]["id"]
+
+    # 预算压到装不下两条：必须只装高优先级的 rule，并把裁掉的项记在 dropped 里
+    big = {"content_hash": "abc", "_build_meta": {"version": 3}, "items": [
+        {"id": "kb-rule-1", "type": "rule", "name": "退款上限", "statement": "单笔退款不超过 500 元",
+         "tags": ["退款"], "fingerprint": "f1"},
+        {"id": "kb-flow-1", "type": "flow", "name": "退款流转", "statement": "退款审批后 3 个工作日到账，"
+         "超时需人工介入并记录到台账，以免客户重复催办", "tags": ["退款"], "fingerprint": "f2"},
+    ]}
+    packed = invoke("context.assemble", {"scope": {"keywords": ["退款"]}, "knowledge": big,
+                                        "budget_tokens": 30})
+    assert packed["tokens_est"] <= packed["budget"]
+    assert packed["context_refs"]["knowledge"]["version"] == 3
+    assert packed["context_refs"]["knowledge"]["total"] == 2
+    assert packed["context_refs"]["knowledge"]["loaded"] == 1, packed["context_refs"]
+    assert len(packed["dropped"]) == 1 and packed["dropped"][0]["reason"], "被裁掉的项必须给出原因"
+
+
+def test_knowledge_build_multi_source():
+    """多份资料一起条款化：条款 id 必须带来源前缀，知识项的原文位置不能串到别人家。
+
+    这是「原文位置可见」这件事的地基。两份资料各自从 `c0001` 起编时，`s02-c0001` 会
+    被解析成第一份资料的第 5 行——页面照样显示"退款规则.md 第 5 行"，看起来有据可查，
+    实际指向的是另一份文件。同一输入两次构建的 content_hash 也必须一致，否则
+    "同一输入结果可复现"就只是一句话。
+    """
+    from aitestharness_tools.runtime_cli import invoke
+
+    sources = [
+        {"name": "退款规则.md", "text": "# 退款\n\n## 上限\n\n单笔退款不超过 500 元。\n"},
+        {"name": "登录规则.md", "text": "# 登录\n\n## 锁定\n\n连续五次失败锁定十五分钟。\n"},
+    ]
+    items = [
+        {"type": "rule", "name": "退款上限", "statement": "单笔退款不超过 500 元", "clause_id": "s01-c0001"},
+        {"type": "rule", "name": "锁定时长", "statement": "连续五次失败锁定十五分钟", "clause_id": "s02-c0001"},
+        # 同一指纹（type+statement）只留一条，与 name 这个人类标签无关。
+        {"type": "rule", "name": "退款上限（旧写法）", "statement": "单笔退款不超过 500 元", "clause_id": "s01-c0001"},
+        {"type": "rule", "name": "无位置", "statement": "这条没有原文位置"},   # 必须丢弃
+    ]
+    built = invoke("knowledge.build", {"project": "proj-kb", "version": 2, "sources": sources, "items": items})
+    clauses, knowledge = built["clauses"], built["knowledge"]
+
+    ids = [c["clause_id"] for c in clauses]
+    assert ids == ["s01-c0001", "s02-c0001"], ids
+    assert len(set(ids)) == len(ids), "条款 id 撞了，知识项会定位到别人的行"
+    assert [c["location"] for c in clauses] == [
+        {"file": "退款规则.md", "line": 5}, {"file": "登录规则.md", "line": 5},
+    ]
+
+    by_name = {it["name"]: it for it in knowledge["items"]}
+    assert set(by_name) == {"退款上限", "锁定时长"}, by_name
+    assert by_name["锁定时长"]["source"] == {"file": "登录规则.md", "line": 5}, \
+        "知识项定位到了错误的资料：原文位置不能当装饰"
+    assert by_name["锁定时长"]["section"] == "登录 / 锁定"
+    assert knowledge["stats"]["dropped"] == 1, "无位置的知识项必须计入 dropped"
+    assert knowledge["stats"]["duplicates"] == 1, "同一条规则写两遍应判重复而不是入库两条"
+    assert knowledge["_build_meta"]["version"] == 2
+
+    again = invoke("knowledge.build", {"project": "proj-kb", "version": 2, "sources": sources, "items": items})
+    assert again["knowledge"]["content_hash"] == knowledge["content_hash"], "同一输入必须给出同一 content_hash"
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):

@@ -14,6 +14,7 @@ import type { ServerConfig } from "../../config.js";
 import type { Db, AuthState } from "../../hmr/capabilities.js";
 import { registerQaProjectRoutes } from "./qa-project.js";
 import { registerQaProjectKnowledgeRoutes } from "./qa-project-knowledge.js";
+import { registerQaConfirmGateRoutes } from "./qa-confirm-gate.js";
 import type { KnowledgeAuthorizer } from "../../services/qa-knowledge-authorization.js";
 import type { KnowledgeReceiver } from "../../services/qa-knowledge-receiver.js";
 import { registerQaQualityTraceabilityRoutes } from "./qa-quality-traceability.js";
@@ -91,6 +92,7 @@ export function agentsRoutes(deps: AgentsRouteDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   registerQaProjectRoutes(app, deps);
   registerQaProjectKnowledgeRoutes(app, deps);
+  registerQaConfirmGateRoutes(app, deps);
   registerQaQualityTraceabilityRoutes(app, deps);
   registerQaU2ContractRoutes(app, deps);
   registerQaU3SafetyRoutes(app, deps);

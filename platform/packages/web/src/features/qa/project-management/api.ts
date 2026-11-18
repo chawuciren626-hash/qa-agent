@@ -10,10 +10,18 @@
  */
 import type {
   CreateProjectInput,
+  EnvironmentKnowledge,
+  EnvironmentView,
+  Hypothesis,
+  HypothesisStatus,
+  HypothesisSummary,
+  ExplorationView,
   ManagedProject,
   ProjectListQuery,
+  StartExplorationInput,
   ProjectListResult,
   UpdateProjectInput,
+  WhyUnknown,
 } from "./types";
 import { apiFetch } from "../../../api/client";
 
@@ -76,4 +84,149 @@ export async function enterProject(projectId: string): Promise<void> {
 export async function quickSwitchProjects(currentProjectId: string | null): Promise<ManagedProject[]> {
   const result = await apiFetch<{ projects: ManagedProject[] }>(`${base}/quick-switch`, { query: { currentProjectId: currentProjectId ?? undefined } });
   return result.projects;
+}
+
+// ---------------------------------------------------------------- 项目环境
+
+const envBase = (projectId: string) => `/api/projects/${encodeURIComponent(projectId)}/environments`;
+const envItem = (projectId: string, env: string) => `${envBase(projectId)}/${encodeURIComponent(env)}`;
+
+/** 一个项目的全部环境；defaultEnv 为 null 表示还没连过环境。 */
+export async function listEnvironments(
+  projectId: string,
+): Promise<{ environments: EnvironmentView[]; defaultEnv: string | null }> {
+  return apiFetch<{ environments: EnvironmentView[]; defaultEnv: string | null }>(envBase(projectId));
+}
+
+/** 新增或修改一个环境（地址变更会清空旧建档摘要，不会出现旧站点的页面数描述新地址）。 */
+export async function saveEnvironment(
+  projectId: string,
+  input: { env?: string; baseUrl: string; isDefault?: boolean },
+): Promise<EnvironmentView> {
+  const response = await apiFetch<{ environment: EnvironmentView }>(envBase(projectId), { method: "POST", body: input });
+  return response.environment;
+}
+
+/** 读取单个环境（建档期间用于轮询 status）。 */
+export async function getEnvironment(projectId: string, env: string): Promise<EnvironmentView> {
+  const response = await apiFetch<{ environment: EnvironmentView }>(envItem(projectId, env));
+  return response.environment;
+}
+
+/**
+ * 触发建档：服务端立刻返回（status=probing），实际抓取在后台跑。
+ * 调用方按 getEnvironment 轮询，不要在这里等——建档最长两分钟。
+ */
+export async function bootstrapEnvironment(projectId: string, env: string): Promise<EnvironmentView> {
+  const response = await apiFetch<{ environment: EnvironmentView }>(`${envItem(projectId, env)}/bootstrap`, {
+    method: "POST",
+    body: {},
+  });
+  return response.environment;
+}
+
+// ---------------------------------------------------------------- 探索派发
+
+/** 轮次列表 + 最近一轮；探索进行中由页面轮询这个接口。 */
+export async function listExplorations(
+  projectId: string,
+  env: string,
+): Promise<{ explorations: ExplorationView[]; latest: ExplorationView | null }> {
+  return apiFetch<{ explorations: ExplorationView[]; latest: ExplorationView | null }>(
+    `${envItem(projectId, env)}/explorations`,
+  );
+}
+
+/**
+ * 派发一轮探索：服务端立刻返回（status=running），浏览器脚本在后台跑。
+ * 凭据只用于当次派发，不落库——下次派发的密码框一律重新填。
+ */
+export async function startExploration(
+  projectId: string,
+  env: string,
+  input: StartExplorationInput,
+): Promise<ExplorationView> {
+  const response = await apiFetch<{ exploration: ExplorationView }>(`${envItem(projectId, env)}/explore`, {
+    method: "POST",
+    body: input,
+  });
+  return response.exploration;
+}
+
+/** 人工填答验证码（只在 waiting_human 的那一轮有效）。 */
+export async function answerExplorationCaptcha(
+  projectId: string,
+  env: string,
+  explorationId: string,
+  answer: string,
+): Promise<ExplorationView> {
+  const response = await apiFetch<{ exploration: ExplorationView }>(
+    `${envItem(projectId, env)}/explore/${encodeURIComponent(explorationId)}/answer`,
+    { method: "POST", body: { answer } },
+  );
+  return response.exploration;
+}
+
+/** 中止：已采部分随本轮封存，不算成功也不算失败。 */
+export async function abortExploration(
+  projectId: string,
+  env: string,
+  explorationId: string,
+): Promise<ExplorationView> {
+  const response = await apiFetch<{ exploration: ExplorationView }>(
+    `${envItem(projectId, env)}/explore/${encodeURIComponent(explorationId)}/abort`,
+    { method: "POST", body: {} },
+  );
+  return response.exploration;
+}
+
+/** 验证码截图地址（<img src> 直接用；后端不缓存）。 */
+export function explorationCaptchaUrl(projectId: string, env: string, explorationId: string): string {
+  return `${envItem(projectId, env)}/explore/${encodeURIComponent(explorationId)}/captcha`;
+}
+
+// ---------------------------------------------------------------- 探索资产与假设
+
+/**
+ * 一次取回四层资产 + 假设计数。
+ * 分开请求会让首屏出现「地图有了、计数还是 0」的错帧，所以后端就配成一次返回。
+ */
+export async function getEnvironmentKnowledge(
+  projectId: string,
+  env: string,
+): Promise<{ knowledge: EnvironmentKnowledge; hypotheses: HypothesisSummary }> {
+  return apiFetch<{ knowledge: EnvironmentKnowledge; hypotheses: HypothesisSummary }>(
+    `${envItem(projectId, env)}/knowledge`,
+  );
+}
+
+export async function listHypotheses(
+  projectId: string,
+  env: string,
+  status?: HypothesisStatus,
+): Promise<{ hypotheses: Hypothesis[]; summary: HypothesisSummary }> {
+  return apiFetch<{ hypotheses: Hypothesis[]; summary: HypothesisSummary }>(
+    `${envItem(projectId, env)}/hypotheses`,
+    { query: status ? { status } : undefined },
+  );
+}
+
+/** 人提一条待验证假设（不进地图：验证通过后由探索程序写回）。 */
+export async function createHypothesis(
+  projectId: string,
+  env: string,
+  input: {
+    statement: string;
+    whyUnknown: WhyUnknown;
+    moduleKey?: string;
+    expectation?: string;
+    dataSetup?: string;
+    allowSeed?: boolean;
+  },
+): Promise<Hypothesis> {
+  const response = await apiFetch<{ hypothesis: Hypothesis }>(`${envItem(projectId, env)}/hypotheses`, {
+    method: "POST",
+    body: input,
+  });
+  return response.hypothesis;
 }

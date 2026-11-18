@@ -24,6 +24,7 @@ import { operationPerformance, humanHandoffTiming } from './browser-performance.
 import { browserSecretReferences, validateSecretReference } from './browser-secret-references.mjs';
 import { isProtectedInput, protectedInputs } from './protected-inputs.mjs';
 import { nativeHumanDecision } from './browser-human-action.mjs';
+import { collectLoginDom, classifyLoginForm, classifyCaptcha, parseArithmetic, confidenceGate, strategyOrder, recordStrategyOutcome, validateLoginConfig, loginSessionFile, loginSessionMetaFile, loginSessionMeta, MAX_CAPTCHA_SUBMITS, MIN_SOLVE_CONFIDENCE, AGENT_VISION_STRATEGY, loginCaptchaPendingFile, loginCaptchaImageFile, resolveCaptchaType } from './login-captcha-chain.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const uuid = value => /^[a-f0-9-]{36}$/.test(value ?? '');
@@ -32,16 +33,23 @@ const privatePath = dir => resolve(dir, 'execution/browser-private.json');
 const statePath = dir => resolve(dir, 'execution/browser-state.json');
 const load = path => JSON.parse(readFileSync(path, 'utf8'));
 const sleep = ms => new Promise(done => setTimeout(done, ms));
+// 登录结果的观察窗口。成功与失败在同一窗口里并行采样：真实站点的错误提示
+// 往往 3 秒内自愈，串行"先等成功再探失败"会系统性错过它（见 1F 真实验收记录）。
+const LOGIN_SIGNAL_WINDOW_MS = 8000;
+// 单次采样上限：信号在时立刻返回，只有信号不在时才等这么久。
+const LOGIN_SIGNAL_PROBE_MS = 250;
+const LOGIN_SIGNAL_POLL_MS = 100;
 import { validateSequence, runBrowserSequence } from './browser-sequence.mjs';
 import { boundedNetworkLog } from './bounded-network-log.mjs';
 let sequenceCancelled=false;
 
-export const browserOperations = ['start', 'health', 'recover', 'sequence', 'snapshot', 'goto', 'fill', 'click', 'press', 'select', 'check', 'assert', 'pause', 'finish', 'data_prepare', 'api_check'];
+export const browserOperations = ['start', 'health', 'recover', 'sequence', 'snapshot', 'goto', 'fill', 'click', 'press', 'select', 'check', 'assert', 'pause', 'finish', 'data_prepare', 'api_check', 'login_probe', 'login', 'login_recognize'];
 export const browserOperationFields=Object.freeze({
   sequence:['observed_request_id','steps'],start:['url','source_path','scope','headless'],health:[],recover:[],snapshot:['scope','if_sha256'],goto:['url','source_path'],
   fill:['target','value','value_ref','secret_ref','secret'],click:['target','assertion','preconditions','response_check','data_effect','fault','dialog_policy'],press:['target','key','assertion','preconditions','response_check','data_effect','fault','dialog_policy'],select:['target','value','value_ref'],
   check:['target','checked'],assert:['target','condition','value','value_ref','text_mode','case_id','title','expected','case_ref','recheck_of','ready','expected_basis'],
-  pause:['kind','question'],finish:['summary','limitations','untested','case_reviews'],data_prepare:['key'],api_check:['check']
+  pause:['kind','question'],finish:['summary','limitations','untested','case_reviews'],data_prepare:['key'],api_check:['check'],
+  login_probe:[],login:['config_path','quote','username','password'],login_recognize:['login_request_id','answer','confidence','recognizer']
 });
 
 // A one-shot CLI must not retain a pooled socket after its reply is written.
@@ -206,8 +214,24 @@ export function validateBrowserOperation(op) {
   assert(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(op.request_id ?? ''), 'operation.request_id is required: use 1-80 ASCII letters/digits/_/-, e.g. "case1-submit". No operation performed. Reuse the same ID after transport uncertainty; give a different intended operation a new ID.');
   const fields=browserOperationFields;
   assert(Object.keys(op).every(k => ['type','request_id',...fields[op.type]].includes(k)), 'Unknown browser operation field');
-  for(const key of ['url','target','assertion','preconditions','check','dialog_policy','value_ref','response_check','fault']) assert(!JSON.stringify(op[key] ?? null).includes('qa-secret://'),'Protected inputs are supported only as an exact private fill value');
+  for(const key of ['url','target','assertion','preconditions','check','dialog_policy','value_ref','response_check','fault','config_path','quote']) assert(!JSON.stringify(op[key] ?? null).includes('qa-secret://'),'Protected inputs are supported only as an exact private fill value');
   if(typeof op.value==='string' && op.value.includes('qa-secret://')) assert(op.type==='fill' && op.secret!==false && isProtectedInput(op.value),'Protected inputs are supported only as an exact private fill value');
+  if(op.type==='login') {
+    assert(typeof op.config_path==='string' && /^inputs\/[^/\\]+$/.test(op.config_path) && !op.config_path.includes('..'),'login config_path must be an archived inputs/ file');
+    assert(typeof op.quote==='string' && op.quote.trim() && op.quote.length<=500,'login quote must be a verbatim excerpt of the archived config');
+    for(const key of ['username','password']) {
+      assert(typeof op[key]==='string' && op[key].length>0,'login username and password are required; use current-task input or qa-secret:// references');
+      if(op[key].includes('qa-secret://')) assert(isProtectedInput(op[key]),'Protected inputs are supported only as an exact private credential value');
+    }
+  }
+  if(op.type==='login_recognize') {
+    assert(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(op.login_request_id ?? ''),'login_recognize login_request_id must reference the pending login operation');
+    assert(typeof op.answer==='string' && op.answer.length>=1,'login_recognize answer must be the recognized short captcha solution');
+    if(op.answer.includes('qa-secret://')) assert(isProtectedInput(op.answer),'Protected inputs are supported only as an exact private captcha answer');
+    else assert(op.answer.length<=32,'login_recognize answer must be the recognized short captcha solution');
+    assert(typeof op.confidence==='number' && op.confidence>=0 && op.confidence<=1,'login_recognize confidence must be a number in [0,1]');
+    assert(op.recognizer==='agent_vision','login_recognize recognizer must be agent_vision; the recognition executor is agent vision, not local OCR');
+  }
   if(op.type==='api_check') validateApiCheck(op.check);
   if(op.dialog_policy!==undefined) validateDialogPolicy(op.dialog_policy);
   if(op.type==='snapshot') assert(op.scope===undefined || ['document','viewport'].includes(op.scope),'snapshot scope is document or viewport');
@@ -305,12 +329,17 @@ export async function browserTaskCommand(root,runId,operation) {
     if(receipt.status==='completed') {clearPending();return receipt.result;}
     return {status:'in_progress_or_uncertain',request_id:operation.request_id,next_action:'inspect_existing_receipt_no_replay'};
   }
-  const inspection=['health','snapshot','assert','finish'].includes(operation.type);
+  const inspection=['health','snapshot','assert','finish','login_probe','login_recognize'].includes(operation.type);
   if(pending && !inspection) return {status:'transport_uncertain',request_id:pending.request_id,
     operation_started:false,next_action:'inspect_original_request_receipt_or_finish_partial_no_new_mutation'};
   if (['start','goto'].includes(operation.type)) {
     validateExplorationTarget(operation.url,operation.source_path,readRunFile(dir,operation.source_path).data.toString('utf8'));
     assertBrowserTarget(root,runId,load(resolve(dir,'manifest.json')),operation.url);
+  }
+  if(operation.type==='login') {
+    const source=readRunFile(dir,operation.config_path);
+    assert(source.data.toString('utf8').includes(operation.quote),'Login config needs a verbatim supplied excerpt');
+    validateLoginConfig(JSON.parse(source.data.toString('utf8')));
   }
   const request={operation,command_id:process.env.QA_TASK_COMMAND_ID,dispatch_id:dispatch.dispatch_id};
   if (!existsSync(privatePath(dir))) {
@@ -347,6 +376,8 @@ async function worker(root,runId) {
   const networkLog=boundedNetworkLog(resolve(dir,'execution'));
   const receipts=new Map(), secrets=new Set(), cases=[], evidence=[], network=networkLog.events;
   const secretReferences=browserSecretReferences(runId);
+  // 红线 3 的项目成功率统计：当前为 worker 生命周期内累积，跨 run 持久化待后续接线。
+  const loginStats={};
   const committedCases=[];
   let state={version:1,run_id:runId,invocation_id:randomUUID(),dispatch_id:null,status:'starting',started_at:new Date().toISOString(),scope:null,source_path:null,source_sha256:null,origin:null,blocked_requests:0};
   const dataLedger={version:1,run_id:runId,invocation_id:state.invocation_id,items:[]};
@@ -467,6 +498,265 @@ async function worker(root,runId) {
     if(check.recheck_of) row.recheck_of=check.recheck_of;
     cases.push(row);return {assertion:row,...captured};
   }
+  async function readCaptchaText(config) {
+    try {
+      if(config.captcha_text_target) return (await locator(config.captcha_text_target).textContent({timeout:2000}))?.trim() || null;
+      if(config.captcha_image_target) {
+        const img=locator(config.captcha_image_target);
+        return (await img.getAttribute('alt',{timeout:2000}))?.trim() || (await img.getAttribute('title',{timeout:2000}))?.trim() || null;
+      }
+    } catch { /* 读取失败按无法识别处理，不猜测答案 */ }
+    return null;
+  }
+  async function reuseLoginSession(config,phases) {
+    const prior=config.reuse_session.run_id;
+    let priorDir;
+    try {priorDir=runDirectory(root,prior);} catch {phases.session_reuse={status:'unavailable',prior_run_id:prior};return 'unavailable';}
+    const metaPath=resolve(priorDir,loginSessionMetaFile),storagePath=resolve(priorDir,loginSessionFile);
+    if(!existsSync(metaPath) || !existsSync(storagePath)) {phases.session_reuse={status:'unavailable',prior_run_id:prior};return 'unavailable';}
+    const meta=load(metaPath);
+    if(meta.origin!==state.origin) {phases.session_reuse={status:'origin_mismatch',prior_run_id:prior};return 'unavailable';}
+    const storage=load(storagePath);
+    await context.addCookies(storage.cookies ?? []);
+    if(storage.origins?.length) await context.addInitScript(origins=>{
+      try {const entry=origins.find(o=>o.origin===location.origin);if(entry) for(const {name,value} of entry.localStorage ?? []) if(localStorage.getItem(name)===null) localStorage.setItem(name,value);} catch { /* 注入失败按会话过期处理 */ }
+    },storage.origins);
+    await page.reload({waitUntil:'domcontentloaded',timeout:25000});
+    try {await expectResult(config.success_check,8000);phases.session_reuse={status:'reused',prior_run_id:prior};return 'reused';}
+    catch(error) {
+      if(['browser_unavailable','navigation_changed'].includes(browserErrorDiagnostic(error,'login_reuse_check').category)) throw error;
+      phases.session_reuse={status:'expired',prior_run_id:prior};return 'expired';
+    }
+  }
+  const captchaPendingPath=()=>resolve(dir,loginCaptchaPendingFile);
+  function clearCaptchaScratch(pending) {
+    try {const p=captchaPendingPath();if(existsSync(p)) unlinkSync(p);} catch { /* 受保护临时文件清理失败不影响判定 */ }
+    if(pending?.image_path) {try {const ip=resolve(dir,pending.image_path);if(existsSync(ip)) unlinkSync(ip);} catch { /* 同上 */ }}
+  }
+  // 指纹绑定当前验证码元素截图字节（与来源无关，跨域图形码同样适用）；回传答案时重新截图比对，
+  // 防止用旧答案提交刷新后的新码。静态码两次截图字节一致，刷新后必然变化。
+  async function captchaFingerprint(config) {
+    const handle=await locator(config.captcha_image_target).elementHandle({timeout:3000});
+    if(!handle) return null;
+    try {return hash(await handle.screenshot({timeout:5000}));} finally {await handle.dispose();}
+  }
+  // 本地策略耗尽：保存验证码元素截图与待识别状态（0600、不进证据清单），交代理视觉读图回传。
+  // credentials 非空时先填用户名/密码（仅填表单不提交），回传阶段只需填码提交。
+  async function captureCaptchaRecognition({loginRequestId,configPath,config,phases,attempt,attempts,strategyAttempts,recognition,credentials}) {
+    const imagePath=loginCaptchaImageFile(loginRequestId);
+    let handle=null;
+    try {handle=await locator(config.captcha_image_target).elementHandle({timeout:3000});} catch {handle=null;}
+    if(!handle) {
+      phases.recognition={...recognition,strategy_attempts:strategyAttempts,at:new Date().toISOString()};
+      return {status:'captcha_unresolved',operation_started:attempt>1,phases,next_action:'supply_project_test_code_or_pause_for_human_login_never_guess_submit'};
+    }
+    if(credentials) {
+      await locator(config.username_target).fill(credentials.username);
+      await locator(config.password_target).fill(credentials.password);
+    }
+    let fingerprint=null,buffer=null;
+    try {buffer=await handle.screenshot({timeout:5000});fingerprint=hash(buffer);}
+    catch {fingerprint=null;}
+    finally {await handle.dispose();}
+    if(!fingerprint || !buffer) {
+      phases.recognition={...recognition,strategy_attempts:strategyAttempts,at:new Date().toISOString()};
+      return {status:'recognition_unavailable',operation_started:!!credentials,phases,reason:'captcha_image_fingerprint_unavailable',next_action:'configure_captcha_text_target_or_test_code_or_pause_for_human_login'};
+    }
+    writeFileSync(resolve(dir,imagePath),buffer,{mode:0o600});
+    writeJson(captchaPendingPath(),{version:1,login_request_id:loginRequestId,attempt,config_path:configPath,config_sha256:phases.classification.config_sha256,classification:phases.classification,fingerprint,image_path:imagePath,strategy_attempts:strategyAttempts,recognition,attempts,at:new Date().toISOString()},{mode:0o600});
+    phases.recognition={...recognition,strategy_attempts:strategyAttempts,at:new Date().toISOString()};
+    return {status:'recognition_required',operation_started:!!credentials || attempt>1,phases,recognition:{strategy:AGENT_VISION_STRATEGY,executor:'agent_vision',login_request_id:loginRequestId,image_path:imagePath,fingerprint,attempt,confidence_minimum:MIN_SOLVE_CONFIDENCE},next_action:'read_protected_captcha_image_then_login_recognize_with_matching_fingerprint_and_confidence'};
+  }
+  // 单个登录结果断言的采样。短超时 + 外层轮询，而不是一条长超时：
+  // 失败信号常常是自愈 toast，只有在它还在屏幕上的那几百毫秒里采样才看得见。
+  async function loginSignal(check) {
+    try { await expectResult(check,LOGIN_SIGNAL_PROBE_MS); return {held:true}; }
+    catch(error) {
+      return {held:false,error,discriminating:['browser_unavailable','navigation_changed'].includes(browserErrorDiagnostic(error,'login_signal').category)};
+    }
+  }
+  // 文档身份探针：提交后文档被替换（跳转/整页重载）时，提交前看到的错误提示就与本次无关了。
+  // 用页面里的一次性随机标记做判断，比比较 URL 可靠——真实站点常见"错误后重定向回同一个 URL"。
+  async function documentMark() {
+    try { return await page.evaluate(() => {
+      if (!window.__loginSignalDocument) window.__loginSignalDocument = String(Math.random());
+      return window.__loginSignalDocument;
+    }); } catch { return null; }
+  }
+  // 成功与失败并行探测，先成立者定论。
+  //
+  // 先前的写法是"先等 8s 成功，再花 1.5s 探失败"。真实 element-plus 的错误提示约 3s
+  // 自愈，等 8s 过去再去看，屏幕上既没成功也没失败，于是把"密码错"记成"结果未知"。
+  // 提交前就成立的失败信号不参与判定（无法归属这一次提交），但文档一旦被替换就重新可用——
+  // 否则上一轮的错误提示会把下一轮的明确失败压成 unknown。
+  async function raceLoginSignals(config,{failureBaseline,baselineDocument}) {
+    let failureUsable=!!config.failure_check && !failureBaseline;
+    const deadline=Date.now()+LOGIN_SIGNAL_WINDOW_MS;
+    let interrupted=null;
+    while(Date.now()<deadline) {
+      const success=await loginSignal(config.success_check);
+      if(success.held) return {verdict:'success'};
+      if(success.discriminating) interrupted??=success.error;
+      if(!failureUsable && config.failure_check) {
+        const mark=await documentMark();
+        failureUsable=!!mark && !!baselineDocument && mark!==baselineDocument;
+      }
+      if(failureUsable) {
+        const failure=await loginSignal(config.failure_check);
+        if(failure.held) return {verdict:'failure'};
+        if(failure.discriminating) interrupted??=failure.error;
+      }
+      await sleep(LOGIN_SIGNAL_POLL_MS);
+    }
+    // 浏览器掉线/页面被顶掉时不能算"没信号"——那会把工具故障写成业务结论。
+    if(interrupted) throw interrupted;
+    return {verdict:'none'};
+  }
+  // 填码（可选先填凭据）→提交→成功/失败/未知判定。成功固化会话并记录真实断言；未知转 needs_inspection 绝不重放。
+  async function submitLoginAttempt({op,config,phases,attempt,attempts,recognition,solution,recordPath,fillCredentials}) {
+    if(fillCredentials) {
+      await locator(config.username_target).fill(op.username);
+      await locator(config.password_target).fill(op.password);
+    }
+    if(solution) {
+      secrets.add(solution.answer);
+      await locator(config.captcha_input_target).fill(solution.answer);
+    }
+    // 基线必须在点提交之前取：提交之后读到的是本次提交的结果，不是基线。
+    const failureBaseline=config.failure_check?(await loginSignal(config.failure_check)).held:false;
+    const baselineDocument=await documentMark();
+    phases.recognition={...recognition,at:new Date().toISOString()};
+    await locator(config.submit_target).click();
+    const submittedAt=new Date().toISOString();
+    let success=false,failure=false;
+    try {
+      const raced=await raceLoginSignals(config,{failureBaseline,baselineDocument});
+      success=raced.verdict==='success';
+      failure=raced.verdict==='failure';
+    } catch(error) {
+      state.status='needs_inspection';save();
+      return {kind:'unknown',result:{status:'login_outcome_unknown',phases:{...phases,submission:{attempts:[...attempts,{attempt,submitted_at:submittedAt,outcome:'unknown'}]}},diagnostic:browserErrorDiagnostic(error,'login_success_check'),next_action:'inspect_snapshot_no_replay_of_uncertain_login'}};
+    }
+    const allAttempts=[...attempts,{attempt,submitted_at:submittedAt,outcome:success?'success':failure?'explicit_failure':'unknown'}];
+    if(success) {
+      if(solution) recordStrategyOutcome(loginStats,config.project,recognition.strategy,true);
+      let session={saved:false},assertionPart={},snapshotPart,evidenceWarning;
+      try {
+        const storage=await context.storageState();
+        writeJson(resolve(dir,loginSessionFile),storage,{mode:0o600});
+        writeJson(resolve(dir,loginSessionMetaFile),loginSessionMeta({runId,origin:state.origin,project:config.project,formTargets:hash(JSON.stringify([config.username_target,config.password_target,config.submit_target]))}));
+        if(!evidence.includes(loginSessionMetaFile)) evidence.push(loginSessionMetaFile);
+        session={saved:true,meta_path:loginSessionMetaFile,storage_protected:true};
+        lastAction={request_id:op.request_id,type:'login',completed_at:submittedAt};
+        assertionPart=await recordAssertion(config.success_check,op.request_id,recordPath,lastAction,null);
+        snapshotPart=await snapshot();
+      } catch(error) {evidenceWarning={category:'login_evidence_incomplete',diagnostic:browserErrorDiagnostic(error,'login_evidence'),next_action:'login_success_signal_was_observed_inspect_without_replaying'};}
+      return {kind:'success',result:{status:'logged_in',phases:{...phases,submission:{attempts:allAttempts}},session,...(evidenceWarning?{evidence_warning:evidenceWarning}:{}),...assertionPart,...(snapshotPart?{snapshot:snapshotPart}:{})}};
+    }
+    if(!failure) {
+      state.status='needs_inspection';save();
+      return {kind:'unknown',result:{status:'login_outcome_unknown',phases:{...phases,submission:{attempts:allAttempts}},
+        // 失败判据在提交前就已成立时无法归属本次提交，如实说明"未知"的成因。
+        ...(config.failure_check && failureBaseline?{failure_check_baseline_active:true}:{}),
+        next_action:'inspect_snapshot_no_replay_of_uncertain_login'}};
+    }
+    if(solution) recordStrategyOutcome(loginStats,config.project,recognition.strategy,false);
+    return {kind:'failure',attempts:allAttempts};
+  }
+  async function performLogin(op,recordPath) {
+    assert(page && state.status==='ready','Start the browser task before automated login');
+    const source=readRunFile(dir,op.config_path);
+    assert(source.data.toString('utf8').includes(op.quote),'Login config needs a verbatim supplied excerpt');
+    const config=validateLoginConfig(JSON.parse(source.data.toString('utf8')));
+    secrets.add(op.username);secrets.add(op.password);
+    if(config.test_code) secrets.add(config.test_code);
+    assert(!cases.some(c=>c.case_id===config.success_check.case_id),'Use a unique case_id for each actual assertion');
+    assertBrowserDesignCheck(dir,load(resolve(dir,'manifest.json')),config.success_check);
+    if(config.success_check.case_ref) {resolveCaseReference(config.success_check.case_ref,path=>readRunFile(dir,path));if(!evidence.includes(config.success_check.case_ref.source_path)) evidence.push(config.success_check.case_ref.source_path);}
+    const summary=await collectLoginDom(page);
+    const form=classifyLoginForm(summary),domCaptcha=classifyCaptcha(summary);
+    let imagePresent=false;
+    if(config.captcha_image_target && config.captcha_input_target && domCaptcha.type!=='image') {
+      try {imagePresent=(await locator(config.captcha_image_target).count())===1;} catch {imagePresent=false;}
+    }
+    const captcha=resolveCaptchaType(domCaptcha.type,config,imagePresent);
+    const phases={classification:{is_login:form.is_login,confidence:form.confidence,captcha_type:captcha.type,basis:captcha.basis,dom_captcha_type:captcha.dom_captcha_type,config_sha256:source.sha256,at:new Date().toISOString()}};
+    if(form.is_login!==true) return {status:'login_form_not_observed',operation_started:false,phases,next_action:'snapshot_to_verify_the_login_page_or_use_human_login'};
+    try {await expectResult(config.success_check,1);return {status:'already_authenticated',operation_started:false,phases,next_action:'continue_authorized_work_without_repeating_login'};}
+    catch(error) {if(['browser_unavailable','navigation_changed'].includes(browserErrorDiagnostic(error,'login_precheck').category)) throw error;}
+    if(config.reuse_session) {
+      const reuse=await reuseLoginSession(config,phases);
+      if(reuse==='reused') {
+        const action={request_id:op.request_id,type:'login_session_reuse',completed_at:new Date().toISOString()};
+        const assertion=await recordAssertion(config.success_check,op.request_id,recordPath,action,null);
+        return {status:'session_reused',phases,session:{reused:true,meta_path:loginSessionMetaFile},...assertion,snapshot:await snapshot()};
+      }
+    }
+    if(!['none','image'].includes(captcha.type)) return {status:'manual_required',operation_started:false,phases,captcha_type:captcha.type,reason:'no_configured_automatic_strategy_for_this_captcha_type',next_action:'pause_kind_captcha_or_mfa_for_human_login_no_automatic_submission'};
+    if(captcha.type==='image') assert(config.captcha_input_target,'Image captcha needs captcha_input_target in the archived config');
+    let attempts=[];
+    const maxSubmits=captcha.type==='image'?MAX_CAPTCHA_SUBMITS:1;
+    for(let attempt=1;attempt<=maxSubmits;attempt++) {
+      let recognition={strategy:'direct',accepted:true,basis:'no_captcha_observed'},solution=null,strategyAttempts=[];
+      if(captcha.type==='image') {
+        recognition={strategy:null,accepted:false,reason:'not_attempted'};
+        for(const strategy of strategyOrder('image',loginStats,config.project)) {
+          if(strategy==='manual') break;
+          if(strategy==='test_bypass_code') {
+            if(config.test_code) {solution={answer:config.test_code,confidence:1};recognition={strategy,accepted:true,confidence:1,basis:'project_configured_test_code'};strategyAttempts.push({strategy,accepted:true});break;}
+            recognition={strategy,accepted:false,reason:'not_configured'};strategyAttempts.push({strategy,accepted:false,reason:'not_configured'});continue;
+          }
+          if(strategy==='ocr') {
+            const parsed=parseArithmetic(await readCaptchaText(config));
+            if(confidenceGate(parsed).accepted) {solution=parsed;recognition={strategy:'local_arithmetic_recognition',accepted:true,confidence:parsed.confidence,basis:parsed.basis};strategyAttempts.push({strategy:'local_arithmetic_recognition',accepted:true});break;}
+            recognition={strategy:'local_arithmetic_recognition',accepted:false,reason:parsed?'low_confidence':'no_recognizable_arithmetic_expression',scope:'本地仅支持算术码解析；通用图形 OCR 与打码服务未接线'};strategyAttempts.push({strategy:'local_arithmetic_recognition',accepted:false,reason:recognition.reason});continue;
+          }
+          if(strategy==='captcha_service') {
+            // 保留先前策略的实质性失败原因；服务未配置只作补充记录。
+            if(recognition.strategy===null) recognition={strategy,accepted:false,reason:'service_not_configured'};
+            strategyAttempts.push({strategy,accepted:false,reason:'service_not_configured'});continue;
+          }
+        }
+        if(!solution) {
+          // 本地无解：配置声明了图形码目标时交代理视觉读图回传，否则如实报未完成（绝不猜测提交）。
+          if(config.captcha_image_target) return await captureCaptchaRecognition({loginRequestId:op.request_id,configPath:op.config_path,config,phases,attempt,attempts,strategyAttempts,recognition,credentials:attempt===1?{username:op.username,password:op.password}:null});
+          phases.recognition={...recognition,strategy_attempts:strategyAttempts,at:new Date().toISOString()};
+          return {status:'captcha_unresolved',operation_started:attempt>1,phases,next_action:'supply_project_test_code_or_pause_for_human_login_never_guess_submit'};
+        }
+        recognition={...recognition,strategy_attempts:strategyAttempts};
+      }
+      const outcome=await submitLoginAttempt({op,config,phases,attempt,attempts,recognition,solution,recordPath,fillCredentials:attempt===1});
+      if(outcome.kind!=='failure') return outcome.result;
+      attempts=outcome.attempts;
+    }
+    return {status:'login_failed_after_bounded_retries',phases:{...phases,submission:{attempts}},next_action:'report_failed_login_no_further_automatic_retry_use_human_login'};
+  }
+  // 一次性回传：绑定指纹+置信度门控，消费待识别状态后继续填码/提交/判定/会话保存。识别执行器=代理视觉。
+  async function performRecognize(op,recordPath) {
+    assert(page && state.status==='ready','Start the browser task before captcha recognition return');
+    if(!existsSync(captchaPendingPath())) return {status:'recognition_not_pending',operation_started:false,next_action:'run_login_to_capture_a_pending_captcha_no_guess_submit'};
+    const pending=load(captchaPendingPath());
+    if(pending.login_request_id!==op.login_request_id) return {status:'recognition_not_pending',operation_started:false,next_action:'login_request_id_must_match_the_pending_captcha'};
+    const source=readRunFile(dir,pending.config_path);
+    if(source.sha256!==pending.config_sha256) {clearCaptchaScratch(pending);return {status:'login_config_changed',operation_started:false,next_action:'rerun_login_with_current_archived_config'};}
+    const config=validateLoginConfig(JSON.parse(source.data.toString('utf8')));
+    assert(!cases.some(c=>c.case_id===config.success_check.case_id),'Use a unique case_id for each actual assertion');
+    assertBrowserDesignCheck(dir,load(resolve(dir,'manifest.json')),config.success_check);
+    let current=null;
+    try {current=await captchaFingerprint(config);} catch {current=null;}
+    if(!current || current!==pending.fingerprint) {clearCaptchaScratch(pending);return {status:'captcha_changed',operation_started:false,next_action:'rerun_login_to_capture_the_current_captcha_no_stale_answer_submit'};}
+    const gate=confidenceGate({answer:op.answer,confidence:op.confidence});
+    if(!gate.accepted) return {status:'recognition_low_confidence',operation_started:false,reason:gate.reason,confidence_minimum:MIN_SOLVE_CONFIDENCE,next_action:'rerecognize_or_pause_for_human_login_never_guess_submit'};
+    unlinkSync(captchaPendingPath());
+    secrets.add(op.answer);
+    const recognition={strategy:AGENT_VISION_STRATEGY,accepted:true,confidence:op.confidence,basis:'screenshot_recognition_return',executor:'agent_vision'};
+    const phases={classification:pending.classification};
+    const outcome=await submitLoginAttempt({op,config,phases,attempt:pending.attempt,attempts:pending.attempts,recognition,solution:{answer:op.answer,confidence:op.confidence},recordPath,fillCredentials:false});
+    if(outcome.kind==='success') {clearCaptchaScratch(pending);return outcome.result;}
+    if(outcome.kind==='unknown') {clearCaptchaScratch(pending);return outcome.result;}
+    if(pending.attempt>=MAX_CAPTCHA_SUBMITS) {clearCaptchaScratch(pending);return {status:'login_failed_after_bounded_retries',phases:{...phases,submission:{attempts:outcome.attempts}},next_action:'report_failed_login_no_further_automatic_retry_use_human_login'};}
+    return await captureCaptchaRecognition({loginRequestId:pending.login_request_id,configPath:pending.config_path,config,phases:{classification:pending.classification},attempt:pending.attempt+1,attempts:outcome.attempts,strategyAttempts:[{strategy:AGENT_VISION_STRATEGY,accepted:false,reason:'explicit_failure'}],recognition:{strategy:AGENT_VISION_STRATEGY,accepted:false,reason:'explicit_failure',executor:'agent_vision'}});
+  }
   async function perform(request) {
     metrics=operationPerformance();
     let {operation:op}=request;
@@ -497,6 +787,16 @@ async function worker(root,runId) {
       assert(op.type==='fill' && op.secret!==false,'Protected input is only usable for a private fill');
       try {op={...op,value:protectedInputs().get(dispatch['parent-session-id'],op.value),secret:true};}
       catch {return {status:'secret_reference_unavailable',operation_started:false,next_action:'use_existing_human_login_or_current_task_input_no_store_search'};}
+    }
+    if(op.type==='login') {
+      for(const key of ['username','password']) if(isProtectedInput(op[key])) {
+        try {op={...op,[key]:protectedInputs().get(dispatch['parent-session-id'],op[key])};}
+        catch {return {status:'secret_reference_unavailable',operation_started:false,next_action:'use_existing_human_login_or_current_task_input_no_store_search'};}
+      }
+    }
+    if(op.type==='login_recognize' && isProtectedInput(op.answer)) {
+      try {op={...op,answer:protectedInputs().get(dispatch['parent-session-id'],op.answer)};}
+      catch {return {status:'secret_reference_unavailable',operation_started:false,next_action:'rerecognize_current_captcha_image_no_store_search'};}
     }
     if(op.secret_ref) {
       try {op={...op,value:secretReferences.resolve({run:runId,url:page?.url(),target:op.target,ref:op.secret_ref}),secret:true};}
@@ -583,6 +883,15 @@ async function worker(root,runId) {
         state.status='ready';save();
         phase='page_evidence';
         result={status:'ready',browser_runtime:state.browser_runtime,navigation_observation:await waitForBrowserContent(page),snapshot:await snapshot()};
+      } else if(op.type==='login_probe') {
+        assert(page && state.status==='ready','Start the browser task before probing login');
+        const summary=await collectLoginDom(page);
+        const form=classifyLoginForm(summary),captcha=classifyCaptcha(summary);
+        result={status:state.status,classification:form,captcha,strategy_order:strategyOrder(captcha.type,loginStats),interpretation:'只读分类，不是识别结果，也不构成自动登录成功',next_action:['none','image'].includes(captcha.type)?'login_with_archived_config_or_human_login':'pause_for_human_login_this_type_has_no_automatic_strategy'};
+      } else if(op.type==='login') {
+        result=await performLogin(op,recordPath);
+      } else if(op.type==='login_recognize') {
+        result=await performRecognize(op,recordPath);
       } else if(op.type==='api_check') {
         const check=op.check,detail=await runReadOnlyApiCheck(page,check),path=`execution/browser-evidence/${op.request_id}.api.json`;
         writeJson(resolve(dir,path),{...detail,mode:'real_api',method:check.method,endpoint_sha256:hash(new URL(check.url).pathname),source_path:check.source_path,source_sha256:readRunFile(dir,check.source_path).sha256,observed_at:new Date().toISOString()});evidence.push(path);
@@ -610,6 +919,7 @@ async function worker(root,runId) {
         result={status:'waiting_human',human_protocol:humanProtocol,action_id:commandId,kind:op.kind,question:state.question,...await capture(op.request_id),next_action:humanProtocol?'wait_for_human_card_keep_original_task_and_browser':'return_to_controller_preserve_browser'};
       } else if(op.type==='finish') {
         const cleanup=summarizeDataLedger(dataLedger);
+        if(existsSync(captchaPendingPath())) {try {clearCaptchaScratch(load(captchaPendingPath()));} catch { /* 受保护临时文件清理失败不影响收尾 */ }}
         const unacknowledged=existsSync(resolve(dir,'execution/browser-pending-operation.json'));
         const untested=(op.untested ?? []).map(scrub);
         let incomplete=state.human_resolution?.decision==='cancel' || untested.length>0 || unacknowledged || !!state.dialog_issues || ['waiting_human','needs_inspection','starting'].includes(state.status) || !cases.length || cases.some(row=>['blocked','skipped','unknown'].includes(row.status));

@@ -23,6 +23,13 @@ function isSafeHttpUrl(value: string | null): URL | null {
   }
 }
 
+const ENV_STATUS_LABEL: Record<string, string> = {
+  unregistered: "未建档",
+  probing: "建档中",
+  registered: "已建档",
+  failed: "建档失败",
+};
+
 /** 详情字段行：缺失值统一「—」，不虚构同步成功状态（§10 同步元数据缺失）。 */
 function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -39,6 +46,7 @@ export function ProjectDetailPanel({
   editOnOpen = false,
   onClose,
   onSaveEdits,
+  onOpenEnvironments,
 }: {
   projectId: string;
   /** 列表行数据（侧栏先以它呈现，同时向适配层请求最新详情）。 */
@@ -46,6 +54,8 @@ export function ProjectDetailPanel({
   editOnOpen?: boolean;
   onClose: () => void;
   onSaveEdits: (project: ManagedProject, name: string, description: string) => Promise<ManagedProject>;
+  /** 进入项目并跳到项目环境页（环境页是项目内的一级页，不在列表里就地展开）。 */
+  onOpenEnvironments?: (project: ManagedProject) => void;
 }) {
   const [project, setProject] = useState<ManagedProject | null>(fallback);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -190,6 +200,50 @@ export function ProjectDetailPanel({
                     <Field label="创建时间" value={fullTimeText(project.createdAt)} />
                     <Field label="最近活动" value={timeText(project.lastActivityAt)} />
                   </>
+                )}
+              </section>
+
+              {/* 项目环境：地址归环境，这里只报默认环境。建档是"有哪些地址"，
+                  探索是"地址怎么走通"——两者都不在列表里就地展开。 */}
+              <section aria-label="项目环境">
+                <h3>项目环境</h3>
+                {project.environment ? (
+                  <>
+                    <div className="qpm-field">
+                      <span className="qpm-field-label">默认环境</span>
+                      <span className="qpm-field-value">
+                        <i
+                          className={`qpm-env-dot ${
+                            project.environment.status === "probing" ? "is-run"
+                              : project.environment.status === "registered" ? "is-ok"
+                                : project.environment.status === "failed" ? "is-fail" : ""
+                          }`}
+                          aria-hidden="true"
+                        />
+                        {" "}{project.environment.env} · {ENV_STATUS_LABEL[project.environment.status] ?? project.environment.status}
+                      </span>
+                    </div>
+                    <Field label="环境地址" value={project.environment.baseUrl} mono />
+                    <Field
+                      label="建档结果"
+                      value={project.environment.pages === null
+                        ? "—（没跑过建档）"
+                        : `${project.environment.pages.total} 页 / ${project.environment.apis?.total ?? 0} 接口`}
+                    />
+                    <Field label="最近建档" value={fullTimeText(project.environment.probedAt)} />
+                    {project.environment.status === "failed" && project.environment.lastError && (
+                      <p className="qpm-field-error" role="alert">{project.environment.lastError}</p>
+                    )}
+                    {onOpenEnvironments && (
+                      <button type="button" className="qpm-btn-ghost qpm-env-open" onClick={() => onOpenEnvironments(project)}>
+                        打开项目环境 →
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <p className="qpm-panel-note">
+                    这个项目还没连环境地址。连上之后才能建档（抓页面与接口）与派发探索。
+                  </p>
                 )}
               </section>
 

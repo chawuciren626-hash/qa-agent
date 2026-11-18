@@ -20,8 +20,10 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urljoin, urlparse
 
 __all__ = [
@@ -198,16 +200,62 @@ def guess_route_module(route: str) -> str:
 
 # ---------------------------------------------------------------- 站点探测
 
+STEP_NAMES = {
+    1: "可达性探测",
+    2: "抓取前端骨架",
+    3: "提取路由",
+    4: "探测登录与接口",
+    5: "生成环境档案",
+}
+
+
+def _step_reporter(on_step: Callable | None):
+    """把 (step, status, detail, facts) 包成只报一次进度的回调。
+
+    没有 on_step 时返回空函数——测试与库调用不需要任何 I/O 副作用。
+    """
+    started: dict[int, float] = {}
+
+    def tick(index: int, status: str, detail: str = "", facts: dict | None = None) -> None:
+        if on_step is None:
+            return
+        now = time.perf_counter()
+        if status == "running":
+            started[index] = now
+            on_step({"index": index, "name": STEP_NAMES.get(index, ""), "status": "running"})
+            return
+        began = started.get(index, now)
+        on_step({
+            "index": index,
+            "name": STEP_NAMES.get(index, ""),
+            "status": status,
+            "ms": max(0, round((now - began) * 1000)),
+            "detail": detail,
+            "facts": facts or {},
+        })
+
+    return tick
+
+
 def probe_site(base_url: str, probe: Probe | None = None,
-               extra_js: str | None = None) -> dict:
-    """抓首页与 bundle，产出路由清单与技术栈。**硬限流，绝不无限抓。**"""
+               extra_js: str | None = None, on_step: Callable | None = None) -> dict:
+    """抓首页与 bundle，产出路由清单与技术栈。**硬限流，绝不无限抓。**
+
+    on_step 只用来对外播报进度：第 1~3 步的真实边界就在本函数里（首页可达 / 骨架
+    抓完 / 路由提完），所以进度回调必须挂在这里，不能在上层按时间猜。
+    """
     from ..explore.explorer import detect_stack, extract_routes
 
     p = probe or Probe()
+    tick = _step_reporter(on_step)
+    tick(1, "running")
     home = p.get(base_url)
     if not home["ok"]:
+        tick(1, "failed", home["error"] or f"HTTP {home['status']}")
         return {"ok": False, "error": home["error"] or f"HTTP {home['status']}",
                 "routes": [], "stack": {}, "bundles": [], "home": home}
+    tick(1, "done", f"HTTP {home['status']}", {"bytes": home["bytes"], "finalUrl": home["final_url"]})
+    tick(2, "running")
 
     html = home["text"]
     blob_parts = [html] + _INLINE_ROUTE_IN_HTML.findall(html)
@@ -235,6 +283,10 @@ def probe_site(base_url: str, probe: Probe | None = None,
         bundles.append({"src": abs_url, "bytes": r["bytes"]})
         blob_parts.append(r["text"])
 
+    tick(2, "done", f"{len(bundles)} 个 bundle", {"bundles": len(bundles), "bytes": total,
+                                                 "skipped": len(skipped)})
+    tick(3, "running")
+
     for body in _SCRIPT_BODY.findall(html):
         blob_parts.append(body)
     if extra_js:
@@ -243,6 +295,9 @@ def probe_site(base_url: str, probe: Probe | None = None,
     bundle_text = "\n".join(blob_parts)
     raw = extract_routes(bundle_text)
     norm = normalize_routes(raw["routes"])
+    tick(3, "done", f"{norm['count']} 条路由", {"count": norm["count"],
+                                               "raw": norm["raw_count"],
+                                               "collapsed": norm["collapsed"]})
     return {
         "ok": True, "error": None,
         "html": html,
@@ -402,12 +457,17 @@ def scan_risky_actions(text: str) -> list[dict]:
 
 def bootstrap(project: str, env: str, url: str, openapi_url: str | None = None,
               extra_js: str | None = None, probe: Probe | None = None,
-              engine_version: str = "1.0.0") -> dict:
-    """给一个地址，产出 maps IR + 建档报告。全过程零 LLM。"""
+              engine_version: str = "1.0.0", on_step: Callable | None = None) -> dict:
+    """给一个地址，产出 maps IR + 建档报告。全过程零 LLM。
+
+    on_step 是纯播报通道（progress 事件），不参与任何判断：传与不传，建档结果必须
+    完全一致。UI 的五步进度就靠它，失败时它停在出错那一步、后面四步不播报。
+    """
     from ..knowledge.maps import build_maps
 
+    tick = _step_reporter(on_step)
     p = probe or Probe()
-    site = probe_site(url, p, extra_js=extra_js)
+    site = probe_site(url, p, extra_js=extra_js, on_step=on_step)
     warnings: list[str] = []
 
     if not site["ok"]:
@@ -416,6 +476,8 @@ def bootstrap(project: str, env: str, url: str, openapi_url: str | None = None,
                 "report": {"project": project, "env": env, "url": url,
                            "warnings": warnings, "probed_at": _now()},
                 "probe_trace": p.trace}
+
+    tick(4, "running")
 
     login = probe_login(site.get("html") or "")
     if login.get("is_login") is None:
@@ -442,6 +504,14 @@ def bootstrap(project: str, env: str, url: str, openapi_url: str | None = None,
                         "、".join(sorted({r["text"] for r in risky})) +
                         "）：首次探索务必只读模式，禁用提交类动作")
 
+    tick(4, "done", f"{api.get('api_count', 0)} 个接口", {
+        "apis": api.get("api_count", 0),
+        "loginForm": login.get("is_login"),
+        "captcha": login.get("captcha_type"),
+        "risky": len(risky),
+    })
+    tick(5, "running")
+
     routes = site["routes"]
     maps = build_maps(
         project=project, env=env, routes=routes,
@@ -461,6 +531,11 @@ def bootstrap(project: str, env: str, url: str, openapi_url: str | None = None,
         "bundles": len(site["bundles"]), "fetched_bytes": site["fetched_bytes"],
         "truncated": site["truncated"],
     }
+    tick(5, "done", f"{report['pages']['total']} 页 / {report['apis']['count']} 接口", {
+        "pages": report["pages"]["total"],
+        "registered": report["pages"]["registered"],
+        "apis": report["apis"]["count"],
+    })
     return {"ok": True, "error": None, "maps": maps, "report": report,
             "probe_trace": p.trace}
 

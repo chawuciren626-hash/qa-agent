@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>批次 3 · 知识与版本（A5/A6 原型）</title>
+<style>
+  :root{
+    --text:#1f2329; --muted:#8f959e; --muted2:#646a73; --line:#e6e9ef; --line2:#eef0f4;
+    --hover:#f1f3f6; --pri:#185fa5; --pri-bg:#eaf2fb; --pri-line:#cfe0f3;
+    --green:#2e9e6b; --green-bg:#e8f6ef; --red:#d45555; --red-bg:#fdeeee;
+    --amber:#b8781a; --amber-bg:#fdf3e3; --grey-bg:#f2f3f5; --bg:#fff;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:#f5f6f8;color:var(--text);font-size:13.5px;-webkit-font-smoothing:antialiased}
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+  input,textarea{font:inherit;color:inherit}
+
+  /* 原型外壳（不属于产品 UI） */
+  .pg-bar{height:46px;display:flex;align-items:center;gap:14px;padding:0 16px;background:#0f172a;color:#cbd5e1;
+    font-size:12px;position:sticky;top:0;z-index:100}
+  .pg-bar b{color:#fff;font-weight:600;font-size:12.5px}
+  .pg-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-left:6px}
+  .pg-tabs button{padding:5px 10px;border-radius:6px;color:#94a3b8;font-size:11.5px;border:1px solid transparent}
+  .pg-tabs button:hover{background:#1e293b;color:#e2e8f0}
+  .pg-tabs button.on{background:#185fa5;color:#fff;border-color:#2f7ac4}
+  .pg-hint{margin-left:auto;color:#7c8ba1;font-size:11.5px;max-width:46%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pg-hint b{color:#e2e8f0;font-weight:600}
+
+  .app{position:relative;display:flex;height:calc(100vh - 46px);min-height:680px;background:var(--bg);
+    max-width:1560px;margin:0 auto;overflow:hidden;box-shadow:0 0 0 1px var(--line)}
+  .side{width:232px;flex:none;border-right:1px solid var(--line);display:flex;flex-direction:column;background:#fff}
+  .brand{display:flex;align-items:center;gap:10px;padding:18px 16px 14px}
+  .brand-logo{width:32px;height:32px;border-radius:7px;background:#185fa5;color:#fff;display:grid;place-items:center;
+    font-weight:700;font-size:16px;position:relative;flex:none}
+  .brand-logo::after{content:"";position:absolute;left:7px;right:7px;bottom:7px;height:2px;border-radius:2px;background:#5dcaa5}
+  .brand-txt b{display:block;font-size:15.5px;font-weight:700;letter-spacing:-.2px}
+  .brand-txt small{display:block;font-size:10.5px;color:var(--muted);letter-spacing:.3px}
+  .nav{padding:8px 10px}
+  .nav-item{display:flex;align-items:center;gap:9px;width:100%;min-height:36px;padding:7px 10px;border-radius:8px;
+    color:var(--muted2);text-align:left;white-space:nowrap;font-size:13.5px}
+  .nav-item:hover:not(.on){background:var(--hover)}
+  .nav-item.on{background:var(--pri-bg);color:var(--pri);font-weight:600}
+  .side-foot{margin-top:auto;padding:12px 14px;border-top:1px solid var(--line);display:flex;align-items:center;gap:9px}
+  .avatar{width:28px;height:28px;border-radius:50%;background:var(--pri);color:#fff;display:grid;place-items:center;
+    font-size:12px;font-weight:600;flex:none}
+  .who b{display:block;font-size:12.5px}
+  .who small{font-size:11px;color:var(--muted)}
+
+  .main{flex:1;min-width:0;position:relative;display:flex;flex-direction:column;overflow:hidden}
+  .scroll{flex:1;min-height:0;overflow-y:auto;padding:24px 28px 40px}
+
+  .head{display:flex;align-items:flex-start;gap:12px}
+  .head h1{font-size:19px;font-weight:700;letter-spacing:-.2px}
+  .head p{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.6}
+  .head-act{margin-left:auto;display:flex;align-items:center;gap:8px;flex:none}
+  .btn-main{display:inline-flex;align-items:center;gap:6px;background:var(--pri);color:#fff;border-radius:8px;
+    padding:7px 15px;font-weight:600;font-size:13px}
+  .btn-main:hover{background:#14508c}
+  .btn-ghost{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:8px;
+    padding:6px 13px;color:var(--muted2);font-size:13px;background:#fff}
+  .btn-ghost:hover{background:var(--hover)}
+  .btn-sm{padding:4px 10px;font-size:12.5px;border-radius:6px}
+
+  .tabs{display:flex;gap:6px;margin-top:18px;border-bottom:1px solid var(--line)}
+  .tabs button{padding:8px 12px;font-size:13.5px;color:var(--muted2);border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tabs button.on{color:var(--pri);font-weight:600;border-bottom-color:var(--pri)}
+  .tabs button:hover:not(.on){color:var(--text)}
+
+  .card{border:1px solid var(--line);border-radius:10px;background:#fff}
+  .card-h{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line2)}
+  .card-h b{font-size:13px;font-weight:600}
+  .card-h .sub{font-size:11.5px;color:var(--muted)}
+  .card-h .right{margin-left:auto;display:flex;align-items:center;gap:6px}
+
+  /* 装配账目 */
+  .ledger{margin-top:16px}
+  .ledger-body{padding:13px 14px}
+  .meter{display:flex;align-items:center;gap:10px}
+  .bar{flex:1;height:7px;border-radius:4px;background:var(--line2);overflow:hidden}
+  .bar>i{display:block;height:100%;border-radius:4px;background:var(--pri)}
+  .bar.warn>i{background:var(--amber)}
+  .num{font-family:var(--mono);font-size:12px;color:var(--muted2);white-space:nowrap}
+  .ledger-facts{display:flex;gap:18px;margin-top:11px;flex-wrap:wrap}
+  .fact{font-size:12.5px;color:var(--muted2)}
+  .fact b{color:var(--text);font-weight:600}
+  .fact .warn{color:var(--amber);font-weight:600}
+  .dropped{margin-top:11px;border-top:1px dashed var(--line);padding-top:10px;display:none}
+  .dropped.on{display:block}
+  .drop-row{display:flex;align-items:baseline;gap:8px;padding:5px 0;font-size:12.5px}
+  .drop-row .k{font-family:var(--mono);font-size:11px;color:var(--muted);min-width:64px}
+  .drop-row .why{color:var(--amber)}
+  .drop-row .tok{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--muted)}
+
+  /* 两栏 */
+  .cols{display:grid;grid-template-columns:246px minmax(0,1fr);gap:16px;margin-top:16px;align-items:start}
+  .list{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fff}
+  .list-h{padding:10px 12px;border-bottom:1px solid var(--line2);font-size:11.5px;color:var(--muted);
+    display:flex;align-items:center;gap:6px}
+  .vrow{display:block;width:100%;text-align:left;padding:10px 12px;border-bottom:1px solid var(--line2)}
+  .vrow:last-child{border-bottom:none}
+  .vrow:hover{background:var(--hover)}
+  .vrow.on{background:var(--pri-bg)}
+  .vrow .l1{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600}
+  .vrow.on .l1{color:var(--pri)}
+  .vrow .l2{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .vrow .l3{font-size:11.5px;color:var(--muted2);margin-top:4px;display:flex;gap:8px;flex-wrap:wrap}
+  .tag{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:20px;font-size:10.5px;
+    font-weight:600;line-height:1.7;white-space:nowrap}
+  .tag.pri{background:var(--pri-bg);color:var(--pri)}
+  .tag.ok{background:var(--green-bg);color:var(--green)}
+  .tag.warn{background:var(--amber-bg);color:var(--amber)}
+  .tag.bad{background:var(--red-bg);color:var(--red)}
+  .tag.grey{background:var(--grey-bg);color:var(--muted2)}
+  .tag.line{background:#fff;border:1px solid var(--line);color:var(--muted2);font-weight:500}
+
+  .krow{display:grid;grid-template-columns:64px minmax(120px,150px) minmax(0,1fr) 152px;gap:12px;align-items:start;
+    padding:11px 14px;border-bottom:1px solid var(--line2);width:100%;text-align:left}
+  .krow:last-child{border-bottom:none}
+  .krow:hover{background:var(--hover)}
+  .krow.on{background:var(--pri-bg)}
+  .krow .name{font-weight:600;font-size:13px}
+  .krow .stmt{color:var(--muted2);font-size:12.5px;line-height:1.6}
+  .loc{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--pri);border-bottom:1px dashed var(--pri-line)}
+  .loc:hover{border-bottom-style:solid}
+  .loc .ico{width:12px;height:12px;flex:none}
+
+  /* 右侧详情 */
+  .detail{border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden}
+  .detail-h{padding:13px 15px;border-bottom:1px solid var(--line2)}
+  .detail-h h2{font-size:14.5px;font-weight:700}
+  .detail-h p{font-size:11.5px;color:var(--muted);margin-top:4px;font-family:var(--mono)}
+  .detail-b{padding:14px 15px}
+  .kv{display:grid;grid-template-columns:76px minmax(0,1fr);gap:7px 10px;font-size:12.5px;margin-bottom:14px}
+  .kv dt{color:var(--muted)}
+  .kv dd{color:var(--text);word-break:break-word}
+
+  .code{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fbfcfd}
+  .code-h{display:flex;align-items:center;gap:8px;padding:7px 11px;border-bottom:1px solid var(--line2);
+    font-size:11.5px;color:var(--muted);background:#fff}
+  .code-h .right{margin-left:auto;font-family:var(--mono);font-size:10.5px}
+  .code pre{margin:0;padding:9px 0;font-family:var(--mono);font-size:11.5px;line-height:1.95;overflow-x:auto}
+  .ln{display:flex;gap:12px;padding:0 11px}
+  .ln .no{width:26px;flex:none;text-align:right;color:#b6bcc6;user-select:none}
+  .ln .tx{white-space:pre-wrap;color:#33383f}
+  .ln.hit{background:#fff8e6;box-shadow:inset 3px 0 0 var(--amber)}
+  .ln.hit .no{color:var(--amber);font-weight:700}
+  .ln.hit .tx{color:#5c4415}
+
+  .section-t{font-size:12px;font-weight:600;color:var(--muted2);margin:16px 0 9px;display:flex;align-items:center;gap:7px}
+  .section-t .right{margin-left:auto;font-weight:500;color:var(--muted);font-size:11.5px}
+  .ref{border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin-bottom:8px}
+  .ref:hover{background:var(--hover)}
+  .ref .l1{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600}
+  .ref .l2{font-size:11.5px;color:var(--muted);margin-top:4px}
+
+  .empty{padding:26px 14px;text-align:center;color:var(--muted);font-size:12.5px;line-height:1.8}
+
+  /* 弹窗 */
+  .mask{position:fixed;inset:0;background:rgba(15,23,42,.42);display:none;place-items:center;z-index:80;padding:24px}
+  .mask.on{display:grid}
+  .modal{width:min(860px,100%);max-height:min(84vh,760px);background:#fff;border-radius:12px;display:flex;
+    flex-direction:column;overflow:hidden;box-shadow:0 18px 48px rgba(15,23,42,.24)}
+  .modal-h{display:flex;align-items:flex-start;gap:10px;padding:15px 18px;border-bottom:1px solid var(--line)}
+  .modal-h h3{font-size:15px;font-weight:700}
+  .modal-h p{font-size:11.5px;color:var(--muted);margin-top:4px}
+  .modal-h .x{margin-left:auto;width:28px;height:28px;border-radius:7px;display:grid;place-items:center;color:var(--muted)}
+  .modal-h .x:hover{background:var(--hover)}
+  .modal-b{padding:16px 18px;overflow-y:auto}
+  .modal-f{padding:12px 18px;border-top:1px solid var(--line);display:flex;align-items:center;gap:8px}
+  .modal-f .right{margin-left:auto;display:flex;gap:8px}
+
+  /* diff */
+  .diffgrid{display:grid;grid-template-columns:1fr 300px;gap:16px;align-items:start}
+  .dgroup{border:1px solid var(--line);border-radius:9px;margin-bottom:10px;overflow:hidden}
+  .dgroup>.h{display:flex;align-items:center;gap:8px;padding:9px 12px;background:#fbfcfd;border-bottom:1px solid var(--line2)}
+  .dgroup>.h b{font-size:12.5px;font-weight:600}
+  .dgroup>.h .n{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .dgroup>.h .right{margin-left:auto}
+  .dbody{padding:10px 12px;font-size:12.5px;line-height:1.7}
+  .delta{display:grid;grid-template-columns:minmax(0,1fr) 18px minmax(0,1fr);gap:8px;align-items:start;padding:6px 0;
+    border-bottom:1px dashed var(--line2)}
+  .delta:last-child{border-bottom:none}
+  .delta .old,.delta .new{font-size:12px;line-height:1.65;padding:6px 8px;border-radius:6px}
+  .delta .old{background:#fdeeee;color:#8c3535;text-decoration:line-through;text-decoration-color:rgba(140,53,53,.4)}
+  .delta .new{background:var(--green-bg);color:#1d6b49}
+  .delta .arrow{color:var(--muted);text-align:center;padding-top:10px}
+  .ratio{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-left:6px}
+
+  .callout{display:flex;gap:9px;padding:10px 12px;border-radius:9px;font-size:12.5px;line-height:1.7}
+  .callout.info{background:var(--pri-bg);color:#14508c}
+  .callout.warn{background:var(--amber-bg);color:#7a4f10}
+  .callout .ic{flex:none;margin-top:2px}
+  .stat{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-top:12px}
+  .stat .box{border:1px solid var(--line);border-radius:9px;padding:10px 12px}
+  .stat .box .n{font-size:19px;font-weight:700;letter-spacing:-.4px}
+  .stat .box .l{font-size:11.5px;color:var(--muted);margin-top:2px}
+
+  textarea.ta{width:100%;min-height:96px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+    font-size:13px;line-height:1.7;resize:vertical;outline:none}
+  textarea.ta:focus{border-color:var(--pri-line);box-shadow:0 0 0 3px rgba(24,95,165,.08)}
+  .hintline{font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.7}
+  .u-list{margin-top:14px}
+  .u-item{display:flex;gap:9px;align-items:flex-start;padding:9px 11px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px}
+  .u-item .l1{font-size:12.5px;font-weight:600}
+  .u-item .l2{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .u-item .right{margin-left:auto;flex:none}
+</style>
+</head>
+<body>
+
+<div class="pg-bar">
+  <b>批次 3 · 知识与版本</b>
+  <div class="pg-tabs">
+    <button class="on" data-view="main">主界面</button>
+    <button data-view="diff">版本对比</button>
+    <button data-view="refs">引用反查</button>
+  </div>
+  <div class="pg-hint">原型：右边栏三条链路（<b>原文位置</b> / <b>版本 diff</b> / <b>引用反查</b>）都能顺着点到原文</div>
+</div>
+
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="brand-logo">A</div>
+      <div class="brand-txt"><b>AITestHarness</b><small>QA WORKSPACE</small></div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item">任务</button>
+      <button class="nav-item">项目环境</button>
+      <button class="nav-item on">项目资料与知识</button>
+      <button class="nav-item">报告</button>
+      <button class="nav-item">设置</button>
+    </nav>
+    <div class="side-foot">
+      <div class="avatar">林</div>
+      <div class="who"><b>林工</b><small>项目所有者</small></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="scroll">
+      <div class="head">
+        <div>
+          <h1>项目资料与知识</h1>
+          <p>资料切成带原文位置的条款，聚成可对账的知识版本；对话只注入当轮相关的片段，裁掉了什么看得见。</p>
+        </div>
+        <div class="head-act">
+          <button class="btn-ghost" id="btn-refs">引用反查</button>
+          <button class="btn-ghost" id="btn-diff">版本对比</button>
+          <button class="btn-main">重新构建知识</button>
+        </div>
+      </div>
+
+      <div class="tabs">
+        <button>资料</button>
+        <button>知识候选</button>
+        <button>正式规则</button>
+        <button class="on">知识与版本 <span class="tag pri" style="margin-left:4px">v3</span></button>
+      </div>
+
+      <!-- 装配账目 -->
+      <section class="card ledger">
+        <div class="card-h">
+          <b>本次对话注入（装配账目）</b>
+          <span class="sub">会话 #20261118-0931 · 快照 v2 · 装配器 python:context.assemble</span>
+          <div class="right">
+            <button class="btn-ghost btn-sm" id="btn-dropped">看裁掉了什么（6 项）</button>
+          </div>
+        </div>
+        <div class="ledger-body">
+          <div class="meter">
+            <span class="num">5,240 / 8,000 tokens</span>
+            <div class="bar"><i style="width:65.5%"></i></div>
+            <span class="num">65.5%</span>
+          </div>
+          <div class="ledger-facts">
+            <span class="fact">规则 <b>12 / 18</b> 条</span>
+            <span class="fact">资料 <b>2 / 3</b> 篇</span>
+            <span class="fact">被裁 <span class="warn">6 项</span></span>
+            <span class="fact">知识版本 <b>v3</b>（内容哈希 <span style="font-family:var(--mono)">9f3ac1b2</span>）</span>
+          </div>
+          <div class="dropped" id="dropped">
+            <div class="drop-row"><span class="k">kb:rule</span><span>退款上限（旧版：单笔 800 元）</span><span class="why">预算不足</span><span class="tok">118 tok</span></div>
+            <div class="drop-row"><span class="k">kb:rule</span><span>优惠券叠加规则</span><span class="why">预算不足</span><span class="tok">96 tok</span></div>
+            <div class="drop-row"><span class="k">kb:rule</span><span>积分抵扣上限</span><span class="why">预算不足</span><span class="tok">84 tok</span></div>
+            <div class="drop-row"><span class="k">kb:rule</span><span>发票申请时限</span><span class="why">预算不足</span><span class="tok">77 tok</span></div>
+            <div class="drop-row"><span class="k">doc</span><span>库存同步说明.md 修订 3</span><span class="why">预算不足</span><span class="tok">1,412 tok</span></div>
+            <div class="drop-row"><span class="k">kb:term</span><span>「履约中」定义（与已有条目同指纹）</span><span class="why">重复指纹，未入库</span><span class="tok">0 tok</span></div>
+          </div>
+        </div>
+      </section>
+
+      <div class="cols">
+        <!-- 版本列表 -->
+        <div class="list">
+          <div class="list-h">知识版本 <span style="margin-left:auto">3 个</span></div>
+          <button class="vrow on">
+            <div class="l1">v3 <span class="tag pri">当前</span></div>
+            <div class="l2">11-18 09:28 · 由 林工 构建</div>
+            <div class="l3"><span>18 条</span><span>语义变更 2</span><span>新增 3</span></div>
+          </button>
+          <button class="vrow">
+            <div class="l1">v2</div>
+            <div class="l2">11-17 16:02 · 由 requirement_agent 构建</div>
+            <div class="l3"><span>16 条</span><span>仅措辞 1</span></div>
+          </button>
+          <button class="vrow">
+            <div class="l1">v1</div>
+            <div class="l2">11-17 11:40 · 由 requirement_agent 构建</div>
+            <div class="l3"><span>14 条</span><span>首个版本</span></div>
+          </button>
+          <div class="list-h" style="border-top:1px solid var(--line2);border-bottom:none;padding:9px 12px">
+            <span class="tag grey">v3 来源</span> 退款规则.md · 登录与锁定.md · 优惠券.md
+          </div>
+        </div>
+
+        <!-- 知识项 -->
+        <div style="min-width:0">
+          <div class="list">
+            <div class="list-h">
+              知识项（v3 · 18 条）
+              <span style="margin-left:auto">按优先级 · 点「原文位置」看依据</span>
+            </div>
+
+            <button class="krow on">
+              <span><span class="tag warn">rule</span></span>
+              <span class="name">退款上限</span>
+              <span class="stmt">单笔退款金额不超过 500 元，超出需人工审批。</span>
+              <span><span class="loc">退款规则.md 第 5 行 <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 3h7v7"/><path d="M13 3 3 13"/></svg></span></span>
+            </button>
+
+            <button class="krow">
+              <span><span class="tag warn">rule</span></span>
+              <span class="name">账户锁定时长</span>
+              <span class="stmt">连续 5 次密码错误锁定 15 分钟，锁定期间不校验密码。</span>
+              <span><span class="loc">登录与锁定.md 第 12 行 <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 3h7v7"/><path d="M13 3 3 13"/></svg></span></span>
+            </button>
+
+            <button class="krow">
+              <span><span class="tag pri">constraint</span></span>
+              <span class="name">退款到账时效</span>
+              <span class="stmt">审批通过后 3 个工作日内到账。</span>
+              <span><span class="loc">退款规则.md 第 9 行 <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 3h7v7"/><path d="M13 3 3 13"/></svg></span></span>
+            </button>
+
+            <button class="krow">
+              <span><span class="tag ok">term</span></span>
+              <span class="name">履约中</span>
+              <span class="stmt">订单已支付且未完成发货的状态。</span>
+              <span><span class="loc">订单状态说明.md 第 21 行 <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 3h7v7"/><path d="M13 3 3 13"/></svg></span></span>
+            </button>
+
+            <button class="krow">
+              <span><span class="tag bad">rule</span></span>
+              <span class="name">退款上限（旧）</span>
+              <span class="stmt" style="color:#b04a4a">单笔退款金额不超过 800 元。</span>
+              <span><span class="tag bad">已移除</span></span>
+            </button>
+          </div>
+
+          <div class="callout warn" style="margin-top:12px">
+            <svg class="ic" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2 1.5 13h13L8 2Z"/><path d="M8 6.5v3M8 11.3v.7"/></svg>
+            <div><b>未入知识项的候选 4 条</b>：其中 3 条抽不出原文位置、1 条类型不在封闭枚举内。抽不出位置的知识会污染所有下游产物，所以一律不入库——在「知识候选」里可逐条查看被拒原因。</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右侧详情（原文位置） -->
+      <section class="detail" style="margin-top:16px">
+        <div class="detail-h">
+          <h2>退款上限</h2>
+          <p>kb-rule-7f3ac1b2 · rule · 指纹 f3ac1b2d9e · 来自 退款规则.md 修订 4</p>
+        </div>
+        <div class="detail-b">
+          <dl class="kv">
+            <dt>条文</dt><dd>单笔退款金额不超过 500 元，超出需人工审批。</dd>
+            <dt>章节</dt><dd>退款 / 上限</dd>
+            <dt>原文位置</dt><dd><span class="loc">退款规则.md · 第 5 行 <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 3h7v7"/><path d="M13 3 3 13"/></svg></span></dd>
+            <dt>入库版本</dt><dd>v3（v1 起存在，v3 语义变更：800 → 500）</dd>
+          </dl>
+
+          <div class="code">
+            <div class="code-h">
+              <span>退款规则.md</span>
+              <span class="right">修订 4 · 内容哈希 sha256:6b21…c4</span>
+            </div>
+            <pre>
+<div class="ln"><span class="no">1</span><span class="tx"># 退款</span></div>
+<div class="ln"><span class="no">2</span><span class="tx"></span></div>
+<div class="ln"><span class="no">3</span><span class="tx">## 上限</span></div>
+<div class="ln"><span class="no">4</span><span class="tx"></span></div>
+<div class="ln hit"><span class="no">5</span><span class="tx">单笔退款金额不超过 500 元，超出需人工审批。</span></div>
+<div class="ln"><span class="no">6</span><span class="tx"></span></div>
+<div class="ln"><span class="no">7</span><span class="tx">## 时效</span></div>
+<div class="ln"><span class="no">8</span><span class="tx"></span></div>
+<div class="ln"><span class="no">9</span><span class="tx">审批通过后 3 个工作日内到账。</span></div>
+</pre>
+          </div>
+
+          <div class="section-t">引用这条知识的用例 <span class="right">引用反查 · 3 条</span></div>
+          <div class="ref">
+            <div class="l1">R5-REFUND-EDGE <span class="tag grey">回归</span></div>
+            <div class="l2">验证退款金额 499 / 500 / 501 三档边界 · 上次运行 11-18 08:12 通过</div>
+          </div>
+          <div class="ref">
+            <div class="l1">R5-REFUND-MANUAL <span class="tag grey">回归</span></div>
+            <div class="l2">超过上限时进入人工审批 · 上次运行 11-18 08:12 通过</div>
+          </div>
+          <div class="ref">
+            <div class="l1">T-退款流程-03 <span class="tag warn">待复核</span></div>
+            <div class="l2">测试点「退款审批链路」引用了旧值 800 元，建议按 v3 重算</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- 版本对比 -->
+<div class="mask" id="m-diff">
+  <div class="modal">
+    <div class="modal-h">
+      <div>
+        <h3>版本对比：v2 → v3</h3>
+        <p>四类分开报。只有「语义变更 / 新增 / 移除」触发下游重算，「仅措辞」不触发——否则增量机制等于全量。</p>
+      </div>
+      <button class="x" data-close>✕</button>
+    </div>
+    <div class="modal-b">
+      <div class="diffgrid">
+        <div>
+          <div class="dgroup">
+            <div class="h"><span class="tag bad">语义变更</span><b>2</b><span class="n">触发重算</span>
+              <span class="right"><span class="ratio">相似度 ≥ 0.86</span></span></div>
+            <div class="dbody">
+              <div class="delta">
+                <div class="old">单笔退款金额不超过 800 元。</div>
+                <div class="arrow">→</div>
+                <div class="new">单笔退款金额不超过 500 元，超出需人工审批。</div>
+              </div>
+              <div class="delta">
+                <div class="old">连续 3 次密码错误锁定 10 分钟。</div>
+                <div class="arrow">→</div>
+                <div class="new">连续 5 次密码错误锁定 15 分钟。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="dgroup">
+            <div class="h"><span class="tag grey">仅措辞</span><b>1</b><span class="n">不触发重算</span></div>
+            <div class="dbody">
+              <div class="delta">
+                <div class="old">审批通过后 3 个工作日内到账。</div>
+                <div class="arrow">→</div>
+                <div class="new">审批通过后三个工作日内到账。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="dgroup">
+            <div class="h"><span class="tag warn">重命名</span><b>1</b><span class="n">引用需跟改</span></div>
+            <div class="dbody">「发票时限」→「发票申请时限」（名称变了，条文与指纹未变）</div>
+          </div>
+
+          <div class="dgroup">
+            <div class="h"><span class="tag ok">新增</span><b>3</b><span class="n">来自 优惠券.md 修订 1</span></div>
+            <div class="dbody">优惠券叠加规则 · 积分抵扣上限 · 「履约中」定义</div>
+          </div>
+
+          <div class="dgroup">
+            <div class="h"><span class="tag bad">移除</span><b>1</b><span class="n">原文已删</span></div>
+            <div class="dbody">退款上限（旧）：800 元这条已从资料中删除，v3 起不再注入。</div>
+          </div>
+        </div>
+
+        <div>
+          <div class="callout info">
+            <svg class="ic" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.4"/><path d="M8 7.2v4M8 5.2v.6"/></svg>
+            <div>本轮需要重算的测试点：<b>4 条</b>（引用过 v2 里那两条语义变更规则）。其余 12 条可复用上次结果。</div>
+          </div>
+          <div class="stat">
+            <div class="box"><div class="n">18</div><div class="l">v3 知识项</div></div>
+            <div class="box"><div class="n">16</div><div class="l">v2 知识项</div></div>
+            <div class="box"><div class="n">4</div><div class="l">受影响用例</div></div>
+            <div class="box"><div class="n">0</div><div class="l">仅措辞触发的重算</div></div>
+          </div>
+          <div class="callout warn" style="margin-top:12px">
+            <svg class="ic" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2 1.5 13h13L8 2Z"/><path d="M8 6.5v3M8 11.3v.7"/></svg>
+            <div>v3 里 3 条新增项来自新资料，尚未被任何用例引用——不会自动扩大重算范围。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-f">
+      <span class="hintline">对比基于内容哈希 <span style="font-family:var(--mono)">9f3ac1b2</span> 与 <span style="font-family:var(--mono)">4d7e0a91</span></span>
+      <div class="right">
+        <button class="btn-ghost" data-close>关闭</button>
+        <button class="btn-main">按影响范围重算 4 条</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 引用反查 -->
+<div class="mask" id="m-refs">
+  <div class="modal" style="width:min(760px,100%)">
+    <div class="modal-h">
+      <div>
+        <h3>引用反查</h3>
+        <p>粘一段用例或新需求，看它踩到了哪些知识项。宁可多报一点，也不能漏——漏一条就等于改了规则却没人重算。</p>
+      </div>
+      <button class="x" data-close>✕</button>
+    </div>
+    <div class="modal-b">
+      <textarea class="ta">验证单笔退款 500 元边界：金额 499 可直接提交，501 进入人工审批；审批通过后 3 个工作日内到账。</textarea>
+      <div class="hintline">对照知识版本 v3（18 条）。反查按知识项名称与标签匹配，不做语义推断。</div>
+
+      <div class="u-list">
+        <div class="u-item">
+          <span class="tag warn" style="margin-top:1px">rule</span>
+          <div>
+            <div class="l1">退款上限</div>
+            <div class="l2">命中关键词「退款上限」· 优先级 5 · 原文 退款规则.md 第 5 行</div>
+          </div>
+          <div class="right"><button class="btn-ghost btn-sm">看原文</button></div>
+        </div>
+        <div class="u-item">
+          <span class="tag pri" style="margin-top:1px">constraint</span>
+          <div>
+            <div class="l1">退款到账时效</div>
+            <div class="l2">命中关键词「3 个工作日内到账」· 优先级 5 · 原文 退款规则.md 第 9 行</div>
+          </div>
+          <div class="right"><button class="btn-ghost btn-sm">看原文</button></div>
+        </div>
+        <div class="u-item">
+          <span class="tag grey" style="margin-top:1px">flow</span>
+          <div>
+            <div class="l1">人工审批流转</div>
+            <div class="l2">命中标签「人工审批」· 优先级 2 · 原文 退款规则.md 第 15 行</div>
+          </div>
+          <div class="right"><button class="btn-ghost btn-sm">看原文</button></div>
+        </div>
+      </div>
+
+      <div class="callout info" style="margin-top:6px">
+        <svg class="ic" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.4"/><path d="M8 7.2v4M8 5.2v.6"/></svg>
+        <div>命中 3 项。这三条知识的原文资料一旦改动，这段文本对应的用例会被列入重算范围。</div>
+      </div>
+    </div>
+    <div class="modal-f">
+      <span class="hintline">反查结果只读；要改知识请到「知识候选」确认。</span>
+      <div class="right">
+        <button class="btn-ghost" data-close>关闭</button>
+        <button class="btn-main">导出命中清单</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const masks = { diff: document.getElementById('m-diff'), refs: document.getElementById('m-refs') };
+  const open = (id) => { Object.values(masks).forEach(m => m.classList.remove('on')); masks[id].classList.add('on'); };
+  const closeAll = () => Object.values(masks).forEach(m => m.classList.remove('on'));
+
+  document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closeAll));
+  Object.values(masks).forEach(m => m.addEventListener('click', e => { if (e.target === m) closeAll(); }));
+
+  document.getElementById('btn-diff').addEventListener('click', () => open('diff'));
+  document.getElementById('btn-refs').addEventListener('click', () => open('refs'));
+  document.querySelectorAll('.pg-tabs button').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('.pg-tabs button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    if (b.dataset.view === 'main') closeAll(); else open(b.dataset.view);
+  }));
+
+  const dropped = document.getElementById('dropped');
+  const btnDropped = document.getElementById('btn-dropped');
+  btnDropped.addEventListener('click', () => {
+    const on = dropped.classList.toggle('on');
+    btnDropped.textContent = on ? '收起裁剪明细' : '看裁掉了什么（6 项）';
+  });
+
+  document.querySelectorAll('.krow').forEach(row => row.addEventListener('click', () => {
+    document.querySelectorAll('.krow').forEach(r => r.classList.remove('on'));
+    row.classList.add('on');
+  }));
+  document.querySelectorAll('.vrow').forEach(row => row.addEventListener('click', () => {
+    document.querySelectorAll('.vrow').forEach(r => r.classList.remove('on'));
+    row.classList.add('on');
+  }));
+</script>
+</body>
+</html>

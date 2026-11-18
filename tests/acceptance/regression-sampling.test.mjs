@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  samplingModes, samplingTier, plannedRuns, judgeRuns, planSampling, summarizeVerdicts,
+  samplingModes, samplingTier, plannedRuns, judgeRuns, planSampling, summarizeVerdicts, flakyIsolation,
 } from '../../scripts/regression-sampling.mjs';
 
 /* ── 分档 ─────────────────────────────────────────────────────── */
@@ -133,4 +133,55 @@ test('L-6 一条都没跑出结论时通过率是 null，不是 0% 也不是 100
   assert.equal(summary.attempted, 0);
   assert.equal(summary.passRate, null);
   assert.equal(summary.flakyRate, null);
+});
+
+test('L-6 隔离名单只收 unstable 用例，且下一轮采样立刻进 flaky 敏感集', () => {
+  const comparison = {
+    kind: 'replay-comparison',
+    run_id: 'run-x',
+    status: 'completed',
+    executed_replays: 3,
+    requested_replays: 3,
+    per_case: [
+      { case_id: 'TC-A', verdict: 'passed', consistent: true, flaky_suspect: false, verdicts: [{ status: 'passed' }, { status: 'passed' }, { status: 'passed' }] },
+      { case_id: 'TC-B', verdict: 'unstable', consistent: false, flaky_suspect: true, verdicts: [{ status: 'passed' }, { status: 'failed' }, { status: 'passed' }] },
+      { case_id: 'TC-C', verdict: 'inconclusive', consistent: false, flaky_suspect: false, reason: '缺席 2 次执行', verdicts: [{ status: 'passed' }] },
+    ],
+  };
+  const list = flakyIsolation(comparison);
+  assert.equal(list.kind, 'regression-isolation');
+  assert.deepEqual(list.isolated.map(row => row.case_id), ['TC-B']);
+  assert.equal(list.isolated[0].history, 'flaky');
+  assert.deepEqual(list.isolated[0].verdicts, ['passed', 'failed', 'passed']);
+  // 名单直接喂回采样器：这条用例下一轮进 flaky 档（always ×3）。
+  const plan = plannedRuns({ case_id: 'TC-B', history: list.isolated[0].history }, { suite: 'full' });
+  assert.equal(plan.tier, 'flaky');
+  assert.equal(plan.mode, 'always');
+  assert.equal(plan.max_runs, 3);
+  // coverage 如实：完整执行才有 complete=true。
+  assert.equal(list.coverage.complete, true);
+});
+
+test('L-6 partial 的重放仍然产出怀疑名单，但 coverage 明说执行不完整', () => {
+  const comparison = {
+    kind: 'replay-comparison',
+    run_id: 'run-y',
+    status: 'partial',
+    stop_reason: 'replay_budget_exhausted',
+    executed_replays: 1,
+    requested_replays: 3,
+    per_case: [
+      { case_id: 'TC-D', verdict: 'unstable', consistent: false, flaky_suspect: true, verdicts: [{ status: 'failed' }] },
+    ],
+  };
+  const list = flakyIsolation(comparison);
+  // 一次失败就足够怀疑：怀疑就该隔离，不必等预算跑满。
+  assert.deepEqual(list.isolated.map(row => row.case_id), ['TC-D']);
+  assert.equal(list.coverage.complete, false);
+  assert.equal(list.coverage.stop_reason, 'replay_budget_exhausted');
+});
+
+test('L-6 不是重放对比的文档拒绝产出名单', () => {
+  assert.throws(() => flakyIsolation({ kind: 'something-else', per_case: [] }), /replay-comparison/);
+  assert.throws(() => flakyIsolation({ kind: 'replay-comparison' }), /per_case/);
 });

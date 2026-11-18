@@ -78,6 +78,9 @@ export function openDatabase(dbPath: string): DatabaseSync {
   // message, recorded in the release's backward-compatibility entry.
   ensureColumn(db, "messaging_bindings", "render_markdown", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn(db, "messaging_bindings", "last_inbound_message_id", "TEXT");
+  // 建档五步进度：老 web.db 的 project_environments 没有这一列，CREATE 不会补，
+  // 而服务端每次上报进度都要写它。
+  ensureColumn(db, "project_environments", "steps_json", "TEXT");
   // Superseded by idx_usage_session_ts (session_id, ts), which SCHEMA_SQL just created on
   // this database: the old index is a strict prefix of it, so every query it served is
   // served identically. Dropping is safe — an index is derived, never data.

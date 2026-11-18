@@ -74,6 +74,116 @@ CREATE TABLE IF NOT EXISTS project_management (
   last_synced_at TEXT,
   revision INTEGER NOT NULL DEFAULT 1
 );
+-- 被测环境（B1）：地址归属于环境，不归属于项目；一个项目多环境，maps 落在
+-- maps/<env>/ 下。.project_config.toml 只记默认环境名，绝不再存地址——那里的
+-- base_url 是模型供应商端点，语义不同，混用会污染模型配置。
+-- status 有 unregistered/probing/registered/failed 四态：用 probing 区分"正在跑"
+-- 与"从没跑过"，也用来在进程崩溃后看出残留；failed 与 registered 互斥，失败绝不
+-- 写成 registered + pages=0（那会被读成"扫过了但没有页面"）。
+CREATE TABLE IF NOT EXISTS project_environments (
+  project_id       TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  env              TEXT NOT NULL,
+  base_url         TEXT NOT NULL,
+  is_default       INTEGER NOT NULL DEFAULT 0,
+  status           TEXT NOT NULL DEFAULT 'unregistered'
+                   CHECK(status IN ('unregistered','probing','registered','failed')),
+  pages_total      INTEGER,               -- NULL = 没跑过，0 = 跑过且确实 0 个
+  pages_registered INTEGER,
+  apis_total       INTEGER,
+  api_modules      TEXT,                  -- JSON 数组：接口模块名
+  login_captcha    TEXT,                  -- none|image|slider|click_select|sms|unknown
+  maps_path        TEXT,                  -- 相对项目目录的 maps 文件路径
+  report_path      TEXT,                  -- 相对项目目录的建档报告路径
+  last_error       TEXT,                  -- 最近一次失败原因（成功时清空）
+  probed_at        TEXT,
+  -- 五步进度（JSON 数组）：Python 侧每报一个 @@step 就覆盖写一次，供抽屉显示真实
+  -- 进度。NULL = 这一轮还没报过任何步（不是"五步全 0%"）。不写进 revision：进度是
+  -- 过程量，不是配置版本，前端按 status 轮询本就会整行重取。
+  steps_json       TEXT,
+  created_at       TEXT NOT NULL,
+  revision         INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (project_id, env)
+);
+
+-- 环境级探索资产：三张表跟着 project_environments 走，不跟着 qa_ 主区（那里是项目级、
+-- 人产出物）。原因：模块地图按环境分片——预发常比生产少几个模块，混成一张项目级图会
+-- 让下游拿预发的模块去生产跑。primary key 必带 env，这不是冗余，是正确性的前提。
+CREATE TABLE IF NOT EXISTS qa_environment_knowledge (
+  project_id TEXT NOT NULL,
+  env        TEXT NOT NULL,
+  layer      TEXT NOT NULL CHECK(layer IN ('module','flow','wall','interface')),
+  entry_key  TEXT NOT NULL,               -- 模块名 / 链路 id / 墙点 id（层内唯一）
+  summary    TEXT,                        -- 列表页直接读这个，不用打开文件
+  rel_path   TEXT,                        -- kb/<env>/ 下的文件位置，供下游取全量
+  round      INTEGER NOT NULL DEFAULT 1,  -- 第几轮探索写入的
+  source_session_id TEXT,                 -- 哪个会话跑出来的（可回溯到现场）
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, env, layer, entry_key),
+  FOREIGN KEY (project_id, env) REFERENCES project_environments(project_id, env) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_env_knowledge_env ON qa_environment_knowledge(project_id, env);
+
+-- 人提的待验证假设。它不进 qa_environment_knowledge：那里是程序验证过的结论，
+-- 这里是还没验的猜想。混在一张表里就分不清"看到过"和"猜的"。
+CREATE TABLE IF NOT EXISTS qa_exploration_hypotheses (
+  hypothesis_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  env        TEXT NOT NULL,
+  module_key TEXT,                        -- 关联到哪一层模块（可空：全局假设）
+  statement  TEXT NOT NULL,               -- 必须是可判定的句子，不是"流程很复杂"
+  why_unknown TEXT NOT NULL CHECK(why_unknown IN ('business','data','role','async','external')),
+  expectation TEXT,                       -- 期望看到什么（给探索 Agent 的断言线索）
+  data_setup  TEXT,                       -- 前置数据说明
+  allow_seed  INTEGER NOT NULL DEFAULT 0, -- 造数授权：逐条放开，默认关
+  status     TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','verified','refuted','unreachable')),
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (project_id, env) REFERENCES project_environments(project_id, env) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_env_hypotheses ON qa_exploration_hypotheses(project_id, env, status);
+
+-- 判定记录：append-only。假设表上的 status 只是"最新一版"的快照，这里才是全过程。
+-- 为什么必须留旧结论：被推翻的假设决定了断言该放哪（示例：退款超额是提交时才校验，
+-- 断言放输入框就会误报）。只存最新状态，这个信息就永久丢了。
+CREATE TABLE IF NOT EXISTS qa_hypothesis_verdicts (
+  verdict_id TEXT PRIMARY KEY,
+  hypothesis_id TEXT NOT NULL REFERENCES qa_exploration_hypotheses(hypothesis_id) ON DELETE CASCADE,
+  round      INTEGER NOT NULL,
+  verdict    TEXT NOT NULL CHECK(verdict IN ('verified','refuted','unreachable')),
+  evidence   TEXT,                        -- 实际观察到什么
+  session_id TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hypothesis_verdicts ON qa_hypothesis_verdicts(hypothesis_id, round);
+
+-- 探索派发：一轮一条，append-only。探索与建档分工：建档回答「有哪些地址」（零浏览器、
+-- 零模型），探索回答「地址怎么走通」（开真浏览器登录后采集页面/接口）。
+--
+-- 为什么单开一张表而不是复用 project_environments 的状态列：建档只有"最近一次"有意义，
+-- 探索是逐轮演进（第 2 轮要对照第 1 轮、失败轮也要占号），覆盖写会丢掉轮次账目。
+-- status 五态：running 执行中 / waiting_human 等验证码答案 / succeeded 完成且已回写 /
+-- failed 失败（不写任何探索资产）/ aborted 人工中止（已采部分如实封存）。
+-- 失败轮与中止轮都保留行：round 号不回退，第 N 轮失败 ≠ 第 N 轮为空。
+CREATE TABLE IF NOT EXISTS qa_environment_explorations (
+  exploration_id TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL,
+  env            TEXT NOT NULL,
+  round          INTEGER NOT NULL,
+  status         TEXT NOT NULL CHECK(status IN ('running','waiting_human','succeeded','failed','aborted')),
+  target_url     TEXT NOT NULL,           -- 本轮探的页面（默认环境根地址）
+  login_url      TEXT,                    -- 登录页地址；NULL=按公开页走
+  login_mode     TEXT NOT NULL CHECK(login_mode IN ('authenticated','public')),
+  steps_json     TEXT,                    -- 六步进度（与建档同样的 @@step 合并规则）
+  summary_json   TEXT,                    -- {pages, apis, controls, maps, receipt, captchaStrategy, limitations[]}
+  last_error     TEXT,
+  started_at     TEXT NOT NULL,
+  finished_at    TEXT,
+  updated_at     TEXT NOT NULL,
+  FOREIGN KEY (project_id, env) REFERENCES project_environments(project_id, env) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_env_explorations ON qa_environment_explorations(project_id, env, round);
+
 CREATE TABLE IF NOT EXISTS project_management_prefs (
   user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
@@ -591,6 +701,47 @@ CREATE TABLE IF NOT EXISTS qa_task_context_snapshots ( -- append-only task-start
   UNIQUE(session_id, version)
 );
 CREATE INDEX IF NOT EXISTS idx_qa_task_snapshots_project ON qa_task_context_snapshots(project_id, session_id, version DESC);
+CREATE TABLE IF NOT EXISTS qa_context_ledger ( -- append-only context assembly receipts; one per assembly
+  ledger_id         TEXT PRIMARY KEY,
+  snapshot_id       TEXT NOT NULL,
+  project_id        TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  session_id        TEXT NOT NULL,
+  budget_tokens     INTEGER NOT NULL,
+  tokens_est        INTEGER NOT NULL,
+  loaded_json       TEXT NOT NULL,             -- what actually went in (knowledge/documents/rules)
+  dropped_json      TEXT NOT NULL,             -- what was cut, each with kind/ref/tokens/reason
+  assembler         TEXT NOT NULL,             -- which assembler produced this (e.g. python:context.assemble)
+  created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_qa_context_ledger_session ON qa_context_ledger(project_id, session_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS qa_confirm_batches ( -- A3 三层确认卡点批次；每批一条文档记录（items/audit 内嵌 JSON）
+  batch_id          TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  title             TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'draft',  -- draft / reviewing / approved
+  seed              TEXT NOT NULL,                  -- 抽样种子；同种子名单可复现（指纹可对）
+  items_json        TEXT NOT NULL,                  -- 确认项 [{id,type,text,risk,changed,st}]
+  audit_json        TEXT NOT NULL DEFAULT '[]',     -- 审批留痕 append-only [{seq,at,action,actor,note?,gateFailures?}]
+  created_by        TEXT NOT NULL,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_qa_confirm_batches_project ON qa_confirm_batches(project_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS qa_knowledge_builds ( -- immutable knowledge builds; one row per version
+  build_id          TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  version           INTEGER NOT NULL,
+  content_hash      TEXT NOT NULL,
+  items_json        TEXT NOT NULL,             -- knowledge items, each with its source location
+  clauses_json      TEXT NOT NULL,             -- clause index the items point into (file+line+section)
+  stats_json        TEXT NOT NULL,
+  sources_json      TEXT NOT NULL,             -- document snapshots this build was cut from
+  build_meta_json   TEXT NOT NULL,             -- dropped / duplicates / actor (why items did not enter)
+  created_at        TEXT NOT NULL,
+  created_by        TEXT NOT NULL,
+  UNIQUE(project_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_qa_knowledge_builds_project ON qa_knowledge_builds(project_id, version DESC);
 CREATE TABLE IF NOT EXISTS qa_design_batches (  -- immutable test design batch per run; revisions append
   batch_id          TEXT PRIMARY KEY,
   project_id        TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,

@@ -56,6 +56,25 @@ describe("managed projects", () => {
     expect((await memberList.json() as { total: number }).total).toBe(0);
   });
 
+  it("keeps projects created before environments existed readable, with null instead of a fake default", async () => {
+    test = await createTestApp();
+    const admin = apiClient(test.app, (await loginAdmin(test.app)).cookie);
+    // 不传 environment = 建档功能上线前就存在的老项目。这类项目必须能正常读，
+    // 且环境字段是 null——凭空造一个"默认环境"会让 UI 把老项目显示成已建档。
+    const created = await admin.post("/api/projects/managed", { projectId: "legacy_no_env", name: "无环境老项目" });
+    expect(created.status, await created.clone().text()).toBe(201);
+    const { project } = await created.json() as { project: { projectId: string; environment: unknown } };
+    expect(project.environment).toBeNull();
+    const list = await admin.get("/api/projects/managed?keyword=无环境老项目");
+    const listed = (await list.json() as { projects: { projectId: string; environment: unknown }[] }).projects[0];
+    expect(listed?.environment).toBeNull();
+    // 环境接口对老项目要回空列表 + defaultEnv=null，而不是 404：否则环境页打不开，
+    // 用户连"补一个环境"的入口都没有。
+    const envs = await admin.get(`/api/projects/${project.projectId}/environments`);
+    expect(envs.status, await envs.clone().text()).toBe(200);
+    expect(await envs.json()).toMatchObject({ environments: [], defaultEnv: null });
+  });
+
   it("enforces the owner's project id namespace", async () => {
     test = await createTestApp();
     const member = apiClient(test.app, (await provisionUser(test.app, "project_member")).cookie);

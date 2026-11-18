@@ -28,6 +28,9 @@ import {
 } from "../../services/qa-knowledge-authorization.js";
 import { renderUntrustedMaterial } from "../../services/qa-knowledge-untrusted.js";
 import { QaLibraryReference } from "../../services/qa-library-reference.js";
+import { QaKnowledgeBuildStore } from "../../services/qa-knowledge-build.js";
+import { latestContextLedger } from "../../services/qa-context-assembly.js";
+import { isValidId } from "@prismshadow/penguin-core";
 
 function limitOf(c: Context, code: string): number | undefined {
   const raw = c.req.query("limit");
@@ -46,6 +49,31 @@ function bodyNumber(value: unknown, code: string, label: string): unknown {
   if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
   if (typeof value !== "number") throw new HttpError(400, code, `${label} 必须是整数。`);
   return value;
+}
+
+function versionOf(c: Context): number {
+  const raw = c.req.param("version");
+  if (!raw || !/^\d+$/.test(raw) || Number(raw) < 1) throw new HttpError(400, "invalid_knowledge", "知识版本号无效。");
+  return Number(raw);
+}
+
+/**
+ * 知识构建失败 → HTTP 错误。
+ *
+ * 只把错误码与工具层原文带出来，**不带资料正文**：这些错误会进普通日志，
+ * 而资料原文属于项目私有内容。未知原因也只截断到 300 字符，避免把整段 stderr 写进日志。
+ */
+function knowledgeBuildError(error: unknown): HttpError {
+  if (error instanceof HttpError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  switch (message) {
+    case "knowledge_source_missing": return new HttpError(400, message, "指定的资料不存在或已归档。");
+    case "knowledge_too_large": return new HttpError(409, message, "资料数量超出单次构建上限（200 份）。");
+    case "knowledge_engine_unavailable": return new HttpError(503, message, "服务端未配置 AITEST_ENGINE_ROOT，无法条款化资料。");
+    case "knowledge_build_not_found": return new HttpError(404, message, "知识版本不存在。");
+    case "knowledge_diff_same_version": return new HttpError(400, message, "同一版本之间没有差异。");
+    default: return new HttpError(502, "knowledge_build_failed", `知识构建失败：${message.slice(0, 300)}`);
+  }
 }
 
 export function registerQaProjectKnowledgeRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps): void {
@@ -81,7 +109,7 @@ export function registerQaProjectKnowledgeRoutes(app: Hono<AppEnv>, deps: Agents
     },
   };
   app.use('/qa/*', async (c, next) => {
-    if (!/\/qa\/(?:documents|knowledge|uploads|server-copies)(?:\/|$)/.test(c.req.path) && !/\/context-snapshot(?:\/|$)/.test(c.req.path)) { await next(); return; }
+    if (!/\/qa\/(?:documents|knowledge|uploads|server-copies)(?:\/|$)/.test(c.req.path) && !/(?:\/context-snapshot|\/context-ledger)(?:\/|$)/.test(c.req.path)) { await next(); return; }
     const client = deps.authState?.accountClient;
     if (client) {
       const projectId = requireValidId(c, 'projectId');
@@ -97,6 +125,7 @@ export function registerQaProjectKnowledgeRoutes(app: Hono<AppEnv>, deps: Agents
     deps.config.root,
     receiver
   );
+  const builds = new QaKnowledgeBuildStore(deps.db as unknown as KnowledgeDb, store);
   const authorize = (
     c: Context<AppEnv>,
     operation: KnowledgeOperation,
@@ -570,5 +599,89 @@ export function registerQaProjectKnowledgeRoutes(app: Hono<AppEnv>, deps: Agents
       ruleIds: body.ruleIds,
       all: body.all
     }));
+  });
+
+  // ---------------------------------------------------------------- knowledge builds (A6)
+
+  app.post("/qa/knowledge/builds", async (c) => {
+    const { projectId, userId } = ownerScope(c);
+    const body = await readJson(c);
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!Array.isArray(body.items)) throw new HttpError(400, "invalid_knowledge_items", "items 必须是知识项数组。");
+    // 上限只防误传整份文件：真正"是不是知识"由 Python 侧的位置校验决定。
+    if (items.length > 5000) throw new HttpError(400, "invalid_knowledge_items", "单次提交的知识项不能超过 5000 条。");
+    const documentIds = body.documentIds === undefined
+      ? undefined
+      : (Array.isArray(body.documentIds)
+        ? body.documentIds.map((id: unknown) => {
+          if (typeof id !== "string" || !isValidId(id)) throw new HttpError(400, "invalid_document", "资料标识无效。");
+          return id;
+        })
+        : []);
+    if (documentIds && documentIds.length > 200) throw new HttpError(400, "invalid_document", "单次构建的资料不能超过 200 份。");
+    try {
+      const result = await builds.build({
+        db: deps.db as unknown as KnowledgeDb,
+        store, projectId, userId, items, documentIds,
+        actor: typeof body.actor === "string" ? body.actor.slice(0, 120) : undefined
+      });
+      return c.json(result, result.unchanged ? 200 : 201);
+    } catch (error) {
+      throw knowledgeBuildError(error);
+    }
+  });
+
+  app.get("/qa/knowledge/builds", async (c) => {
+    const { projectId } = scope(c);
+    return c.json({ builds: builds.list(projectId, limitOf(c, "invalid_knowledge") ?? 20) });
+  });
+
+  app.get("/qa/knowledge/builds/:version", async (c) => {
+    const { projectId } = scope(c);
+    try {
+      return c.json({ build: builds.get(projectId, versionOf(c)) });
+    } catch (error) {
+      throw knowledgeBuildError(error);
+    }
+  });
+
+  // 版本对账。`from` 缺省为当前版本的前一版——页面默认就是"这次改了什么"。
+  app.get("/qa/knowledge/builds/:version/diff", async (c) => {
+    const { projectId } = scope(c);
+    const to = versionOf(c);
+    let from: number;
+    try {
+      const latest = builds.get(projectId, to);
+      from = c.req.query("from") === undefined ? to - 1 : Number(c.req.query("from"));
+      if (!/^\d+$/.test(String(from)) || from < 1) throw new HttpError(400, "invalid_knowledge", "from 必须是有效版本号。");
+      if (from === to) throw new HttpError(400, "knowledge_diff_same_version", "同一版本之间没有差异。");
+      return c.json({ from, to, diff: await builds.diff(projectId, from, to) });
+    } catch (error) {
+      throw knowledgeBuildError(error);
+    }
+  });
+
+  // 引用反查：资料/用例文本用到了哪些知识项（变更影响分析的第一跳）。
+  app.post("/qa/knowledge/references", async (c) => {
+    const { projectId } = scope(c);
+    const body = await readJson(c);
+    const text = typeof body.text === "string" ? body.text : "";
+    if (!text.trim()) throw new HttpError(400, "invalid_reference_query", "反查文本不能为空。");
+    if (text.length > 200_000) throw new HttpError(400, "invalid_reference_query", "反查文本过长。");
+    const version = body.version === undefined ? undefined : bodyNumber(body.version, "invalid_knowledge", "version") as number;
+    try {
+      return c.json(await builds.references(projectId, text, version));
+    } catch (error) {
+      throw knowledgeBuildError(error);
+    }
+  });
+
+  // ---------------------------------------------------------------- context assembly ledger (A5)
+
+  app.get("/qa/tasks/:sessionId/context-ledger", async (c) => {
+    const { projectId } = scope(c);
+    const sessionId = c.req.param("sessionId");
+    taskSession(projectId, sessionId, c.var.user.userId);
+    return c.json({ ledger: latestContextLedger(deps.db as unknown as KnowledgeDb, projectId, sessionId) });
   });
 }
