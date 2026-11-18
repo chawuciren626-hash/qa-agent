@@ -144,3 +144,54 @@ export function summarizeVerdicts(judgements) {
     note: 'flaky is counted on its own and never added to passed; unknown and incomplete neither pass nor fail',
   };
 }
+
+/**
+ * 从重放对比（批次 4 的 `execution/replay-comparison.json`）提取隔离名单。
+ *
+ * 这是「不稳定用例不进入可靠通过率」的数据入口：`flaky_suspect` 的用例在这里被标成
+ * `history: 'flaky'`，下一轮 `samplingTier` 会把它放进 flaky 敏感集（always ×3）。
+ * 怀疑就该隔离——即使重放是 partial（预算到点只跑了 1 次），那次失败依然成立。
+ *
+ * 只认 `kind: 'replay-comparison'`：别的文档长得再像也不收，防止把任意 JSON
+ * 喂进来产出一份看似有据的名单。
+ */
+export function flakyIsolation(comparison) {
+  if (comparison?.kind !== 'replay-comparison') throw new Error('Expected a replay-comparison document (kind: replay-comparison)');
+  if (!Array.isArray(comparison.per_case)) throw new Error('replay-comparison missing per_case array');
+  const cases = comparison.per_case
+    .filter(row => row?.verdict === 'unstable')
+    .map(row => ({
+      case_id: row.case_id,
+      history: 'flaky',
+      reason: 'unstable across replay attempts (flaky_suspect from replay-comparison)',
+      verdicts: Array.isArray(row.verdicts) ? row.verdicts.map(item => item.status) : null,
+    }));
+  return {
+    kind: 'regression-isolation',
+    run_id: comparison.run_id ?? null,
+    generated_at: new Date().toISOString(),
+    /** 名单只覆盖重放真正执行过的范围；partial 时缺席的次数不构成"稳定"，但也不构成"不稳定"。 */
+    coverage: {
+      executed_replays: comparison.executed_replays ?? 0,
+      requested_replays: comparison.requested_replays ?? 0,
+      complete: comparison.status === 'completed',
+      ...(comparison.stop_reason ? { stop_reason: comparison.stop_reason } : {}),
+    },
+    isolated: cases,
+    count: cases.length,
+  };
+}
+
+if (import.meta.url === `file://${process.argv[1]?.replaceAll('\\', '/')}`) {
+  const [command, runId] = process.argv.slice(2);
+  if (command !== 'isolate' || !runId) {
+    console.error('用法：node scripts/regression-sampling.mjs isolate <run_id>  # 从 execution/replay-comparison.json 提取隔离名单');
+    process.exit(2);
+  }
+  const { readFileSync } = await import('node:fs');
+  const { resolve } = await import('node:path');
+  const { runDirectory } = await import('./design-quality.mjs');
+  const root = resolve(import.meta.dirname, '..');
+  const doc = JSON.parse(readFileSync(resolve(runDirectory(root, runId), 'execution/replay-comparison.json'), 'utf8'));
+  console.log(JSON.stringify(flakyIsolation(doc), null, 2));
+}
