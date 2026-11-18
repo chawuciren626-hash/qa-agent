@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import { zipSync, strToU8 } from "fflate";
 import { createTestApp, restartTestApp, apiClient, loginUser } from "./helpers.js";
@@ -372,6 +373,19 @@ it('blocks pinned sessions on resource revocation, module revocation and logout'
   await bridge.authorizeSessionInvocation('private_project', 'test_agent', 'session-revoke');
   await user.post('/api/auth/logout', {});
   await expect(bridge.authorizeSessionInvocation('private_project', 'test_agent', 'session-revoke')).rejects.toBeDefined();
+});
+
+it('authorizes unpinned sessions of non-shared agents while shared agents stay pinned-only', async () => {
+  const bridge = app!.boot.tree.api<AuthState>('RuntimeModule', 'AuthState').accountClient!;
+  // 本地智能体（无 shared-agent.json 标记）：会话永远拿不到 pin，模型/工具调用不得被 session_unpinned 挡住
+  await bridge.authorizeSessionInvocation('private_project', 'local_agent', 'session-local');
+  await bridge.authorizeSessionInvocation('private_project', '', 'session-no-agent');
+  // 共享智能体（磁盘标记存在）但会话未 pin：仍然拒绝失败关闭
+  const marker = path.join(app!.root, 'private_project', 'agents', 'test_agent', 'agent_state');
+  fs.mkdirSync(marker, { recursive: true });
+  fs.writeFileSync(path.join(marker, 'shared-agent.json'), '{"published":true}');
+  await expect(bridge.authorizeSessionInvocation('private_project', 'test_agent', 'session-unpinned'))
+    .rejects.toMatchObject({ code: 'session_unpinned' });
 });
 
 it('uses the authenticated service policy and local device for unattended authorization', async () => {
