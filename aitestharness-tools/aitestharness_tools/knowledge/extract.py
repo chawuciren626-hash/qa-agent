@@ -24,7 +24,7 @@ from pathlib import Path
 
 from ..common.lineage import semantic_fingerprint, content_hash
 
-__all__ = ["KNOWLEDGE_TYPES", "split_clauses", "normalize_item", "dedupe_items",
+__all__ = ["KNOWLEDGE_TYPES", "split_clauses", "split_sources", "normalize_item", "dedupe_items",
            "build_knowledge", "check_gaps", "find_references", "KNOWLEDGE_PRIORITY"]
 
 # 知识项类型（封闭枚举）：决定它在下游怎么被用
@@ -131,6 +131,28 @@ def split_clauses(text: str, source: str = "doc.md") -> list[dict]:
                 buf_line = lineno
             buf.append(line)
     flush()
+    return clauses
+
+
+def split_sources(sources: list[dict]) -> list[dict]:
+    """多份资料一起条款化：每份各自从第 1 行编号，条款 id 带来源前缀。
+
+    为什么需要它：单文档的 `split_clauses` 每份都从 `c0001` 开始，多份拼在一起
+    条款 id 会撞，知识项就"定位"到了别人的第 3 行——这种错不会报错，只会让
+    「原文位置」变成一条假证据。
+
+    前缀取 `s01`、`s02`…（按传入顺序，稳定可复现），并保留 `source_name`，
+    使页面能同时显示"哪份资料 + 第几行 + 章节路径"。
+    """
+    clauses: list[dict] = []
+    for index, source in enumerate(sources or [], start=1):
+        name = str(source.get("name") or f"doc{index}")
+        for clause in split_clauses(str(source.get("text") or ""), name):
+            clauses.append({
+                **clause,
+                "clause_id": f"s{index:02d}-{clause['clause_id']}",
+                "source_name": name,
+            })
     return clauses
 
 

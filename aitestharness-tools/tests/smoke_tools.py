@@ -1285,6 +1285,50 @@ def test_knowledge_runtime_cli():
     assert len(packed["dropped"]) == 1 and packed["dropped"][0]["reason"], "被裁掉的项必须给出原因"
 
 
+def test_knowledge_build_multi_source():
+    """多份资料一起条款化：条款 id 必须带来源前缀，知识项的原文位置不能串到别人家。
+
+    这是「原文位置可见」这件事的地基。两份资料各自从 `c0001` 起编时，`s02-c0001` 会
+    被解析成第一份资料的第 5 行——页面照样显示"退款规则.md 第 5 行"，看起来有据可查，
+    实际指向的是另一份文件。同一输入两次构建的 content_hash 也必须一致，否则
+    "同一输入结果可复现"就只是一句话。
+    """
+    from aitestharness_tools.runtime_cli import invoke
+
+    sources = [
+        {"name": "退款规则.md", "text": "# 退款\n\n## 上限\n\n单笔退款不超过 500 元。\n"},
+        {"name": "登录规则.md", "text": "# 登录\n\n## 锁定\n\n连续五次失败锁定十五分钟。\n"},
+    ]
+    items = [
+        {"type": "rule", "name": "退款上限", "statement": "单笔退款不超过 500 元", "clause_id": "s01-c0001"},
+        {"type": "rule", "name": "锁定时长", "statement": "连续五次失败锁定十五分钟", "clause_id": "s02-c0001"},
+        # 同一指纹（type+statement）只留一条，与 name 这个人类标签无关。
+        {"type": "rule", "name": "退款上限（旧写法）", "statement": "单笔退款不超过 500 元", "clause_id": "s01-c0001"},
+        {"type": "rule", "name": "无位置", "statement": "这条没有原文位置"},   # 必须丢弃
+    ]
+    built = invoke("knowledge.build", {"project": "proj-kb", "version": 2, "sources": sources, "items": items})
+    clauses, knowledge = built["clauses"], built["knowledge"]
+
+    ids = [c["clause_id"] for c in clauses]
+    assert ids == ["s01-c0001", "s02-c0001"], ids
+    assert len(set(ids)) == len(ids), "条款 id 撞了，知识项会定位到别人的行"
+    assert [c["location"] for c in clauses] == [
+        {"file": "退款规则.md", "line": 5}, {"file": "登录规则.md", "line": 5},
+    ]
+
+    by_name = {it["name"]: it for it in knowledge["items"]}
+    assert set(by_name) == {"退款上限", "锁定时长"}, by_name
+    assert by_name["锁定时长"]["source"] == {"file": "登录规则.md", "line": 5}, \
+        "知识项定位到了错误的资料：原文位置不能当装饰"
+    assert by_name["锁定时长"]["section"] == "登录 / 锁定"
+    assert knowledge["stats"]["dropped"] == 1, "无位置的知识项必须计入 dropped"
+    assert knowledge["stats"]["duplicates"] == 1, "同一条规则写两遍应判重复而不是入库两条"
+    assert knowledge["_build_meta"]["version"] == 2
+
+    again = invoke("knowledge.build", {"project": "proj-kb", "version": 2, "sources": sources, "items": items})
+    assert again["knowledge"]["content_hash"] == knowledge["content_hash"], "同一输入必须给出同一 content_hash"
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):

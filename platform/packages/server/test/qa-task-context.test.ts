@@ -6,6 +6,7 @@ import { strToU8, zipSync } from "fflate";
 import { sessionScratchpadDir } from "@prismshadow/penguin-core";
 import { apiClient, createTestApp, provisionUser, type TestApp } from "./helpers.js";
 import { prepareQaTaskContext } from "../src/services/qa-task-context.js";
+import { latestContextLedger } from "../src/services/qa-context-assembly.js";
 import { currentSelection, selectionDirectory } from "../src/services/qa-skill-selection.js";
 
 const projectId = "context_owner-sandbox";
@@ -59,6 +60,12 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("QA task dispatch context", () 
     expect(first.text).toContain("旧版：五次失败锁定十五分钟。");
     expect(first.text).toContain("原规则：十五分钟。");
     expect(first.text).toContain("默认测试 Skill 仍有效");
+    // 装配账目必须落库：只写进提示词等于事后无法对账"这次到底装了什么"。
+    const ledger = latestContextLedger(app.deps.db as never, projectId, sessionId);
+    expect(ledger?.assembler).toBe("python:context.assemble");
+    expect(ledger?.loaded.knowledge.loaded).toBe(1);
+    expect(ledger?.loaded.documents).toBe(1);
+    expect(first.text).toContain("已确认规则（装配 1/1 条）");
     const scratch = sessionScratchpadDir(app.root, projectId, agentId, sessionId);
     expect(await fs.readFile(path.join(scratch, "personal-skills", selectionId, "round-guide", "references", "guide.md"), "utf8"))
       .toBe("Only for this round.");

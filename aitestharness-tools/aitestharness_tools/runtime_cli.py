@@ -58,6 +58,18 @@ def invoke(tool_id: str, payload: dict) -> object:
             actor=payload.get("actor") or "agent:requirement_agent",
         )
         return {"clauses": clauses, "knowledge": knowledge}
+    if tool_id == "knowledge.build":
+        # 多份资料一起条款化再建知识：条款 id 带来源前缀（s01-c0003），
+        # 否则两份资料各从 c0001 起编，知识项会"定位"到别人的同名行——
+        # 这种错不报错，只会让「原文位置」变成假证据。
+        from .knowledge.extract import split_sources, build_knowledge
+        clauses = split_sources(payload.get("sources") or [])
+        knowledge = build_knowledge(
+            payload["project"], payload.get("items") or [], clauses,
+            version=int(payload.get("version") or 1),
+            actor=payload.get("actor") or "agent:requirement_agent",
+        )
+        return {"clauses": clauses, "knowledge": knowledge}
     if tool_id == "knowledge.diff":
         # 版本对账：四类结果分开报。wording_only 不得触发重算，否则增量机制等于全量。
         from .knowledge.incremental import diff_knowledge

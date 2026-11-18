@@ -673,6 +673,34 @@ CREATE TABLE IF NOT EXISTS qa_task_context_snapshots ( -- append-only task-start
   UNIQUE(session_id, version)
 );
 CREATE INDEX IF NOT EXISTS idx_qa_task_snapshots_project ON qa_task_context_snapshots(project_id, session_id, version DESC);
+CREATE TABLE IF NOT EXISTS qa_context_ledger ( -- append-only context assembly receipts; one per assembly
+  ledger_id         TEXT PRIMARY KEY,
+  snapshot_id       TEXT NOT NULL,
+  project_id        TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  session_id        TEXT NOT NULL,
+  budget_tokens     INTEGER NOT NULL,
+  tokens_est        INTEGER NOT NULL,
+  loaded_json       TEXT NOT NULL,             -- what actually went in (knowledge/documents/rules)
+  dropped_json      TEXT NOT NULL,             -- what was cut, each with kind/ref/tokens/reason
+  assembler         TEXT NOT NULL,             -- which assembler produced this (e.g. python:context.assemble)
+  created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_qa_context_ledger_session ON qa_context_ledger(project_id, session_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS qa_knowledge_builds ( -- immutable knowledge builds; one row per version
+  build_id          TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  version           INTEGER NOT NULL,
+  content_hash      TEXT NOT NULL,
+  items_json        TEXT NOT NULL,             -- knowledge items, each with its source location
+  clauses_json      TEXT NOT NULL,             -- clause index the items point into (file+line+section)
+  stats_json        TEXT NOT NULL,
+  sources_json      TEXT NOT NULL,             -- document snapshots this build was cut from
+  build_meta_json   TEXT NOT NULL,             -- dropped / duplicates / actor (why items did not enter)
+  created_at        TEXT NOT NULL,
+  created_by        TEXT NOT NULL,
+  UNIQUE(project_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_qa_knowledge_builds_project ON qa_knowledge_builds(project_id, version DESC);
 CREATE TABLE IF NOT EXISTS qa_design_batches (  -- immutable test design batch per run; revisions append
   batch_id          TEXT PRIMARY KEY,
   project_id        TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
