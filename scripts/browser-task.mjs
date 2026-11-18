@@ -33,6 +33,12 @@ const privatePath = dir => resolve(dir, 'execution/browser-private.json');
 const statePath = dir => resolve(dir, 'execution/browser-state.json');
 const load = path => JSON.parse(readFileSync(path, 'utf8'));
 const sleep = ms => new Promise(done => setTimeout(done, ms));
+// 登录结果的观察窗口。成功与失败在同一窗口里并行采样：真实站点的错误提示
+// 往往 3 秒内自愈，串行"先等成功再探失败"会系统性错过它（见 1F 真实验收记录）。
+const LOGIN_SIGNAL_WINDOW_MS = 8000;
+// 单次采样上限：信号在时立刻返回，只有信号不在时才等这么久。
+const LOGIN_SIGNAL_PROBE_MS = 250;
+const LOGIN_SIGNAL_POLL_MS = 100;
 import { validateSequence, runBrowserSequence } from './browser-sequence.mjs';
 import { boundedNetworkLog } from './bounded-network-log.mjs';
 let sequenceCancelled=false;
@@ -561,6 +567,51 @@ async function worker(root,runId) {
     phases.recognition={...recognition,strategy_attempts:strategyAttempts,at:new Date().toISOString()};
     return {status:'recognition_required',operation_started:!!credentials || attempt>1,phases,recognition:{strategy:AGENT_VISION_STRATEGY,executor:'agent_vision',login_request_id:loginRequestId,image_path:imagePath,fingerprint,attempt,confidence_minimum:MIN_SOLVE_CONFIDENCE},next_action:'read_protected_captcha_image_then_login_recognize_with_matching_fingerprint_and_confidence'};
   }
+  // 单个登录结果断言的采样。短超时 + 外层轮询，而不是一条长超时：
+  // 失败信号常常是自愈 toast，只有在它还在屏幕上的那几百毫秒里采样才看得见。
+  async function loginSignal(check) {
+    try { await expectResult(check,LOGIN_SIGNAL_PROBE_MS); return {held:true}; }
+    catch(error) {
+      return {held:false,error,discriminating:['browser_unavailable','navigation_changed'].includes(browserErrorDiagnostic(error,'login_signal').category)};
+    }
+  }
+  // 文档身份探针：提交后文档被替换（跳转/整页重载）时，提交前看到的错误提示就与本次无关了。
+  // 用页面里的一次性随机标记做判断，比比较 URL 可靠——真实站点常见"错误后重定向回同一个 URL"。
+  async function documentMark() {
+    try { return await page.evaluate(() => {
+      if (!window.__loginSignalDocument) window.__loginSignalDocument = String(Math.random());
+      return window.__loginSignalDocument;
+    }); } catch { return null; }
+  }
+  // 成功与失败并行探测，先成立者定论。
+  //
+  // 先前的写法是"先等 8s 成功，再花 1.5s 探失败"。真实 element-plus 的错误提示约 3s
+  // 自愈，等 8s 过去再去看，屏幕上既没成功也没失败，于是把"密码错"记成"结果未知"。
+  // 提交前就成立的失败信号不参与判定（无法归属这一次提交），但文档一旦被替换就重新可用——
+  // 否则上一轮的错误提示会把下一轮的明确失败压成 unknown。
+  async function raceLoginSignals(config,{failureBaseline,baselineDocument}) {
+    let failureUsable=!!config.failure_check && !failureBaseline;
+    const deadline=Date.now()+LOGIN_SIGNAL_WINDOW_MS;
+    let interrupted=null;
+    while(Date.now()<deadline) {
+      const success=await loginSignal(config.success_check);
+      if(success.held) return {verdict:'success'};
+      if(success.discriminating) interrupted??=success.error;
+      if(!failureUsable && config.failure_check) {
+        const mark=await documentMark();
+        failureUsable=!!mark && !!baselineDocument && mark!==baselineDocument;
+      }
+      if(failureUsable) {
+        const failure=await loginSignal(config.failure_check);
+        if(failure.held) return {verdict:'failure'};
+        if(failure.discriminating) interrupted??=failure.error;
+      }
+      await sleep(LOGIN_SIGNAL_POLL_MS);
+    }
+    // 浏览器掉线/页面被顶掉时不能算"没信号"——那会把工具故障写成业务结论。
+    if(interrupted) throw interrupted;
+    return {verdict:'none'};
+  }
   // 填码（可选先填凭据）→提交→成功/失败/未知判定。成功固化会话并记录真实断言；未知转 needs_inspection 绝不重放。
   async function submitLoginAttempt({op,config,phases,attempt,attempts,recognition,solution,recordPath,fillCredentials}) {
     if(fillCredentials) {
@@ -571,14 +622,17 @@ async function worker(root,runId) {
       secrets.add(solution.answer);
       await locator(config.captcha_input_target).fill(solution.answer);
     }
+    // 基线必须在点提交之前取：提交之后读到的是本次提交的结果，不是基线。
+    const failureBaseline=config.failure_check?(await loginSignal(config.failure_check)).held:false;
+    const baselineDocument=await documentMark();
     phases.recognition={...recognition,at:new Date().toISOString()};
     await locator(config.submit_target).click();
     const submittedAt=new Date().toISOString();
     let success=false,failure=false;
     try {
-      try {await expectResult(config.success_check,8000);success=true;}
-      catch(error) {if(['browser_unavailable','navigation_changed'].includes(browserErrorDiagnostic(error,'login_success_check').category)) throw error;}
-      if(!success && config.failure_check) {try {await expectResult(config.failure_check,1500);failure=true;} catch { /* 无明确失败信号按未知处理 */ }}
+      const raced=await raceLoginSignals(config,{failureBaseline,baselineDocument});
+      success=raced.verdict==='success';
+      failure=raced.verdict==='failure';
     } catch(error) {
       state.status='needs_inspection';save();
       return {kind:'unknown',result:{status:'login_outcome_unknown',phases:{...phases,submission:{attempts:[...attempts,{attempt,submitted_at:submittedAt,outcome:'unknown'}]}},diagnostic:browserErrorDiagnostic(error,'login_success_check'),next_action:'inspect_snapshot_no_replay_of_uncertain_login'}};
@@ -601,7 +655,10 @@ async function worker(root,runId) {
     }
     if(!failure) {
       state.status='needs_inspection';save();
-      return {kind:'unknown',result:{status:'login_outcome_unknown',phases:{...phases,submission:{attempts:allAttempts}},next_action:'inspect_snapshot_no_replay_of_uncertain_login'}};
+      return {kind:'unknown',result:{status:'login_outcome_unknown',phases:{...phases,submission:{attempts:allAttempts}},
+        // 失败判据在提交前就已成立时无法归属本次提交，如实说明"未知"的成因。
+        ...(config.failure_check && failureBaseline?{failure_check_baseline_active:true}:{}),
+        next_action:'inspect_snapshot_no_replay_of_uncertain_login'}};
     }
     if(solution) recordStrategyOutcome(loginStats,config.project,recognition.strategy,false);
     return {kind:'failure',attempts:allAttempts};

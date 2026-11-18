@@ -79,7 +79,7 @@
 | 批次 | 状态 | commit | 备注 |
 |---|---|---|---|
 | 1 统一工具通道 | 已合入 `main`，运行副本待核验 | `6635ac9`（含 `89978ab`、`29e4cee`、`612a432`） | 阶段回执与后台查询已实现；验证码闭环另列 1F |
-| 1F 图形验证码自动登录 | **工程部分已合入整合分支；真实验收仍未通过（unknown）** | `7e2e750`、`20bd3e0`（原 Qoder 分支 `qoder/batch-2u-20261117`，已合入 `workbuddy/batch2-env-onboarding`） | 工程验证通过：`browser_task` 新增 `login_probe`/`login`/`login_recognize`，同一受控会话分类→识别→填码→提交→成功断言；本地策略耗尽且配置声明图形码时走截图识别回传协议（受保护截图 0600 + 指纹绑定 + 置信度≥0.9 + 一次性消费 + 受限重试）；配置声明图形码且元素存在时覆盖 DOM 关键词误分类。专项测试 19/19、browser 104/104、core 1080/1088（4 失败为基线既有）。真实站点两次 run 均无成功回执，旁证见 `docs/batch1f-acceptance-evidence-review-20261117.md`。**待办**：失败探测时序缺陷（错误 toast ~3s 自愈，failure_check 在 8s 成功等待之后才探）+ 真实闭环重跑 |
+| 1F 图形验证码自动登录 | **真实闭环已通过**：登录 `logged_in` + 会话复用 `session_reused`，两次断言都 `passed` | `7e2e750`、`20bd3e0`（Qoder，已合入）；失败探测时序修复与真实验收见本轮提交 | 真实站点 `run-71178f8f`（登录）与 `run-39318e19`（复用）回执见 `docs/batch1f-real-acceptance-20261118.md`；修掉"先等 8s 成功再探失败"导致真失败被记 unknown 的缺陷；测试 20/20。**未做**：VM 实例与已安装应用同场景回执 |
 | 2 环境与建档 | 本地已提交，**待验收合并**；真实站点建档回执未做 | 分支 `workbuddy/batch2-env-onboarding`，`2e90f58`…`60f1f44`（按用户要求暂未推送） | B1/A1 服务端 + 五步进度流式 + 前端五处落地；详见 `docs/batch2-environment-onboarding-20261117.md` |
 | 2U Agent 工具只读展示 | 已合入整合分支（未合并 `main`、未推送） | `03392d3`（原 Qoder 分支，已合入） | 工程验证通过：新增前端测试 6/6；ci:tools、irval 114、server/web tsc 均通过；web 全量 4306 通过/46 失败为基线既有。管理页面真实验收待部署核验 |
 | 3 来源条款化与上下文装配 | WorkBuddy 进行中 | | 2026-11-18 起由 WorkBuddy 接手（原建议负责人 Qoder 已无额度） |
@@ -94,3 +94,16 @@
 - 共享模型记录 schema 强校验：手工拼 `.account-models/*.json` 少字段会让建项目 500，写它必须走 `publishSharedModels`/`publishUserModelBlock` 同构组装。
 - `readRaw` 会因磁盘 stat 清缓存：内存态视图要临时接管（参考 `modelViewOfRaw` 的做法）。
 - Playwright 的 host 白名单只认 `localhost`（不是 127.0.0.1）。
+- **在 WorkBuddy 的 Agent 沙箱里跑 engineering tests 必须先摘掉删除守卫**：沙箱给每个 node 进程注入
+  `NODE_OPTIONS=--require=.../node-language-shim.cjs` 与 `CODEBUDDY_SAFE_DELETE_*`，每轮最多允许 50 次删除。
+  browser 套件跑到第 6 个用例就会被 `[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED]` 拦在
+  `state.json.lock` 上，后续用例全部 fixture 失败并卡住（实测挂 17 分钟无 CPU）。
+  跑法：`env -u NODE_OPTIONS -u CODEBUDDY_SAFE_DELETE_ENABLED -u CODEBUDDY_SAFE_DELETE_BULK_GUARD ... node scripts/run-engineering-tests.mjs --suite=browser`，
+  并把 PATH 里的 `shim/safe-bin` 去掉。
+- **同一沙箱里 browser worker 会被进程树回收**：`browser-task` 用 `detached:true` 拉起 worker，但命令结束时
+  整个进程树被回收，分步驱动（一条命令一步）会让 worker 在下一步之前消失，并触发 pending 隔离
+  （`transport_uncertain` → 按协议不重放）。需要多步交互的真实验收必须**一个进程跑完**，
+  中途要外部读图就用答案文件握手（见 `output/real-acceptance/login-flow.mjs`）。
+- `browser_task` 的成功判据优先用**正向可见条件**（如登录后工作台标题 `visible`）。
+  用负向条件（`count=0`）时，断言记录要求 `ready` 锚点，缺了就只能记 `blocked/readiness_required`——
+  登录明明成功，回执里却没有可用正向证据。

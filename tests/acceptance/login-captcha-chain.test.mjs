@@ -74,13 +74,14 @@ test('login config validation rejects unknown fields, bad targets and missing su
 function loginSite({ mode = 'ok', captchaAlt = '3 + 4 = ?', acceptCode = '7', smsHint = false } = {}) {
   const state = { posts: 0, tokens: new Set(), mode, captchaVersion: 0 };
   const page = (body, extra = '') => `<!doctype html><meta charset="utf-8"><title>合成登录</title>${body}${extra}`;
-  const loginHtml = error => page(`${smsHint ? '<span>手机短信登录</span>' : ''}<form action="/login" method="post">
+  const formHtml = error => `${smsHint ? '<span>手机短信登录</span>' : ''}<form action="/login" method="post">
     <input name="username" placeholder="用户名">
     <input name="password" type="password" placeholder="密码">
     <img class="captcha" src="/captcha.svg" alt="${captchaAlt}" width="120" height="40">
     <input name="captcha" placeholder="验证码">
     <button type="submit">登录</button>
-  </form>${error ? '<div id="error">验证码错误</div>' : ''}`);
+  </form>${error ? '<div id="error">验证码错误</div>' : ''}`;
+  const loginHtml = error => page(formHtml(error));
   const captchaSvg = () => `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><rect width="120" height="40" fill="#ffffff"/><text x="10" y="28" font-size="24" font-family="monospace" fill="#000000">v${state.captchaVersion}</text></svg>`;
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -91,6 +92,13 @@ function loginSite({ mode = 'ok', captchaAlt = '3 + 4 = ?', acceptCode = '7', sm
       let body = ''; req.on('data', c => body += c); req.on('end', () => {
         const fields = new URLSearchParams(body);
         if (state.mode === 'unknown') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(page('<h1>处理中</h1>')); return; }
+        // 自愈 toast：错误提示 1.1s 后自己消失，页面不跳转。真实 element-plus 就是这样，
+        // 而串行探测要等 8s 成功等待结束才去看失败，那时早已消失。
+        if (state.mode === 'toast') {
+          res.writeHead(200, { 'content-type': 'text/html' });
+          res.end(page(`${formHtml(true)}<script>setTimeout(()=>document.getElementById('error')?.remove(),1100)</script>`));
+          return;
+        }
         const codeOk = fields.get('captcha') === acceptCode || fields.get('captcha') === '8888';
         const credentialsOk = fields.get('username') === 'demo-user' && fields.get('password') === 'demo-pass-123';
         if (codeOk && credentialsOk) {
@@ -223,6 +231,20 @@ test('explicit failure retries at most once and never exceeds the anti-lockout b
     await f.browser({ type: 'finish', request_id: 'finish', summary: '受限重试验证', limitations: ['合成页面'] });
   });
 });
+
+test('a self-healing error toast is judged as explicit failure, not unknown', async () => {
+  await withSite({ mode: 'toast' }, async (url, state) => {
+    const f = await fixture(url, loginConfig({ test_code: '0000' }));
+    const result = await f.browser(loginOp('login-toast'));
+    // 这条是 1F 真实验收里栽过的坑：错误提示 1.1s 后自己消失，若等 8s 成功等待
+    // 结束再去探失败，只会得到"既没成功也没失败"，把密码错写成"结果未知"。
+    assert.equal(result.status, 'login_failed_after_bounded_retries', JSON.stringify(result));
+    assert.ok(result.phases.submission.attempts.every(a => a.outcome === 'explicit_failure'), JSON.stringify(result.phases.submission));
+    assert.equal(state.posts, 2, '明确失败才允许受限重试一次，且不能超过锁定上限');
+    await f.browser({ type: 'finish', request_id: 'finish', summary: '自愈错误提示的失败判定验证', limitations: ['合成页面'] });
+  });
+});
+
 
 test('unknown submit outcome stops for inspection and is never replayed', async () => {
   await withSite({ mode: 'unknown' }, async (url, state) => {
