@@ -394,6 +394,50 @@ def test_playwright_two_rounds_identical():
     assert all(v == "pass" for v in report["per_round"][0]["verdicts"].values()), report["per_round"]
 
 
+def test_storage_state_accepts_dict_path_and_none():
+    """会话既可以直接给 dict，也可以给落盘路径——跨进程复用是常态，调用方不该被迫自己读文件。"""
+    import json
+    import tempfile
+    from aitestharness_tools.exec.web_driver import _load_state
+
+    assert _load_state(None) is None
+    payload = {"cookies": [], "origins": []}
+    assert _load_state(payload) == payload
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "state.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        assert _load_state(path) == payload
+
+
+def test_select_value_reads_selected_label():
+    """el-select 的 input 是 readOnly 搜索框，value 永远为空，选中文本在 span 里。
+
+    这里用最小 DOM 复刻组件库结构：不需要真的装 Element Plus，
+    但必须覆盖这条路径——否则"选了却说没选"会被记成产品缺陷。
+    """
+    if not _browser_available():
+        print("  (skip: playwright 未安装)")
+        return
+    from aitestharness_tools.exec.locator import fingerprint_query
+    from aitestharness_tools.exec.web_driver import BrowserHost
+
+    with BrowserHost() as host:
+        driver = host.new_driver("")
+        driver._page.set_content(
+            '<div class="el-select"><span class="el-select__tags-text">测试</span>'
+            '<input readonly value=""></div>'
+            '<input id="plain" value="hello">')
+        selected = driver.probe(fingerprint_query({"css": ".el-select input"}))
+        plain = driver.probe(fingerprint_query({"css": "#plain"}))
+        driver.close()
+
+    assert selected["ok"] is True, selected
+    assert selected["value"] == "测试", f"应读选中标签文本而非空 value：{selected}"
+    assert plain["value"] == "hello", f"普通输入框仍读 value：{plain}"
+
+
 if __name__ == "__main__":
     import traceback
     fails = 0

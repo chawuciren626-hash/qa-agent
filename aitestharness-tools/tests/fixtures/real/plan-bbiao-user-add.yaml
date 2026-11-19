@@ -1,0 +1,79 @@
+# 真实系统剧本：系统设置 → 用户管理 → 添加用户
+#
+# 这是 E2E-1 的第一条"真实被测系统"剧本（此前的 3 条 Web 剧本打在自建靶站上）。
+#
+# 定位策略（踩过坑后的结论）：
+#   · 该系统是 Vue3 + Element Plus，**没有 data-testid**；
+#   · placeholder 看似好用，但 el-select 一旦选中就会把 placeholder 清空，
+#     后续任何基于 placeholder 的定位/断言都会瞬间失效——这不是偶发，是必然；
+#   · 实测 `get_by_label` 对这套 el-form 全部命中（label 与控件有可访问名关联），
+#     且选中前后都稳定，所以**一律用 label 定位**；
+#   · 列表页的查询框不在 el-form-item 内（没有 label），只能用 placeholder。
+#
+# 最后一步刻意不提交：
+#   "创建用户"是真写库动作，会在真实系统里新增账号。演练只填不点，
+#   等确认允许后再补最后一步。
+lineage:
+  id: PLAN-BBIAO-USER-ADD
+  version: 2
+title: 系统用户管理 - 添加用户（填表演练，不提交）
+driver: web
+
+steps:
+  - action: goto
+    target: {url: /bbiao-admin/system/user/index}
+    wait:
+      - {type: element_visible, target: {placeholder: 输入用户名}, timeout_ms: 20000}
+    assert:
+      - {type: url_contains, value: /system/user/index, level: decide}
+      - {type: text_visible, value: 添加用户, level: decide}
+
+  - action: click
+    target: {role: button, name: 添加用户}
+    wait:
+      - {type: element_visible, target: {label: 昵称}, timeout_ms: 15000}
+    assert:
+      - {type: text_visible, value: 添加系统用户, level: decide}
+
+  - action: fill
+    target: {label: 昵称}
+    value: QA自动化探针
+    assert:
+      - {type: value_equals, target: {label: 昵称}, expected: QA自动化探针, level: decide}
+
+  - action: fill
+    target: {label: 手机号码}
+    value: "13900000000"
+    assert:
+      - {type: value_equals, target: {label: 手机号码}, expected: "13900000000", level: observe}
+
+  - action: fill
+    target: {label: 用户名}
+    value: qa_probe_20261119
+    assert:
+      - {type: value_equals, target: {label: 用户名}, expected: qa_probe_20261119, level: decide}
+
+  # 密码框 type=text（明文可见，已单独记为缺陷），填写行为与普通输入框一致
+  - action: fill
+    target: {label: 用户密码}
+    value: QaProbe@2026
+    assert:
+      - {type: value_equals, target: {label: 用户密码}, expected: QaProbe@2026, level: observe}
+
+  - action: click
+    target: {label: 所属角色：}
+    wait:
+      - {type: element_visible, target: {text: 普通角色}, timeout_ms: 10000}
+
+  - action: click
+    target: {text: 测试}
+    assert:
+      - {type: value_equals, target: {label: 所属角色：}, expected: 测试, level: decide}
+
+  # 只等到按钮出现并断言可见，**不点击**——写库动作留待确认
+  - action: wait
+    wait:
+      - {type: element_visible, target: {role: button, name: 创建用户}, timeout_ms: 5000}
+    assert:
+      - {type: visible, target: {role: button, name: 创建用户}, level: decide}
+      - {type: visible, target: {role: button, name: 取消}, level: observe}

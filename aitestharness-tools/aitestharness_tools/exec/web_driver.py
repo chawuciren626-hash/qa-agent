@@ -47,6 +47,19 @@ def _css_string(value: str) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
+def _load_state(storage_state: Any) -> Any:
+    """把 storageState 统一成 dict：接受 dict、文件路径、None。
+
+    为什么支持路径：会话是"一次登录、多次复用"的东西，天然要跨进程落盘。
+    调用方不该被迫在每次跑之前读一遍 JSON。
+    """
+    if storage_state is None:
+        return None
+    if isinstance(storage_state, dict):
+        return storage_state
+    return json.loads(open(str(storage_state), "r", encoding="utf-8").read())
+
+
 class BrowserHost:
     """浏览器进程宿主。可以当上下文管理器用，`new_driver()` 出隔离的会话。"""
 
@@ -75,16 +88,25 @@ class BrowserHost:
             raise DriverUnavailable(f"浏览器启动失败：{type(error).__name__}: {error}")
         return self
 
-    def new_driver(self, base_url: str = "", **overrides) -> "PlaywrightDriver":
+    def new_driver(self, base_url: str = "", *, storage_state: Any = None,
+                   **overrides) -> "PlaywrightDriver":
+        """新建一个 driver（= 一个独立 context）。
+
+        `storage_state` 可以是 dict，也可以是 storageState 的文件路径。它解决的
+        是"登录不可确定性自动化"的系统：登录环节带随机验证码，无法零 LLM 重放，
+        于是把登录隔离成一次性动作、落盘会话，之后每个剧本复用它——
+        被测功能的执行路径仍然是确定性的。
+        """
         self.start()
-        driver = PlaywrightDriver(self, base_url, **overrides)
+        driver = PlaywrightDriver(self, base_url, storage_state=storage_state, **overrides)
         self._drivers.append(driver)
         return driver
 
-    def _new_context(self):
+    def _new_context(self, storage_state: Any = None):
         return self._browser.new_context(
             viewport={"width": self.viewport[0], "height": self.viewport[1]},
             ignore_https_errors=self.ignore_https_errors,
+            storage_state=storage_state,
         )
 
     def close(self) -> None:
@@ -113,11 +135,11 @@ class PlaywrightDriver:
     """单个会话（context + page）上的原语集合。"""
 
     def __init__(self, host: BrowserHost, base_url: str = "", *,
-                 nav_timeout_ms: int | None = None):
+                 nav_timeout_ms: int | None = None, storage_state: Any = None):
         self.host = host
         self.base_url = (base_url or "").rstrip("/")
         self.nav_timeout_ms = nav_timeout_ms or host.nav_timeout_ms
-        self._context = host._new_context()
+        self._context = host._new_context(_load_state(storage_state))
         self._page = self._context.new_page()
         self._page.set_default_timeout(self.nav_timeout_ms)
         self._pending: set[Any] = set()
@@ -251,7 +273,7 @@ class PlaywrightDriver:
         for name, reader in (("visible", element.is_visible),
                              ("enabled", element.is_enabled),
                              ("text", lambda: element.inner_text()[:MAX_TEXT]),
-                             ("value", element.input_value),
+                             ("value", lambda: self._read_value(element)),
                              ("box", element.bounding_box)):
             try:
                 info[name] = reader()
@@ -259,6 +281,30 @@ class PlaywrightDriver:
                 info[name] = None
                 info.setdefault("unreadable", {})[name] = f"{type(error).__name__}"
         return info
+
+    @staticmethod
+    def _read_value(element) -> Any:
+        """读"当前值"，并对组件库的 select 做一次适配。
+
+        为什么不能直接用 `input_value()`：Element Plus 的 `el-select` 内部是一个
+        `readOnly` 的搜索框，选中后 `value` 始终是空串，真正的选中文本在
+        `.el-select__tags-text` / `.el-select__selected-item` 里。直接读 value 的表现是
+        "明明选了，断言却说没选"——而且这种失败会被记成产品缺陷。
+        """
+        return element.evaluate(
+            """(node) => {
+              const host = node.closest && node.closest('.el-select, .ant-select');
+              if (host) {
+                const shown = host.querySelector(
+                  '.el-select__tags-text, .el-select__selected-item, .ant-select-selection-item');
+                if (shown) {
+                  const text = (shown.innerText || shown.textContent || '').trim();
+                  if (text) return text;
+                }
+              }
+              return node.value === undefined ? null : node.value;
+            }"""
+        )
 
     # ---- 动作 ------------------------------------------------------------
     ACTIONS = ("click", "fill", "press", "select", "hover", "scroll", "check", "uncheck")
