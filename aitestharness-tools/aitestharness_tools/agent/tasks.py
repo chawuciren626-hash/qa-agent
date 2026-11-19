@@ -29,18 +29,29 @@ __all__ = ["TASK_CONTRACTS", "CONTRACT_TASKS", "dispatch", "submit",
 
 # 每类任务的派发契约。
 #   task        —— 必须是 model_capability.TASKS 里的键（白名单，防随手新增"自由发挥"任务）
+#   stage       —— 该任务落在哪个阶段；阶段工具只在对应阶段可调（stage-tool-runtime 硬校验）
 #   inputs      —— 输入产物 kind（来自 plan.phases 的产物命名）
 #   scope_keys  —— 上下文装配允许的 scope 键（防止 agent 顺手把整库塞进来）
-#   tools       —— 允许调用的工具（白名单，精确到函数名）
+#   tools       —— 允许调用的**阶段工具 id**（= stage-tool-runtime.STAGE_TOOLS 的 key）。
+#                  不是 Python 函数名：agent 唯一的调用入口是 `run_stage_tool` 的 tool_id，
+#                  写成 `module.func` 的下游一个也调不通（本文件 2026-11-19 之前就是这样，
+#                  12 条声明里只有 4 条能对上，其余的在 prompt 里只是噪声）。
+#                  真源是 STAGE_TOOLS；`scripts/check-tool-contract.mjs` 的 B1/B2 会断言
+#                  「这里 ⊆ STAGE_TOOLS ⊆ MCP tools/list」，漂了 CI 就红。
+#   budget_tokens —— 单次派发的 token 上限；on_exceed 是超限行为（degrade 降级给程序兜底 /
+#                   abort 中止由人接手）。两者都必须显式写：不写就等于"超了随便"，
+#                   而长上下文阶段（报告、归因）的成本失控正是这么来的。
 #   must / must_not —— 产物里必须有的 / 绝对不能有的字段（must_not 给的是"会误导下游"的字段）
 TASK_CONTRACTS: dict[str, dict] = {
     "requirement_extract": {
         "title": "需求项抽取",
         "agent": "requirement_analysis_agent",
+        "budget_tokens": 12000,
+        "on_exceed": "degrade",
+        "stage": "analysis",
         "inputs": ["条款列表（split_clauses 产出）"],
         "scope_keys": ("modules", "keywords"),
-        "tools": ("knowledge.extract.check_gaps", "requirement.testability.check_testability",
-                  "requirement.acceptance.check_acceptance_observable"),
+        "tools": ("requirement.testability", "requirement.acceptance", "irval.check"),
         "must": ["items"],
         "must_not": ["approved_by"],          # 批准是人签的
         "notes": "输入只能是条款；每条必须挂原文位置；抽不出位置的丢弃，不要猜",
@@ -48,21 +59,25 @@ TASK_CONTRACTS: dict[str, dict] = {
     "testpoint_fill": {
         "title": "测试点缺口补齐",
         "agent": "test_point_agent",
+        "budget_tokens": 8000,
+        "on_exceed": "degrade",
+        "stage": "test_points",
         "inputs": ["requirements", "matrix（程序算好的空矩阵）"],
         "scope_keys": ("modules", "keywords", "pages"),
-        "tools": ("testpoint.matrix.matrix_gaps", "testpoint.matrix.assign_verify_mode",
-                  "testpoint.coverage.coverage_gaps"),
+        "tools": ("testpoint.coverage", "irval.check"),
         "must": ["items"],
         "must_not": ["matrix", "coverage"],   # 矩阵与覆盖度是程序算的，agent 不许改
-        "notes": "只填 gaps 列的格子；不许新增格子；验证方式由 assign_verify_mode 分配",
+        "notes": "只填 gaps 列的格子；不许新增格子；验证方式由程序按矩阵分配",
     },
     "case_step_fill": {
         "title": "用例步骤补全",
         "agent": "test_case_agent",
+        "budget_tokens": 10000,
+        "on_exceed": "degrade",
+        "stage": "test_cases",
         "inputs": ["testpoints", "skeleton（骨架，含断言占位）"],
         "scope_keys": ("pages", "apis", "modules"),
-        "tools": ("case.builder.check_case_budget", "case.builder.reconcile_enumeration",
-                  "assets.ElementLibrary.resolve", "assets.DataSetStore.get"),
+        "tools": ("plan.gates", "irval.check"),
         "must": ["items"],
         "must_not": ["gates"],                # 闸由编译器写
         "notes": "只补 steps 的 intent/action；断言字段一律保留骨架里的引用，不许改写预期",
@@ -70,10 +85,12 @@ TASK_CONTRACTS: dict[str, dict] = {
     "failure_attribution": {
         "title": "失败归因",
         "agent": "defect_analysis_agent",
+        "budget_tokens": 12000,
+        "on_exceed": "degrade",
+        "stage": "defects",
         "inputs": ["exec（含取证包引用）"],
         "scope_keys": ("pages", "apis"),
-        "tools": ("defect.tools.dedup_fingerprint", "regression.selector.suspicious_signals",
-                  "assets.ElementLibrary.get"),
+        "tools": ("defect.evidence", "defect.tools", "irval.check"),
         "must": ["items"],
         "must_not": ["evidence_ref", "verdict"],   # 证据与结论是执行进程的
         "notes": "取证包由程序组装；只写 category 与 confidence；低置信标 low 转人工",
@@ -81,9 +98,12 @@ TASK_CONTRACTS: dict[str, dict] = {
     "report_insight": {
         "title": "报告洞察",
         "agent": "test_report_agent",
+        "budget_tokens": 16000,
+        "on_exceed": "degrade",
+        "stage": "report",
         "inputs": ["facts（程序生成，只读）", "risk_ledger"],
         "scope_keys": ("modules",),
-        "tools": ("report.reviewer.extract_facts", "regression.plan_regression.regression_three_answers"),
+        "tools": ("report.reviewer", "regression.select", "regression.impact", "irval.check"),
         "must": ["insights"],
         "must_not": ["facts", "verdict"],     # 数字与结论只读（§16.2 第一条）
         "notes": "允许空 insights；每条洞察必须挂 facts 引用，否则视为套话",
@@ -136,11 +156,14 @@ def dispatch(task: str, *, tier: str = "A", scope: dict | None = None,
     return {
         "task": task,
         "agent": spec["agent"],
+        "stage": spec["stage"],
         "tier": tier,
         "mode": mode.get("mode"),
         "runnable": runnable,
         "inputs": spec["inputs"],
         "tools": list(spec["tools"]),
+        "budget_tokens": spec["budget_tokens"],
+        "on_exceed": spec["on_exceed"],
         "context": ctx.get("context"),
         "context_refs": ctx.get("context_refs"),
         "context_dropped": ctx.get("dropped") or [],

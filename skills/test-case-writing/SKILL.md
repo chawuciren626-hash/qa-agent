@@ -2,6 +2,13 @@
 name: test-case-writing
 version: 2026.11.02.2
 description: 根据测试点生成符合项目 JSON Schema 的结构化测试用例。
+task: case_step_fill
+stage: test_cases
+tools: ["plan.gates", "irval.check"]
+sections:
+  criteria: ["阶段工具执行协议（强制）"]
+  knowledge: ["数据与来源表达（两种模式共用）"]
+  steps: ["分批保存", "独立任务（task）", "生命周期模式（lifecycle）"]
 ---
 
 # 测试用例编写 Skill

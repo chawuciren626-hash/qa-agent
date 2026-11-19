@@ -346,6 +346,13 @@ def _safe(v):
 
 
 def run_plan(plan: dict, base_url: str, data: dict | None = None,
-             registry: CapabilityRegistry | None = None) -> dict:
-    """便捷入口：构造引擎并执行。"""
-    return ApiEngine(base_url, data, registry=registry).run_plan(plan)
+             registry: CapabilityRegistry | None = None, *,
+             authorization: dict | None = None, env_id: str = "local") -> dict:
+    """便捷入口：构造引擎并执行。
+
+    `authorization` 与 `env_id` 透传给引擎（判据 3 的闸在引擎里）。便捷入口曾漏掉这两个
+    参数，于是"用便捷入口就绕过了授权闸"——不是实现了绕过，而是唯一能跑的入口没有
+    开口，调用方只能去掉闸。授权仍然是记录（有 id / 签发人 / 范围），不是布尔开关。
+    """
+    return ApiEngine(base_url, data, registry=registry).run_plan(
+        plan, authorization=authorization, env_id=env_id)

@@ -128,9 +128,15 @@ class LoginStrategyChain:
             if ok:
                 return self._record(project, attempts, {"status": "ok", "used": strategy})
         if captcha_type == "image":
+            # 状态值收敛到既有的 `manual_required`：上层（browser-task 与验收用例）只认
+            # ok / manual_required 两种收尾，`recognition_failed` 是没有任何消费方的孤儿值——
+            # 新增一个没人处理的状态，效果是"识别失败被当成未知结果丢掉"。
+            # 区分仍然保留在 `auto_recognition_failed` 上：诊断要分清"类型就得人工"
+            # 与"自动识别试过了但没成"。
             return self._record(project, attempts,
-                                {"status": "recognition_failed",
-                                 "reason": f"已尝试 {tried} 次（含 ≤1 次重试，防风控锁号），图形验证码自动识别失败"})
+                                {"status": "manual_required",
+                                 "auto_recognition_failed": True,
+                                 "reason": f"已尝试 {tried} 次（含 ≤1 次重试，防风控锁号），图形验证码自动识别失败，转人工"})
         attempts.append({"strategy": "manual", "ok": None})
         return self._record(project, attempts,
                             {"status": "manual_required",

@@ -4,6 +4,10 @@ version: 2026.11.02.1
 description: 通过微信开发者工具自动化后端执行小程序启动、页面操作、UI/数据断言、截图与失败取证；区分开发者工具验证与真机验证，结果未知时不重放，供自动化执行角色在小程序派发范围内使用。
 metadata:
   scope: wechat-devtools-automator-backend
+sections:
+  criteria: ["核心原则"]
+  knowledge: ["请求格式与证据"]
+  steps: ["操作流程", "1. 环境检查", "2. 启动与观察", "3. 操作与断言", "4. 结束与交付", "失败与恢复"]
 ---
 
 # 小程序执行 Skill

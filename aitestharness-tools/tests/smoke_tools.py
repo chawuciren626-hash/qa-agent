@@ -115,12 +115,18 @@ def test_api_engine_live():
                        "assert": [{"type": "status_code", "matcher": "equals", "expected": "200", "decide": True},
                                   {"type": "json_path", "path": "$.code", "matcher": "equals", "expected": "0",
                                    "decide": True, "source": "case.assertions[0]"}]}]}
-    ex = run_plan(plan, f"http://127.0.0.1:{port}", data={"username": "admin"})
+    # 判据 3：计划含写动作（POST），必须有授权记录。这里用真实签发入口，而不是关掉闸——
+    # 关闸的测试只证明"没闸时能跑"，不证明"有闸时批了能跑"。
+    from aitestharness_tools.exec.authorization import build_approval
+    approval = build_approval(plan, env_id="smoke-api", issued_by="smoke")
+    ex = run_plan(plan, f"http://127.0.0.1:{port}", data={"username": "admin"},
+                  authorization=approval, env_id="smoke-api")
     assert ex["verdict"] == "pass", ex
     assert ex["steps"][0]["assertions"][1]["actual"] == 0
 
-    # 错误路径：错口令 → decide 失败 → verdict=fail
-    ex2 = run_plan(plan, f"http://127.0.0.1:{port}", data={"username": "hacker"})
+    # 错误路径：错口令 → decide 失败 → verdict=fail（同一份授权，仍在有效期内）
+    ex2 = run_plan(plan, f"http://127.0.0.1:{port}", data={"username": "hacker"},
+                   authorization=approval, env_id="smoke-api")
     assert ex2["verdict"] == "fail"
     srv.shutdown()
 
@@ -836,9 +842,12 @@ def test_version_stamp_247():
                        "assert": [{"type": "json_path", "path": "$.code",
                                    "matcher": "equals", "expected": "0",
                                    "decide": True, "source": "tp-1"}]}]}
-    ex = run_plan(plan, f"http://127.0.0.1:{port}", registry=reg)
+    from aitestharness_tools.exec.authorization import build_approval
+    approval = build_approval(plan, env_id="smoke-stamp", issued_by="smoke")
+    ex = run_plan(plan, f"http://127.0.0.1:{port}", registry=reg,
+                  authorization=approval, env_id="smoke-stamp")
     srv.shutdown()
-    assert ex["verdict"] == "pass"
+    assert ex["verdict"] == "pass", ex
     assert ex["engine_version"] == ENGINE_VERSION and ex["schema_version"] == SCHEMA_VERSION
     assert ex["capability_versions"]["popup-policy"] == "1.1.0"
     assert not reg.frozen                                         # 会话结束解冻

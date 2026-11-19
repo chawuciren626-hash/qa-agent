@@ -2,6 +2,13 @@
 name: requirement-analysis
 version: 2026.11.02.3
 description: 分析需求中的功能、业务规则、风险和待澄清问题。
+task: requirement_extract
+stage: analysis
+tools: ["requirement.testability", "requirement.acceptance", "irval.check"]
+sections:
+  criteria: ["阶段工具执行协议（强制）", "质量标准", "禁止事项"]
+  knowledge: ["专业方法", "适用场景"]
+  steps: ["独立任务（task）", "生命周期模式（lifecycle）", "输入", "输出", "工作步骤"]
 ---
 
 # 需求分析 Skill

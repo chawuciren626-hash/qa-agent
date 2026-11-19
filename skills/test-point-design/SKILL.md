@@ -2,6 +2,13 @@
 name: test-point-design
 version: 2026.11.02.2
 description: 基于需求分析设计正常、异常和边界场景的测试点。
+task: testpoint_fill
+stage: test_points
+tools: ["testpoint.coverage", "irval.check"]
+sections:
+  criteria: ["阶段工具执行协议（强制）", "质量标准", "禁止事项"]
+  knowledge: ["专业方法", "适用场景", "XMind 结构规则"]
+  steps: ["分批保存", "独立任务（task）", "生命周期模式（lifecycle）", "草稿批量诊断与覆盖分类", "输入", "输出", "工作步骤"]
 ---
 
 # 测试点设计 Skill

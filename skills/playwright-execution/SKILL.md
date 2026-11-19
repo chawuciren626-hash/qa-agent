@@ -6,6 +6,10 @@ metadata:
   source: fugazi/test-automation-skills-agents
   revision: 65a72d5e74def3c23143bef8757e72cb68e91032
   adapted-from: playwright-e2e-testing authoring references
+sections:
+  criteria: ["阶段工具执行协议（强制）", "输出保护与耗时"]
+  knowledge: ["全流程浏览器策略", "浏览器诊断与降级"]
+  steps: ["独立URL探索", "按模式加载"]
 ---
 
 # Playwright 执行 Skill

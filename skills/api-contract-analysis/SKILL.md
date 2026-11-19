@@ -2,6 +2,10 @@
 name: api-contract-analysis
 version: 2026.11.02.1
 description: 解析当前任务的 OpenAPI/Swagger 或文字接口契约，形成有来源的接口清单及业务规则，供接口测试点和用例设计使用。
+sections:
+  criteria: []
+  knowledge: []
+  steps: ["输入与产出", "工作步骤"]
 ---
 
 # 接口契约分析

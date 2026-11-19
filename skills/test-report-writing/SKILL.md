@@ -2,6 +2,13 @@
 name: test-report-writing
 version: 2026.11.02.3
 description: 根据真实测试结果和缺陷记录生成测试报告与风险建议。
+task: report_insight
+stage: report
+tools: ["report.reviewer", "irval.check"]
+sections:
+  criteria: ["阶段工具执行协议（强制）", "统一产物交付契约", "质量标准", "禁止事项", "报告规则", "当前用户交付约定"]
+  knowledge: ["证据解释（所有模式）", "通用交付模板", "适用场景"]
+  steps: ["独立任务（task）", "生命周期模式（lifecycle）", "输入", "输出", "工作步骤"]
 ---
 
 # 测试报告生成 Skill

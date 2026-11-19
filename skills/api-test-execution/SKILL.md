@@ -2,6 +2,10 @@
 name: api-test-execution
 version: 2026.11.02.2
 description: 使用独立 HTTP worker 执行已设计的接口场景，保存逐请求断言证据，处理关联、凭据引用、取消和部分结果；不启动浏览器。
+sections:
+  criteria: ["阶段工具执行协议（强制）"]
+  knowledge: []
+  steps: ["输入与产出", "工作步骤"]
 ---
 
 # 接口执行

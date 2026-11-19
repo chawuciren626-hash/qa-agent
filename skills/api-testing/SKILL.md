@@ -7,6 +7,10 @@ metadata:
   source: fugazi/test-automation-skills-agents
   revision: 65a72d5e74def3c23143bef8757e72cb68e91032
   adapted-from: api-testing
+sections:
+  criteria: ["独立任务边界", "判定底线"]
+  knowledge: []
+  steps: ["工作方式"]
 ---
 
 # API 测试
