@@ -447,9 +447,9 @@ export function ProjectEnvironmentsPage() {
                             <div className="qpm-captcha-img qpm-captcha-img-empty">截图不可用</div>
                           )}
                           <div className="qpm-captcha-form">
-                            <b>图形验证码需要人工填答</b>
+                            <b>仅人工验证码需要处理</b>
                             <p className="qpm-panel-note">
-                              自动策略链（测试后门码 → 本地算术识别 → 打码服务）都没拿下来，才停在这里。
+                              图形验证码由工具自动识别；只有短信、扫码、滑块或点选验证码才会停在这里。
                               填错不会自动重试——本轮直接结束，防触发目标站锁定。
                             </p>
                             <div className="qpm-captcha-row">
@@ -457,7 +457,7 @@ export function ProjectEnvironmentsPage() {
                                 value={captchaAnswer}
                                 maxLength={64}
                                 onChange={(e) => setCaptchaAnswer(e.target.value)}
-                                placeholder="填入验证码结果"
+                                placeholder="填入人工验证码结果"
                                 aria-label="验证码答案"
                               />
                               <button type="button" className="qpm-btn-main" disabled={captchaBusy || !captchaAnswer.trim()} onClick={() => void submitCaptcha()}>
@@ -647,6 +647,7 @@ export function ProjectEnvironmentsPage() {
         <ExplorationDialog
           projectId={projectId}
           environment={current}
+          last={exploration}
           onClose={() => setDispatchOpen(false)}
           onStarted={(started) => {
             setDispatchOpen(false);
@@ -858,20 +859,25 @@ function HypothesisDialog({
  *
  * 凭据只用于当次派发（服务端写 0600 临时文件、进程结束即删），不进库、不回显——
  * 每次派发都要重新填密码，这是有意的：密码一旦进库就多一个泄露面。
+ *
+ * 目标页与登录页地址回填上一轮的值（服务端每轮都存 targetUrl/loginUrl），
+ * 失败轮重派时不用重新抄地址；用户名/密码仍每次必填（有意设计，不回显）。
  */
 function ExplorationDialog({
   projectId,
   environment,
+  last,
   onClose,
   onStarted,
 }: {
   projectId: string;
   environment: EnvironmentView;
+  last?: ExplorationView | null;
   onClose: () => void;
   onStarted: (exploration: ExplorationView) => void;
 }) {
-  const [targetUrl, setTargetUrl] = useState(environment.baseUrl);
-  const [loginUrl, setLoginUrl] = useState("");
+  const [targetUrl, setTargetUrl] = useState(last?.targetUrl || environment.baseUrl);
+  const [loginUrl, setLoginUrl] = useState(last?.loginUrl || "");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [saving, setSaving] = useState(false);
