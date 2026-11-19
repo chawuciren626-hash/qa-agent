@@ -32,6 +32,55 @@ const STAGES: ReadonlyArray<readonly [string, string]> = [
 ];
 
 /**
+ * 实现路径登记（R3）。
+ *
+ * 为什么需要它：工具台账里最贵的错误不是参数写错，而是**描述指向一个不存在的文件**——
+ * agent 照着描述去调，选错工具且错得很自信，人排查时先怀疑模型、再怀疑提示词，最后才怀疑台账。
+ * 2026-11-19 盘点时 33 个工具里有 14 条 description 指向 `scripts/`（该目录全仓不存在，
+ * 真实路径是 `scripts/`），就是靠人工发现的，一天之后就又漂了。
+ *
+ * 三条纪律：
+ *   1. 每个 implemented 工具必须有登记（缺失由 `scripts/check-tool-contract.mjs` 拦下）；
+ *   2. 登记的路径必须真实存在（同一脚本校验，进 CI，不靠自觉）；
+ *   3. 描述里出现的路径 token 必须是登记路径的子集（防止描述里再写一处"影子路径"）。
+ */
+const IMPL_PATHS: Record<string, string[]> = {
+  "irval.check": ["aitestharness-tools/aitestharness_tools/irval/cli.py"],
+  "assets.library": ["aitestharness-tools/aitestharness_tools/assets/library.py"],
+  "regression.select": ["scripts/select-test-cases.mjs", "config/test-selection-policy.json"],
+  "plan.phases": ["aitestharness-tools/aitestharness_tools/plan/phases.py"],
+  "agent.contract": ["aitestharness-tools/aitestharness_tools/agent/tasks.py"],
+  "knowledge.incremental": ["aitestharness-tools/aitestharness_tools/knowledge/incremental.py"],
+  "dom.snapshot": ["aitestharness-tools/aitestharness_tools/exec/snapshot.py"],
+  "expected.provenance": ["scripts/expected-source.mjs", "scripts/execution-verdict.mjs"],
+  "requirement.completeness": ["scripts/requirement-completeness.mjs"],
+  "requirement.parse": ["aitestharness-tools/aitestharness_tools/requirement/parsers.py"],
+  "requirement.testability": ["aitestharness-tools/aitestharness_tools/requirement/testability.py"],
+  "requirement.acceptance": ["aitestharness-tools/aitestharness_tools/requirement/acceptance.py"],
+  "testpoint.matrix": ["aitestharness-tools/aitestharness_tools/testpoint/matrix.py"],
+  "testpoint.coverage": ["aitestharness-tools/aitestharness_tools/testpoint/coverage.py"],
+  "plan.gates": ["aitestharness-tools/aitestharness_tools/plan/gates.py"],
+  "exec.api_engine": ["aitestharness-tools/aitestharness_tools/exec/api_engine.py", "scripts/api-engine.mjs"],
+  "exec.pools": ["aitestharness-tools/aitestharness_tools/exec/pools.py"],
+  "regression.impact": ["aitestharness-tools/aitestharness_tools/regression/impact.py", "scripts/regression-sampling.mjs"],
+  "report.reviewer": ["aitestharness-tools/aitestharness_tools/report/reviewer.py", "scripts/report-fact-body.mjs", "scripts/report-runtime-sections.mjs"],
+  "defect.tools": ["aitestharness-tools/aitestharness_tools/defect/tools.py", "scripts/normalize-defects.mjs", "scripts/defect-cluster.mjs", "scripts/defect-severity.mjs"],
+  "defect.evidence": ["aitestharness-tools/aitestharness_tools/defect/evidence.py"],
+  "onboard.bootstrap": ["aitestharness-tools/aitestharness_tools/onboard/bootstrap.py"],
+  "trace.view": ["scripts/trace.mjs"],
+  "defects.cluster": ["scripts/defect-cluster.mjs"],
+  "release.probe": ["scripts/release-probe.mjs"],
+  "golden.run": ["scripts/golden-runner.mjs"],
+  "execution.stub": ["scripts/execution-stub.mjs", "scripts/execution-summary.mjs"],
+  "coverage.split": ["scripts/coverage-split.mjs"],
+  "m1.consistency": ["scripts/consistency-report.mjs"],
+  "data.lifecycle": ["scripts/data-lifecycle.mjs"],
+  "confirm.gate": ["scripts/confirm-gate.mjs"],
+  "expectation.audit": ["scripts/expectation-audit.mjs"],
+  "login.captcha_chain": ["aitestharness-tools/aitestharness_tools/exec/login.py", "scripts/browser-task.mjs"],
+};
+
+/**
  * 首批内置工具。`implemented:false` 的按「规划中」入库并默认停用——
  * 后台里出现一个灰着的条目，比出现一个假的可点条目诚实。
  */
@@ -164,7 +213,7 @@ const SEED: Seed[] = [
   {
     name: "exec.api_engine", displayName: "接口执行引擎", categoryId: "api", permissions: "write", implemented: true,
     summary: "DSL（YAML plan）→ HTTP → exec IR；断言预声明、回执留痕、无重试通过率",
-    description: "aitestharness_tools/exec/api_engine.py 与 qa/scripts/api-engine.mjs（同构实现，后者已接 M1 一致性与 duration_ms 汇总）。重定向不跟随、凭据只走引用通道。",
+    description: "aitestharness_tools/exec/api_engine.py 与 scripts/api-engine.mjs（同构实现，后者已接 M1 一致性与 duration_ms 汇总）。重定向不跟随、凭据只走引用通道。",
     parameters: { type: "object", required: ["plan"], properties: { plan: { type: "object" }, prior: { type: "object", description: "中断恢复用的既有回执" } } },
     returns: { type: "object", properties: { cases: { type: "array" }, receipts: { type: "object" }, statistics: { type: "object" } } },
     agents: ["automation_execution_agent"],
@@ -180,7 +229,7 @@ const SEED: Seed[] = [
   {
     name: "regression.impact", displayName: "回归影响选集", categoryId: "report", permissions: "read", implemented: true,
     summary: "五个触发源按可信度排序，每条选中必须给理由",
-    description: "aitestharness_tools/regression/impact.py + qa/scripts/regression-sampling.mjs（采样分层 L-6）。触发源：变更血缘 / 元素失效 / 历史失败 / 冒烟集 / 周期全量。",
+    description: "aitestharness_tools/regression/impact.py + scripts/regression-sampling.mjs（采样分层 L-6）。触发源：变更血缘 / 元素失效 / 历史失败 / 冒烟集 / 周期全量。",
     parameters: { type: "object", required: ["changed"], properties: { changed: { type: "object" }, tier: { type: "string", enum: ["smoke", "core_regression", "regression", "full"] } } },
     returns: { type: "object", properties: { selected: { type: "array" }, reasons: { type: "object" } } },
     agents: ["test_agent", "test_report_agent"],
@@ -188,7 +237,7 @@ const SEED: Seed[] = [
   {
     name: "report.reviewer", displayName: "报告审阅（facts 抽取）", categoryId: "report", permissions: "read", implemented: true,
     summary: "报告 Agent = 审阅者不是写手：facts 纯数字抽取，agent 不可编造段落",
-    description: "aitestharness_tools/report/reviewer.py + qa/scripts/report-fact-body.mjs / report-runtime-sections.mjs（运行时事实六段：工具降级、桩、完备性、聚类、覆盖度、数据生命周期）。",
+    description: "aitestharness_tools/report/reviewer.py + scripts/report-fact-body.mjs / report-runtime-sections.mjs（运行时事实六段：工具降级、桩、完备性、聚类、覆盖度、数据生命周期）。",
     parameters: { type: "object", required: ["run_dir"], properties: { run_dir: { type: "string" } } },
     returns: { type: "object", properties: { facts: { type: "object" }, runtime_sections: { type: "string" }, review_notes: { type: "array" } } },
     agents: ["test_report_agent"],
@@ -196,7 +245,7 @@ const SEED: Seed[] = [
   {
     name: "defect.tools", displayName: "缺陷四件套（归因/去重/渲染/偶发识别）", categoryId: "defect", permissions: "write", implemented: true,
     summary: "归因下沉到执行末端；去重 display_only 不并单；偶发识别不折算失败率",
-    description: "aitestharness_tools/defect/tools.py（§10.5）+ qa/scripts/normalize-defects.mjs / defect-cluster.mjs（merge_safety=display_only）/ defect-severity.mjs。",
+    description: "aitestharness_tools/defect/tools.py（§10.5）+ scripts/normalize-defects.mjs / defect-cluster.mjs（merge_safety=display_only）/ defect-severity.mjs。",
     parameters: { type: "object", required: ["failure"], properties: { failure: { type: "object" }, defects: { type: "array", items: { type: "object" } } } },
     returns: { type: "object", properties: { attribution: { type: "object" }, duplicates: { type: "array" }, flaky_suspects: { type: "array" } } },
     agents: ["defect_analysis_agent"],
@@ -220,7 +269,7 @@ const SEED: Seed[] = [
   {
     name: "trace.view", displayName: "全链路 trace 查询", categoryId: "common", permissions: "read", implemented: true,
     summary: "每个 action 一条 jsonl（O_APPEND 并发安全），可按 run/stage/action/成败过滤",
-    description: "qa/scripts/trace.mjs（B1，L-10）。凭据脱敏（命中键整值 [redacted]）；attempt 由读取端编号；入口被拒也留 trace。无 trace 时 available=false，不据此判断「没有调用」。",
+    description: "scripts/trace.mjs（B1，L-10）。凭据脱敏（命中键整值 [redacted]）；attempt 由读取端编号；入口被拒也留 trace。无 trace 时 available=false，不据此判断「没有调用」。",
     parameters: { type: "object", properties: { run_id: { type: "string" }, action: { type: "string" }, stage: { type: "string" }, fail: { type: "boolean" }, limit: { type: "number", default: 50 } } },
     returns: { type: "object", properties: { rows: { type: "array" }, summary: { type: "object" }, available: { type: "boolean" } } },
     agents: ["test_agent"],
@@ -228,7 +277,7 @@ const SEED: Seed[] = [
   {
     name: "defects.cluster", displayName: "缺陷根因聚类", categoryId: "defect", permissions: "read", implemented: true,
     summary: "error_type + (堆栈帧|接口) 聚类；只改展示分组，不合并缺陷单",
-    description: "qa/scripts/defect-cluster.mjs（B2，L-9）。merge_safety=display_only：聚类前后缺陷单数不变，40 张单仍各自可流转。",
+    description: "scripts/defect-cluster.mjs（B2，L-9）。merge_safety=display_only：聚类前后缺陷单数不变，40 张单仍各自可流转。",
     parameters: { type: "object", required: ["run_id"], properties: { run_id: { type: "string" }, min_size: { type: "number", default: 2 } } },
     returns: { type: "object", properties: { clusters: { type: "array" }, stats: { type: "object" }, merge_safety: { type: "string" } } },
     agents: ["defect_analysis_agent"],
@@ -236,7 +285,7 @@ const SEED: Seed[] = [
   {
     name: "release.probe", displayName: "发版探针", categoryId: "report", permissions: "read", implemented: true,
     summary: "按资源指纹判发版；S1/P0→smoke→其余抽样 20 条；失败率超阈值 blocked 不出全量报告",
-    description: "qa/scripts/release-probe.mjs（B4，L-5）。整数比较避浮点；inconclusive 不进失败率；无 baseline 明确 no_baseline 不假绿。",
+    description: "scripts/release-probe.mjs（B4，L-5）。整数比较避浮点；inconclusive 不进失败率；无 baseline 明确 no_baseline 不假绿。",
     parameters: { type: "object", required: ["build_id"], properties: { build_id: { type: "string" }, assets: { type: "array", items: { type: "object" } }, size: { type: "number", default: 20 }, threshold: { type: "number", default: 0.2 } } },
     returns: { type: "object", properties: { verdict: { type: "string" }, gate: { type: "object" }, plan: { type: "array" } } },
     agents: ["test_agent"],
@@ -244,7 +293,7 @@ const SEED: Seed[] = [
   {
     name: "golden.run", displayName: "golden set 回放", categoryId: "common", permissions: "read", implemented: true,
     summary: "六类结构断言（schema/数量区间/关键词/幻觉/引用/越权字段），与基线比退化",
-    description: "qa/scripts/golden-runner.mjs + tests/golden/（B5，L-4）。replay 用录制基线、live 传 produce；无 baseline 明确 no_baseline；pending 点如实登记不硬凑。",
+    description: "scripts/golden-runner.mjs + tests/golden/（B5，L-4）。replay 用录制基线、live 传 produce；无 baseline 明确 no_baseline；pending 点如实登记不硬凑。",
     parameters: { type: "object", properties: { task: { type: "string" }, all: { type: "boolean", default: true }, record: { type: "boolean", default: false } } },
     returns: { type: "object", properties: { rates: { type: "object" }, comparison: { type: "object" }, failures: { type: "array" } } },
     agents: ["test_agent"],
@@ -252,7 +301,7 @@ const SEED: Seed[] = [
   {
     name: "execution.stub", displayName: "外部依赖桩策略", categoryId: "api", permissions: "read", implemented: true,
     summary: "有 stub 声明的依赖不可用 → 该步 inconclusive（downgradable=false 不许转 fail）；无声明仍 fail",
-    description: "qa/scripts/execution-stub.mjs + execution-summary.mjs（B6，P1-5）。无 stubs 声明时行为与原实现逐字节一致。",
+    description: "scripts/execution-stub.mjs + execution-summary.mjs（B6，P1-5）。无 stubs 声明时行为与原实现逐字节一致。",
     parameters: { type: "object", required: ["results"], properties: { results: { type: "array", items: { type: "object" } }, stubs: { type: "array", items: { type: "object" } } } },
     returns: { type: "object", properties: { cases: { type: "array" }, downgraded: { type: "array" }, kept_fail: { type: "array" } } },
     agents: ["automation_execution_agent"],
@@ -260,7 +309,7 @@ const SEED: Seed[] = [
   {
     name: "coverage.split", displayName: "覆盖度拆分", categoryId: "report", permissions: "read", implemented: true,
     summary: "「已执行」与「仅分配」两个口径并排；blocked/skipped 不算已执行",
-    description: "qa/scripts/coverage-split.mjs（B8，P2-4）。报表不再把「分配了」当成「测过了」；两口径差异逐条列原因。",
+    description: "scripts/coverage-split.mjs（B8，P2-4）。报表不再把「分配了」当成「测过了」；两口径差异逐条列原因。",
     parameters: { type: "object", required: ["cases"], properties: { cases: { type: "array", items: { type: "object" } }, results: { type: "array", items: { type: "object" } } } },
     returns: { type: "object", properties: { coverage_rate: { type: "number" }, optimistic_rate: { type: "number" }, by_layer: { type: "object" }, warnings: { type: "array" } } },
     agents: ["test_report_agent"],
@@ -268,7 +317,7 @@ const SEED: Seed[] = [
   {
     name: "m1.consistency", displayName: "M1 一致性验收报告", categoryId: "report", permissions: "read", implemented: true,
     summary: "§18.2 四条：N=3 一致率 / 取证包定位 / 耗时记录 / 可读 diff（恒 manual）",
-    description: "qa/scripts/consistency-report.mjs（B9）。零失败=not_applicable（不等于满分）；overall 三态 ready / ready_pending_manual / not_ready。真实 run 验证过：not_ready 如实报，不编造通过。",
+    description: "scripts/consistency-report.mjs（B9）。零失败=not_applicable（不等于满分）；overall 三态 ready / ready_pending_manual / not_ready。真实 run 验证过：not_ready 如实报，不编造通过。",
     parameters: { type: "object", required: ["run_id"], properties: { run_id: { type: "string" }, repeats: { type: "number", default: 3 } } },
     returns: { type: "object", properties: { overall: { type: "string" }, checks: { type: "array" } } },
     agents: ["test_report_agent"],
@@ -276,7 +325,7 @@ const SEED: Seed[] = [
   {
     name: "data.lifecycle", displayName: "数据生命周期纪律", categoryId: "common", permissions: "read", implemented: true,
     summary: "setup/teardown 强制声明；清理失败进 data_residue 不许静默；无 teardown 只许只读",
-    description: "qa/scripts/data-lifecycle.mjs（B11，P1-6）。persistent 基础数据不许用例级增删改；写语义判不出时归 unknown_mutation 列出不计违规。",
+    description: "scripts/data-lifecycle.mjs（B11，P1-6）。persistent 基础数据不许用例级增删改；写语义判不出时归 unknown_mutation 列出不计违规。",
     parameters: { type: "object", properties: { datasets: { type: "array", items: { type: "object" } }, plan: { type: "object" }, teardown_results: { type: "array", items: { type: "object" } } } },
     returns: { type: "object", properties: { data_residue: { type: "array" }, findings: { type: "array" }, counts: { type: "object" } } },
     agents: ["automation_execution_agent", "test_case_agent"],
@@ -284,7 +333,7 @@ const SEED: Seed[] = [
   {
     name: "confirm.gate", displayName: "确认卡点三件套", categoryId: "common", permissions: "read", implemented: true,
     summary: "差异聚焦（只审与上版不同）+ 抽样审核（10% 深审，超阈值退回全审）+ 风险加权（P0 全审）",
-    description: "qa/scripts/confirm-gate.mjs（B12，P2-2）。抽样确定性可复现（sha256(seed+id)）；缺风险字段按强制全审对待；反绕过核对缺口退出码 1。",
+    description: "scripts/confirm-gate.mjs（B12，P2-2）。抽样确定性可复现（sha256(seed+id)）；缺风险字段按强制全审对待；反绕过核对缺口退出码 1。",
     parameters: { type: "object", required: ["items"], properties: { items: { type: "array", items: { type: "object" } }, previous: { type: "array", items: { type: "object" } }, mode: { type: "string", enum: ["all", "diff", "sample"] }, rate: { type: "number", default: 0.1 }, seed: { type: "string" }, confirmed: { type: "array", items: { type: "object" } } } },
     returns: { type: "object", properties: { must_review: { type: "array" }, inherit: { type: "array" }, sampled: { type: "array" }, completion: { type: "object" } } },
     agents: ["test_agent", "requirement_analysis_agent", "test_point_agent", "test_case_agent"],
@@ -292,15 +341,15 @@ const SEED: Seed[] = [
   {
     name: "expectation.audit", displayName: "预期变更审计", categoryId: "case", permissions: "read", implemented: true,
     summary: "预期结果是资产：改动留 diff 与理由，漂移进报告，与元素库同纪律",
-    description: "qa/scripts/expectation-audit.mjs（L-1）。V-40 漂移口径：同一 case 预期一个版本周期改 ≥2 次必须标 drifted 且不进冒烟集（契约 v1.1）。",
+    description: "scripts/expectation-audit.mjs（L-1）。V-40 漂移口径：同一 case 预期一个版本周期改 ≥2 次必须标 drifted 且不进冒烟集（契约 v1.1）。",
     parameters: { type: "object", required: ["case_id"], properties: { case_id: { type: "string" }, history: { type: "array", items: { type: "object" } } } },
     returns: { type: "object", properties: { drifts: { type: "array" }, verdict_cap: { type: "object" } } },
     agents: ["test_case_agent"],
   },
   {
     name: "login.captcha_chain", displayName: "登录与验证码策略链", categoryId: "web", permissions: "read", implemented: true,
-    summary: "六类验证码封闭枚举（none/image/slider/click_select/sms/unknown）→ 策略链（万能码→OCR→打码平台→人工）；失败最多重试 1 次防风控锁号",
-    description: "aitestharness_tools/exec/login.py（§12.6）+ onboard/bootstrap.py 登录探测。探测零 LLM（DOM 特征规则）；策略执行器为外部服务档位（打码平台/OCR 需项目配置），自动策略用尽即转人工接管（qa 人工接管链路 human-action 已落地）；SessionCache 会话固化是终极解法。",
+    summary: "六类验证码封闭枚举（none/image/slider/click_select/sms/unknown）→ 图形码自动策略链（测试码→OCR→打码平台→代理视觉），失败最多重试 1 次",
+    description: "aitestharness_tools/exec/login.py（§12.6）+ browser-task.mjs 登录探测。探测零 LLM（DOM 特征规则）；图形验证码由工具自动识别、填写、提交并验证成功，短信/扫码/滑块/点选等人工验证码才进入 human-action；SessionCache 会话固化是终极解法。",
     parameters: { type: "object", required: ["project", "dom_summary"], properties: { project: { type: "string" }, dom_summary: { type: "object" }, executors: { type: "object" } } },
     returns: { type: "object", properties: { captcha_type: { type: "string" }, status: { type: "string" }, attempts: { type: "array" } } },
     agents: ["automation_execution_agent"],
@@ -337,6 +386,7 @@ type ToolRow = {
   id: string; name: string; display_name: string; summary: string; description: string;
   category_id: string; permissions: string; parameters: string; returns: string;
   version: number; revision: number; enabled: number; builtin: number;
+  impl_path: string;
   created_at: string; updated_at: string;
 };
 
@@ -351,6 +401,7 @@ export function centralToolRoutes(store: ControlStore): Hono<AppEnv> {
       parameters TEXT NOT NULL DEFAULT '{}', returns TEXT NOT NULL DEFAULT '{}',
       version INTEGER NOT NULL DEFAULT 1, revision INTEGER NOT NULL DEFAULT 1,
       enabled INTEGER NOT NULL DEFAULT 1, builtin INTEGER NOT NULL DEFAULT 0,
+      impl_path TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS central_tool_categories(
       id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, builtin INTEGER NOT NULL DEFAULT 0,
@@ -361,6 +412,10 @@ export function centralToolRoutes(store: ControlStore): Hono<AppEnv> {
       id INTEGER PRIMARY KEY AUTOINCREMENT, tool_id TEXT NOT NULL, action TEXT NOT NULL,
       actor TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
   `);
+  // 老库补列：CREATE TABLE IF NOT EXISTS 对已存在的表不生效，R3 的 impl_path 只能 ALTER 补。
+  // 补列而不是重建表，是因为工具台账里可能已有管理员改过的行（含自建工具）。
+  const toolColumns = (db.prepare("PRAGMA table_info(central_tools)").all() as { name: string }[]).map(item => item.name);
+  if (!toolColumns.includes("impl_path")) db.exec("ALTER TABLE central_tools ADD COLUMN impl_path TEXT NOT NULL DEFAULT '[]'");
   const seedCategories = db.prepare("INSERT OR IGNORE INTO central_tool_categories(id,name,builtin,deleted,created_at) VALUES (?,?,1,0,'builtin')");
   for (const [id, name] of STAGES) seedCategories.run(id, name);
 
@@ -383,21 +438,29 @@ export function centralToolRoutes(store: ControlStore): Hono<AppEnv> {
     description: row.description, categoryId: stageOf(row.category_id), permissions: row.permissions,
     parameters: row.parameters, returns: row.returns, version: row.version, revision: row.revision,
     enabled: row.enabled === 1, builtin: row.builtin === 1,
+    // implPath 是「实现文件清单」，给 agent 选工具与人工排障共用：空数组表示未登记（规划中或自建）。
+    implPath: (() => { try { const parsed = JSON.parse(row.impl_path || "[]") as unknown; return Array.isArray(parsed) ? parsed.filter(item => typeof item === "string") : []; } catch { return []; } })(),
     agents: agents.get(row.id) ?? [], createdAt: row.created_at, updatedAt: row.updated_at,
   });
 
   // 首启把内置工具登记进来；已存在的行只补「引用关系」，不覆盖管理员改过的字段。
   const seedTools = () => {
-    const insert = db.prepare("INSERT OR IGNORE INTO central_tools(id,name,display_name,summary,description,category_id,permissions,parameters,returns,version,revision,enabled,builtin,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,1,1,?,1,?,?)");
+    const insert = db.prepare("INSERT OR IGNORE INTO central_tools(id,name,display_name,summary,description,category_id,permissions,parameters,returns,version,revision,enabled,builtin,impl_path,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,1,1,?,1,?,?,?)");
     const link = db.prepare("INSERT OR IGNORE INTO central_tool_agents(tool_id,agent_id) VALUES (?,?)");
+    const implPathOf = (name: string) => JSON.stringify(IMPL_PATHS[name] ?? []);
     for (const item of SEED) {
       const now = new Date().toISOString();
       const id = `tool_${item.name.replace(/[^a-z0-9]/g, "_")}`;
       insert.run(id, item.name, item.displayName, item.summary, item.description, item.categoryId, item.permissions,
-        JSON.stringify(item.parameters), JSON.stringify(item.returns), item.implemented ? 1 : 0, item.implemented ? "2026-01-01T00:00:00.000Z" : now, now);
+        JSON.stringify(item.parameters), JSON.stringify(item.returns), item.implemented ? 1 : 0, implPathOf(item.name),
+        item.implemented ? "2026-01-01T00:00:00.000Z" : now, now);
       const row = db.prepare("SELECT id FROM central_tools WHERE name=?").get(item.name) as { id: string } | undefined;
       if (row) for (const agent of item.agents) link.run(row.id, agent);
     }
+    // impl_path 属于「代码事实」，不是管理员配置：每次启动按 IMPL_PATHS 覆盖 builtin 行，
+    // 否则改了代码路径、老库里还是旧值，CI 过了但运行时仍是错的。
+    const syncImpl = db.prepare("UPDATE central_tools SET impl_path=? WHERE name=? AND builtin=1");
+    for (const item of SEED) syncImpl.run(implPathOf(item.name), item.name);
     // 「规划中 → 已落地」补登记：早期按 implemented:false 入库（默认停用）的工具，
     // 代码落地后刷新 builtin 行的文案与启停状态。只刷新 summary 仍是「（规划中）」模板的行——
     // 管理员改过描述或手动停用的行不动，避免覆盖管理员操作。
