@@ -11,6 +11,7 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 import { HttpError } from "../http/errors.js";
+import { pointUid } from "./qa-point-identity.js";
 import { parseEvidenceRefs, type EvidenceRef, type KnowledgeDb } from "./qa-project-knowledge.js";
 import { QaTaskRunRegistry, readRunFacts, type RunObservation } from "./qa-task-run-registry.js";
 
@@ -41,6 +42,21 @@ export type DefectConfidence = (typeof DEFECT_CONFIDENCES)[number];
 export type ReportConclusion = (typeof REPORT_CONCLUSIONS)[number];
 export type QualityGate = (typeof QUALITY_GATES)[number];
 
+/**
+ * 一个测试点在一个 run 里由多条用例共同决定结论时，取"最坏"的那一条。
+ * 顺序：failed > blocked > skipped > passed。理由与 `readCoverage` 里逐点收敛的口径一致——
+ * 只要有一条失败，这个点就不算通过；把多条用例平均或取最好看，会让覆盖率虚高。
+ */
+const RESULT_STATUS_SEVERITY: Record<ResultStatus, number> = { failed: 4, blocked: 3, skipped: 2, passed: 1 };
+
+function worstResultStatus(statuses: Iterable<ResultStatus>): ResultStatus | null {
+  let worst: ResultStatus | null = null;
+  for (const status of statuses) {
+    if (!worst || RESULT_STATUS_SEVERITY[status] > RESULT_STATUS_SEVERITY[worst]) worst = status;
+  }
+  return worst;
+}
+
 export interface TraceSession {
   projectId: string;
   agentId: string;
@@ -64,6 +80,8 @@ export interface DesignBatch {
 
 export interface TestPointView {
   pointKey: string;
+  /** 跨批次稳定身份（P6/G4）；缺省 = 该行是未回填的历史数据。 */
+  pointUid?: string;
   module: string;
   feature: string;
   description: string;
@@ -108,8 +126,29 @@ export interface CaseResultView {
   updatedAt: string;
 }
 
+/**
+ * 一个测试点的跨批次历史（P6/G4），**只算本次运行之前**。
+ *
+ * 为什么只算之前：这个字段的用途是回答"上一轮跑过没有""这条缺陷以前是不是就挂在这个点上"。
+ * 把当前运行算进来，`lastRunId` 永远等于当前 run，等于没回答。
+ */
+export interface PointHistory {
+  /** 历史上（不含本次）有多少个运行设计过这个测试点。 */
+  runs: number;
+  /** 其中有多少个运行真的执行过它（至少一条关联用例有结果）。 */
+  executedRuns: number;
+  /** 最近一次设计它的运行；null = 这是全新测试点。 */
+  lastRunId: string | null;
+  /** 那次运行里它的结论；null = 设计了但没跑。 */
+  lastStatus: ResultStatus | null;
+  /** 挂在它上面的缺陷数（项目级、全部状态）。历史缺陷没记 uid，所以这个数只会少不会多。 */
+  defects: number;
+}
+
 export interface PointCoverage {
   pointKey: string;
+  /** 跨批次稳定身份；null = 该行没回填过 uid（历史数据），不能参与跨批次归并。 */
+  pointUid: string | null;
   module: string;
   feature: string;
   risk: RiskLevel;
@@ -117,6 +156,7 @@ export interface PointCoverage {
   status: "passed" | "failed" | "blocked" | "partial" | "untested";
   caseCounts: { passed: number; failed: number; skipped: number; blocked: number; notRun: number };
   untestedReason: string | null;
+  history: PointHistory;
 }
 
 export interface Coverage {
@@ -142,6 +182,28 @@ export interface Coverage {
   gate: { qualityGate: QualityGate; conclusion: ReportConclusion; allPassed: boolean; complete: boolean; evidenceComplete: boolean; reasons: string[] };
   points: PointCoverage[];
   untested: { kind: "point" | "case"; id: string; reason: string }[];
+  /**
+   * 项目级覆盖率（按 uid 跨批次去重，P6/G4）。
+   *
+   * 与上面的 `counts` / `rates` **不是一回事**，也**不参与 gate 判定**：
+   * `counts` 回答"本轮设计的点覆盖了多少"，`identity` 回答"这个项目历史上到底覆盖了哪些点"。
+   * 把历史执行过算成本轮已覆盖，等于拿过去给现在背书——gate 会从"本轮有没有跑"悄悄变成
+   * "以前跑过没"，那正是假绿。
+   */
+  identity: {
+    /** 项目历史上出现过的测试点（按 uid 去重）。 */
+    distinctPoints: number;
+    /** 其中至少被某一个运行执行过的。 */
+    executedPoints: number;
+    /** 从设计出来就没跑过的（含"设计了但每轮都没执行"）。 */
+    neverExecutedPoints: number;
+    /** 没有 uid、无法参与跨批次归并的行数（历史未回填）。单列，不推测归并。 */
+    untrackedPoints: number;
+    /** 本批次里此前历史出现过的点（复用）。 */
+    reusedPoints: number;
+    /** 本批次里首次出现的点（新增）。 */
+    newPoints: number;
+  };
 }
 
 export interface DefectView {
@@ -159,6 +221,11 @@ export interface DefectView {
   analysis: string;
   duplicateOf?: string;
   relatedCases: string[];
+  /**
+   * 这条缺陷挂在哪些测试点上（跨批次稳定的 uid，P6/G4）。
+   * 历史缺陷没有这个信息 → 空数组（表示"当时没记"，不表示"没有关联测试点"）。
+   */
+  relatedPoints: string[];
   evidenceRefs: EvidenceRef[];
   originSessionId: string;
   originRunId: string;
@@ -252,6 +319,8 @@ interface BatchRow {
 
 interface PointRow {
   point_key: string;
+  /** P6/G4：跨批次稳定身份；NULL = 该行尚未回填（历史数据）。 */
+  point_uid?: string | null;
   module: string;
   feature: string;
   description: string;
@@ -305,6 +374,8 @@ interface DefectRow {
   analysis: string;
   duplicate_of: string | null;
   related_cases_json: string;
+  /** P6/G4 迁移新增；老快照里可能没有这一列，读时按 '[]' 兜底。 */
+  related_points_json?: string;
   evidence_refs_json: string;
   origin_session_id: string;
   origin_run_id: string;
@@ -628,6 +699,7 @@ export class QaQualityTraceabilityStore {
   private mapPoint(row: PointRow): TestPointView {
     return {
       pointKey: row.point_key,
+      ...(row.point_uid ? { pointUid: row.point_uid } : {}),
       module: row.module,
       feature: row.feature,
       description: row.description,
@@ -747,6 +819,27 @@ export class QaQualityTraceabilityStore {
       if (pointKeys.has(point.pointKey)) throw new HttpError(400, "invalid_design", "测试点编号重复。");
       pointKeys.add(point.pointKey);
     }
+    // 跨批次稳定身份（P6/G4）：同一份证据/模块/功能/描述，在哪一批都算出同一个 uid。
+    // 批次内重复必须当场拦下：两条描述相同却各自编号的测试点，后面覆盖率会算成两个点，
+    // 而它们其实是同一件事——这种"设计里就重复"的错误越早发现越便宜。
+    const pointUids = points.map((point) => pointUid({
+      module: point.module,
+      feature: point.feature,
+      description: point.description,
+      evidenceRefs: point.evidenceRefs,
+    }));
+    const uidSeen = new Map<string, number>();
+    points.forEach((point, index) => {
+      const uid = pointUids[index]!;
+      const previous = uidSeen.get(uid);
+      if (previous !== undefined) {
+        throw new HttpError(400, "duplicate_point",
+          `测试点 ${point.pointKey} 与 ${points[previous]!.pointKey} 的稳定身份相同（模块/功能/描述一致）；`
+          + "同一批次里不允许两条描述相同的测试点——要么合并，要么把真正的差异写进描述。");
+      }
+      uidSeen.set(uid, index);
+    });
+
     const cases = input.cases.map((item) => this.parseCase(input.projectId, item, "invalid_design", pointKeys));
     const caseKeys = new Set<string>();
     for (const item of cases) {
@@ -780,14 +873,14 @@ export class QaQualityTraceabilityStore {
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         batchId, input.projectId, input.sessionId, input.runId, revision, "open", JSON.stringify(normalizedSource), points.length, cases.length, contentHash, at, input.userId
       );
-      for (const point of points) {
+      points.forEach((point, index) => {
         this.db.prepare(`INSERT INTO qa_test_points
-          (row_id,batch_id,project_id,point_key,module,feature,description,risk,coverage_type_json,evidence_refs_json,source,source_locator,execution_layer,created_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-          `tp-${this.id()}`, batchId, input.projectId, point.pointKey, point.module, point.feature, point.description, point.risk,
+          (row_id,batch_id,project_id,point_key,point_uid,module,feature,description,risk,coverage_type_json,evidence_refs_json,source,source_locator,execution_layer,created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          `tp-${this.id()}`, batchId, input.projectId, point.pointKey, pointUids[index], point.module, point.feature, point.description, point.risk,
           JSON.stringify(point.coverageType), JSON.stringify(point.evidenceRefs), point.source, point.sourceLocator, point.executionLayer ?? null, at
         );
-      }
+      });
       for (const item of cases) {
         this.db.prepare(`INSERT INTO qa_test_cases
           (row_id,batch_id,project_id,case_key,title,priority,type,preconditions_json,test_data_json,steps_json,expected,automation_feasible,related_point_key,evidence_refs_json,design_contract_json,created_at)
@@ -913,6 +1006,107 @@ export class QaQualityTraceabilityStore {
     return { designRevision: batch.revision, results: rows.map((row) => this.mapResult(row)) };
   }
 
+  /**
+   * 项目级测试点盘点（P6/G4）：按 uid 把同一件事在各个批次里认成同一个点。
+   *
+   * 三件事必须分开，混起来就会给出错的数：
+   *   1. **本批次**（`pointViews`）= 这次设计的点各自覆盖成什么样 —— 只看本运行；
+   *   2. **历史**（`PointHistory`）= 同一个点以前被设计/执行过几次、上次什么结论 —— 只看本次之前；
+   *   3. **项目级总量**（`identity`）= 这个项目至今覆盖了多少个不同的点 —— 含本次。
+   *
+   * 取「每个 run 的最新一批」：同一 run 内改设计会追加 revision，旧 revision 的点与用例都还在表里；
+   * 把它们一起算会把「改了三次描述」数成三个测试点，而这正是 uid 要消灭的噪声。
+   *
+   * 没有 uid 的历史行不猜：计入 `untrackedPoints`，不参与任何按 uid 的归并。
+   */
+  private pointRollup(projectId: string, currentRunId: string, currentPoints: PointRow[]): {
+    historyByUid: Map<string, PointHistory>;
+    identity: Coverage["identity"];
+  } {
+    const rows = this.db.prepare(`SELECT b.run_id AS run_id, b.created_at AS batch_at,
+            p.point_uid AS uid, c.case_key AS case_key, r.status AS status
+       FROM qa_design_batches b
+       JOIN qa_test_points p ON p.batch_id = b.batch_id
+       LEFT JOIN qa_test_cases c ON c.batch_id = b.batch_id AND c.related_point_key = p.point_key
+       LEFT JOIN qa_case_results r ON r.project_id = b.project_id AND r.run_id = b.run_id AND r.case_key = c.case_key
+      WHERE b.project_id = ?
+        AND b.revision = (SELECT MAX(b2.revision) FROM qa_design_batches b2
+                           WHERE b2.project_id = b.project_id AND b2.session_id = b.session_id AND b2.run_id = b.run_id)
+      ORDER BY b.created_at, b.run_id`).all(projectId) as {
+      run_id: string;
+      batch_at: string;
+      uid: string | null;
+      case_key: string | null;
+      status: ResultStatus | null;
+    }[];
+
+    interface UidAgg { otherRuns: Set<string>; executedOtherRuns: Set<string>; executedAny: boolean; lastRunId: string | null; lastStatuses: Set<ResultStatus> }
+    const aggs = new Map<string, UidAgg>();
+    for (const row of rows) {
+      const uid = row.uid ?? "";
+      if (!uid) continue;
+      let agg = aggs.get(uid);
+      if (!agg) {
+        agg = { otherRuns: new Set(), executedOtherRuns: new Set(), executedAny: false, lastRunId: null, lastStatuses: new Set() };
+        aggs.set(uid, agg);
+      }
+      if (row.status) agg.executedAny = true;
+      if (row.run_id === currentRunId) continue;
+      agg.otherRuns.add(row.run_id);
+      if (row.status) agg.executedOtherRuns.add(row.run_id);
+      // 行已按 batch_at 升序排好，所以「最后遇到的新 run」就是最近一次设计过它的运行。
+      // 同一 run 的多条用例要合起来看：不能"最后一条用例 passed 就算 passed"。
+      if (row.run_id !== agg.lastRunId) {
+        agg.lastRunId = row.run_id;
+        agg.lastStatuses = new Set();
+      }
+      if (row.status) agg.lastStatuses.add(row.status);
+    }
+
+    const defectsByUid = new Map<string, number>();
+    for (const row of this.db.prepare("SELECT related_points_json FROM qa_defects WHERE project_id=?").all(projectId) as { related_points_json: string }[]) {
+      for (const uid of new Set(parseJson<string[]>(row.related_points_json, []))) {
+        defectsByUid.set(uid, (defectsByUid.get(uid) ?? 0) + 1);
+      }
+    }
+
+    const historyByUid = new Map<string, PointHistory>();
+    let executedPoints = 0;
+    for (const [uid, agg] of aggs) {
+      if (agg.executedAny) executedPoints++;
+      historyByUid.set(uid, {
+        runs: agg.otherRuns.size,
+        executedRuns: agg.executedOtherRuns.size,
+        lastRunId: agg.lastRunId,
+        lastStatus: worstResultStatus(agg.lastStatuses),
+        defects: defectsByUid.get(uid) ?? 0
+      });
+    }
+
+    let reusedPoints = 0;
+    let newPoints = 0;
+    for (const point of currentPoints) {
+      const uid = point.point_uid ?? "";
+      if (!uid) continue;
+      if ((historyByUid.get(uid)?.runs ?? 0) > 0) reusedPoints++;
+      else newPoints++;
+    }
+    const untrackedPoints = (this.db.prepare("SELECT count(*) AS n FROM qa_test_points WHERE project_id=? AND (point_uid IS NULL OR point_uid='')")
+      .get(projectId) as { n: number }).n;
+
+    return {
+      historyByUid,
+      identity: {
+        distinctPoints: aggs.size,
+        executedPoints,
+        neverExecutedPoints: aggs.size - executedPoints,
+        untrackedPoints,
+        reusedPoints,
+        newPoints
+      }
+    };
+  }
+
   readCoverage(projectId: string, sessionId: string, runId: string): Coverage {
     this.task(projectId, sessionId, runId);
     const batch = this.latestBatchRow(projectId, sessionId, runId);
@@ -930,6 +1124,9 @@ export class QaQualityTraceabilityStore {
     };
     const pointViews: PointCoverage[] = [];
     const untested: Coverage["untested"] = [];
+    // 项目级盘点只读一次，逐点循环里按 uid 取历史（避免每个点一次查询）
+    const rollup = this.pointRollup(projectId, runId, points);
+    const emptyHistory: PointHistory = { runs: 0, executedRuns: 0, lastRunId: null, lastStatus: null, defects: 0 };
     const casesByPoint = new Map<string, CaseRow[]>();
     for (const item of cases) {
       const list = casesByPoint.get(item.related_point_key) ?? [];
@@ -977,15 +1174,18 @@ export class QaQualityTraceabilityStore {
         if (stats.passed + stats.failed > 0) risk[point.risk].executed++;
       }
       risk[point.risk].points++;
+      const uid = point.point_uid ?? "";
       pointViews.push({
         pointKey: point.point_key,
+        pointUid: uid || null,
         module: point.module,
         feature: point.feature,
         risk: point.risk,
         coveredBy: related.map((item) => item.case_key),
         status,
         caseCounts: stats,
-        untestedReason: reason
+        untestedReason: reason,
+        history: (uid ? rollup.historyByUid.get(uid) : undefined) ?? emptyHistory
       });
     }
     const pointCoverage = counts.points ? counts.coveredPoints / counts.points : 0;
@@ -1027,7 +1227,8 @@ export class QaQualityTraceabilityStore {
       risk,
       gate: { qualityGate, conclusion, allPassed, complete, evidenceComplete, reasons },
       points: pointViews,
-      untested
+      untested,
+      identity: rollup.identity
     };
   }
 
@@ -1055,6 +1256,7 @@ export class QaQualityTraceabilityStore {
       analysis: row.analysis,
       ...(row.duplicate_of ? { duplicateOf: row.duplicate_of } : {}),
       relatedCases: parseJson(row.related_cases_json, []),
+      relatedPoints: parseJson(row.related_points_json ?? "[]", []),
       evidenceRefs: parseJson(row.evidence_refs_json, []),
       originSessionId: row.origin_session_id,
       originRunId: row.origin_run_id,
@@ -1122,6 +1324,28 @@ export class QaQualityTraceabilityStore {
     return { sequence, hash };
   }
 
+  /**
+   * 用例 → 测试点 uid（P6/G4）。
+   *
+   * `case_key` / `point_key` 只在批次内唯一，所以缺陷只记 `related_cases_json` 时，
+   * "这条缺陷属于哪个测试点"换个批次就断了。这里按 `related_point_key` 跳到测试点行取 uid，
+   * 拿到的是跨批次稳定的身份。
+   *
+   * 取不到 uid（历史行未回填、或列值为空）时**不编造**：直接不返回这一条。让缺陷挂点少一个，
+   * 好过挂一个错的——挂错之后"这个测试点历史上出过几次缺陷"就永久错了，而且没有痕迹。
+   *
+   * 结果排序去重：同一缺陷可能由同批次的多个用例指向同一测试点，调用方要的是集合而不是顺序。
+   */
+  private pointUidsOfBatchCases(batchId: string, caseKeys: string[]): string[] {
+    if (caseKeys.length === 0) return [];
+    const placeholders = caseKeys.map(() => "?").join(",");
+    const rows = this.db.prepare(`SELECT DISTINCT p.point_uid AS uid
+        FROM qa_test_cases c
+        JOIN qa_test_points p ON p.batch_id=c.batch_id AND p.point_key=c.related_point_key
+       WHERE c.batch_id=? AND c.case_key IN (${placeholders})`).all(batchId, ...caseKeys) as { uid: string | null }[];
+    return [...new Set(rows.map((row) => row.uid).filter((uid): uid is string => typeof uid === "string" && uid !== ""))].sort();
+  }
+
   private fingerprintOf(input: { fingerprint?: unknown; category: DefectCategory; title: string; relatedCases: string[]; expectedResult: string; actualResult: string }): string {
     const computed = sha256(canonical({
       category: input.category,
@@ -1183,6 +1407,10 @@ export class QaQualityTraceabilityStore {
       duplicateOf = text(input.duplicateOf, 100, "invalid_defect", "重复缺陷");
       this.defectRow(input.projectId, duplicateOf);
     }
+    // 缺陷挂测试点（P6/G4）：case_key 只在批次内有意义，uid 才能跨批次问"这个测试点历史上
+    // 出过几次"。关联用例已经校验过属于本批次，所以直接按该批次的测试点取 uid，不再多查一次
+    // 「run 的最新批次」——两次查询之间批次可能又升了一版，那就成了用 A 批的用例查 B 批的点。
+    const relatedPoints = this.pointUidsOfBatchCases(batch.batch_id, relatedCases);
     const fingerprint = this.fingerprintOf({ fingerprint: input.fingerprint, category, title, relatedCases, expectedResult, actualResult });
     const existing = this.db.prepare("SELECT * FROM qa_defects WHERE project_id=? AND fingerprint=?").get(input.projectId, fingerprint) as DefectRow | undefined;
     const at = iso(this.now());
@@ -1204,6 +1432,15 @@ export class QaQualityTraceabilityStore {
           VALUES (?,?,?,?,?,?,?,?,?)`).run(
           `occ-${this.id()}`, existing.defect_id, input.projectId, input.sessionId, input.runId, relatedCases[0], JSON.stringify(refs), at, at
         );
+        // 同一条缺陷可能从不同用例/不同批次复现，测试点归属要求并集：只记第一次会把
+        // "这条缺陷影响哪几个测试点"永久截断在第一次观测上。排序是为了让"同一组归属"
+        // 无论观测顺序如何都存成同一个值——否则同样两条 uid 会因先后不同而写成两个样子。
+        const knownPoints = new Set((JSON.parse(existing.related_points_json || "[]") as string[]));
+        const merged = [...new Set([...knownPoints, ...relatedPoints])].sort();
+        if (merged.length !== knownPoints.size) {
+          this.db.prepare("UPDATE qa_defects SET related_points_json=? WHERE defect_id=?")
+            .run(JSON.stringify(merged), existing.defect_id);
+        }
         // 跨环境复现是有价值的信号：同一条缺陷在另一个环境再次出现，记到最后环境上。
         const env = this.envOfRun(input.projectId, input.runId);
         if (env) {
@@ -1224,10 +1461,10 @@ export class QaQualityTraceabilityStore {
     this.tx(() => {
       this.db.prepare(`INSERT INTO qa_defects
         (defect_id,project_id,fingerprint,title,category,status,confidence,severity,priority,expected_result,actual_result,analysis,duplicate_of,
-         related_cases_json,evidence_refs_json,origin_session_id,origin_run_id,first_seen_at,first_seen_env,last_seen_env,updated_at,revision,event_count,last_event_hash,created_at,created_by)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+         related_cases_json,related_points_json,evidence_refs_json,origin_session_id,origin_run_id,first_seen_at,first_seen_env,last_seen_env,updated_at,revision,event_count,last_event_hash,created_at,created_by)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         defectId, input.projectId, fingerprint, title, category, initialStatus, confidence, severity, priority,
-        expectedResult, actualResult, analysis, duplicateOf ?? null, JSON.stringify(relatedCases), JSON.stringify(refs),
+        expectedResult, actualResult, analysis, duplicateOf ?? null, JSON.stringify(relatedCases), JSON.stringify(relatedPoints), JSON.stringify(refs),
         input.sessionId, input.runId, at, seenEnv, seenEnv, at, 0, 0, "", at, input.userId
       );
       this.db.prepare(`INSERT INTO qa_defect_occurrences

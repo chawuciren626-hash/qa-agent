@@ -82,6 +82,7 @@ import { qaU3CancellationDrills } from "./steps/2026-11-13-u3-cancellation-drill
 import { qaTaskRun } from "./steps/2026-11-19-qa-task-run.js";
 import { qaRunExecution } from "./steps/2026-11-19-qa-run-execution.js";
 import { mapsHash } from "./steps/2026-11-19-maps-hash.js";
+import { pointUidColumn } from "./steps/2026-11-19-point-uid.js";
 
 export type { Migration } from "./migration.js";
 export { IrreversibleMigrationError, UnknownMigrationError, appliedMigrations } from "./runner.js";
@@ -129,6 +130,7 @@ export const MIGRATIONS: readonly Migration[] = [
   qaTaskRun,
   qaRunExecution,
   mapsHash,
+  pointUidColumn,
 ];
 
 /**

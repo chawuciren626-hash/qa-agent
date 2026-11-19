@@ -823,6 +823,7 @@ CREATE TABLE IF NOT EXISTS qa_test_points (     -- test points with EvidenceRef 
   batch_id           TEXT NOT NULL REFERENCES qa_design_batches(batch_id) ON DELETE CASCADE,
   project_id         TEXT NOT NULL,
   point_key          TEXT NOT NULL,
+  point_uid          TEXT,                      -- 跨批次稳定身份（P6/G4）；由内容算出，NULL = 迁移未回填
   module             TEXT NOT NULL,
   feature            TEXT NOT NULL,
   description        TEXT NOT NULL,
@@ -887,6 +888,7 @@ CREATE TABLE IF NOT EXISTS qa_defects (         -- project-level defect aggregat
   analysis           TEXT NOT NULL DEFAULT '',
   duplicate_of       TEXT,
   related_cases_json TEXT NOT NULL,
+  related_points_json TEXT NOT NULL DEFAULT '[]', -- 缺陷关联的测试点稳定身份（P6/G4）
   evidence_refs_json TEXT NOT NULL,
   origin_session_id  TEXT NOT NULL,
   origin_run_id      TEXT NOT NULL,
