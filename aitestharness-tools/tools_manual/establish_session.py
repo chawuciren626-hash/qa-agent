@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from aitestharness_tools.exec.web_driver import BrowserHost
 
-BASE = "https://local.console.gov-bid.com"
+BASE = os.environ.get("AITH_SUT_BASE", "https://local.console.gov-bid.com").rstrip("/")
 LOGIN_PATH = "/gateway-admin/login"
 OUT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "output", "probe-20261119"))
 CAPTCHA_PNG = os.path.join(OUT, "captcha-live.png")

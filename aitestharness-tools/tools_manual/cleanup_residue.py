@@ -26,7 +26,7 @@ import yaml
 from aitestharness_tools.exec.web_driver import BrowserHost
 from aitestharness_tools.exec.web_engine import WebEngine, validate_plan
 
-BASE = "https://local.console.gov-bid.com"
+BASE = os.environ.get("AITH_SUT_BASE", "https://local.console.gov-bid.com").rstrip("/")
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 OUT = os.path.abspath(os.path.join(ROOT, "..", "output", "probe-bbiao-20261119"))
 STATE_JSON = os.path.join(OUT, "session-state.json")

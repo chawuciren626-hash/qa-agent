@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from aitestharness_tools.exec.web_driver import BrowserHost
 
-BASE = "https://local.console.gov-bid.com"
+BASE = os.environ.get("AITH_SUT_BASE", "https://local.console.gov-bid.com").rstrip("/")
 TARGET_PATH = "/bbiao-admin/system/user/index"
 OUT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..",
                                    "output", "probe-bbiao-20261119"))
