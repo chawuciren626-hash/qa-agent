@@ -1,0 +1,39 @@
+# 剧本 03：登录 → 下单 → 用返回的订单号查详情。
+# 选它的理由：这是唯一一条**跨步骤传值**的剧本，专门压 extract 与变量池：
+#   session 段拿到 token → 下单请求头带 ${data.token}
+#   → 下单响应 extract order_id → 查单路径带 ${data.order_id}
+# 链路里任何一环断了（变量没写进池子 / 路径没解析），都会在第二步而不是
+# 最后一步暴露，所以断言分步放，不做成一个"最后看结果"的大断言。
+lineage:
+  id: PLAN-P4-03
+  version: 1
+intent: 登录后下单，并按下单返回的 id 查回详情
+session:
+  - request: "POST /api/auth/login"
+    payload:
+      username: "${data.username}"
+      password: "${data.password}"
+    extract:
+      token: $.data.token
+    assert:
+      - {type: status_code, matcher: equals, expected: "200", decide: true}
+      - {type: json_path, path: $.data.token, matcher: not_null, decide: true}
+steps:
+  - request: "POST /api/orders"
+    headers:
+      authorization: "Bearer ${data.token}"
+    payload:
+      sku: "SKU-1"
+      qty: 1
+    extract:
+      order_id: $.data.id
+    assert:
+      - {type: status_code, matcher: equals, expected: "200", decide: true}
+      - {type: json_path, path: $.code, matcher: equals, expected: "0", decide: true}
+  - request: "GET /api/orders/${data.order_id}"
+    headers:
+      authorization: "Bearer ${data.token}"
+    assert:
+      - {type: status_code, matcher: equals, expected: "200", decide: true}
+      - {type: json_path, path: $.data.amount, matcher: equals, expected: "99.0", decide: true}
+      - {type: json_path, path: $.data.status, matcher: equals, expected: "created", decide: true}

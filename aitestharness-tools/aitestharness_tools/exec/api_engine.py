@@ -10,7 +10,15 @@
   - driver: api, request: "POST /api/login", payload: {...}（支持 ${data.*} 引用）
   - assert: [{type: status_code, matcher: equals, expected: "200", decide: true},
              {type: json_path, path: $.code, matcher: equals, expected: "0", decide: true}]
+  - extract: {token: $.data.token}   # 从本步响应取值写入变量池，供后续步骤 ${data.token} 引用
 前置/登录态：通过 session 段（可选）先执行登录请求并把响应 token 写入变量。
+
+变量池的两条边界（为什么 extract 必须显式声明、不能自动推断）：
+  · 计划里出现 `${data.token}` 而没有任何一步 extract 过 token，应当在编译期被判死
+    （那是"计划依赖了一个不存在的来源"，属于未声明上下文），而不是在执行期拿到
+    字面量 `${data.token}` 发出去、再以一个看不懂的 401 结束；
+  · extract 的 key 一旦写入变量池，后续所有步骤都能看到它——所以 key 名是接口契约的
+    一部分，不是局部变量。重名覆盖只允许同一 session 内的登录刷新（见 `session`）。
 """
 from __future__ import annotations
 
@@ -40,7 +48,8 @@ def _resolve(data_ref_text, data: dict):
                 if not isinstance(cur, dict) or k not in cur:
                     return m.group(0)  # 解析不了就原样保留，闸3会拦硬编码
                 cur = cur[k]
-            return str(cur) if not isinstance(cur, (dict, list)) else cur
+            # re.sub 的回调必须返回字符串：dict/list 值若原样返回会抛 TypeError
+            return cur if isinstance(cur, str) else json.dumps(cur, ensure_ascii=False, default=str)
         return _DATA_REF.sub(repl, data_ref_text)
     if isinstance(data_ref_text, dict):
         return {k: _resolve(v, data) for k, v in data_ref_text.items()}
@@ -93,12 +102,14 @@ def _apply_matcher(actual, matcher: str, expected) -> bool:
 
 @dataclass
 class StepResult:
-    index: int
+    # session 段的前置步骤没有业务步骤序号，用 "s1"/"login" 这类标识，不挤占 0..n 的编号
+    index: int | str
     action: str
     status: str                    # pass / fail / error
     assertions: list = field(default_factory=list)
     evidence: dict = field(default_factory=dict)
     duration_ms: int = 0
+    extracted: dict = field(default_factory=dict)
 
 
 class ApiEngine:
@@ -123,7 +134,21 @@ class ApiEngine:
             started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             step_results: list[StepResult] = []
             verdict = "pass"
+            halt = None
+            # 前置（session 段）：登录 / 取 token。失败即不进入业务步骤——
+            # 拿未登录态去跑业务断言，只会把"登录失败"伪装成一串业务失败，
+            # 归因阶段再想把它拆开就得逐个反推，代价远高于在此处止步。
+            for j, step in enumerate(plan.get("session") or []):
+                sr = self._run_step(f"session-{j}", step)
+                step_results.append(sr)
+                if sr.status != "pass":
+                    verdict = "inconclusive"
+                    halt = {"stage": "session", "step": sr.index,
+                            "because": "前置登录/取凭证未通过，业务步骤未执行"}
+                    break
             for i, step in enumerate(plan.get("steps") or []):
+                if halt is not None:
+                    break
                 sr = self._run_step(i, step)
                 step_results.append(sr)
                 if sr.status == "fail":
@@ -139,18 +164,21 @@ class ApiEngine:
                     break
             if verdict == "pass":
                 verdict = self._consistency(plan)  # N=3 一致性复跑（引擎内最小实现）
-        return self._build_exec(plan, step_results, verdict, started, stamp)
+        return self._build_exec(plan, step_results, verdict, started, stamp, halt)
 
-    def _run_step(self, i: int, step: dict) -> StepResult:
+    def _run_step(self, i: int | str, step: dict) -> StepResult:
         t0 = time.time()
         method, path = None, None
+        # request 也要解析变量：`GET /api/orders/${data.order_id}` 是真实用例的常态，
+        # 只解析 payload/headers 会让"上一步拿到的 id"没法用在路径上
+        raw_request = str(_resolve(str(step.get("request") or ""), self.data))
         m = re.match(r"^(GET|POST|PUT|PATCH|DELETE)\s+(\S+)$",
-                     str(step.get("request") or ""), re.I)
+                     raw_request, re.I)
         if m:
             method, path = m.group(1).upper(), m.group(2)
         else:
             method = str(step.get("method") or "GET").upper()
-            path = str(step.get("endpoint") or "")
+            path = str(_resolve(str(step.get("endpoint") or ""), self.data))
         payload = _resolve(step.get("payload") or step.get("data"), self.data)
         headers = _resolve(step.get("headers") or {}, self.data)
         try:
@@ -192,6 +220,16 @@ class ApiEngine:
             })
             if a.get("decide") and not passed:
                 sr.status = "fail"
+        # 变量提取：只认显式 extract 声明（见模块 docstring 的两条边界）。
+        # 提取到的是**敏感值**（token/会话 id），所以只写变量池与 evidence（短期），
+        # 不写 exec IR（长期资产不留入参，决议 #2）。
+        for key, path in (step.get("extract") or {}).items():
+            value, err = _json_get(body, path)
+            if err is not None:
+                sr.evidence.setdefault("extract_errors", {})[str(key)] = err
+                continue
+            self.data[str(key)] = value
+            sr.extracted[str(key)] = _safe(value)
         return sr
 
     def _consistency(self, plan: dict, n: int = 3) -> str:
@@ -211,7 +249,7 @@ class ApiEngine:
         outcomes.discard("pass")
         return "flaky" if outcomes else "pass"
 
-    def _build_exec(self, plan, step_results, verdict, started, stamp=None) -> dict:
+    def _build_exec(self, plan, step_results, verdict, started, stamp=None, halt=None) -> dict:
         stamp = stamp or runtime_stamp(self.registry)
         return {
             "type": "exec",
@@ -225,9 +263,14 @@ class ApiEngine:
             "started_at": started,
             "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "verdict": verdict,
+            # 中途止步的原因（当前只有"前置未通过"）：不写原因的话，一个全是 0 步的
+            # exec IR 在报告层看起来跟"用例没有步骤"完全一样
+            "halt": halt,
             "steps": [{
                 "index": sr.index, "action": sr.action, "status": sr.status,
                 "assertions": sr.assertions, "duration_ms": sr.duration_ms,
+                # 只记提取了哪些 key，不记值：token 之类不许进长期资产
+                "extracted_keys": sorted(sr.extracted),
             } for sr in step_results],
             "evidence_refs": [f"evidence://{plan.get('lineage', {}).get('id')}/step-{sr.index}"
                               for sr in step_results if sr.evidence],
