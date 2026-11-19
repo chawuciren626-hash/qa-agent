@@ -15,7 +15,7 @@
 #   等确认允许后再补最后一步。
 lineage:
   id: PLAN-BBIAO-USER-ADD
-  version: 2
+  version: 3
 title: 系统用户管理 - 添加用户（填表演练，不提交）
 driver: web
 
@@ -70,7 +70,19 @@ steps:
     assert:
       - {type: value_equals, target: {label: 所属角色：}, expected: 测试, level: decide}
 
-  # 只等到按钮出现并断言可见，**不点击**——写库动作留待确认
+  # 收起下拉浮层，再判"创建用户"按钮。
+  # 实测：选中「所属角色」后浮层不收起，会盖住按钮——此时 `visible` 断言仍然成立
+  # （Playwright 的 is_visible 不看遮挡），但真去点会被拦截（popover intercepts pointer events）。
+  # "可见"不是"可点"，所以先把浮层收掉（点弹窗标题），再断言选项已不可见。
+  - action: click
+    target: {text: 添加系统用户}
+    wait:
+      - {type: element_visible, target: {role: button, name: 创建用户}, timeout_ms: 5000}
+    assert:
+      - {type: hidden, target: {text: 测试}, level: decide}
+
+  # 只等到按钮出现并断言可见，**不点击**——写库动作需单独许可。
+  # 写库闭环见 plan-bbiao-user-crud.yaml（创建 → 列表验证 → 注销清理）
   - action: wait
     wait:
       - {type: element_visible, target: {role: button, name: 创建用户}, timeout_ms: 5000}

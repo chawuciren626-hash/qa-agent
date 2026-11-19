@@ -330,6 +330,139 @@ def test_explicit_idempotent_overrides_inference():
     assert allowed is False and "显式声明" in reason
 
 
+# ---------------------------------------------------------------- 清理契约 teardown
+def plan_with_teardown(steps, teardown_steps, verify=None):
+    plan = plan_of(*steps)
+    plan["teardown"] = {"steps": list(teardown_steps)}
+    if verify:
+        plan["teardown"]["verify_gone"] = verify
+    return plan
+
+
+def test_teardown_runs_even_when_main_step_fails():
+    """失败的那一次才是最需要清理的那一次——只在 pass 时清理，数据就永久留下了。"""
+    driver = FakeDriver([element({"kind": "testid", "value": "btn"})])
+    plan = plan_with_teardown(
+        [{"action": "click", "target": {"testid": "btn"},
+          "assert": [{"type": "visible", "target": {"testid": "not-rendered"}, "level": "decide"}]}],
+        [{"action": "click", "target": {"testid": "btn"}}])
+    result = run(driver, plan)
+    assert result["verdict"] == "fail"
+    assert len(result["teardown"]["steps"]) == 1, "主步骤失败后清理没有执行"
+    assert result["teardown"]["status"] == "pass", result["teardown"]
+
+
+def test_teardown_halts_when_a_cleanup_step_cannot_act():
+    """清理步骤带着失败的前提继续跑，最坏会作用到别人的数据。"""
+    driver = FakeDriver([element({"kind": "testid", "value": "btn"})])
+    plan = plan_with_teardown(
+        [{"action": "click", "target": {"testid": "btn"}}],
+        [{"action": "click", "target": {"testid": "not-there"}},
+         {"action": "click", "target": {"testid": "btn"}}],
+        verify=[{"name": "探针账号", "target": {"testid": "not-there"}}])
+    result = run(driver, plan)
+    teardown = result["teardown"]
+    assert len(teardown["steps"]) == 1, "清理失败后仍继续执行了后续清理步骤"
+    assert teardown["steps"][0]["status"] == "blocked"
+    assert teardown["halt"]["failure_kind"] == "locator_not_found"
+    assert [a["kind"] for a in driver.actions].count("click") == 1, "清理多点了"
+
+
+def test_teardown_residue_is_surfaced_without_changing_verdict():
+    """清理失败不改 verdict（verdict 判被测系统），但残留必须显式可见。"""
+    driver = FakeDriver([element({"kind": "testid", "value": "btn"})])
+    plan = plan_with_teardown(
+        [{"action": "click", "target": {"testid": "btn"}}],
+        [{"action": "click", "target": {"testid": "btn"}}],
+        verify=[{"name": "探针账号", "target": {"testid": "btn"}}])
+    result = run(driver, plan)
+    assert result["verdict"] == "pass"
+    assert result["teardown"]["status"] == "failed"
+    assert result["teardown"]["residue"] == ["探针账号"], result["teardown"]
+    assert result["needs_attention"]["kind"] == "residue"
+    assert "探针账号" in result["needs_attention"]["because"]
+
+
+def test_expired_cleanup_step_without_residue_is_not_an_alert():
+    """清理步骤过期（按钮已经不存在）但反验证明无残留：是维护提示，不是事故。"""
+    driver = FakeDriver([element({"kind": "testid", "value": "btn"})])
+    plan = plan_with_teardown(
+        [{"action": "click", "target": {"testid": "btn"}}],
+        [{"action": "click", "target": {"testid": "already-gone"}}],
+        verify=[{"name": "探针账号", "target": {"testid": "already-gone"}}])
+    result = run(driver, plan)
+    assert result["teardown"]["status"] == "failed"
+    assert result["teardown"]["verified_no_residue"] is True
+    assert "needs_attention" not in result, "无残留却报了需要人工介入"
+
+
+def test_teardown_skipped_when_no_step_acted():
+    """一步都没跑通 = 页面没被操作过，此时清理只会制造假告警。"""
+    driver = FakeDriver([])
+    plan = plan_with_teardown(
+        [{"action": "click", "target": {"testid": "not-there"}}],
+        [{"action": "click", "target": {"testid": "not-there"}}])
+    result = run(driver, plan)
+    assert result["teardown"]["status"] == "skipped"
+    assert "未执行任何写动作" in result["teardown"]["reason"]
+
+
+def test_plan_without_teardown_is_flagged_as_uncleaned():
+    driver = FakeDriver([element({"kind": "testid", "value": "btn"})])
+    result = run(driver, plan_of({"action": "click", "target": {"testid": "btn"}}))
+    assert result["teardown"]["status"] == "skipped"
+    assert "teardown" in result["teardown"]["reason"], result["teardown"]
+
+
+def test_teardown_steps_are_compiled_too():
+    """清理步骤写错了同样会点到别的数据，必须在开浏览器之前判掉。"""
+    plan = plan_with_teardown(
+        [{"action": "click", "target": {"testid": "btn"}}],
+        [{"action": "submit", "target": {"testid": "btn"}}])
+    result = run(FakeDriver([]), plan)
+    assert result["verdict"] == "inconclusive"
+    assert any("teardown[0]" in e for e in result["compile_errors"]), result["compile_errors"]
+
+
+def test_request_done_ignores_requests_from_earlier_steps():
+    """请求记录是计划级的：不划基线，"等提交成功"会被上一步的请求立刻满足。"""
+    driver = FakeDriver([element({"kind": "testid", "value": "btn"})])
+    driver.requests_on_act = [{"method": "POST", "path": "/api/orders"}]
+    plan = plan_of(
+        {"action": "click", "target": {"testid": "btn"}},
+        {"action": "wait", "wait": [{"type": "request_done", "pattern": "POST /api/orders",
+                                     "timeout_ms": 150}]},
+    )
+    result = run(driver, plan)
+    assert result["steps"][1]["status"] == "fail", "把上一步的请求当成了这一步的"
+    assert result["steps"][1]["waits"][0]["observed"]["baseline"] == 1
+
+
+def test_request_done_matches_request_caused_by_the_same_step():
+    driver = FakeDriver([element({"kind": "testid", "value": "btn"})])
+    driver.requests_on_act = [{"method": "POST", "path": "/api/orders"}]
+    plan = plan_of({"action": "click", "target": {"testid": "btn"},
+                    "wait": [{"type": "request_done", "pattern": "POST /api/orders",
+                              "timeout_ms": 500}]})
+    result = run(driver, plan)
+    assert result["steps"][0]["status"] == "pass", result["steps"][0]
+
+
+def test_ambiguous_wait_target_is_blocked_not_product_fail():
+    """等待条件写宽了（命中多个）是脚本问题，不能记成产品缺陷。"""
+    driver = FakeDriver([element({"kind": "css", "value": ".row"}),
+                         element({"kind": "css", "value": ".row"})])
+    plan = plan_of({"action": "wait",
+                    "wait": [{"type": "element_visible", "target": {"css": ".row"},
+                              "timeout_ms": 150}]})
+    result = run(driver, plan)
+    step = result["steps"][0]
+    assert step["status"] == "blocked", step
+    assert step["failure_kind"] == "wait_locator_ambiguous"
+    assert step["attribution"] == "script"
+    assert result["verdict"] == "inconclusive"
+
+
 # ---------------------------------------------------------------- 真浏览器
 def _web_plans():
     files = sorted(glob.glob(os.path.join(WEB_FIXTURES, "plan-w*.yaml")))
