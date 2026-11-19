@@ -1,0 +1,19 @@
+# 剧本 W02：未登录直达订单页必须被拦回登录页。
+# 负向用例的价值在于"错的时候确实会失败"：如果这道拦截不存在，本剧本会 fail 而不是
+# inconclusive——这正是 E2E-1 判据 3（卡点有效性）要的那种信号。
+lineage:
+  id: PLAN-WEB-02
+  version: 1
+intent: 无会话直接访问订单页，应被拦回登录页且不渲染订单表
+steps:
+  - action: goto
+    target:
+      url: /orders
+    wait:
+      # 前端拦截是一次整页跳转，这里等的是"跳完之后登录表单出现了"
+      - {type: element_visible, target: {testid: login-form}, timeout_ms: 8000}
+    assert:
+      - {type: url_contains, value: /login, level: decide}
+      - {type: visible, target: {testid: login-form}, level: decide}
+      - {type: hidden, target: {testid: order-table}, level: decide}
+      - {type: text_visible, value: 请先登录, level: decide}

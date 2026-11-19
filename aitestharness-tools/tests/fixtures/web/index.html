@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>订单中心</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; color: #1f2328; }
+  main { max-width: 720px; margin: 0 auto; }
+  section[hidden], div[hidden] { display: none; }
+  label { display: block; margin: 12px 0 4px; }
+  input { width: 100%; padding: 8px; box-sizing: border-box; }
+  button { margin-top: 12px; padding: 8px 16px; }
+  [data-testid="login-error"] { color: #b42318; margin-top: 12px; }
+  [data-testid="guard"] { color: #9a6700; margin-bottom: 8px; }
+  ul { padding-left: 18px; }
+</style>
+</head>
+<body>
+<main>
+  <!-- 登录视图：故意用 label + data-testid 双通道，供定位指纹按优先级降级 -->
+  <section data-testid="login-view" hidden>
+    <div data-testid="guard" hidden>请先登录</div>
+    <form data-testid="login-form">
+      <label for="username">用户名</label>
+      <input id="username" name="username" data-testid="login-username"
+             placeholder="请输入用户名" autocomplete="off">
+      <label for="password">密码</label>
+      <input id="password" name="password" type="password" data-testid="login-password"
+             placeholder="请输入密码" autocomplete="off">
+      <button type="submit" data-testid="login-submit">登录</button>
+      <div data-testid="login-error" hidden>用户名或密码错误</div>
+    </form>
+  </section>
+
+  <section data-testid="orders-view" hidden>
+    <h1>订单列表</h1>
+    <div data-testid="order-count">共 2 条</div>
+    <ul data-testid="order-table"></ul>
+    <button data-testid="create-order">新建订单</button>
+    <div data-testid="last-order-id" hidden></div>
+    <div data-testid="flash" hidden></div>
+  </section>
+
+  <!-- 详情页：存在的唯一理由，是让"取到的订单号"能真正被用起来（跨步骤传递） -->
+  <section data-testid="detail-view" hidden>
+    <h1>订单详情</h1>
+    <div data-testid="detail-id"></div>
+    <a data-testid="back-to-orders" href="/orders">返回订单列表</a>
+  </section>
+</main>
+<script>
+(function () {
+  "use strict";
+  // 固定数据：不取时间、不用随机数——每一轮重放拿到的页面必须逐字相同
+  var SEED_ORDERS = [
+    { id: 1001, amount: "128.50", status: "paid" },
+    { id: 1002, amount: "66.00", status: "created" }
+  ];
+  var TOKEN_KEY = "qa-token";
+
+  var views = {
+    login: document.querySelector('[data-testid="login-view"]'),
+    orders: document.querySelector('[data-testid="orders-view"]'),
+    detail: document.querySelector('[data-testid="detail-view"]')
+  };
+  var form = document.querySelector('[data-testid="login-form"]');
+  var errorBox = document.querySelector('[data-testid="login-error"]');
+  var guard = document.querySelector('[data-testid="guard"]');
+  var table = document.querySelector('[data-testid="order-table"]');
+  var countBox = document.querySelector('[data-testid="order-count"]');
+  var lastId = document.querySelector('[data-testid="last-order-id"]');
+  var flash = document.querySelector('[data-testid="flash"]');
+  var detailId = document.querySelector('[data-testid="detail-id"]');
+
+  function show(name) {
+    views.login.hidden = name !== "login";
+    views.orders.hidden = name !== "orders";
+    views.detail.hidden = name !== "detail";
+  }
+
+  function renderRows(orders) {
+    table.innerHTML = "";
+    orders.forEach(function (order) {
+      var li = document.createElement("li");
+      li.setAttribute("data-testid", "order-row");
+      li.setAttribute("data-id", String(order.id));
+      li.textContent = order.id + " / " + order.amount + " / " + order.status;
+      table.appendChild(li);
+    });
+    countBox.textContent = "共 " + orders.length + " 条";
+  }
+
+  function token() { return sessionStorage.getItem(TOKEN_KEY) || ""; }
+
+  function request(path, options) {
+    options = options || {};
+    var headers = options.headers || {};
+    if (token()) headers["authorization"] = "Bearer " + token();
+    if (options.body) headers["content-type"] = "application/json";
+    return fetch(path, {
+      method: options.method || "GET",
+      headers: headers,
+      body: options.body ? JSON.stringify(options.body) : undefined
+    });
+  }
+
+  function renderOrders() {
+    if (!token()) {
+      // 未登录直达订单页：拦回登录页，并留下可断言的原因文案。
+      // 原因用 query 带过去：整页跳转会清掉 DOM，不带上就没人知道"为什么回到登录页"
+      guard.hidden = false;
+      show("login");
+      if (location.pathname !== "/login") location.replace("/login?guard=1");
+      return;
+    }
+    guard.hidden = true;
+    show("orders");
+    request("/api/orders").then(function (response) {
+      if (response.status === 401) {
+        sessionStorage.removeItem(TOKEN_KEY);
+        guard.hidden = false;
+        show("login");
+        location.replace("/login");
+        return null;
+      }
+      return response.json();
+    }).then(function (payload) {
+      if (payload && payload.data) renderRows(payload.data.orders);
+    });
+  }
+
+  function renderDetail(orderId) {
+    if (!token()) {
+      guard.hidden = false;
+      show("login");
+      location.replace("/login?guard=1");
+      return;
+    }
+    guard.hidden = true;
+    detailId.textContent = orderId;
+    show("detail");
+  }
+
+  function route() {
+    // 用路径而不是 hash 路由：URL 干净，断言 url_contains 才有意义
+    var path = location.pathname;
+    var detail = /^\/orders\/([A-Za-z0-9_-]+)$/.exec(path);
+    if (detail) renderDetail(detail[1]);
+    else if (path.indexOf("/orders") === 0) renderOrders();
+    else {
+      // 带 guard=1 说明是被拦回来的，原因要留在页面上（可断言）
+      guard.hidden = !new URLSearchParams(location.search).has("guard");
+      show("login");
+    }
+  }
+
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    errorBox.hidden = true;
+    request("/api/auth/login", {
+      method: "POST",
+      body: {
+        username: form.username.value,
+        password: form.password.value
+      }
+    }).then(function (response) {
+      return response.json().then(function (payload) { return { status: response.status, payload: payload }; });
+    }).then(function (result) {
+      if (result.status !== 200) {
+        errorBox.hidden = false;
+        return;
+      }
+      sessionStorage.setItem(TOKEN_KEY, result.payload.data.token);
+      location.assign("/orders");
+    });
+  });
+
+  document.querySelector('[data-testid="create-order"]').addEventListener("click", function () {
+    flash.hidden = true;
+    request("/api/orders", { method: "POST", body: { amount: "99.00" } })
+      .then(function (response) { return response.json(); })
+      .then(function (payload) {
+        if (!payload || payload.code !== 0) {
+          flash.hidden = false;
+          flash.textContent = "新建失败";
+          return;
+        }
+        var order = payload.data;
+        var li = document.createElement("li");
+        li.setAttribute("data-testid", "order-row");
+        li.setAttribute("data-id", String(order.id));
+        li.textContent = order.id + " / " + order.amount + " / " + order.status;
+        table.appendChild(li);
+        countBox.textContent = "共 " + table.querySelectorAll('[data-testid="order-row"]').length + " 条";
+        lastId.hidden = false;
+        lastId.textContent = String(order.id);
+      });
+  });
+
+  window.addEventListener("popstate", route);
+  route();
+}());
+</script>
+</body>
+</html>

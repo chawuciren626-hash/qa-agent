@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from .api_engine import ApiEngine
+from .manifest import attach_baseline
 from .preflight import preflight
 
 __all__ = ["replay", "llm_sdk_present", "REPLAY_SCHEMA", "REPLAY_FILE"]
@@ -202,6 +203,7 @@ def replay(plans: Iterable[Mapping[str, Any]], *, base_url: str,
     per_round: list[dict] = []
     baseline_notes: list[dict] = []
     reference_now = reference
+    first_baseline: dict | None = None
 
     for round_no in range(1, rounds + 1):
         pre = None
@@ -219,6 +221,8 @@ def replay(plans: Iterable[Mapping[str, Any]], *, base_url: str,
             if directory is not None and pre["allow"] and not pre["prechecked"]:
                 # 首轮落盘后，后续轮次就该拿它当参考；否则会一直停在"无参考"
                 reference_now = pre["baseline"] if reference_now is None else reference_now
+            if first_baseline is None and pre["allow"] and pre.get("baseline"):
+                first_baseline = pre["baseline"]
             if not pre["allow"]:
                 return _write_report({
                     "type": "replay", "schema": REPLAY_SCHEMA, "run_id": run_id,
@@ -238,7 +242,17 @@ def replay(plans: Iterable[Mapping[str, Any]], *, base_url: str,
         for pid, plan in zip(ids, plan_list):
             # 每份计划一个引擎实例：轮内隔离会话，但跨轮也隔离——见模块 docstring
             engine = make_engine(base_url, dict(data or {}))
-            execs[pid] = engine.run_plan(plan)
+            try:
+                execs[pid] = engine.run_plan(plan)
+            finally:
+                # web 引擎持有一个浏览器 context（不开则泄漏，5 轮 x 3 计划就是 15 个），
+                # api 引擎没有 close，getattr 兜住
+                closer = getattr(engine, "close", None)
+                if callable(closer):
+                    try:
+                        closer()
+                    except Exception:
+                        pass
         per_round.append({
             "round": round_no,
             "execs": execs,
@@ -288,6 +302,8 @@ def replay(plans: Iterable[Mapping[str, Any]], *, base_url: str,
                      "env_dir": env_dir_str},
         "llm": {"calls": 0, "sdk_present": sorted(sdk_before),
                 "loaded_during": loaded_during, "guard": guard},
+        # 基线写回 run manifest：服务端只认 manifest，不认本地目录布局
+        "manifest": attach_baseline(directory, first_baseline, source=env_dir_str),
         "started_at": started_at,
         "finished_at": _utc_now(),
     }

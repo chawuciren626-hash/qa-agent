@@ -108,3 +108,67 @@ output/runs/<id>/baseline.json            采集证据（单次 run，留痕）
 2. **`_consistency` 幂等性决策**（4.2）；
 3. **server 侧接线**：`qa_runs` 落 `baseline_hash`（P3a 已留字段）+ replay 结果回写，判据 1 才可测；
 4. 判据 3 依赖 P2 的 confirm 权限强制。
+
+---
+
+# P4 第二切片验收记录：Web 执行闭环（2026-11-19）
+
+> 上一节的三条「下一步」全部落地：Web driver、幂等决策、基线写回 manifest。
+
+## 1. 交付了什么
+
+| 交付 | 文件 | 作用 |
+|---|---|---|
+| 定位解析层 | `exec/locator.py` | 指纹（testid/role+name/label/text/placeholder/id/name/css/alt/title）→ 与驱动无关的查询；未知键、多策略**编译期**报错；三条硬规则（优先级/多命中拒绝/降级记录） |
+| Web 执行引擎 | `exec/web_engine.py` | 10 个动作、8 类等待、9 类断言；**fail / blocked / error 三分**；`validate_plan` 在开浏览器前拒掉不支持的写法 |
+| Playwright 驱动 | `exec/web_driver.py` | 8 个原语；`BrowserHost` 复用浏览器、每计划一 context（会话隔离）；延迟导入 |
+| 幂等许可 | `exec/consistency.py` | 复跑只允许 GET/HEAD/OPTIONS 或显式 `idempotent=true`；选不出对象时记 `not_verified` |
+| 基线写回 | `exec/manifest.py` | 在既有 manifest 上加 `baseline` / `baseline_hash` / `sut_version`；冲突不覆盖 |
+| 确定性靶站 | `tests/{web_service.py,fixtures/web/}` | SPA（登录 / 订单 / 详情）+ 4 个固定响应接口，固定 token `tk-fixed-001`、固定订单号 `2001` |
+| 3 条 Web 剧本 | `tests/fixtures/web/plan-w0*.yaml` | 登录成功、未登录被拦、新建订单取号后导航到详情 |
+| 测试 | `tests/smoke_web_engine.py` | 25 例（22 例假驱动与纯逻辑 + 3 例真浏览器） |
+
+## 2. 实测数据
+
+```
+首个 run（run-web-p4-20261119）
+  deterministic=True   content_stable=True   3 剧本 × 5 轮全部 pass
+  每轮 1661–1970ms    llm.calls=0 / loaded_during=[] / guard=pass
+  baseline: manual → 采集即落盘；manifest writeback: attached=True hash=4ac21ae3…
+
+第二个 run（新 run 目录，共用 output/environments/web-target）
+  baseline: comparable / prechecked=True / degraded=None
+  deterministic=True   content_stable=True   5 轮全部 pass，1666–1985ms
+```
+
+`content_stable=True` 的含义比"结论一致"更强：连断言里的 `actual` 都逐字相同，说明固定数据集确实固定住了。
+
+## 3. E2E-1 判据覆盖变化
+
+| 判据 | 第一切片 | 第二切片 |
+|---|---|---|
+| 1 贯通性（①→⑦） | 未覆盖（无 server 派发） | **仍不成立** |
+| 2 确定性 | 部分（API 剧本 + mock） | **Web 侧成立**（真浏览器 + 真 DOM + 真 XHR，5 轮一致、VLM=0） |
+| 3 卡点有效性 | 未覆盖 | **仍不成立**（confirm 未强制） |
+| 4 可解释 | 部分 | 部分（新增 `attribution` 与 `locator.degraded` 两个归因字段） |
+
+## 4. 本片修掉的两个真缺陷
+
+**4.1 Playwright 同步 API 的事件只在 API 调用期间派发。**
+`page.on("response", ...)` 注册的回调不会自己跑；只读自己维护的列表（不碰浏览器）永远读不到最新事件。表现是 `request_done` 的请求明明发出并返回了，却一路等到超时。修法是在 `inflight()` / `requests_seen()` 前做一次最便宜的 `evaluate("() => 0")` 当泵。这个坑不修，`request_done` 这类等待条件等于全废，而且失败现象会指向"被测系统没发请求"——方向完全错。
+
+**4.2 拦截原因靠整页跳转会丢。**
+"未登录访问订单页被拦回登录页"这条负向用例，`text_visible 请先登录` 一开始必挂：`location.replace("/login")` 重新加载文档，DOM 重置，原因文案自然消失。改用 `/login?guard=1` 传递，`text_visible` 才有东西可断。**这不是靶站 bug，而是"负向用例要断言什么"的设计问题**——断言"回到登录页"很容易通过，断言"并且告诉了用户为什么"才有价值。
+
+## 5. 三个设计决策（不是实现细节）
+
+1. **定位失败不判产品缺陷**，判 `blocked` + `inconclusive`，`attribution=script`。元素没找到可能是产品没渲染，也可能是页面改版改了 testid；在拿到基线指纹与自愈结果之前无法区分。判 fail 就是把脚本维护成本转成假缺陷，而假缺陷会让人不再看报告。
+2. **复跑是需要声明的许可**，不是默认行为。`POST` 复跑 = 重复下单，会污染下一轮基线；无可复跑步骤时记 `not_verified`，而不是静默返回 pass 假装验证过。
+3. **基线由执行侧写进 manifest，服务端不认本地目录约定**。`output/environments/<env>/baseline.json` 是执行侧的布局，换个目录服务端就得改；manifest 仍是唯一真源。已有不同哈希时**不覆盖**，只追加 `baseline_conflicts`。
+
+## 6. 仍未解决
+
+- **判据 1**：需要 server 派发 run → 调 `web_engine` → 结果回写，这一段还没接；现在 Web 执行只能由脚本/测试直接调用。
+- **判据 3**：confirm 卡点仍只落 `owner_user_id`，不拦截。
+- **`element_stable` 的 N 帧**：目前按轮询次数计（`stable_frames`），不是真正的渲染帧；在低帧率页面上会偏乐观。
+- **`switch_context` / `upload` / `download`** 明确拒绝，未实现；遇到这类需求会停在编译期（这是刻意选择，避免静默跳过）。

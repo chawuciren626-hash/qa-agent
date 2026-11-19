@@ -32,6 +32,7 @@ import requests
 
 from ..common.version import (CapabilityRegistry, runtime_stamp,
                               default_registry)
+from .consistency import not_verified_note, pick_repeatable
 
 __all__ = ["ApiEngine", "run_plan"]
 
@@ -134,6 +135,7 @@ class ApiEngine:
             started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             step_results: list[StepResult] = []
             verdict = "pass"
+            consistency = {"status": "not_run", "reason": "未执行到一致性检查", "repeats": 0}
             halt = None
             # 前置（session 段）：登录 / 取 token。失败即不进入业务步骤——
             # 拿未登录态去跑业务断言，只会把"登录失败"伪装成一串业务失败，
@@ -163,8 +165,11 @@ class ApiEngine:
                     verdict = "inconclusive"
                     break
             if verdict == "pass":
-                verdict = self._consistency(plan)  # N=3 一致性复跑（引擎内最小实现）
-        return self._build_exec(plan, step_results, verdict, started, stamp, halt)
+                verdict, consistency = self._consistency(plan)  # N=3，仅限安全步骤
+            else:
+                consistency = {"status": "skipped", "reason": "结论已非 pass，无需复跑",
+                               "repeats": 0}
+        return self._build_exec(plan, step_results, verdict, started, stamp, halt, consistency)
 
     def _run_step(self, i: int | str, step: dict) -> StepResult:
         t0 = time.time()
@@ -232,24 +237,32 @@ class ApiEngine:
             sr.extracted[str(key)] = _safe(value)
         return sr
 
-    def _consistency(self, plan: dict, n: int = 3) -> str:
-        """N=3 一致性（最小实现）：关键步骤（首个 decide 请求）复跑 n 次比对 verdict。"""
-        first = None
-        for s in plan.get("steps") or []:
-            if any(a.get("decide") for a in (s.get("assert") or [])):
-                first = s
-                break
-        if first is None:
-            return "pass"
-        outcomes = set()
-        for _ in range(n - 1):
-            sr = self._run_step(-1, first)
-            outcomes.add("fail" if any(a["decide"] and not a["passed"] for a in sr.assertions)
-                         else "pass")
-        outcomes.discard("pass")
-        return "flaky" if outcomes else "pass"
+    def _consistency(self, plan: dict, n: int = 3) -> tuple[str, dict]:
+        """N=3 一致性（最小实现）：在**允许复跑**的步骤上重复 n 次比对结论。
 
-    def _build_exec(self, plan, step_results, verdict, started, stamp=None, halt=None) -> dict:
+        复跑对象不是"第一个 decide 步骤"，而是"第一个 decide 且不会产生副作用的步骤"
+        （见 exec/consistency.py）。选不出对象时如实记 not_verified：
+        静默返回 pass 等于宣称"已验证可复现"，而实际一次都没验证。
+        """
+        picked = pick_repeatable(plan.get("steps") or [], "api")
+        if picked is None:
+            return "pass", {"status": "not_verified",
+                            "reason": not_verified_note(plan.get("steps") or [], "api"),
+                            "repeats": 0}
+        outcomes = {}
+        for _ in range(n - 1):
+            sr = self._run_step(picked["index"], picked["step"])
+            failed = [a for a in sr.assertions if a["decide"] and not a["passed"]]
+            key = "fail" if failed else "pass"
+            outcomes[key] = outcomes.get(key, 0) + 1
+        info = {"status": "flaky" if "fail" in outcomes else "verified",
+                "target": picked["index"], "reason": picked["reason"],
+                "repeats": n - 1,
+                "outcomes": outcomes}
+        return ("flaky" if "fail" in outcomes else "pass"), info
+
+    def _build_exec(self, plan, step_results, verdict, started, stamp=None, halt=None,
+                    consistency=None) -> dict:
         stamp = stamp or runtime_stamp(self.registry)
         return {
             "type": "exec",
@@ -263,6 +276,9 @@ class ApiEngine:
             "started_at": started,
             "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "verdict": verdict,
+            # 一致性检查的实际范围：verified / flaky / not_verified / skipped。
+            # 这一栏存在的意义是让"没验证"和"验证过"在报告里长得不一样。
+            "consistency": consistency or {"status": "not_run", "repeats": 0},
             # 中途止步的原因（当前只有"前置未通过"）：不写原因的话，一个全是 0 步的
             # exec IR 在报告层看起来跟"用例没有步骤"完全一样
             "halt": halt,

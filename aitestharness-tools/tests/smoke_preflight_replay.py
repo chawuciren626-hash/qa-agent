@@ -372,6 +372,86 @@ def test_extract_carries_order_id_into_next_path():
         assert engine.data["order_id"] == 2001
 
 
+# --------------------------------------------------------------- 基线写回 manifest
+
+def _manifest(directory, **overrides):
+    payload = {"manifest_version": 3, "run_id": "run-test", "status": "created",
+               "stages": {}, "orchestration": {"events": [], "plan": None}}
+    payload.update(overrides)
+    path = os.path.join(directory, "manifest.json")
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False)
+    return path
+
+
+def _read(path):
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def test_attach_baseline_never_creates_manifest():
+    from aitestharness_tools.exec.manifest import attach_baseline
+    with tempfile.TemporaryDirectory() as directory:
+        result = attach_baseline(directory, {"content_hash": "a" * 64, "env": "e"})
+        assert result["attached"] is False and "manifest" in result["reason"]
+        assert not os.path.exists(os.path.join(directory, "manifest.json")), \
+            "执行侧不许自己造 manifest：那会产生一个没有 directory_context 的假 run"
+
+
+def test_attach_baseline_writes_hash_and_sut_version():
+    from aitestharness_tools.exec.manifest import attach_baseline
+    with tempfile.TemporaryDirectory() as directory:
+        path = _manifest(directory)
+        result = attach_baseline(directory, {"content_hash": "b" * 64, "env": "staging",
+                                             "sut_version": "v9", "collected_at": "t0"})
+        assert result["attached"] is True
+        data = _read(path)
+        assert data["baseline_hash"] == "b" * 64
+        assert data["baseline"]["env"] == "staging"
+        assert data["sut_version"] == "v9", "manifest 缺版本时用基线里的版本补"
+
+
+def test_attach_baseline_keeps_explicit_sut_version():
+    from aitestharness_tools.exec.manifest import attach_baseline
+    with tempfile.TemporaryDirectory() as directory:
+        path = _manifest(directory, sut_version="explicit-v1")
+        attach_baseline(directory, {"content_hash": "c" * 64, "sut_version": "from-baseline"})
+        assert _read(path)["sut_version"] == "explicit-v1", \
+            "manifest 显式声明的被测版本优先于基线采集值"
+
+
+def test_attach_baseline_refuses_conflicting_hash():
+    from aitestharness_tools.exec.manifest import attach_baseline
+    with tempfile.TemporaryDirectory() as directory:
+        path = _manifest(directory, baseline_hash="d" * 64)
+        result = attach_baseline(directory, {"content_hash": "e" * 64, "env": "prod"})
+        assert result["attached"] is False and result["conflict"]["previous_hash"] == "d" * 64
+        data = _read(path)
+        assert data["baseline_hash"] == "d" * 64, "冲突时绝不能覆盖：覆盖后就查不清跑在哪个环境"
+        assert data["baseline_conflicts"][0]["incoming_hash"] == "e" * 64
+
+
+def test_attach_baseline_rejects_short_hash():
+    from aitestharness_tools.exec.manifest import attach_baseline
+    with tempfile.TemporaryDirectory() as directory:
+        path = _manifest(directory)
+        result = attach_baseline(directory, {"content_hash": "deadbeef"})
+        assert result["attached"] is False and "非法" in result["reason"]
+        assert _read(path).get("baseline_hash") is None
+
+
+def test_replay_writes_baseline_into_report_and_manifest():
+    with MockService() as service, tempfile.TemporaryDirectory() as directory:
+        _manifest(directory, run_id="run-replay")
+        report = replay(_plans(), base_url=service.base_url,
+                        data={"username": "qa", "password": "qa-pass"}, rounds=2,
+                        run_dir=directory, baseline_config=_baseline_config())
+        assert report["manifest"]["attached"] is True, report["manifest"]
+        data = _read(os.path.join(directory, "manifest.json"))
+        assert len(data["baseline_hash"]) == 64
+        assert data["baseline"]["content_hash"] == data["baseline_hash"]
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):

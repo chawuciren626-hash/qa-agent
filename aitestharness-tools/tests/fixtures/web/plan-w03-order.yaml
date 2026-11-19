@@ -1,0 +1,61 @@
+# 剧本 W03：登录后新建订单，断言数量变化并取出新订单号。
+# 它覆盖了三条别处覆盖不到的东西：
+#   · request_done：等的是"POST /api/orders 这条请求确实发生了"，不是"等 1 秒"；
+#   · count_equals：断言的是集合规模（2 → 3），不是某一行的文本；
+#   · extract：从上一步的页面取回 2001，再在后续断言里引用——跨步骤数据传递在
+#     Web 侧同样必须成立，否则"按新订单号去查详情"这类用例根本写不出来。
+lineage:
+  id: PLAN-WEB-03
+  version: 1
+intent: 登录后新建订单，列表由 2 条变 3 条并能取到新订单号
+steps:
+  - action: goto
+    target:
+      url: /login
+
+  - action: fill
+    target:
+      locators:
+        - {testid: login-username}
+    value: "${data.username}"
+
+  - action: fill
+    target:
+      locators:
+        - {testid: login-password}
+    value: "${data.password}"
+
+  - action: click
+    target:
+      locators:
+        - {testid: login-submit}
+    wait:
+      - {type: element_visible, target: {testid: order-table}, timeout_ms: 8000}
+    assert:
+      - {type: count_equals, target: {testid: order-row}, expected: 2, level: decide}
+
+  - action: click
+    target:
+      locators:
+        - {testid: create-order}
+    wait:
+      - {type: request_done, pattern: "POST /api/orders", timeout_ms: 8000}
+      - {type: element_visible, target: {testid: last-order-id}, timeout_ms: 8000}
+    assert:
+      - {type: count_equals, target: {testid: order-row}, expected: 3, level: decide}
+    extract:
+      order_id:
+        from: text
+        target: {testid: last-order-id}
+
+  # 拿提取到的订单号导航到详情页：这一步是"跨步骤变量"的实证——
+  # 如果 extract 没生效，${data.order_id} 会原样发给服务端，页面显示空、断言必挂。
+  - action: goto
+    target:
+      url: /orders/${data.order_id}
+    wait:
+      - {type: element_visible, target: {testid: detail-id}, timeout_ms: 8000}
+    assert:
+      - {type: text_equals, target: {testid: detail-id},
+         expected: "${data.order_id}", level: decide}
+      - {type: url_matches, value: "/orders/[0-9]+$", level: decide}
