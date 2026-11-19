@@ -701,6 +701,63 @@ CREATE TABLE IF NOT EXISTS qa_task_context_snapshots ( -- append-only task-start
   UNIQUE(session_id, version)
 );
 CREATE INDEX IF NOT EXISTS idx_qa_task_snapshots_project ON qa_task_context_snapshots(project_id, session_id, version DESC);
+CREATE TABLE IF NOT EXISTS qa_tasks (           -- 任务实体：env/范围/负责人/被测版本的落点（P2）
+  task_id        TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  session_id     TEXT NOT NULL,                 -- 当前 1:1；未来一任务多会话时改为关联表
+  env            TEXT NOT NULL DEFAULT '',      -- '' = 未指定，不假装是某个环境
+  title          TEXT NOT NULL DEFAULT '',
+  status         TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('draft','active','blocked','done','archived')),
+  owner_user_id  TEXT,                          -- 任务负责人；确认卡点权限的依据
+  scope_json     TEXT NOT NULL DEFAULT '{}',    -- 范围：模块 / 需求点 / 环境白名单
+  sut_version    TEXT,                          -- 被测系统版本；NULL = 未知，绝不写 ''
+  context_snapshot_id TEXT,
+  origin         TEXT NOT NULL DEFAULT 'created' CHECK(origin IN ('created','backfill')),
+  created_at     TEXT NOT NULL,
+  created_by     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_qa_tasks_session ON qa_tasks(session_id);
+CREATE INDEX IF NOT EXISTS idx_qa_tasks_project ON qa_tasks(project_id, status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS qa_runs (            -- run 的索引：事实由工作区 manifest.json 定义（P2）
+  run_id           TEXT NOT NULL,               -- run_id 只在项目内唯一（两个项目各有 run-1）
+  task_id          TEXT NOT NULL REFERENCES qa_tasks(task_id) ON DELETE CASCADE,
+  project_id       TEXT NOT NULL,
+  session_id       TEXT NOT NULL,
+  env              TEXT NOT NULL DEFAULT '',    -- 与 task.env 分开：run 可跑在非默认环境
+  kind             TEXT NOT NULL DEFAULT 'run' CHECK(kind IN ('run','design','execution','regression','retest','legacy')),
+  status           TEXT NOT NULL DEFAULT 'created',
+  run_index        INTEGER NOT NULL DEFAULT 0,  -- 同任务内第几次；0 = 回填未编号
+  manifest_path    TEXT NOT NULL DEFAULT '',
+  manifest_sha256  TEXT NOT NULL DEFAULT '',
+  manifest_version INTEGER,
+  sut_version      TEXT,
+  baseline_hash    TEXT,                        -- 环境基线指纹（P3 填）
+  resource_pool    TEXT,                        -- web|api|android|miniprogram
+  device_id        TEXT,                        -- 设备 / 浏览器实例；容量约束落点
+  batch_id         TEXT,
+  counts_json      TEXT NOT NULL DEFAULT '{}',
+  started_at       TEXT,
+  finished_at      TEXT,
+  created_at       TEXT NOT NULL,
+  created_by       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (project_id, run_id)              -- run_id 的语义域是项目
+);
+CREATE INDEX IF NOT EXISTS idx_qa_runs_task ON qa_runs(task_id, run_index);
+CREATE INDEX IF NOT EXISTS idx_qa_runs_session ON qa_runs(project_id, session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_qa_runs_env ON qa_runs(project_id, env, created_at DESC);
+CREATE TABLE IF NOT EXISTS qa_pool_leases (     -- 执行资源池租约：一个 (pool, slot) 同时只归一个 run
+  pool          TEXT NOT NULL CHECK(pool IN ('web','api','android','miniprogram')),
+  slot          INTEGER NOT NULL,
+  project_id    TEXT NOT NULL,
+  holder_run_id TEXT NOT NULL,
+  lease_until   TEXT NOT NULL,                  -- 过期即可被抢占，进程崩了不会永久占着
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY (pool, slot)
+);
+CREATE INDEX IF NOT EXISTS idx_qa_pool_leases_holder ON qa_pool_leases(project_id, holder_run_id);
 CREATE TABLE IF NOT EXISTS qa_context_ledger ( -- append-only context assembly receipts; one per assembly
   ledger_id         TEXT PRIMARY KEY,
   snapshot_id       TEXT NOT NULL,
@@ -831,6 +888,8 @@ CREATE TABLE IF NOT EXISTS qa_defects (         -- project-level defect aggregat
   origin_session_id  TEXT NOT NULL,
   origin_run_id      TEXT NOT NULL,
   first_seen_at      TEXT NOT NULL,
+  first_seen_env     TEXT NOT NULL DEFAULT '',  -- 首次在哪个环境见到
+  last_seen_env      TEXT NOT NULL DEFAULT '',  -- 最后一次又在哪个环境见到（跨环境复现的证据）
   updated_at         TEXT NOT NULL,
   revision           INTEGER NOT NULL,
   event_count        INTEGER NOT NULL,
@@ -891,6 +950,7 @@ CREATE TABLE IF NOT EXISTS qa_report_indexes (  -- immutable report evidence ind
   batch_id            TEXT NOT NULL,
   revision            INTEGER NOT NULL,
   status              TEXT NOT NULL,            -- published|superseded
+  env                 TEXT NOT NULL DEFAULT '', -- 发布时冻结的归属环境
   html_path           TEXT NOT NULL,
   html_sha256         TEXT NOT NULL,
   conclusion          TEXT NOT NULL,

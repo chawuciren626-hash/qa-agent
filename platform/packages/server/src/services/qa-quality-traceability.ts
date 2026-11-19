@@ -12,6 +12,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import { HttpError } from "../http/errors.js";
 import { parseEvidenceRefs, type EvidenceRef, type KnowledgeDb } from "./qa-project-knowledge.js";
+import { QaTaskRunRegistry, readRunFacts, type RunObservation } from "./qa-task-run-registry.js";
 
 export const RISK_LEVELS = ["high", "medium", "low"] as const;
 export const RESULT_STATUSES = ["passed", "failed", "skipped", "blocked"] as const;
@@ -162,6 +163,9 @@ export interface DefectView {
   originSessionId: string;
   originRunId: string;
   firstSeenAt: string;
+  /** 首次 / 最后一次见到这条缺陷的环境；'' = 未指定。跨环境复现靠这两列看出来。 */
+  firstSeenEnv: string;
+  lastSeenEnv: string;
   updatedAt: string;
   revision: number;
   eventCount: number;
@@ -210,6 +214,8 @@ export interface ReportIndexView {
   sessionId: string;
   runId: string;
   batchId: string;
+  /** 发布时冻结的归属环境；'' = 当时未指定。报告必须自己能回答"哪个环境"。 */
+  env: string;
   designRevision: number;
   revision: number;
   status: "published" | "superseded";
@@ -303,6 +309,8 @@ interface DefectRow {
   origin_session_id: string;
   origin_run_id: string;
   first_seen_at: string;
+  first_seen_env: string;
+  last_seen_env: string;
   updated_at: string;
   revision: number;
   event_count: number;
@@ -359,6 +367,7 @@ interface ReportRow {
   batch_id: string;
   revision: number;
   status: "published" | "superseded";
+  env: string;
   html_path: string;
   html_sha256: string;
   conclusion: ReportConclusion;
@@ -464,6 +473,8 @@ const decodeCursor = (raw: string | undefined, code: string): { updatedAt: strin
 export class QaQualityTraceabilityStore {
   private readonly now: () => number;
   private readonly id: () => string;
+  /** 已校验的 manifest 在这里登记成可查询的 run 行；本类不产生 run，只索引它。 */
+  private readonly runs: QaTaskRunRegistry;
 
   constructor(
     private readonly db: KnowledgeDb,
@@ -472,6 +483,7 @@ export class QaQualityTraceabilityStore {
   ) {
     this.now = options.now ?? (() => Date.now());
     this.id = options.id ?? randomUUID;
+    this.runs = new QaTaskRunRegistry(db, this.now, this.id);
   }
 
   private tx<T>(fn: () => T): T {
@@ -484,6 +496,11 @@ export class QaQualityTraceabilityStore {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  /** 这次运行归属的环境；run 未登记时返回 ''（未指定），不冒充默认环境。 */
+  private envOfRun(projectId: string, runId: string): string {
+    return this.runs.run(projectId, runId)?.env ?? "";
   }
 
   private count(sql: string, ...params: unknown[]): number {
@@ -503,7 +520,7 @@ export class QaQualityTraceabilityStore {
     return session;
   }
 
-  private assertNewRun(session: TraceSession, sessionId: string, runId: string): void {
+  private assertNewRun(session: TraceSession, sessionId: string, runId: string): RunObservation {
     try {
       if (!session.workspace) throw Error("missing workspace");
       const workspace = fsSync.realpathSync(path.resolve(session.workspace));
@@ -513,13 +530,20 @@ export class QaQualityTraceabilityStore {
       if (fsSync.realpathSync(manifestPath) !== manifestPath) throw Error("linked manifest");
       const stat = fsSync.lstatSync(manifestPath);
       if (!stat.isFile() || stat.size > 1024 * 1024) throw Error("invalid manifest");
-      const manifest = JSON.parse(fsSync.readFileSync(manifestPath, "utf8")) as {
+      const raw = fsSync.readFileSync(manifestPath, "utf8");
+      const manifest = JSON.parse(raw) as {
         run_id?: unknown; manifest_version?: unknown; directory_context?: { mode?: unknown; session_id?: unknown };
       };
       if (manifest.run_id !== runId || !Number.isInteger(manifest.manifest_version) ||
           (manifest.directory_context?.mode === "isolated" && manifest.directory_context.session_id !== sessionId)) {
         throw Error("run identity mismatch");
       }
+      // 校验通过即登记：run 的存在由这份 manifest 定义，这里只把核过的结果索引成行。
+      return {
+        facts: readRunFacts(manifest),
+        manifestPath: `output/runs/${runId}/manifest.json`,
+        manifestSha256: sha256(raw),
+      };
     } catch {
       throw new HttpError(400, "run_not_found", "运行清单不存在或不属于当前任务，不能登记新的设计批次。");
     }
@@ -668,7 +692,17 @@ export class QaQualityTraceabilityStore {
     // Existing Q3 batches predate manifest checks; keep them readable and editable.
     // A new run must have a real manifest in this session's workspace.
     if (!this.latestBatchRow(input.projectId, input.sessionId, input.runId)) {
-      this.assertNewRun(session, input.sessionId, input.runId);
+      const observation = this.assertNewRun(session, input.sessionId, input.runId);
+      // 一次运行在 DB 里的第一次露面：此刻登记，之后的结果与报告都挂在同一行上。
+      this.runs.observeRun({
+        projectId: input.projectId,
+        sessionId: input.sessionId,
+        userId: input.userId,
+        facts: observation.facts,
+        manifestPath: observation.manifestPath,
+        manifestSha256: observation.manifestSha256,
+        kind: "design",
+      });
     }
     if (!Array.isArray(input.points) || !input.points.length || input.points.length > DESIGN_MAX_POINTS) {
       throw new HttpError(400, "invalid_design", `测试点必须是 1 至 ${DESIGN_MAX_POINTS} 项。`);
@@ -738,6 +772,7 @@ export class QaQualityTraceabilityStore {
         );
       }
     });
+    this.runs.attachBatch(input.projectId, input.runId, batchId);
     return { created: true, batch: this.mapBatch(this.batchRow(input.projectId, batchId)!) };
   }
 
@@ -836,6 +871,11 @@ export class QaQualityTraceabilityStore {
       }
       this.db.prepare("UPDATE qa_design_batches SET status='frozen' WHERE batch_id=?").run(batch.batch_id);
     });
+    // 结果落了，run 的统计就定了。未登记的 run（未见过 manifest）静默跳过——缺的是索引，
+    // 不是数据，不该让一次正常的结果上报失败。
+    const tally = this.db.prepare("SELECT status, COUNT(*) AS n FROM qa_case_results WHERE project_id=? AND run_id=? GROUP BY status")
+      .all(input.projectId, input.runId) as { status: string; n: number }[];
+    if (tally.length) this.runs.settleRun(input.projectId, input.runId, Object.fromEntries(tally.map((row) => [row.status, Number(row.n)])));
     return { idempotent: changed === 0, designRevision: batch.revision, invocationId, stored: parsed.length, coverage: this.readCoverage(input.projectId, input.sessionId, input.runId) };
   }
 
@@ -993,6 +1033,8 @@ export class QaQualityTraceabilityStore {
       originSessionId: row.origin_session_id,
       originRunId: row.origin_run_id,
       firstSeenAt: row.first_seen_at,
+      firstSeenEnv: row.first_seen_env ?? "",
+      lastSeenEnv: row.last_seen_env ?? "",
       updatedAt: row.updated_at,
       revision: row.revision,
       eventCount: row.event_count
@@ -1136,6 +1178,11 @@ export class QaQualityTraceabilityStore {
           VALUES (?,?,?,?,?,?,?,?,?)`).run(
           `occ-${this.id()}`, existing.defect_id, input.projectId, input.sessionId, input.runId, relatedCases[0], JSON.stringify(refs), at, at
         );
+        // 跨环境复现是有价值的信号：同一条缺陷在另一个环境再次出现，记到最后环境上。
+        const env = this.envOfRun(input.projectId, input.runId);
+        if (env) {
+          this.db.prepare("UPDATE qa_defects SET last_seen_env=? WHERE defect_id=?").run(env, existing.defect_id);
+        }
         this.appendEvent({
           projectId: input.projectId, defect: existing, action: "observed", fromStatus: existing.status, toStatus: existing.status,
           userId: input.userId, reason: "", evidenceRefs: refs, at
@@ -1147,14 +1194,15 @@ export class QaQualityTraceabilityStore {
       throw new HttpError(409, "defect_limit", "项目缺陷数量已达上限。");
     }
     const defectId = `bug-${this.id()}`;
+    const seenEnv = this.envOfRun(input.projectId, input.runId);
     this.tx(() => {
       this.db.prepare(`INSERT INTO qa_defects
         (defect_id,project_id,fingerprint,title,category,status,confidence,severity,priority,expected_result,actual_result,analysis,duplicate_of,
-         related_cases_json,evidence_refs_json,origin_session_id,origin_run_id,first_seen_at,updated_at,revision,event_count,last_event_hash,created_at,created_by)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+         related_cases_json,evidence_refs_json,origin_session_id,origin_run_id,first_seen_at,first_seen_env,last_seen_env,updated_at,revision,event_count,last_event_hash,created_at,created_by)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         defectId, input.projectId, fingerprint, title, category, initialStatus, confidence, severity, priority,
         expectedResult, actualResult, analysis, duplicateOf ?? null, JSON.stringify(relatedCases), JSON.stringify(refs),
-        input.sessionId, input.runId, at, at, 0, 0, "", at, input.userId
+        input.sessionId, input.runId, at, seenEnv, seenEnv, at, 0, 0, "", at, input.userId
       );
       this.db.prepare(`INSERT INTO qa_defect_occurrences
         (occurrence_id,defect_id,project_id,session_id,run_id,case_key,evidence_refs_json,observed_at,created_at)
@@ -1401,7 +1449,7 @@ export class QaQualityTraceabilityStore {
 
   // ---------------------------------------------------------------- reports
 
-  private async assertReportRun(session: TraceSession, runId: string): Promise<void> {
+  private async assertReportRun(session: TraceSession, runId: string): Promise<RunObservation> {
     if (!session.workspace) throw new HttpError(400, "report_run_invalid", "任务没有可核验的工作区。");
     try {
       const workspace = await fs.realpath(path.resolve(session.workspace));
@@ -1411,8 +1459,14 @@ export class QaQualityTraceabilityStore {
       if (await fs.realpath(manifestPath) !== manifestPath) throw Error("linked manifest");
       const stat = await fs.lstat(manifestPath);
       if (!stat.isFile() || stat.size > 1024 * 1024) throw Error("invalid manifest size");
-      const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as { run_id?: unknown; manifest_version?: unknown };
+      const raw = await fs.readFile(manifestPath, "utf8");
+      const manifest = JSON.parse(raw) as { run_id?: unknown; manifest_version?: unknown };
       if (manifest.run_id !== runId || !Number.isInteger(manifest.manifest_version)) throw Error("manifest identity mismatch");
+      return {
+        facts: readRunFacts(manifest),
+        manifestPath: `output/runs/${runId}/manifest.json`,
+        manifestSha256: sha256(raw),
+      };
     } catch {
       throw new HttpError(400, "report_run_invalid", "运行清单不存在或与当前任务不匹配，不能发布报告索引。");
     }
@@ -1455,6 +1509,7 @@ export class QaQualityTraceabilityStore {
       sessionId: row.session_id,
       runId: row.run_id,
       batchId: row.batch_id,
+      env: row.env ?? "",
       designRevision: parseJson<{ designRevision?: number }>(row.coverage_json, {}).designRevision ?? 0,
       revision: row.revision,
       status: row.status,
@@ -1530,7 +1585,16 @@ export class QaQualityTraceabilityStore {
     if (positiveInt(input.expectedDesignRevision, "invalid_report", "expectedDesignRevision") !== batch.revision) {
       throw new HttpError(409, "design_revision_conflict", "设计批次版本已变化。");
     }
-    await this.assertReportRun(session, input.runId);
+    const observation = await this.assertReportRun(session, input.runId);
+    // 发报告同样是一次"看见这个 run"：登记或刷新，并取回要冻结进报告行的 env。
+    const run = this.runs.observeRun({
+      projectId: input.projectId,
+      sessionId: input.sessionId,
+      userId: input.userId,
+      facts: observation.facts,
+      manifestPath: observation.manifestPath,
+      manifestSha256: observation.manifestSha256,
+    });
     const coverage = this.readCoverage(input.projectId, input.sessionId, input.runId);
     const conclusion = oneOf(input.conclusion, REPORT_CONCLUSIONS, "invalid_report", "报告结论");
     if (!this.allowedConclusions(coverage).has(conclusion)) {
@@ -1612,16 +1676,17 @@ export class QaQualityTraceabilityStore {
         .get(input.projectId, input.sessionId, input.runId) as { n: number | null }).n ?? 0;
       const contentHash = sha256(canonical({
         projectId: input.projectId, sessionId: input.sessionId, runId: input.runId, batchId: batch.batch_id,
+        env: run.env,
         revision: revision + 1, htmlPath, htmlSha256, conclusion, qualityGate, counts, coverage: coverageSummary,
         untested, evidence, limitations, openDefects, fingerprint
       }));
       this.db.prepare("UPDATE qa_report_indexes SET status='superseded' WHERE project_id=? AND session_id=? AND run_id=? AND status='published'")
         .run(input.projectId, input.sessionId, input.runId);
       this.db.prepare(`INSERT INTO qa_report_indexes
-        (report_id,project_id,session_id,run_id,batch_id,revision,status,html_path,html_sha256,conclusion,quality_gate,counts_json,coverage_json,
+        (report_id,project_id,session_id,run_id,batch_id,revision,status,env,html_path,html_sha256,conclusion,quality_gate,counts_json,coverage_json,
          untested_json,evidence_json,limitations_json,open_defects_json,results_fingerprint,created_at,created_by,content_hash)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        reportId, input.projectId, input.sessionId, input.runId, batch.batch_id, revision + 1, "published", htmlPath, htmlSha256,
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        reportId, input.projectId, input.sessionId, input.runId, batch.batch_id, revision + 1, "published", run.env, htmlPath, htmlSha256,
         conclusion, qualityGate, JSON.stringify(counts), JSON.stringify(coverageSummary), JSON.stringify(untested), JSON.stringify(evidence),
         JSON.stringify(limitations), JSON.stringify(openDefects), fingerprint, at, input.userId, contentHash
       );

@@ -79,6 +79,7 @@ import { qaU2Contracts } from "./steps/2026-11-13-u2-contracts.js";
 import { qaU2ExecutionAttempts } from "./steps/2026-11-13-u2-execution-attempts.js";
 import { qaU3ExecutionSafety } from "./steps/2026-11-13-u3-execution-safety.js";
 import { qaU3CancellationDrills } from "./steps/2026-11-13-u3-cancellation-drills.js";
+import { qaTaskRun } from "./steps/2026-11-19-qa-task-run.js";
 
 export type { Migration } from "./migration.js";
 export { IrreversibleMigrationError, UnknownMigrationError, appliedMigrations } from "./runner.js";
@@ -123,6 +124,7 @@ export const MIGRATIONS: readonly Migration[] = [
   qaU2ExecutionAttempts,
   qaU3ExecutionSafety,
   qaU3CancellationDrills,
+  qaTaskRun,
 ];
 
 /**
