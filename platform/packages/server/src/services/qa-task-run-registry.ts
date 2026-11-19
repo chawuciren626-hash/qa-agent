@@ -82,6 +82,14 @@ export interface QaRun {
   counts: Record<string, number>;
   startedAt: string | null;
   finishedAt: string | null;
+  /** 派发意图（计划/环境/幂等键）。空对象 = 这行不是经派发创建的（回填或手工登记）。 */
+  dispatch: Record<string, unknown>;
+  /** 当前持租约的本地执行器；null = 队列中或已交回结果。 */
+  claimedBy: string | null;
+  /** 租约到期时间：过期即视为执行器已死，允许另一个执行器重领。 */
+  leaseUntil: string | null;
+  /** 被领取过几次（含重领）。>1 说明有人反复拉起又没交回结果。 */
+  attempts: number;
   createdAt: string;
   createdBy: string;
   updatedAt: string;
@@ -179,6 +187,10 @@ function mapRun(r: Record<string, unknown>): QaRun {
     ),
     startedAt: (r.started_at as string | null) ?? null,
     finishedAt: (r.finished_at as string | null) ?? null,
+    dispatch: safeJson(r.dispatch_json),
+    claimedBy: (r.claimed_by as string | null) ?? null,
+    leaseUntil: (r.lease_until as string | null) ?? null,
+    attempts: Number(r.attempts ?? 0),
     createdAt: r.created_at as string,
     createdBy: r.created_by as string,
     updatedAt: r.updated_at as string,
@@ -473,6 +485,187 @@ export class QaTaskRunRegistry {
       .prepare("SELECT * FROM qa_runs WHERE project_id = ? AND session_id = ? ORDER BY run_index DESC, created_at DESC LIMIT ?")
       .all(projectId, sessionId, Math.min(Math.max(limit, 1), 200));
     return (rows as Record<string, unknown>[]).map(mapRun);
+  }
+
+  // ------------------------------------------------------------ 派发与领取（判据 1）
+
+  /**
+   * 登记一次**还没跑**的运行。与 `observeRun` 的区别只有一个：这里没有 manifest。
+   *
+   * 为什么不复用 observeRun：它要求 manifest 指纹，因为它是"已发生事实的索引"。
+   * 派发时事实还没发生，若为了复用而允许空指纹，这条路径立刻变成第二个真源——
+   * 以后谁都敢往 qa_runs 里塞一行自称的 run。这里显式要求 run_id 由调用方给出
+   * （执行器最终会用同一个 id 写 manifest），并拒绝覆盖已存在的 run：
+   * 同一个 run_id 出现两次不同计划，是调用方拼错了，不是并发。
+   */
+  enqueueRun(input: {
+    projectId: string;
+    sessionId: string;
+    userId: string;
+    runId: string;
+    env?: string;
+    kind?: RunKind;
+    resourcePool?: ResourcePool | null;
+    deviceId?: string | null;
+    dispatch?: Record<string, unknown>;
+    title?: string;
+  }): QaRun {
+    if (!input.runId) throw new Error("enqueueRun requires a run_id");
+    return this.tx(() => {
+      if (this.run(input.projectId, input.runId)) {
+        throw new Error(`run ${input.runId} already exists in project ${input.projectId}`);
+      }
+      const task = this.ensureTask({
+        projectId: input.projectId,
+        sessionId: input.sessionId,
+        userId: input.userId,
+        title: input.title,
+      });
+      const next = this.db
+        .prepare("SELECT COALESCE(MAX(run_index), 0) + 1 AS n FROM qa_runs WHERE task_id = ?")
+        .get(task.taskId) as { n: number };
+      const now = this.at();
+      this.db
+        .prepare(
+          `INSERT INTO qa_runs
+             (run_id, task_id, project_id, session_id, env, kind, status, run_index, manifest_path,
+              manifest_sha256, manifest_version, sut_version, baseline_hash, resource_pool, device_id,
+              batch_id, counts_json, dispatch_json, attempts, started_at, finished_at,
+              created_at, created_by, updated_at)
+           VALUES (?,?,?,?,?,?,'queued',?,'','',NULL,NULL,NULL,?,?,NULL,'{}',?,0,NULL,NULL,?,?,?)`,
+        )
+        .run(
+          input.runId,
+          task.taskId,
+          input.projectId,
+          input.sessionId,
+          input.env ?? task.env,
+          input.kind ?? "execution",
+          Number(next.n ?? 1),
+          input.resourcePool ?? null,
+          input.deviceId ?? null,
+          JSON.stringify(input.dispatch ?? {}),
+          now,
+          input.userId,
+          now,
+        );
+      return this.run(input.projectId, input.runId)!;
+    });
+  }
+
+  /**
+   * 领取一条可执行的 run。候选 = 队列中的，或租约已过期的（原执行器已死）。
+   *
+   * 用一条带条件的 UPDATE 抢，而不是"先查再写"：两个执行器同时轮询时，先查再写会
+   * 双双认为可领，然后后写的那个覆盖前者的租约——同一条 run 被跑两遍，副作用也两遍。
+   * 条件更新的 `changes` 是唯一可信的抢到凭据，抢不到就取下一轮候选，最多试 `maxTries` 次。
+   *
+   * 返回 `reclaimed=true` 表示这条 run 之前有人领过（attempts>1）：调用方应当把它当成
+   * "可能已经执行了一半"，先反验再继续，而不是当全新 run 从头跑。
+   */
+  claimRun(input: { projectId: string; workerId: string; leaseMs?: number; maxTries?: number; kind?: RunKind }): {
+    run: QaRun;
+    reclaimed: boolean;
+    leaseUntil: string;
+  } | null {
+    if (!input.workerId) throw new Error("claimRun requires a worker id");
+    const leaseMs = Math.max(5_000, Math.floor(input.leaseMs ?? 5 * 60 * 1000));
+    const tries = Math.max(1, Math.min(Math.floor(input.maxTries ?? 5), 20));
+    for (let attempt = 0; attempt < tries; attempt += 1) {
+      const nowMs = this.now();
+      const now = this.at();
+      const leaseUntil = new Date(nowMs + leaseMs).toISOString();
+      const row = this.db
+        .prepare(
+          `SELECT run_id, status FROM qa_runs
+            WHERE project_id = ?
+              AND (status = 'queued' OR (status = 'running' AND (lease_until IS NULL OR lease_until <= ?)))
+              AND (? IS NULL OR kind = ?)
+            ORDER BY run_index ASC, created_at ASC
+            LIMIT 1`,
+        )
+        .get(input.projectId, now, input.kind ?? null, input.kind ?? null) as
+        | { run_id: string; status: string }
+        | undefined;
+      if (!row) return null;
+      const result = this.db
+        .prepare(
+          `UPDATE qa_runs
+              SET status = 'running', claimed_by = ?, claimed_at = ?, lease_until = ?,
+                  attempts = attempts + 1, started_at = COALESCE(started_at, ?), updated_at = ?
+            WHERE project_id = ? AND run_id = ?
+              AND (status = 'queued' OR (status = 'running' AND (lease_until IS NULL OR lease_until <= ?)))`,
+        )
+        .run(input.workerId, now, leaseUntil, now, now, input.projectId, row.run_id, now) as { changes?: number };
+      if (Number(result.changes ?? 0) > 0) {
+        const run = this.run(input.projectId, row.run_id)!;
+        return { run, reclaimed: row.status === "running", leaseUntil };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 交回执行结果。**只接受持租约的那个执行器**：回填凭据是 claimed_by，不是"知道 run_id"。
+   *
+   * 事实仍走 `observeRun`（manifest 指纹必须由调用方算好并随请求送达），所以这张表
+   * 依旧不承接任何自报结论。`counts` 是覆盖写入而非累加，重复回填同一份结果不会把
+   * 用例数翻倍——回填幂等是"同一 run 只有一份结论"的前提。
+   */
+  reportRun(input: {
+    projectId: string;
+    runId: string;
+    workerId: string;
+    facts: RunManifestFacts;
+    manifestPath: string;
+    manifestSha256: string;
+    counts?: Record<string, number>;
+  }): QaRun {
+    const current = this.run(input.projectId, input.runId);
+    if (!current) throw new Error(`run ${input.runId} not found in project ${input.projectId}`);
+    // observeRun 以 facts.runId 为键：两者不一致会**插入一条新 run**，而不是报错。
+    // 这条线一旦断开，派发的 run 永远停在 running，而结果挂在一条没人派发过的 run 下。
+    if (input.facts.runId !== input.runId) {
+      throw new Error(`run manifest reports ${input.facts.runId}, but this claim is for ${input.runId}`);
+    }
+    if (!current.claimedBy) throw new Error(`run ${input.runId} has no active claim; enqueue and claim it first`);
+    if (current.claimedBy !== input.workerId) {
+      throw new Error(`run ${input.runId} is claimed by ${current.claimedBy}, not ${input.workerId}`);
+    }
+    const observed = this.observeRun({
+      projectId: input.projectId,
+      sessionId: current.sessionId,
+      userId: current.createdBy,
+      facts: input.facts,
+      manifestPath: input.manifestPath,
+      manifestSha256: input.manifestSha256,
+      kind: current.kind,
+      env: current.env,
+    });
+    const settled = input.counts ? (this.settleRun(input.projectId, input.runId, input.counts) ?? observed) : observed;
+    // 交回即释放租约：结果已经落地，继续占着会让"过期重领"把已完成的任务重新拉起。
+    this.db
+      .prepare(
+        `UPDATE qa_runs SET claimed_by = NULL, claimed_at = NULL, lease_until = NULL, updated_at = ?
+          WHERE project_id = ? AND run_id = ?`,
+      )
+      .run(this.at(), input.projectId, input.runId);
+    return this.run(input.projectId, input.runId) ?? settled;
+  }
+
+  /** 主动交回（执行器发现环境不满足、决定不跑）：回到队列，让别人或下一轮再领。 */
+  releaseRun(input: { projectId: string; runId: string; workerId: string; reason?: string }): QaRun | null {
+    const current = this.run(input.projectId, input.runId);
+    if (!current || current.claimedBy !== input.workerId) return null;
+    const dispatch = input.reason ? { ...current.dispatch, last_release_reason: input.reason } : current.dispatch;
+    this.db
+      .prepare(
+        `UPDATE qa_runs SET status = 'queued', claimed_by = NULL, claimed_at = NULL, lease_until = NULL,
+           dispatch_json = ?, updated_at = ?
+         WHERE project_id = ? AND run_id = ?`,
+      )
+      .run(JSON.stringify(dispatch), this.at(), input.projectId, input.runId);
+    return this.run(input.projectId, input.runId);
   }
 
   // ---------------------------------------------------------------- 资源池租约

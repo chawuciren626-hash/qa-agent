@@ -739,6 +739,11 @@ CREATE TABLE IF NOT EXISTS qa_runs (            -- run 的索引：事实由工�
   counts_json      TEXT NOT NULL DEFAULT '{}',
   started_at       TEXT,
   finished_at      TEXT,
+  dispatch_json    TEXT NOT NULL DEFAULT '{}',  -- 派发载荷：剧本/计划引用与响应指纹（判据 1）
+  claimed_by       TEXT,                        -- 领取租约的本地执行器标识
+  claimed_at       TEXT,
+  lease_until      TEXT,                        -- 租约到期；过期即可被另一执行器重领
+  attempts         INTEGER NOT NULL DEFAULT 0,  -- 被领取过几次（含重领），用于发现"反复拉起又失败"
   created_at       TEXT NOT NULL,
   created_by       TEXT NOT NULL,
   updated_at       TEXT NOT NULL,
@@ -747,6 +752,7 @@ CREATE TABLE IF NOT EXISTS qa_runs (            -- run 的索引：事实由工�
 CREATE INDEX IF NOT EXISTS idx_qa_runs_task ON qa_runs(task_id, run_index);
 CREATE INDEX IF NOT EXISTS idx_qa_runs_session ON qa_runs(project_id, session_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_qa_runs_env ON qa_runs(project_id, env, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_qa_runs_claim ON qa_runs(project_id, status, lease_until);
 CREATE TABLE IF NOT EXISTS qa_pool_leases (     -- 执行资源池租约：一个 (pool, slot) 同时只归一个 run
   pool          TEXT NOT NULL CHECK(pool IN ('web','api','android','miniprogram')),
   slot          INTEGER NOT NULL,
