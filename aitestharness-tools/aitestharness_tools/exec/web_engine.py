@@ -757,6 +757,9 @@ def _decision_evidence(decision: dict) -> dict:
     payload = {"status": decision.get("status"), "counts": decision.get("counts"),
                "locator_hit": decision.get("locator_hit"),
                "degraded": decision.get("degraded"),
+               # 按"第 N 列"定位是靠位置假设，与"按表头文本"不是同一可靠性等级；
+               # 不单列出来，改版断掉时会被当成"随机故障"重试而不是改剧本
+               "positional": decision.get("positional"),
                "query": describe_query(decision.get("query"))}
     if decision.get("detail"):
         payload["detail"] = decision["detail"]

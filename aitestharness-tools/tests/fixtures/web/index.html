@@ -47,6 +47,27 @@
     <div data-testid="detail-id"></div>
     <a data-testid="back-to-orders" href="/orders">返回订单列表</a>
   </section>
+
+  <!-- 作用域定位的靶场：真实后台里"同一行里的注销按钮"没有 testid，只能靠行内某列的
+       值把行钉住。表头文本固定，用来验证「按列名」与「按列序号」不是同一可靠性等级。
+       刻意放在登录态之外，免得测作用域定位还要先走一遍登录。 -->
+  <section data-testid="grid-view">
+    <table data-testid="order-grid">
+      <thead>
+        <tr><th>订单号</th><th>金额</th><th>单据状态</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        <tr data-testid="grid-row">
+          <td>1001</td><td>128.50</td><td>就绪</td>
+          <td><button data-testid="grid-action">详情</button></td>
+        </tr>
+        <tr data-testid="grid-row">
+          <td>1002</td><td>66.00</td><td>冻结</td>
+          <td><button data-testid="grid-action">详情</button></td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
 </main>
 <script>
 (function () {

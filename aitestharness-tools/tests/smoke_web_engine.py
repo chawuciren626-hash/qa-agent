@@ -478,6 +478,75 @@ def test_ambiguous_wait_target_is_blocked_not_product_fail():
 
 
 # ---------------------------------------------------------------- 真浏览器
+def test_scope_compiles_column_name_as_semantic_and_column_as_positional():
+    """按表头文本 = 语义；按列序号 = 位置耦合。两者必须能被区分开。
+
+    这不是命名洁癖：改版重排列时，前者仍然对，后者静默点到隔壁列。如果证据里
+    都写成"locator ok"，事故复盘时无从判断该改剧本还是该报产品缺陷。
+    """
+    from aitestharness_tools.exec.locator import describe_query, fingerprint_query
+
+    semantic = fingerprint_query({
+        "role": "button", "name": "注销",
+        "scope": {"container": {"css": "tr.el-table__row"},
+                  "where": [{"column_name": "用户名", "text": "qa_probe"}]}})
+    assert semantic["kind"] == "scoped"
+    assert semantic["positional"] is False
+    assert semantic["scope"]["where"][0] == {"kind": "column_name",
+                                             "name": "用户名", "text": "qa_probe"}
+    assert semantic["inner"] == {"kind": "role", "value": "button", "name": "注销"}
+    assert "用户名=qa_probe" in describe_query(semantic)
+
+    positional = fingerprint_query({
+        "css": "button",
+        "scope": {"container": {"css": "tr"},
+                  "where": [{"column": 3, "text": "qa_probe"}]}})
+    assert positional["positional"] is True
+    assert "col3=qa_probe" in describe_query(positional)
+
+    # 不带内层指纹 = 定位"筛出来的那一行"本身。这是断言"某行存在/消失"的唯一表达，
+    # 不允许被当成漏写（否则只能退回手写 CSS 伪类，又回到位置耦合）
+    row_only = fingerprint_query({
+        "scope": {"container": {"css": "tr.el-table__row"},
+                  "where": [{"column_name": "用户名", "text": "qa_probe"}]}})
+    assert row_only["inner"] is None, row_only
+    assert ">>" not in describe_query(row_only), describe_query(row_only)
+
+
+def test_scope_rejects_specs_that_would_degrade_into_first_match():
+    """作用域写漏时的默认行为是"取第一个"，必须挡在编译期。
+
+    真实事故长这样：只给 container 不给条件 → 页面上所有同类容器都算候选 →
+    多命中拒绝执行 → 报"元素不存在"。排查方向会全部指向产品没渲染。
+    """
+    from aitestharness_tools.exec.locator import LocatorSpecError, fingerprint_query
+
+    cases = [
+        ({"css": "button", "scope": {"where": [{"text": "a"}]}}, "container"),
+        ({"css": "button", "scope": {"container": {"css": "tr"}}}, "where"),
+        ({"css": "button", "scope": {"container": {"css": "tr"},
+                                     "where": [{"text": "  "}]}}, "text"),
+        ({"css": "button", "scope": {"container": {"css": "tr"},
+                                     "where": [{"column": 0, "text": "a"}]}}, "column"),
+        ({"css": "button", "scope": {"container": {"css": "tr"},
+                                     "where": [{"column": True, "text": "a"}]}}, "column"),
+        ({"css": "button", "scope": {"container": {"css": "tr"},
+                                     "where": [{"column": 3, "column_name": "用户名",
+                                                "text": "a"}]}}, "同时"),
+        ({"css": "button", "scope": {"container": {"css": "tr"},
+                                     "where": [{"col": 1, "text": "a"}]}}, "未知键"),
+        ({"css": "button", "scope": {"container": {"css": "tr"},
+                                     "where": [{"text": "a"}], "outer": "x"}}, "未知键"),
+    ]
+    for spec, needle in cases:
+        try:
+            fingerprint_query(spec)
+        except LocatorSpecError as error:
+            assert needle in str(error), f"{needle} 不在报错里：{error}"
+        else:
+            raise AssertionError(f"应当拒绝：{spec}")
+
+
 def _web_plans():
     files = sorted(glob.glob(os.path.join(WEB_FIXTURES, "plan-w*.yaml")))
     return [yaml.safe_load(open(path, encoding="utf-8")) for path in files]
@@ -595,6 +664,79 @@ def test_select_value_reads_selected_label():
     assert selected["ok"] is True, selected
     assert selected["value"] == "测试", f"应读选中标签文本而非空 value：{selected}"
     assert plain["value"] == "hello", f"普通输入框仍读 value：{plain}"
+
+
+def test_playwright_scope_locates_row_and_records_positional_evidence():
+    """真浏览器上验证作用域定位，并确认"按列序号"会在证据里被标出来。"""
+    if not _browser_available():
+        print("  (skip: playwright 未安装)")
+        return
+    from aitestharness_tools.exec.locator import fingerprint_query
+    from aitestharness_tools.exec.web_driver import BrowserHost
+    from web_service import WebTarget
+
+    with WebTarget() as site, BrowserHost() as host:
+        driver = host.new_driver(site.base_url)
+        driver.open("/")
+        semantic = fingerprint_query({
+            "role": "button", "name": "详情",
+            "scope": {"container": {"testid": "grid-row"},
+                      "where": [{"column_name": "单据状态", "text": "冻结"}]}})
+        positional = fingerprint_query({
+            "role": "button", "name": "详情",
+            "scope": {"container": {"testid": "grid-row"},
+                      "where": [{"column": 3, "text": "冻结"}]}})
+        row_only = fingerprint_query({
+            "scope": {"container": {"testid": "grid-row"},
+                      "where": [{"column_name": "单据状态", "text": "冻结"}]}})
+        counts = driver.counts([semantic, positional, row_only])
+        row = driver.probe(row_only)
+        # 阴性对照：换一个页面里不存在的状态值，必须 0 命中——否则"命中 1 个"
+        # 可能只是因为条件根本没生效（两个按钮都被算进来时才会是 2）
+        miss = driver.probe(fingerprint_query({
+            "role": "button", "name": "详情",
+            "scope": {"container": {"testid": "grid-row"},
+                      "where": [{"column_name": "单据状态", "text": "不存在的状态"}]}}))
+        missing_column = driver.probe(fingerprint_query({
+            "role": "button", "name": "详情",
+            "scope": {"container": {"testid": "grid-row"},
+                      "where": [{"column_name": "查无此列", "text": "冻结"}]}}))
+        driver.close()
+
+    assert counts == [1, 1, 1], f"按列名、按列序号、只取行本身都应唯一命中，实际 {counts}"
+    assert row["ok"] is True, row
+    assert "1002" in (row.get("text") or ""), f"应取到冻结那一行：{row}"
+    assert miss["count"] == 0 and miss["ok"] is False, f"阴性对照不应命中：{miss}"
+    # 列名找不到时，报错必须指向"表头里没有这一列"，而不是"元素不存在"：
+    # 两者排查方向完全不同（一个是剧本要改，一个是产品没渲染）
+    assert "表头里找不到列" in (missing_column.get("error") or ""), missing_column
+
+
+def test_playwright_scope_ambiguity_is_blocked():
+    """作用域条件命中多行时，必须判 ambiguous 而不是取第一个。"""
+    if not _browser_available():
+        print("  (skip: playwright 未安装)")
+        return
+    from aitestharness_tools.exec.locator import fingerprint_query, resolve_target
+    from aitestharness_tools.exec.web_driver import BrowserHost
+    from web_service import WebTarget
+
+    with WebTarget() as site, BrowserHost() as host:
+        driver = host.new_driver(site.base_url)
+        driver.open("/")
+        query = fingerprint_query({
+            "role": "button", "name": "详情",
+            "scope": {"container": {"testid": "grid-row"},
+                      "where": [{"column_name": "操作", "text": "详情"}]}})
+        decision = resolve_target(driver.counts, [{
+            "role": "button", "name": "详情",
+            "scope": {"container": {"testid": "grid-row"},
+                      "where": [{"column_name": "操作", "text": "详情"}]}}])
+        driver.close()
+
+    assert query["kind"] == "scoped"
+    assert decision["status"] == "locator_ambiguous", decision
+    assert decision["counts"] == [2], decision
 
 
 if __name__ == "__main__":

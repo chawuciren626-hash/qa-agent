@@ -144,6 +144,9 @@ class PlaywrightDriver:
         self._page.set_default_timeout(self.nav_timeout_ms)
         self._pending: set[Any] = set()
         self._done: list[dict] = []
+        # 表头文本 → 列序号。只缓存"找到了"的结果：页面尚未渲染出表头时缓存了
+        # "找不到"，后续等待会一直失败，而失败原因会指向"元素不存在"。
+        self._column_cache: dict[str, int] = {}
         self._wire_network()
 
     # ---- 生命周期 --------------------------------------------------------
@@ -190,6 +193,7 @@ class PlaywrightDriver:
         self._page.set_default_timeout(self.nav_timeout_ms)
         self._pending.clear()
         self._done.clear()
+        self._column_cache.clear()
         self._wire_network()
 
     def close(self) -> None:
@@ -213,6 +217,8 @@ class PlaywrightDriver:
 
     def open(self, url_or_path: str, timeout_ms: int | None = None) -> dict:
         target = self.absolute(url_or_path)
+        # 换页即失效：不同页面的表头不同，沿用上一页的列序号会静默定位到错误的列
+        self._column_cache.clear()
         try:
             self._page.goto(target, wait_until="domcontentloaded",
                             timeout=timeout_ms or self.nav_timeout_ms)
@@ -221,9 +227,17 @@ class PlaywrightDriver:
             return {"ok": False, "url": target, "error": f"{type(error).__name__}: {error}"}
 
     # ---- 定位 ------------------------------------------------------------
-    def _locator(self, query: dict):
+    def _locator(self, query: dict, base=None):
+        """按查询描述构造 locator。
+
+        `base` 用于**相对定位**：作用域内筛出的容器本身就是一个 locator，内层元素
+        要相对它找。Playwright 的 `get_by_*` 在 Locator 上同样可用，所以十种策略
+        都能相对容器解析，不需要退化成拼 CSS 字符串。
+        """
         kind, value = query.get("kind"), query.get("value")
-        page = self._page
+        page = base if base is not None else self._page
+        if kind == "scoped":
+            return self._scoped_locator(query, base)
         if kind == "testid":
             return page.get_by_test_id(value)
         if kind == "role":
@@ -248,6 +262,58 @@ class PlaywrightDriver:
         if kind == "title":
             return page.locator(f"[title={_css_string(value)}]")
         raise ValueError(f"不支持的定位类型：{kind}（locator.py 与驱动映射不同步）")
+
+    def _scoped_locator(self, query: dict, base=None):
+        """作用域定位：容器 → 按条件筛容器 → 容器内定位元素。
+
+        筛选用 `filter(has=...)` 而不是把条件拼进 CSS：拼 CSS 的写法一旦被照抄，
+        "第 3 列"这类位置耦合就会扩散；而这里列序号是**运行时**按表头文本解析的。
+        """
+        scope = query["scope"]
+        container = self._locator(scope["container"], base=base)
+        cell = scope.get("cell") or "td"
+        for clause in scope.get("where") or []:
+            if clause["kind"] == "text":
+                container = container.filter(has_text=clause["text"])
+                continue
+            if clause["kind"] == "column":
+                index = clause["index"]
+            else:
+                index = self._column_index(clause["name"])
+                if not index:
+                    raise ValueError(
+                        f"表头里找不到列 {clause['name']!r}："
+                        f"当前表头={self._header_texts()}"
+                        f"（按语义定位失效说明页面改版或该页无表头，别退回写列序号）")
+            inner = self._page.locator(f"{cell}:nth-child({index})").filter(
+                has_text=clause["text"])
+            container = container.filter(has=inner)
+        if not query.get("inner"):
+            # 没有内层指纹 = 要的就是筛出来的容器本身（"用户名列是探针账号的那一行"）
+            return container
+        return self._locator(query["inner"], base=container)
+
+    def _header_texts(self) -> list[str]:
+        try:
+            cells = self._page.evaluate(
+                """() => Array.from(document.querySelectorAll('thead th, .el-table__header th'))
+                     .map(th => (th.innerText || th.textContent || '').replace(/\\s+/g, ' ').trim())
+                     .filter(Boolean)"""
+            )
+            return list(cells or [])
+        except Exception:
+            return []
+
+    def _column_index(self, name: str) -> int | None:
+        """按表头文本解析列序号。命中了才缓存：找不到时要能在页面稍后渲染出来时重试。"""
+        cached = self._column_cache.get(name)
+        if cached:
+            return cached
+        for index, header in enumerate(self._header_texts(), 1):
+            if name in header:
+                self._column_cache[name] = index
+                return index
+        return None
 
     def counts(self, queries: list[dict]) -> list[int]:
         """按顺序返回每个指纹的命中数。查询失败按 0 计（元素不存在不是驱动故障）。"""

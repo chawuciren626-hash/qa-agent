@@ -16,9 +16,10 @@
 #     清理的判据因此不是"行没了"，而是"这一行不再有效"；
 #   · 选中"所属角色"后下拉浮层不收起，会盖住"创建用户"按钮（可见 ≠ 可点），
 #     必须显式点一下弹窗标题把浮层收掉；实测按 Escape 有关掉整个弹窗的风险，不用；
-#   · 行作用域定位：`:text-is()` 在 el-table 的 td 上命中 0，
-#     只有 `td:nth-child(3):has-text("x")` 稳定命中——所以按**列序号 + 子串**双约束
-#     （用户名第 3 列、状态第 6 列）。
+#   · 行作用域定位：`:text-is()` 在 el-table 的 td 上命中 0，只有 `:has-text()` 稳定；
+#     但**不要**因此写 `td:nth-child(3):has-text("x")`——那是位置假设，加一列就静默
+#     点到隔壁列。改为 scope 表达（`container` + `column_name`），列号由引擎按表头
+#     文本在运行时解析：真实表头 = 序列/昵称/用户名/所属角色/手机号/状态/创建时间/操作；
 #   · 等待条件必须唯一：`element_visible {css: tr.el-table__row}` 会命中 10 行、
 #     被"多命中拒绝执行"拒掉；等"列表已加载"要从网络上等（request_done）。
 #
@@ -114,10 +115,22 @@ steps:
       # 请求返回 ≠ 表格已重绘；再等一次 network_idle，把"创建后自动刷新"的
       # 尾随响应也收干净，否则断言可能读到被覆盖回未过滤状态的表格
       - {type: network_idle, timeout_ms: 15000}
-      - {type: element_visible, target: {css: 'tr.el-table__row:has(td:nth-child(3):has-text("qa_probe_20261119b"))'}, timeout_ms: 20000}
+      # 定位用 scope（作用域 + 条件），按**表头文本**解析列号，不写列序号
+      - type: element_visible
+        target:
+          scope:
+            container: {css: "tr.el-table__row"}
+            where: [{column_name: 用户名, text: qa_probe_20261119b}]
+        timeout_ms: 20000
     assert:
       # 恰好一行：多了说明历史残留没清干净，少了说明没创建成功
-      - {type: count_equals, target: {css: 'tr.el-table__row:has(td:nth-child(3):has-text("qa_probe_20261119b"))'}, expected: 1, level: decide}
+      - type: count_equals
+        target:
+          scope:
+            container: {css: "tr.el-table__row"}
+            where: [{column_name: 用户名, text: qa_probe_20261119b}]
+        expected: 1
+        level: decide
       - {type: text_visible, value: qa_probe_20261119b, level: decide}
 
 # ---- 清理：注销探针账号（主步骤失败也执行）-------------------------------
@@ -141,14 +154,27 @@ teardown:
       wait:
         - {type: request_done, pattern: "POST /sysEmployee/page", timeout_ms: 20000}
         - {type: network_idle, timeout_ms: 15000}
-        - {type: element_visible, target: {css: 'tr.el-table__row:has(td:nth-child(3):has-text("qa_probe_20261119b"))'}, timeout_ms: 20000}
+        - type: element_visible
+          target:
+            scope:
+              container: {css: "tr.el-table__row"}
+              where: [{column_name: 用户名, text: qa_probe_20261119b}]
+          timeout_ms: 20000
 
     # 行作用域：只点"用户名列恰好是探针账号"的那一行里的注销。
     # 命中 2 行会被"多命中拒绝执行"挡下，不会点到别人的账号。
+    # 列按表头文本解析、不写列序号：真实表头是
+    # 序列/昵称/用户名/所属角色/手机号/状态/创建时间/操作，
+    # 将来加一列"备注"放前面，写死 nth-child(3) 的定位会静默点到隔壁列。
     - action: click
       target:
-        locators:
-          - {css: 'tr.el-table__row:has(td:nth-child(3):has-text("qa_probe_20261119b")) >> button:has-text("注销")'}
+        scope:
+          container: {css: "tr.el-table__row"}
+          where: [{column_name: 用户名, text: qa_probe_20261119b}]
+        # 内层仍用子串匹配而非 role+name：这套后台的按钮里有图标节点和空白，
+        # 可访问名不一定逐字等于"注销"。这里只替换掉"外层的列序号假设"这一件事，
+        # 一次只改一个变量，真机失败时才归因得清。
+        css: 'button:has-text("注销")'
       wait:
         - {type: element_visible, target: {css: ".el-message-box"}, timeout_ms: 10000}
       assert:
@@ -177,13 +203,30 @@ teardown:
         - {type: network_idle, timeout_ms: 15000}
       assert:
         # 仍然"有效"的探针账号必须为 0：行还在但状态已变为注销，也算清理成功
-        - {type: hidden, target: {css: 'tr.el-table__row:has(td:nth-child(3):has-text("qa_probe_20261119b")):has(td:nth-child(6):has-text("有效"))'}, level: decide}
+        - type: hidden
+          target:
+            scope:
+              container: {css: "tr.el-table__row"}
+              where:
+                - {column_name: 用户名, text: qa_probe_20261119b}
+                - {column_name: 状态, text: 有效}
+          level: decide
         # 阴性对照：证明查询条件确实生效了。没有这一条，"0 行"既可能是清理成功，
         # 也可能是过滤没提交、当前页里本来就没有这个账号——后者会把残留报成已清理。
-        - {type: hidden, target: {css: 'tr.el-table__row:has(td:nth-child(3):has-text("sbkjadmin"))'}, level: decide}
+        - type: hidden
+          target:
+            scope:
+              container: {css: "tr.el-table__row"}
+              where: [{column_name: 用户名, text: sbkjadmin}]
+          level: decide
 
   # 最终反验独立于清理步骤的成败：清理步骤全绿也不等于清理成功
   verify_gone:
     - name: qa_probe_20261119b（状态仍为有效）
-      target: {css: 'tr.el-table__row:has(td:nth-child(3):has-text("qa_probe_20261119b")):has(td:nth-child(6):has-text("有效"))'}
+      target:
+        scope:
+          container: {css: "tr.el-table__row"}
+          where:
+            - {column_name: 用户名, text: qa_probe_20261119b}
+            - {column_name: 状态, text: 有效}
       note: 命中 0 即"该账号已不再有效"；命中 >=1 说明清理没成功，账号还留在被测系统里
