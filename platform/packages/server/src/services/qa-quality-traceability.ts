@@ -539,13 +539,39 @@ export class QaQualityTraceabilityStore {
         throw Error("run identity mismatch");
       }
       // 校验通过即登记：run 的存在由这份 manifest 定义，这里只把核过的结果索引成行。
+      const facts = readRunFacts(manifest);
+      // manifest 没声明基线时，认随 run 落盘的 baseline.json（由 exec/baseline.py 采集）。
+      facts.baselineHash = facts.baselineHash ?? this.baselineHashOf(runDir);
       return {
-        facts: readRunFacts(manifest),
+        facts,
         manifestPath: `output/runs/${runId}/manifest.json`,
         manifestSha256: sha256(raw),
       };
     } catch {
       throw new HttpError(400, "run_not_found", "运行清单不存在或不属于当前任务，不能登记新的设计批次。");
+    }
+  }
+
+  /**
+   * 从 run 目录读环境基线指纹（`baseline.json` 由 exec/baseline.py 采集写入）。
+   *
+   * 只取 `content_hash` 并校验格式：基线由 Python 侧采集并自校验完整性，服务端只做索引。
+   * 任何非法字符串都不许进 `qa_runs.baseline_hash`——那一列是"两次运行环境是否一致"的
+   * 唯一凭据，脏值会让可比性判定变成随机数。读不到或格式不对一律返回 null（= 未采集）：
+   * 基线缺失是常态而不是故障，不该因此让登记失败。
+   */
+  private baselineHashOf(runDir: string): string | null {
+    try {
+      const target = path.join(runDir, "baseline.json");
+      const stat = fsSync.lstatSync(target);
+      if (!stat.isFile() || stat.size > 256 * 1024) return null;
+      if (fsSync.realpathSync(target) !== target) return null;
+      const payload = JSON.parse(fsSync.readFileSync(target, "utf8")) as { content_hash?: unknown };
+      return typeof payload.content_hash === "string" && /^[a-f0-9]{64}$/.test(payload.content_hash)
+        ? payload.content_hash
+        : null;
+    } catch {
+      return null;
     }
   }
 
@@ -1462,8 +1488,10 @@ export class QaQualityTraceabilityStore {
       const raw = await fs.readFile(manifestPath, "utf8");
       const manifest = JSON.parse(raw) as { run_id?: unknown; manifest_version?: unknown };
       if (manifest.run_id !== runId || !Number.isInteger(manifest.manifest_version)) throw Error("manifest identity mismatch");
+      const facts = readRunFacts(manifest);
+      facts.baselineHash = facts.baselineHash ?? this.baselineHashOf(runDir);
       return {
-        facts: readRunFacts(manifest),
+        facts,
         manifestPath: `output/runs/${runId}/manifest.json`,
         manifestSha256: sha256(raw),
       };

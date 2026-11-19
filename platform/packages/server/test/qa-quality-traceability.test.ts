@@ -681,4 +681,30 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("Q3 quality traceability", () =
     expect(mainResults.results).toMatchObject([{ caseKey: "CASE-001", status: "passed" }]);
     expect(otherResults.results).toMatchObject([{ caseKey: "CASE-001", status: "blocked" }]);
   });
+
+  it("把 run 目录里的环境基线指纹登记到 qa_runs，读不到或格式不对就留空", async () => {
+    const document = await createDocument();
+    const rule = await createRule(document.document.documentId);
+    const payload = designPayload(document.document.documentId, rule.ruleId);
+    const baselineHash = "c".repeat(64);
+    await writeRunFile(workspace, "session-task", "run-second", "baseline.json", JSON.stringify({
+      baseline_version: 1, env: "staging", sut_version: "v1", content_hash: baselineHash
+    }));
+    const created = await owner.post(`${base}/tasks/session-task/runs/run-second/design`, payload);
+    expect(created.status, await created.clone().text()).toBe(201);
+    expect(app.deps.db.prepare("SELECT baseline_hash FROM qa_runs WHERE project_id=? AND run_id=?").get(project, "run-second"))
+      .toMatchObject({ baseline_hash: baselineHash });
+
+    // 没有 baseline.json：留 null（未采集），不补默认值
+    expect((await owner.post(`${base}/tasks/session-task/runs/run-next/design`, payload)).status).toBe(201);
+    expect(app.deps.db.prepare("SELECT baseline_hash FROM qa_runs WHERE project_id=? AND run_id=?").get(project, "run-next"))
+      .toMatchObject({ baseline_hash: null });
+
+    // 文件里塞一个不是 64 位十六进制的值：拒绝登记，避免脏值进"可比性"凭据列
+    await writeRunFile(workspace, "session-task", "run-pass", "baseline.json",
+      JSON.stringify({ baseline_version: 1, content_hash: "not-a-real-hash" }));
+    expect((await owner.post(`${base}/tasks/session-task/runs/run-pass/design`, payload)).status).toBe(201);
+    expect(app.deps.db.prepare("SELECT baseline_hash FROM qa_runs WHERE project_id=? AND run_id=?").get(project, "run-pass"))
+      .toMatchObject({ baseline_hash: null });
+  });
 });

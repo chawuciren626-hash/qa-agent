@@ -94,6 +94,8 @@ export interface RunManifestFacts {
   status: string;
   resourcePool: string | null;
   sutVersion: string | null;
+  /** 环境基线指纹（manifest.baseline_hash 或随 run 落盘的 baseline.json）。缺失即"未采集"。 */
+  baselineHash: string | null;
 }
 
 /** 一次"已校验的 manifest 观察"：三样东西一起传，避免调用方各拼各的路径与指纹。 */
@@ -121,12 +123,16 @@ export function readRunFacts(manifest: unknown): RunManifestFacts {
   const platform = str(plan.execution_platform);
   // 接口执行走 api 池，其余按执行平台；两者都没有就留空（不猜成 web）。
   const pool = branches.includes("api_execution") ? "api" : platform;
+  // 基线指纹是"这次跑在什么环境上"的唯一凭据：manifest 显式声明优先，
+  // 其次认随 run 落盘的 baseline 段。两者都没有就留 null——不猜、不补默认值。
+  const baseline = (root.baseline ?? orchestration.baseline ?? {}) as Record<string, unknown>;
   return {
     runId: String(root.run_id ?? ""),
     manifestVersion: Number.isInteger(root.manifest_version) ? Number(root.manifest_version) : null,
     status: str(root.status) ?? "unknown",
     resourcePool: pool !== null && (RESOURCE_POOLS as readonly string[]).includes(pool) ? pool : null,
     sutVersion: str(root.sut_version) ?? str(plan.sut_version),
+    baselineHash: str(root.baseline_hash) ?? str(baseline.content_hash),
   };
 }
 
@@ -204,6 +210,15 @@ export interface RunComparison {
   removed: string[];
   /** 两次的 env / sutVersion 是否可比；不可比时上面的差异要打折看。 */
   comparable: boolean;
+  /**
+   * 两次运行的环境基线关系。三态而不是布尔：
+   *   same      → 两侧都采集过且指纹一致，环境没动
+   *   different → 两侧都采集过但不同，结果不可直接比（`comparable` 随之为 false）
+   *   unknown   → 至少一侧没采集，环境是否动过**无从判断**——不冒充一致，也不武断判不可比
+   */
+  baselineStatus: "same" | "different" | "unknown";
+  /** 同上三态的被测版本关系。`unknown` 表示至少一侧没记录版本——G3 要求此时标 inconclusive。 */
+  versionStatus: "same" | "different" | "unknown";
   reasons: string[];
 }
 
@@ -370,6 +385,7 @@ export class QaTaskRunRegistry {
           .prepare(
             `UPDATE qa_runs SET status = ?, manifest_path = ?, manifest_sha256 = ?, manifest_version = ?,
                resource_pool = COALESCE(?, resource_pool), sut_version = COALESCE(?, sut_version),
+               baseline_hash = COALESCE(?, baseline_hash),
                batch_id = COALESCE(?, batch_id), env = ?, updated_at = ?
              WHERE run_id = ?`,
           )
@@ -380,6 +396,7 @@ export class QaTaskRunRegistry {
             input.facts.manifestVersion,
             input.facts.resourcePool,
             input.facts.sutVersion,
+            input.facts.baselineHash,
             input.batchId ?? null,
             env,
             now,
@@ -397,7 +414,7 @@ export class QaTaskRunRegistry {
              (run_id, task_id, project_id, session_id, env, kind, status, run_index, manifest_path,
               manifest_sha256, manifest_version, sut_version, baseline_hash, resource_pool, device_id,
               batch_id, counts_json, started_at, finished_at, created_at, created_by, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?,'{}',?,NULL,?,?,?)`,
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'{}',?,NULL,?,?,?)`,
         )
         .run(
           input.facts.runId,
@@ -412,6 +429,7 @@ export class QaTaskRunRegistry {
           input.manifestSha256,
           input.facts.manifestVersion,
           input.facts.sutVersion,
+          input.facts.baselineHash,
           input.facts.resourcePool,
           input.deviceId ?? null,
           input.batchId ?? null,
@@ -566,8 +584,26 @@ export class QaTaskRunRegistry {
     const added = [...after.keys()].filter((key) => !before.has(key));
     const removed = [...before.keys()].filter((key) => !after.has(key));
     const reasons: string[] = [];
-    if (from.env !== to.env) reasons.push(`环境不同：${from.env || "未指定"} → ${to.env || "未指定"}`);
-    if (from.sutVersion !== to.sutVersion) reasons.push(`被测版本不同：${from.sutVersion ?? "未知"} → ${to.sutVersion ?? "未知"}`);
+    if (!from.env || !to.env) reasons.push("环境未记录：无法确认两次是否同一个环境");
+    else if (from.env !== to.env) reasons.push(`环境不同：${from.env} → ${to.env}`);
+    // 版本三态：两个"未记录"不能算"同一个版本"——那正是 G3 要求标 inconclusive 的场景
+    let versionStatus: "same" | "different" | "unknown" = "unknown";
+    if (from.sutVersion && to.sutVersion) {
+      versionStatus = from.sutVersion === to.sutVersion ? "same" : "different";
+      if (versionStatus === "different") reasons.push(`被测版本不同：${from.sutVersion} → ${to.sutVersion}`);
+    } else {
+      reasons.push("被测版本未记录（G3）：结论标 inconclusive，不当作通过或回归");
+    }
+    let baselineStatus: "same" | "different" | "unknown" = "unknown";
+    if (from.baselineHash && to.baselineHash) {
+      baselineStatus = from.baselineHash === to.baselineHash ? "same" : "different";
+      if (baselineStatus === "different") {
+        // 基线不同意味着数据库/mock/文件至少有一处变了，两次结果不是同一实验条件
+        reasons.push(`环境基线不同：${from.baselineHash.slice(0, 12)} → ${to.baselineHash.slice(0, 12)}`);
+      }
+    } else if (from.baselineHash || to.baselineHash) {
+      reasons.push("仅一侧采集了环境基线，环境是否一致无从判断");
+    }
     return {
       from,
       to,
@@ -577,6 +613,8 @@ export class QaTaskRunRegistry {
       added: added.sort(),
       removed: removed.sort(),
       comparable: reasons.length === 0,
+      baselineStatus,
+      versionStatus,
       reasons,
     };
   }

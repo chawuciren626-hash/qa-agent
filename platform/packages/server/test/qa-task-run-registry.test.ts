@@ -63,6 +63,7 @@ const facts = (over: Partial<ReturnType<typeof readRunFacts>> = {}) => ({
   status: "in_progress",
   resourcePool: "web" as string | null,
   sutVersion: null as string | null,
+  baselineHash: null as string | null,
   ...over,
 });
 
@@ -167,8 +168,8 @@ describe("observeRun", () => {
 describe("compareRuns", () => {
   it("分出回归、修复、仍失败、新增、消失五类", () => {
     registry.ensureTask({ projectId: "p", sessionId: "s1", userId: "u1", env: "staging" });
-    registry.observeRun({ projectId: "p", sessionId: "s1", userId: "u1", facts: facts({ runId: "run-1", status: "completed" }), manifestPath: "m1", manifestSha256: "s1" });
-    registry.observeRun({ projectId: "p", sessionId: "s1", userId: "u1", facts: facts({ runId: "run-2", status: "completed" }), manifestPath: "m2", manifestSha256: "s2" });
+    registry.observeRun({ projectId: "p", sessionId: "s1", userId: "u1", facts: facts({ runId: "run-1", status: "completed", sutVersion: "v1" }), manifestPath: "m1", manifestSha256: "s1" });
+    registry.observeRun({ projectId: "p", sessionId: "s1", userId: "u1", facts: facts({ runId: "run-2", status: "completed", sutVersion: "v1" }), manifestPath: "m2", manifestSha256: "s2" });
     const insert = db.prepare("INSERT INTO qa_case_results(project_id,run_id,case_key,status) VALUES ('p',?,?,?)");
     insert.run("run-1", "C-1", "passed");
     insert.run("run-2", "C-1", "failed"); // 回归
@@ -185,6 +186,17 @@ describe("compareRuns", () => {
     expect(diff.added).toEqual(["C-4"]);
     expect(diff.removed).toEqual(["C-5"]);
     expect(diff.comparable).toBe(true);
+    expect(diff.versionStatus).toBe("same");
+  });
+
+  it("两个 run 都没记录版本时标 unknown，不能因为都空就当作同版本", () => {
+    registry.ensureTask({ projectId: "p", sessionId: "s1", userId: "u1", env: "staging" });
+    registry.observeRun({ projectId: "p", sessionId: "s1", userId: "u1", facts: facts({ runId: "run-1" }), manifestPath: "m1", manifestSha256: "s1" });
+    registry.observeRun({ projectId: "p", sessionId: "s1", userId: "u1", facts: facts({ runId: "run-2" }), manifestPath: "m2", manifestSha256: "s2" });
+    const diff = registry.compareRuns("p", "s1", "run-1", "run-2");
+    expect(diff.versionStatus).toBe("unknown");
+    expect(diff.comparable).toBe(false);
+    expect(diff.reasons.join(" ")).toContain("被测版本未记录");
   });
 
   it("环境或版本不同时仍给差异，但标不可比并说明原因", () => {
@@ -195,6 +207,35 @@ describe("compareRuns", () => {
     expect(diff.comparable).toBe(false);
     expect(diff.reasons.join(" ")).toContain("环境不同");
     expect(diff.reasons.join(" ")).toContain("被测版本不同");
+  });
+
+  it("基线一致说明环境没动，可放心比较", () => {
+    registry.ensureTask({ projectId: "p", sessionId: "s1", userId: "u1", env: "staging" });
+    const hash = "a".repeat(64);
+    registry.observeRun({ projectId: "p", sessionId: "s1", userId: "u1", facts: facts({ runId: "run-1", sutVersion: "v1", baselineHash: hash }), manifestPath: "m1", manifestSha256: "s1" });
+    registry.observeRun({ projectId: "p", sessionId: "s1", userId: "u1", facts: facts({ runId: "run-2", sutVersion: "v1", baselineHash: hash }), manifestPath: "m2", manifestSha256: "s2" });
+    const diff = registry.compareRuns("p", "s1", "run-1", "run-2");
+    expect(diff.baselineStatus).toBe("same");
+    expect(diff.comparable).toBe(true);
+  });
+
+  it("基线不同即环境变了：仍给差异，但标不可比", () => {
+    registry.ensureTask({ projectId: "p", sessionId: "s1", userId: "u1", env: "staging" });
+    registry.observeRun({ projectId: "p", sessionId: "s1", userId: "u1", facts: facts({ runId: "run-1", sutVersion: "v1", baselineHash: "a".repeat(64) }), manifestPath: "m1", manifestSha256: "s1" });
+    registry.observeRun({ projectId: "p", sessionId: "s1", userId: "u1", facts: facts({ runId: "run-2", sutVersion: "v1", baselineHash: "b".repeat(64) }), manifestPath: "m2", manifestSha256: "s2" });
+    const diff = registry.compareRuns("p", "s1", "run-1", "run-2");
+    expect(diff.baselineStatus).toBe("different");
+    expect(diff.comparable).toBe(false);
+    expect(diff.reasons.join(" ")).toContain("环境基线不同");
+  });
+
+  it("只有一侧采集基线时标 unknown，不冒充一致", () => {
+    registry.ensureTask({ projectId: "p", sessionId: "s1", userId: "u1", env: "staging" });
+    registry.observeRun({ projectId: "p", sessionId: "s1", userId: "u1", facts: facts({ runId: "run-1", sutVersion: "v1" }), manifestPath: "m1", manifestSha256: "s1" });
+    registry.observeRun({ projectId: "p", sessionId: "s1", userId: "u1", facts: facts({ runId: "run-2", sutVersion: "v1", baselineHash: "b".repeat(64) }), manifestPath: "m2", manifestSha256: "s2" });
+    const diff = registry.compareRuns("p", "s1", "run-1", "run-2");
+    expect(diff.baselineStatus).toBe("unknown");
+    expect(diff.reasons.join(" ")).toContain("仅一侧采集了环境基线");
   });
 
   it("拒绝比较不属于该任务的运行", () => {
