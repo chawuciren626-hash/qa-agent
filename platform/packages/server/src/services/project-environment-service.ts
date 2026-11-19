@@ -447,7 +447,9 @@ function pythonBootstrapRun(engineRoot: string): BootstrapRun {
     const payload = JSON.stringify({ project: projectId, env, target_url: baseUrl, out: outDir, progress: true });
     // spawn 而不是 execFile：进度在 stderr 上逐行来，必须边跑边读。等进程结束再
     // 一次性拿 buffer，五步进度就退化成"结束瞬间五条一起到"，抽屉里永远是假动画。
-    const child = spawn(python, ["-m", "aitestharness_tools.runtime_cli", "onboard.bootstrap"], {
+    // The bundled Windows Python is isolated and ignores PYTHONPATH. Inject the
+    // source package root explicitly before running the module.
+    const child = spawn(python, ["-c", "import runpy,sys; sys.path.insert(0,sys.argv[1]); sys.argv=sys.argv[2:]; runpy.run_module('aitestharness_tools.runtime_cli',run_name='__main__')", packageRoot, "runtime_cli.py", "onboard.bootstrap"], {
       cwd: engineRoot,
       env: {
         ...process.env,

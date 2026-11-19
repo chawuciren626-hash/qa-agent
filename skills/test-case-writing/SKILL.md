@@ -1,12 +1,16 @@
 ---
 name: test-case-writing
-version: 2026.11.02.1
+version: 2026.11.02.2
 description: 根据测试点生成符合项目 JSON Schema 的结构化测试用例。
 ---
 
 # 测试用例编写 Skill
 
 路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+
+## 阶段工具执行协议（强制）
+
+进入 lifecycle 阶段后，先调用 `plan.gates` 和 `irval.check`，再调用 `diagnose_test_cases`；导出前必须取得工具回执，导出后必须调用 `validate_artifacts`。每条用例的预期来源、闸门结果和结构校验都要在阶段回复中引用回执路径。未调用工具、回执失败或预期来源无法追溯时，不得声称用例编制完成。
 
 两种模式均可按需读取已安装的test-design-methods中的控件、业务权限或AI功能场景参考。检查清单只用于查漏；预期仍须有当前有效依据，未确认建议不进入expected，不为套模板扩大平台、条数或执行范围。
 

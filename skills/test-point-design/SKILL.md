@@ -1,12 +1,16 @@
 ---
 name: test-point-design
-version: 2026.11.02.1
+version: 2026.11.02.2
 description: 基于需求分析设计正常、异常和边界场景的测试点。
 ---
 
 # 测试点设计 Skill
 
 路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+
+## 阶段工具执行协议（强制）
+
+进入 lifecycle 阶段后，先调用 `testpoint.coverage` 和 `irval.check`，并调用 `diagnose_test_points` 检查覆盖缺口；工具回执必须真实落盘并在阶段回复、测试点产物中引用。覆盖缺口、IR 校验失败或回执缺失时不得导出或声称测试点完成，只能返回 blocked/partial。Agent 不得自行凭经验补覆盖结论，工具输出只由 Agent 解释并关联到真实需求。
 
 两种模式均可按需读取已安装的test-design-methods：复杂条件/状态用方法参考，表单与业务权限用控件场景参考，只有被测产品含AI功能时才用AI功能参考。候选检查项经本次来源和范围筛选后才形成测试点，不固定扩充条数。
 

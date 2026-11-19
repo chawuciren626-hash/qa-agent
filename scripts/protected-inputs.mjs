@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { applicationDataRoot, assertPlainPath } from './application-data.mjs';
@@ -18,8 +18,18 @@ function dpapi(bytes,unprotect=false) {
   return Buffer.from(result.stdout,'base64');
 }
 
-// Injection exists for isolated tests only; runtime callers use CurrentUser DPAPI.
-export function createProtectedInputs(base,{wrap=bytes=>dpapi(bytes),unwrap=bytes=>dpapi(bytes,true)}={}) {
+// Windows uses CurrentUser DPAPI. Unix deployments keep the generated master key in
+// the protected-inputs directory with owner-only permissions and use it as the local
+// wrapping key; the payloads remain AES-GCM encrypted and session-bound.
+function platformWrap(bytes) {
+  return process.platform==='win32' ? dpapi(bytes) : Buffer.from(bytes);
+}
+function platformUnwrap(bytes) {
+  return process.platform==='win32' ? dpapi(bytes,true) : Buffer.from(bytes);
+}
+
+// Injection exists for isolated tests; runtime callers use the platform backend.
+export function createProtectedInputs(base,{wrap=platformWrap,unwrap=platformUnwrap}={}) {
   base=assertPlainPath(resolve(base));
   let key;const known=new Map(),loadedReferences=new Set();
   const master=()=>{
@@ -28,7 +38,7 @@ export function createProtectedInputs(base,{wrap=bytes=>dpapi(bytes),unwrap=byte
     const path=assertPlainPath(resolve(base,'key.dpapi'));
     if(!existsSync(path)) {
       const fresh=randomBytes(32),wrapped=wrap(fresh);
-      try {writeFileSync(path,wrapped,{flag:'wx',mode:0o600});}
+      try {writeFileSync(path,wrapped,{flag:'wx',mode:0o600});chmodSync(path,0o600);}
       catch(error) {if(error.code!=='EEXIST') throw new Error('Protected input key creation failed');}
       finally {fresh.fill(0);}
     }

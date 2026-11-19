@@ -14,7 +14,7 @@ const workspace = load("penguin-workspace-adapter");
 const evidence = load("host-observability");
 export const qaEnabled = !!root;
 export function qaLocalBrowserSpawn(options: any): { argv: string[]; env: Record<string, string>; input: string } | null {
-  if (!root || process.env.AITEST_BROWSER_EXECUTION !== "local") return null;
+  if (!root || (process.env.AITEST_BROWSER_EXECUTION !== "local" && process.env.AITEST_STAGE_TOOL_EXECUTION !== "local")) return null;
   return load("local-browser-executor").localBrowserSpawn(root, options);
 }
 export function qaAssertProjectReady(state: { root: string; projectId: string }): void {

@@ -22,6 +22,12 @@ export const STAGE_TOOLS = Object.freeze({
   'regression.impact': { stage: ['execution', 'api_execution', 'report'], source: 'regression/impact.py', payload: '{"cases":caseIR[],"changed_requirements":string[]?,"changed_modules":string[]?,"explicit_ids":string[]?}' },
   'regression.select': { stage: ['execution', 'api_execution', 'report'], source: 'regression/selector.py', payload: '{"cases":caseIR[],"tier":"smoke"|"core"|"full","budget_s":number?}' },
 });
+// 浏览器阶段工具由 browser-task.mjs 执行，不能伪装成 Python 确定性工具；
+// 但它们同样需要进入阶段回执，供回归和探索产物引用。
+export const BROWSER_STAGE_TOOLS = Object.freeze({
+  'dom.snapshot': { stage: 'execution', source: 'scripts/browser-task.mjs' },
+  'login.captcha_chain': { stage: 'execution', source: 'scripts/browser-task.mjs' },
+});
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const NODE_STAGE_CHECK_IDS = new Set(['requirement.parse', 'expected.provenance', 'requirement.completeness', 'testpoint.coverage', 'defects.cluster', 'coverage.split', 'm1.consistency']);
@@ -107,7 +113,7 @@ export function stageToolReceipts(root, runId, { beforeStage = null } = {}) {
     const path = `audit/stage-tools/${name}`;
     try {
       const record = JSON.parse(readRunFile(dir, path).data);
-      if (record.run_id !== runId || record.status !== 'completed' || !STAGE_TOOLS[record.tool_id]) continue;
+      if (record.run_id !== runId || record.status !== 'completed' || (!STAGE_TOOLS[record.tool_id] && !BROWSER_STAGE_TOOLS[record.tool_id])) continue;
       if (beforeStage && record.stage === beforeStage) continue;
       if (manifest.stages?.[record.stage]?.status !== 'completed') continue;
       rows.push({ stage: record.stage, tool_id: record.tool_id, receipt_path: path,
@@ -157,7 +163,7 @@ export function runStageTool(root, { runId, stage, toolId, payload, sourcePath, 
   const implementationSha256 = packageFingerprint(packageRoot);
   const input = JSON.stringify(payload);
   if (Buffer.byteLength(input) > 1024 * 1024) throw new CommandUsageError('Tool payload exceeds 1 MiB');
-  const candidates = pythonCandidates(env);
+  const candidates = pythonCandidates(env, root);
   if (!candidates.length) throw new CommandUsageError('No configured Python runtime for deterministic stage tools');
   const version = spawnSync(candidates[0], ['-c', 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'],
     { cwd: root, env, encoding: 'utf8', shell: false, windowsHide: true, timeout: 5000 });
@@ -165,7 +171,10 @@ export function runStageTool(root, { runId, stage, toolId, payload, sourcePath, 
   const toolEnv = { ...env, PYTHONPATH: [packageRoot, env.PYTHONPATH].filter(Boolean).join(delimiter), PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
   const startedAt = new Date().toISOString();
   const started = performance.now();
-  const processResult = spawnSync(candidates[0], ['-m', 'aitestharness_tools.runtime_cli', toolId], {
+  // 安装包内置 Python 可能是 isolated 模式，会忽略 PYTHONPATH；通过受控启动代码
+  // 显式加入本引擎自己的工具包，避免把工具运行误判为“模块未安装”。
+  const bootstrap = `import sys,runpy; sys.path.insert(0,${JSON.stringify(packageRoot.replaceAll('\\', '/'))}); sys.argv=['aitestharness_tools.runtime_cli',${JSON.stringify(toolId)}]; runpy.run_module('aitestharness_tools.runtime_cli',run_name='__main__')`;
+  const processResult = spawnSync(candidates[0], ['-c', bootstrap], {
     cwd: root, env: toolEnv, input, encoding: 'utf8', shell: false, windowsHide: true, timeout: 20000, maxBuffer: 2 * 1024 * 1024,
   });
   let response;
@@ -180,6 +189,7 @@ export function runStageTool(root, { runId, stage, toolId, payload, sourcePath, 
     version: 1, id, run_id: runId, stage, tool_id: toolId, implementation: `aitestharness_tools/${spec.source}`,
     registry_version: Number.isSafeInteger(runtimeState.versions[toolId]) ? runtimeState.versions[toolId] : null,
     implementation_sha256: implementationSha256, input_sha256: sha(input), started_at: startedAt,
+    execution_location: env.QA_STAGE_TOOL_EXECUTION === 'local' ? 'local_machine' : 'agent_process',
     ...(inputSource ? { input_source: inputSource } : {}),
     duration_ms: Math.round(performance.now() - started), status,
     error_code: status === 'completed' ? null : response?.error_code ?? (processResult.error?.code || 'TOOL_PROCESS_FAILED'),

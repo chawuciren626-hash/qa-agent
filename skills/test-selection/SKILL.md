@@ -1,6 +1,6 @@
 ---
 name: test-selection
-version: 2026.11.02.1
+version: 2026.11.02.2
 description: 按风险、优先级、变更范围、执行成本、数据影响和预算选择测试集。
 metadata:
   source: fugazi/test-automation-skills-agents
@@ -11,6 +11,10 @@ metadata:
 # 智能测试选择 Skill
 
 路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+
+## 阶段工具执行协议（强制）
+
+测试选集必须通过 `regression.select`、`regression.impact` 和 `plan.gates` 产生 `selection/test-selection.json`；Agent 不得凭经验自行扩展或缩减执行范围。阶段回复必须引用每个工具的回执、入选/排除原因和预算影响；缺少回执时不得把选集当作已冻结。
 
 ## 输入与产出
 

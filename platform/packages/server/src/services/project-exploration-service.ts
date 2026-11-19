@@ -622,7 +622,7 @@ export function deriveKnowledge(maps: ExplorationMergeResult["maps"]): { layer: 
   if (login && (login.captcha_type || login.form_detected)) {
     const wallEntries: KnowledgeEntryInput[] = [];
     if (login.captcha_type && login.captcha_type !== "none") {
-      wallEntries.push({ key: "login-captcha", summary: `登录图形码类型：${login.captcha_type}（策略链：测试码→算术识别→人工）` });
+      wallEntries.push({ key: "login-captcha", summary: `登录图形码类型：${login.captcha_type}（策略链：测试码→算术识别→已配置服务→代理视觉自动识别）` });
     }
     if (login.form_detected) {
       wallEntries.push({ key: "login-required", summary: "业务页需登录：未登录访问会被重定向到登录页" });
