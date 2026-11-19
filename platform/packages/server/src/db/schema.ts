@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS project_environments (
   api_modules      TEXT,                  -- JSON 数组：接口模块名
   login_captcha    TEXT,                  -- none|image|slider|click_select|sms|unknown
   maps_path        TEXT,                  -- 相对项目目录的 maps 文件路径
+  maps_hash        TEXT,                  -- 地图内容的 sha256（P6/G9）；NULL = 这一行还没登记过版本
   report_path      TEXT,                  -- 相对项目目录的建档报告路径
   last_error       TEXT,                  -- 最近一次失败原因（成功时清空）
   probed_at        TEXT,

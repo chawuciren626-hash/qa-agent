@@ -51,7 +51,7 @@ describe("channel health", () => {
   it("记录后能读回，同一 baseUrl+protocol 覆盖而不是追加", () => {
     const dir = useEngineRoot();
     recordChannelHealth({ projectId: "p1", baseUrl: "https://api.example/v1", protocol: "openai-chat",
-      probes: [{ clientType: "openai-chat", url: "https://api.example/v1/chat/completions", outcome: "unauthorized", status: 401 }], source: "detect" });
+      probes: [{ clientType: "openai-chat", url: "https://api.example/v1/chat/completions", outcome: "served", status: 401 }], source: "detect" });
     recordChannelHealth({ projectId: "p1", baseUrl: "https://api.example/v1", protocol: "openai-chat",
       probes: [], source: "test", status: "reachable" });
     const reading = readChannelHealth("p1");

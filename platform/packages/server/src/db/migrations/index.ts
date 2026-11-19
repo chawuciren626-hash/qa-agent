@@ -81,6 +81,7 @@ import { qaU3ExecutionSafety } from "./steps/2026-11-13-u3-execution-safety.js";
 import { qaU3CancellationDrills } from "./steps/2026-11-13-u3-cancellation-drills.js";
 import { qaTaskRun } from "./steps/2026-11-19-qa-task-run.js";
 import { qaRunExecution } from "./steps/2026-11-19-qa-run-execution.js";
+import { mapsHash } from "./steps/2026-11-19-maps-hash.js";
 
 export type { Migration } from "./migration.js";
 export { IrreversibleMigrationError, UnknownMigrationError, appliedMigrations } from "./runner.js";
@@ -127,6 +128,7 @@ export const MIGRATIONS: readonly Migration[] = [
   qaU3CancellationDrills,
   qaTaskRun,
   qaRunExecution,
+  mapsHash,
 ];
 
 /**
