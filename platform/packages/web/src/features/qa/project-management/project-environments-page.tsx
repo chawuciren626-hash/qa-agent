@@ -490,6 +490,19 @@ export function ProjectEnvironmentsPage() {
                           <span className="qpm-tag qpm-tag-sync">表格 {exploration.summary.tables ?? "—"}</span>
                           <span className="qpm-tag qpm-tag-sync">接口 {exploration.summary.apis ?? "—"}</span>
                           <span className="qpm-tag qpm-tag-manual">已回写：{exploration.summary.knowledgeLayers.map((layer) => LAYER_LABEL[layer]).join(" / ") || "无"}</span>
+                          {exploration.summary.knowledgeBuild && !("error" in exploration.summary.knowledgeBuild) && exploration.summary.knowledgeBuild.buildVersion !== null && (
+                            <span
+                              className="qpm-tag qpm-tag-sync"
+                              title={`项目资料 ${exploration.summary.knowledgeBuild.documentId} 已更新并构建知识版本 ${exploration.summary.knowledgeBuild.buildVersion}${exploration.summary.knowledgeBuild.unchanged ? "（事实未变，沿用既有版本）" : ""}`}
+                            >
+                              项目资料 v{exploration.summary.knowledgeBuild.buildVersion} · {exploration.summary.knowledgeBuild.itemCount} 条知识
+                            </span>
+                          )}
+                          {exploration.summary.knowledgeBuild && "error" in exploration.summary.knowledgeBuild && (
+                            <span className="qpm-tag qpm-tag-manual" title={exploration.summary.knowledgeBuild.error}>
+                              项目资料联动失败：{exploration.summary.knowledgeBuild.error.slice(0, 40)}
+                            </span>
+                          )}
                           {exploration.summary.sessionReused && <span className="qpm-tag qpm-tag-manual">复用了登录态</span>}
                           {exploration.summary.limitations.map((item) => (
                             <span key={item} className="qpm-explore-limit">{item}</span>

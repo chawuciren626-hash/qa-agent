@@ -213,7 +213,7 @@ describe("exploration dispatch", () => {
     const root = await renderPage();
     const text = root.textContent ?? "";
     expect(text).toContain("等验证码");
-    expect(text).toContain("图形验证码需要人工填答");
+    expect(text).toContain("仅人工验证码需要处理");
     expect(text).toContain("已尝试：测试后门码 → 本地算术识别 → 打码服务");
     expect(root.querySelector('img[alt="目标站验证码"]')).not.toBeNull();
 
@@ -238,5 +238,52 @@ describe("exploration dispatch", () => {
     const text = root.textContent ?? "";
     expect(text).toContain("本轮失败（未回写任何探索资产，四层保持上一轮）");
     expect(text).toContain("登录未成功（验证码错误），不重试提交");
+  });
+});
+
+describe("探索 → 项目资料联动展示", () => {
+  afterEach(() => {
+    // 恢复公共 mock 的缺省形状，别把空 summary 泄漏给后续用例。
+    fixture.state.explorations = [];
+  });
+
+  it("成功摘要带「项目资料 vN · M 条知识」chip", async () => {
+    fixture.state.envStatus = "registered";
+    fixture.state.explorations = [{
+      explorationId: "expl-4", round: 1, status: "succeeded",
+      targetUrl: "http://10.20.31.14:8080", loginUrl: null, loginMode: "public",
+      steps: fixture.explorationSteps.map((step) => ({ ...step, status: "done" as const })),
+      summary: {
+        targetUrl: "http://10.20.31.14:8080", controls: 14, tables: 1, apis: 2,
+        structureDigest: "abc12345", sessionReused: true, mapsPath: "maps-test.json",
+        knowledgeLayers: ["module", "interface", "wall"], captchaStrategy: "test_bypass_code",
+        limitations: [], knowledgeBuild: { documentId: "doc-explore-test", revision: 1, buildVersion: 1, unchanged: false, itemCount: 6 },
+      },
+      lastError: null,
+      startedAt: "2026-11-19T03:00:00.000Z", finishedAt: "2026-11-19T03:02:00.000Z", captcha: null,
+    }];
+    const root = await renderPage();
+    expect(root.textContent ?? "").toContain("项目资料 v1 · 6 条知识");
+  });
+
+  it("联动失败不改探索结论：摘要照常渲染，失败原因如实可见", async () => {
+    fixture.state.envStatus = "registered";
+    fixture.state.explorations = [{
+      explorationId: "expl-5", round: 1, status: "succeeded",
+      targetUrl: "http://10.20.31.14:8080", loginUrl: null, loginMode: "public",
+      steps: fixture.explorationSteps.map((step) => ({ ...step, status: "done" as const })),
+      summary: {
+        targetUrl: "http://10.20.31.14:8080", controls: 14, tables: 1, apis: 2,
+        structureDigest: "abc12345", sessionReused: true, mapsPath: "maps-test.json",
+        knowledgeLayers: ["module", "interface", "wall"], captchaStrategy: "test_bypass_code",
+        limitations: [], knowledgeBuild: { error: "knowledge_engine_unavailable" },
+      },
+      lastError: null,
+      startedAt: "2026-11-19T03:00:00.000Z", finishedAt: "2026-11-19T03:02:00.000Z", captcha: null,
+    }];
+    const root = await renderPage();
+    expect(root.textContent ?? "").toContain("项目资料联动失败：knowledge_engine_unavailable");
+    // 探索自身的产出摘要照常展示：联动失败不吞掉探索结论。
+    expect(root.textContent ?? "").toContain("已回写：");
   });
 });

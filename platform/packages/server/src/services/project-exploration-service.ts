@@ -25,6 +25,7 @@ import type { Db } from "../hmr/capabilities.js";
 import { HttpError } from "../http/errors.js";
 import { replaceKnowledgeLayer, type KnowledgeEntryInput, type KnowledgeLayer } from "./environment-knowledge-service.js";
 import { findEnvironment, type EnvironmentView } from "./project-environment-service.js";
+import type { ExplorationKnowledgeBuildInfo, ExplorationKnowledgeSync } from "./exploration-knowledge-sync.js";
 
 /** 探索六步：前五步与脚本事件一一对应，第六步由服务端合并回写后落定。 */
 export const EXPLORATION_STEP_NAMES = ["准备配置", "拉起浏览器", "登录", "采集页面", "采集接口", "合并回写"] as const;
@@ -50,6 +51,8 @@ export interface ExplorationSummary {
   knowledgeLayers: KnowledgeLayer[];
   captchaStrategy: string | null;
   limitations: string[];
+  /** B1 联动结果：成功带构建信息；失败如实带 error，不改探索结论。 */
+  knowledgeBuild: ExplorationKnowledgeBuildInfo | { error: string } | null;
 }
 
 export interface ExplorationView {
@@ -123,6 +126,8 @@ export interface ExplorationDeps {
   run?: ExplorationRun;
   /** 测试注入：替换 maps 合并（生产走 python merge-explore-maps.py）。 */
   merge?: ExplorationMerge;
+  /** 探索成功后把资产联动进项目资料知识库（B1）；缺省时摘要里如实留空。 */
+  knowledgeSync?: ExplorationKnowledgeSync | null;
 }
 
 export interface ExplorationMergeInput {
@@ -547,6 +552,18 @@ async function completeSuccess(
   for (const layer of layers) {
     replaceKnowledgeLayer(deps.db, projectId, env, layer.layer, layer.entries, { round: row.round, sessionId: null });
   }
+  // B1 联动：探索资产同步进项目资料知识库。失败不改探索结论——
+  // 探索的契约（合并 + 四层回写）已完成，联动失败如实记进摘要。
+  let knowledgeBuild: ExplorationKnowledgeBuildInfo | { error: string } | null = null;
+  if (deps.knowledgeSync) {
+    try {
+      knowledgeBuild = await deps.knowledgeSync({
+        projectId, env, round: row.round, targetUrl: row.target_url, layers,
+      });
+    } catch (error) {
+      knowledgeBuild = { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
   const summary: ExplorationSummary = {
     targetUrl: row.target_url,
     controls: numberOrNull(receipt.controls),
@@ -560,6 +577,7 @@ async function completeSuccess(
     limitations: Array.isArray(receipt.limitations)
       ? receipt.limitations.filter((item): item is string => typeof item === "string")
       : [],
+    knowledgeBuild,
   };
   const now = new Date().toISOString();
   deps.db
@@ -595,7 +613,8 @@ export function deriveKnowledge(maps: ExplorationMergeResult["maps"]): { layer: 
       layer: "interface",
       entries: apis.slice(0, 500).map((api) => ({
         key: `${(api.method ?? "GET").toUpperCase()} ${api.path ?? "/"}`.slice(0, 128),
-        summary: `模块 ${api.module ?? "default"}${api.required?.length ? ` · 必填 ${api.required.length}` : ""}`,
+        // 必填参数名列出来而不是只给个数：知识项、项目资料页都直接可用。
+        summary: `模块 ${api.module ?? "default"}${api.required?.length ? ` · 必填 ${api.required.join("、")}` : ""}`,
       })),
     });
   }

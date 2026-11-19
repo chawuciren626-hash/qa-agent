@@ -51,6 +51,14 @@ export interface ExplorationStep {
 
 export type ExplorationStatus = "running" | "waiting_human" | "succeeded" | "failed" | "aborted";
 
+export interface ExplorationKnowledgeBuildInfo {
+  documentId: string;
+  revision: number;
+  buildVersion: number | null;
+  unchanged: boolean;
+  itemCount: number;
+}
+
 export interface ExplorationSummary {
   targetUrl: string;
   controls: number | null;
@@ -62,6 +70,8 @@ export interface ExplorationSummary {
   knowledgeLayers: KnowledgeLayer[];
   captchaStrategy: string | null;
   limitations: string[];
+  /** 项目资料联动：成功带构建信息；失败如实带 error（探索结论不受影响）。 */
+  knowledgeBuild: ExplorationKnowledgeBuildInfo | { error: string } | null;
 }
 
 /**

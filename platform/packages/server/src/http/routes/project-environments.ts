@@ -46,6 +46,7 @@ import {
 } from "../../services/project-exploration-service.js";
 import { HttpError } from "../errors.js";
 import { readJson, requireValidId } from "../validate.js";
+import { explorationKnowledgeSync } from "../../services/exploration-knowledge-sync.js";
 
 export interface ProjectEnvironmentDeps {
   db: Db;
@@ -85,6 +86,9 @@ export function projectEnvironmentsRoutes(deps: ProjectEnvironmentDeps): Hono<Ap
     engineRoot: deps.engineRoot,
     run: deps.explorationRun,
     merge: deps.explorationMerge,
+    // B1 联动：探索成功后把资产落成项目资料并触发知识构建（engine 未配置时联动
+    // 失败会如实记进轮次摘要，不影响探索结论）。
+    knowledgeSync: explorationKnowledgeSync({ db: deps.db, engineRoot: deps.engineRoot }),
   });
 
   app.get("/", async (c) => {
