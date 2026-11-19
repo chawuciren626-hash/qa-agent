@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import yaml
 
+from aitestharness_tools.exec.authorization import build_approval
 from aitestharness_tools.exec.web_engine import WebEngine, validate_plan
 
 WEB_FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "web")
@@ -107,11 +108,24 @@ def plan_of(*steps):
     return {"lineage": {"id": "PLAN-FAKE", "version": 1}, "steps": list(steps)}
 
 
+FIXTURE_ENV = "fixture-web"
+
+
 def run(driver, plan, **options):
+    """默认带一份**显式签发**的授权。
+
+    注意这不是"把闸关掉"：`approval` 是这里主动 `build_approval` 出来的产物，
+    有 id、有签发人、绑定本计划的指纹与环境。用例要测闸本身时，用 `authorization=`
+    传入构造好的记录（或 `None`）覆盖。
+    """
     options.setdefault("locator_timeout_ms", 0)
     options.setdefault("poll_ms", 20)
+    env_id = options.pop("env_id", FIXTURE_ENV)
+    approval = options.pop("authorization", "__default__")
+    if approval == "__default__":
+        approval = build_approval(plan, env_id=env_id, issued_by="test:smoke_web_engine")
     return WebEngine(driver, {"username": "qa", "password": "qa-pass", "order_id": "2001"},
-                     **options).run_plan(plan)
+                     env_id=env_id, authorization=approval, **options).run_plan(plan)
 
 
 # ---------------------------------------------------------------- 定位规则
@@ -485,8 +499,12 @@ def test_playwright_three_plans_pass():
     assert len(plans) == 3, f"应有 3 条 Web 剧本，实际 {len(plans)}"
     with WebTarget() as site, BrowserHost() as host:
         for plan in plans:
-            result = WebEngine(host.new_driver(site.base_url),
-                               {"username": "qa", "password": "qa-pass"}).run_plan(plan)
+            result = WebEngine(
+                host.new_driver(site.base_url), {"username": "qa", "password": "qa-pass"},
+                env_id=FIXTURE_ENV,
+                authorization=build_approval(plan, env_id=FIXTURE_ENV,
+                                             issued_by="test:smoke_web_engine"),
+            ).run_plan(plan)
             assert result["verdict"] == "pass", f"{plan['lineage']['id']}: {result['halt']}"
 
 
@@ -502,8 +520,12 @@ def test_playwright_locator_miss_blocks_but_does_not_fail():
         {"action": "click", "target": {"locators": [{"testid": "not-exist"},
                                                     {"css": "#not-exist"}]}}]}
     with WebTarget() as site, BrowserHost() as host:
-        result = WebEngine(host.new_driver(site.base_url), {},
-                           locator_timeout_ms=300).run_plan(plan)
+        result = WebEngine(
+            host.new_driver(site.base_url), {}, locator_timeout_ms=300,
+            env_id=FIXTURE_ENV,
+            authorization=build_approval(plan, env_id=FIXTURE_ENV,
+                                         issued_by="test:smoke_web_engine"),
+        ).run_plan(plan)
     assert result["verdict"] == "inconclusive", result
     assert result["steps"][1]["failure_kind"] == "locator_not_found"
     assert result["steps"][1]["attribution"] == "script"
@@ -520,8 +542,12 @@ def test_playwright_two_rounds_identical():
     plans = _web_plans()
     with WebTarget() as site, BrowserHost() as host:
         factory = lambda url, data: WebEngine(host.new_driver(url), data)
-        report = replay(plans, base_url=site.base_url, rounds=2, engine_factory=factory,
-                        data={"username": "qa", "password": "qa-pass"})
+        report = replay(
+            plans, base_url=site.base_url, rounds=2, engine_factory=factory,
+            data={"username": "qa", "password": "qa-pass"}, env_id=FIXTURE_ENV,
+            authorization_for=lambda p: build_approval(
+                p, env_id=FIXTURE_ENV, issued_by="test:replay"),
+        )
     assert report["deterministic"] is True, report["divergence"]
     assert report["content_stable"] is True, "同一份固定数据，页面文本不该抖动"
     assert all(v == "pass" for v in report["per_round"][0]["verdicts"].values()), report["per_round"]

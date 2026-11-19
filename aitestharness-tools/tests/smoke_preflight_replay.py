@@ -43,6 +43,24 @@ def _baseline(**overrides):
     return build_baseline("p4-mock", **args)
 
 
+REPLAY_ENV = "fixture-api"
+
+
+def _replay(plans, **kwargs):
+    """统一签发授权后再重放。
+
+    api 剧本里登录与下单都是 POST，含写动作的计划必须有授权才允许执行。
+    签发方是**测试自己**（`issued_by=test:...`），不是 replay——replay 只搬运算不算
+    "自批自跑"取决于谁签发，这一点必须在调用处显式写出来。
+    """
+    from aitestharness_tools.exec.authorization import build_approval
+    kwargs.setdefault("env_id", REPLAY_ENV)
+    kwargs.setdefault("authorization_for",
+                      lambda plan: build_approval(plan, env_id=REPLAY_ENV,
+                                                  issued_by="test:smoke_preflight_replay"))
+    return replay(plans, **kwargs)
+
+
 def _plans():
     plans = []
     for name in sorted(os.listdir(FIXTURES)):
@@ -100,7 +118,9 @@ class _FakeEngine:
         self.actual_seq = actual_seq
         self.observe_from = observe_from
 
-    def run_plan(self, plan):
+    def run_plan(self, plan, *, authorization=None, env_id=None):
+        # 签名必须跟真实引擎一致（含 authorization / env_id）：替身签名漂移会让
+        # replay 的调用改动在替身上看不出问题，一接触真引擎就炸。
         self.counter["n"] += 1
         n = self.counter["n"]
         actual = 200
@@ -223,7 +243,7 @@ def test_verify_restored_false_when_missing():
 
 def test_replay_five_rounds_deterministic():
     with MockService() as service, tempfile.TemporaryDirectory() as directory:
-        report = replay(_plans(), base_url=service.base_url,
+        report = _replay(_plans(), base_url=service.base_url,
                         data={"username": "qa", "password": "qa-pass"},
                         rounds=5, run_dir=directory, baseline_config=_baseline_config())
         assert report["deterministic"] is True, f"5 轮结论不一致：{report['divergence']}"
@@ -240,7 +260,7 @@ def test_replay_five_rounds_deterministic():
 def test_replay_isolates_sessions_between_rounds():
     """未登录剧本必须每轮都 401：轮间若复用会话，第 2 轮起会带着上轮登录态。"""
     with MockService() as service:
-        report = replay(_plans(), base_url=service.base_url,
+        report = _replay(_plans(), base_url=service.base_url,
                         data={"username": "qa", "password": "qa-pass"}, rounds=3)
         for item in report["per_round"]:
             assert item["verdicts"]["PLAN-P4-02"] == "pass", \
@@ -257,12 +277,12 @@ def test_environment_baseline_spans_runs():
     config = _baseline_config()
     with MockService() as service, tempfile.TemporaryDirectory() as env_dir, \
             tempfile.TemporaryDirectory() as run_a, tempfile.TemporaryDirectory() as run_b:
-        first = replay(_plans(), base_url=service.base_url, data=data, rounds=2,
+        first = _replay(_plans(), base_url=service.base_url, data=data, rounds=2,
                        run_dir=run_a, env_dir=env_dir, baseline_config=config)
         assert first["baseline"]["degraded"] == "manual"
         assert os.path.isfile(os.path.join(env_dir, BASELINE_FILE)), "环境目录必须建立参考基线"
 
-        second = replay(_plans(), base_url=service.base_url, data=data, rounds=2,
+        second = _replay(_plans(), base_url=service.base_url, data=data, rounds=2,
                         run_dir=run_b, env_dir=env_dir, baseline_config=config)
         assert second["baseline"]["preflight"]["status"] == "comparable", \
             "换了 run 目录仍应读到同一个环境基线"
@@ -278,7 +298,7 @@ def test_replay_aborts_when_environment_drifts():
     with MockService() as service, tempfile.TemporaryDirectory() as directory:
         write_baseline(directory, build_baseline("p4-mock", sut_version="p4-mock-9.9"),
                        overwrite=True)
-        report = replay(_plans(), base_url=service.base_url,
+        report = _replay(_plans(), base_url=service.base_url,
                         data={"username": "qa", "password": "qa-pass"}, rounds=3,
                         run_dir=directory, baseline_config=_baseline_config())
         assert report["aborted"] is True
@@ -291,7 +311,7 @@ def test_replay_aborts_when_environment_drifts():
 
 def test_replay_detects_divergence_at_step_level():
     counter = {"n": 0}
-    report = replay([{"lineage": {"id": "PLAN-FAKE", "version": 1}}], base_url="http://fake",
+    report = _replay([{"lineage": {"id": "PLAN-FAKE", "version": 1}}], base_url="http://fake",
                     rounds=3, engine_factory=lambda url, data: _FakeEngine("PLAN-FAKE", counter, 3))
     assert report["deterministic"] is False
     divergence = report["divergence"]
@@ -305,7 +325,7 @@ def test_replay_detects_divergence_at_step_level():
 def test_replay_localizes_assertion_level_divergence():
     """observe 断言翻了但 verdict 和步骤状态都没变——只能靠断言级定位发现。"""
     counter = {"n": 0}
-    report = replay([{"lineage": {"id": "PLAN-FAKE", "version": 1}}], base_url="http://fake",
+    report = _replay([{"lineage": {"id": "PLAN-FAKE", "version": 1}}], base_url="http://fake",
                     rounds=3, engine_factory=lambda url, data: _FakeEngine(
                         "PLAN-FAKE", counter, 99, observe_from=2))
     assert report["deterministic"] is False, "observe 断言也是结论的一部分，翻转必须被看见"
@@ -320,7 +340,7 @@ def test_replay_localizes_assertion_level_divergence():
 def test_replay_separates_content_drift_from_outcome_drift():
     """actual 每轮都变、但断言都过 → 结论仍确定性，只是内容不稳。"""
     counter = {"n": 0}
-    report = replay([{"lineage": {"id": "PLAN-FAKE", "version": 1}}], base_url="http://fake",
+    report = _replay([{"lineage": {"id": "PLAN-FAKE", "version": 1}}], base_url="http://fake",
                     rounds=3, engine_factory=lambda url, data: _FakeEngine(
                         "PLAN-FAKE", counter, 99, actual_seq=lambda n: 200 + n))
     assert report["deterministic"] is True, "actual 抖动不该被判成不可复现"
@@ -339,7 +359,7 @@ def test_replay_rejects_single_round():
 def test_replay_rejects_duplicate_plan_ids():
     plans = [{"lineage": {"id": "DUP"}}, {"lineage": {"id": "DUP"}}]
     try:
-        replay(plans, base_url="http://fake", rounds=2)
+        _replay(plans, base_url="http://fake", rounds=2)
     except ValueError as error:
         assert "重复" in str(error)
     else:
@@ -348,7 +368,7 @@ def test_replay_rejects_duplicate_plan_ids():
 
 def test_replay_llm_guard_records_zero_calls():
     with MockService() as service:
-        report = replay(_plans(), base_url=service.base_url,
+        report = _replay(_plans(), base_url=service.base_url,
                         data={"username": "qa", "password": "qa-pass"}, rounds=2)
         guard = report["llm"]
         assert guard["calls"] == 0
@@ -364,7 +384,12 @@ def test_extract_carries_order_id_into_next_path():
     from aitestharness_tools.exec.api_engine import ApiEngine
     plan = [p for p in _plans() if p["lineage"]["id"] == "PLAN-P4-03"][0]
     with MockService() as service:
-        engine = ApiEngine(service.base_url, {"username": "qa", "password": "qa-pass"})
+        from aitestharness_tools.exec.authorization import build_approval
+        engine = ApiEngine(service.base_url, {"username": "qa", "password": "qa-pass"},
+                           env_id=REPLAY_ENV,
+                           authorization=build_approval(
+                               plan, env_id=REPLAY_ENV,
+                               issued_by="test:smoke_preflight_replay"))
         result = engine.run_plan(plan)
         assert result["verdict"] == "pass"
         assert result["steps"][-1]["action"].endswith("/2001"), \
@@ -443,7 +468,7 @@ def test_attach_baseline_rejects_short_hash():
 def test_replay_writes_baseline_into_report_and_manifest():
     with MockService() as service, tempfile.TemporaryDirectory() as directory:
         _manifest(directory, run_id="run-replay")
-        report = replay(_plans(), base_url=service.base_url,
+        report = _replay(_plans(), base_url=service.base_url,
                         data={"username": "qa", "password": "qa-pass"}, rounds=2,
                         run_dir=directory, baseline_config=_baseline_config())
         assert report["manifest"]["attached"] is True, report["manifest"]

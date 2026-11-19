@@ -25,7 +25,9 @@ from datetime import datetime, timezone
 
 from ..common.version import CapabilityRegistry, default_registry, runtime_stamp
 from .api_engine import _resolve
-from .consistency import not_verified_note, pick_repeatable
+from .authorization import authorize_plan
+from .consistency import (MUTATING_WEB_ACTIONS, not_verified_note, pick_repeatable,
+                          web_action_writes)
 from .locator import (LocatorSpecError, describe_query, fingerprint_query,
                       resolve_target, target_locators)
 from .wait_assert import (WAIT_DEFAULTS, AssertionEngine, assertion_level,
@@ -45,7 +47,10 @@ UNSUPPORTED = ("upload", "download", "request", "db_query", "switch_context")
 # 会改变页面/服务端状态的动作。"有没有可能产生需要清理的产物"只能看这个：
 # 一次"点了提交但断言没对上"的步骤状态是 fail，产物却是真的——用"步骤是否通过"
 # 判断要不要清理，恰好会在最需要清理的那次跳过。
-WEB_MUTATING_ACTIONS = ("click", "navigate", "fill", "press", "select", "check", "uncheck")
+WEB_MUTATING_ACTIONS = MUTATING_WEB_ACTIONS
+
+# 哨兵：区分"未传参"与"显式传 None（无授权）"
+_UNSET = object()
 
 WEB_ASSERT_TYPES = ("url_contains", "url_matches", "visible", "hidden", "text_visible",
                     "text_equals", "value_equals", "attribute_equals", "count_equals")
@@ -120,9 +125,14 @@ class WebEngine:
 
     def __init__(self, driver, data: dict | None = None, *,
                  locator_timeout_ms: int = 3000, poll_ms: int = 100,
-                 registry: CapabilityRegistry | None = None):
+                 registry: CapabilityRegistry | None = None,
+                 authorization: dict | None = None, env_id: str | None = None):
         self.driver = driver
         self.data = data or {}
+        # 写操作授权（P4 判据 3）。放在引擎入口而不是调用方，是因为"调用方会记得
+        # 先查授权"这件事永远不成立——闸只有装在必经之路上才算闸。
+        self.authorization = authorization
+        self.env_id = env_id
         self.locator_timeout_ms = locator_timeout_ms
         self.poll_ms = poll_ms
         self.registry = registry if registry is not None else default_registry()
@@ -130,7 +140,15 @@ class WebEngine:
         self._request_cursor = 0
 
     # ---- 主流程 ----------------------------------------------------------
-    def run_plan(self, plan: dict) -> dict:
+    def run_plan(self, plan: dict, *, authorization=_UNSET, env_id=_UNSET) -> dict:
+        """执行一份计划。
+
+        `authorization` / `env_id` 可在此覆盖构造时的值——replay 这类"引擎由工厂
+        造、计划后到"的调用方拿不到计划，无法在构造时签授权，只能在这里给。
+        用哨兵而不是 None 区分"没传"与"显式给 None（=无授权，应当被拒）"。
+        """
+        approval = self.authorization if authorization is _UNSET else authorization
+        scope_id = self.env_id if env_id is _UNSET else env_id
         scope = self.registry.frozen_scope()
         with scope:
             stamp = runtime_stamp(self.registry)
@@ -143,6 +161,16 @@ class WebEngine:
                           "because": "计划未通过编译期校验，未启动浏览器"},
                     consistency={"status": "skipped", "reason": "计划未执行", "repeats": 0},
                     compile_errors=problems)
+
+            gate = authorize_plan(plan, approval, env_id=scope_id)
+            if not gate["allow"]:
+                return self._build_exec(
+                    plan, [], gate["verdict"], started, stamp,
+                    halt={"stage": "authorization", "step": None, "attribution": "script",
+                          "because": "；".join(gate["reasons"])},
+                    consistency={"status": "skipped", "reason": "未获授权，未执行",
+                                 "repeats": 0},
+                    authorization=gate)
 
             step_results: list[StepResult] = []
             verdict, halt = "pass", None
@@ -178,7 +206,7 @@ class WebEngine:
             # 清理必须在"是否通过"之后、且与它无关：失败的那一次才是最需要清理的那一次
             teardown = self._run_teardown(plan, acted=any(r.acted for r in step_results))
         return self._build_exec(plan, step_results, verdict, started, stamp, halt,
-                                consistency, teardown=teardown)
+                                consistency, teardown=teardown, authorization=gate)
 
     def _consistency(self, plan: dict, verdict: str) -> dict:
         if verdict != "pass":
@@ -362,7 +390,8 @@ class WebEngine:
             return
         # 动作真的执行了：这一条决定后面的 teardown 要不要跑。
         # 注意与"步骤是否通过"无关——断言可能在动作之后才失败，而产物已经产生了。
-        result.acted = action in WEB_MUTATING_ACTIONS
+        # 同 authorization 用同一判定：不写表反向判断，否则新动作会被当成只读
+        result.acted = web_action_writes(action)
 
     def _extract(self, step: dict, result: StepResult) -> None:
         for key, spec in (step.get("extract") or {}).items():
@@ -640,7 +669,7 @@ class WebEngine:
 
     def _build_exec(self, plan, step_results, verdict, started, stamp,
                     halt=None, consistency=None, compile_errors=None,
-                    teardown=None) -> dict:
+                    teardown=None, authorization=None) -> dict:
         lineage = plan.get("lineage") or {}
         body = {
             "type": "exec",
@@ -656,6 +685,9 @@ class WebEngine:
             "teardown": teardown or {"status": "not_run", "steps": [], "verify": [],
                                      "residue": []},
             "halt": halt,
+            # 授权判定必须进 IR：报告要能回答"这次为什么没跑"或"谁批的"。
+            # 只留在 halt.because 里，事后追责时查不到 approval id。
+            "authorization": _authorization_ir(authorization),
             "steps": [self._step_ir(result) for result in step_results],
             "evidence_refs": [f"evidence://{lineage.get('id')}/step-{r.index}"
                               for r in step_results if r.evidence],
@@ -694,6 +726,31 @@ def _probe_field(engine: "WebEngine", target, field: str) -> dict:
             "ambiguous": bool(probe.get("ambiguous")),
             "count": probe.get("count"),
             "reason": probe.get("reason")}
+
+
+def _authorization_ir(gate: dict | None) -> dict:
+    """授权判定的 IR 投影。
+
+    只挑报告层真正要用的字段：谁批的（approval_id / issued_by）、批的是哪份计划
+    （plan_hash）、在哪个环境生效（env_id）、为什么被拒（reasons）。
+    `trust=asserted` 必须原样带出——它是"本记录未经签名校验"的唯一提示，
+    报告里若把它吞掉，读者会以为这是一条可信的批准。
+    """
+    if not gate:
+        return {"status": "not_evaluated", "allow": None}
+    return {
+        "status": gate.get("status"),
+        "allow": gate.get("allow"),
+        "verdict": gate.get("verdict"),
+        "approval_id": gate.get("approval_id"),
+        "issued_by": gate.get("issued_by"),
+        "expires_at": gate.get("expires_at"),
+        "plan_hash": gate.get("plan_hash"),
+        "env_id": gate.get("env_id"),
+        "required_actions": gate.get("required_actions") or [],
+        "trust": gate.get("trust"),
+        "reasons": gate.get("reasons") or [],
+    }
 
 
 def _decision_evidence(decision: dict) -> dict:

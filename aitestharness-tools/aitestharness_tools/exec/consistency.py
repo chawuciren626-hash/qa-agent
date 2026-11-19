@@ -22,11 +22,31 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["SAFE_API_METHODS", "REPEATABLE_WEB_ACTIONS",
+__all__ = ["SAFE_API_METHODS", "MUTATING_WEB_ACTIONS", "READ_ONLY_WEB_ACTIONS",
+           "REPEATABLE_WEB_ACTIONS", "web_action_writes",
            "step_allows_repeat", "pick_repeatable", "not_verified_note"]
 
 # RFC 9110 §9.2.1：safe methods —— 语义上只读，允许客户端重复发起
 SAFE_API_METHODS = ("GET", "HEAD", "OPTIONS")
+
+# web 侧"会改变页面或服务端状态"的动作。
+# **单一真源**：web_engine 的 StepResult.acted（要不要清理）与 authorization 的
+# 授权范围（要批哪些动作）必须用同一份集合，否则会出现"引擎认为写了、授权认为
+# 没写"或相反的裂缝——前者导致该清理的不清理，后者导致写动作绕过卡点。
+MUTATING_WEB_ACTIONS = ("click", "navigate", "fill", "press", "select", "check", "uncheck")
+
+# **只读白名单**：判断"是否改数据"必须用这张表，不能反过来用 MUTATING 表。
+#
+# 用写表判断的写法是 `action in MUTATING_WEB_ACTIONS`——它把"不在写表里"当成只读，
+# 于是引擎将来新增一个写动作（upload / drag_and_drop）而忘记同步写表时，这个动作
+# **自动获得只读身份**，静默绕过授权闸与清理判定。
+# 用只读表判断则相反：没被显式声明为只读的动作一律按写处理，漏声明只会多批一次。
+READ_ONLY_WEB_ACTIONS = ("goto", "wait", "extract", "hover", "scroll")
+
+
+def web_action_writes(action: str) -> bool:
+    """这个 web 动作是否可能改数据。**未声明即视为写**（保守方向）。"""
+    return str(action or "").strip() not in READ_ONLY_WEB_ACTIONS
 
 # web 侧没有任何动作是天然安全的：goto 会触发埋点与服务端会话，click 会提交。
 # 唯一可复跑的是"只读观测"类动作，而它们在本引擎里不是独立步骤（见 web_engine）。

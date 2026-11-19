@@ -32,6 +32,7 @@ import requests
 
 from ..common.version import (CapabilityRegistry, runtime_stamp,
                               default_registry)
+from .authorization import authorize_plan
 from .consistency import not_verified_note, pick_repeatable
 
 __all__ = ["ApiEngine", "run_plan"]
@@ -113,20 +114,54 @@ class StepResult:
     extracted: dict = field(default_factory=dict)
 
 
+def _authorization_ir(gate: dict | None) -> dict:
+    """授权判定的 IR 投影。字段与 web_engine 的同名函数保持一致——
+    报告层不该因为"这条用例是 api 还是 web"而读两套字段名。"""
+    if not gate:
+        return {"status": "not_evaluated", "allow": None}
+    return {
+        "status": gate.get("status"),
+        "allow": gate.get("allow"),
+        "verdict": gate.get("verdict"),
+        "approval_id": gate.get("approval_id"),
+        "issued_by": gate.get("issued_by"),
+        "expires_at": gate.get("expires_at"),
+        "plan_hash": gate.get("plan_hash"),
+        "env_id": gate.get("env_id"),
+        "required_actions": gate.get("required_actions") or [],
+        "trust": gate.get("trust"),
+        "reasons": gate.get("reasons") or [],
+    }
+
+
+# 哨兵：区分"未传参"与"显式传 None（无授权）"
+_UNSET = object()
+
+
 class ApiEngine:
     """确定性 HTTP 执行器。base_url 与 data 在构造时注入，plan 中不落任何环境细节。"""
 
     def __init__(self, base_url: str, data: dict | None = None, timeout: int = 30,
-                 registry: CapabilityRegistry | None = None):
+                 registry: CapabilityRegistry | None = None,
+                 authorization: dict | None = None, env_id: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.data = data or {}
+        # 写操作授权（P4 判据 3）：与 web 侧同一个闸、同一套语义
+        self.authorization = authorization
+        self.env_id = env_id
         self.timeout = timeout
         self.session = requests.Session()
         # 能力包注册表：执行期会被冻结（§24.7），stamp 由此产出
         self.registry = registry if registry is not None else default_registry()
 
-    def run_plan(self, plan: dict) -> dict:
-        """执行一份 type: api 的 plan，返回 exec IR 正文（不含公共头，由上层补 lineage）。"""
+    def run_plan(self, plan: dict, *, authorization=_UNSET, env_id=_UNSET) -> dict:
+        """执行一份 type: api 的 plan，返回 exec IR 正文（不含公共头，由上层补 lineage）。
+
+        `authorization` / `env_id` 可覆盖构造值：replay 的引擎由工厂造、计划后到，
+        拿不到计划就无法在构造时签授权。用哨兵区分"没传"与"显式无授权"。
+        """
+        approval = self.authorization if authorization is _UNSET else authorization
+        scope_id = self.env_id if env_id is _UNSET else env_id
         # 版本冻结 + stamp 在会话开始时取一次：执行期间任何能力包变更都抛错，
         # 保证同一份 exec IR 里记的版本就是实际跑的版本。
         scope = self.registry.frozen_scope()
@@ -137,6 +172,17 @@ class ApiEngine:
             verdict = "pass"
             consistency = {"status": "not_run", "reason": "未执行到一致性检查", "repeats": 0}
             halt = None
+            # 授权判定必须在 session 之前：登录本身是 POST，等它跑完再判等于
+            # "已经建了会话才问允不允许"——顺序反了
+            gate = authorize_plan(plan, approval, env_id=scope_id)
+            if not gate["allow"]:
+                return self._build_exec(
+                    plan, [], gate["verdict"], started, stamp,
+                    halt={"stage": "authorization", "step": None, "attribution": "script",
+                          "because": "；".join(gate["reasons"])},
+                    consistency={"status": "skipped", "reason": "未获授权，未执行",
+                                 "repeats": 0},
+                    authorization=gate)
             # 前置（session 段）：登录 / 取 token。失败即不进入业务步骤——
             # 拿未登录态去跑业务断言，只会把"登录失败"伪装成一串业务失败，
             # 归因阶段再想把它拆开就得逐个反推，代价远高于在此处止步。
@@ -169,7 +215,8 @@ class ApiEngine:
             else:
                 consistency = {"status": "skipped", "reason": "结论已非 pass，无需复跑",
                                "repeats": 0}
-        return self._build_exec(plan, step_results, verdict, started, stamp, halt, consistency)
+        return self._build_exec(plan, step_results, verdict, started, stamp, halt, consistency,
+                                authorization=gate)
 
     def _run_step(self, i: int | str, step: dict) -> StepResult:
         t0 = time.time()
@@ -262,7 +309,7 @@ class ApiEngine:
         return ("flaky" if "fail" in outcomes else "pass"), info
 
     def _build_exec(self, plan, step_results, verdict, started, stamp=None, halt=None,
-                    consistency=None) -> dict:
+                    consistency=None, authorization=None) -> dict:
         stamp = stamp or runtime_stamp(self.registry)
         return {
             "type": "exec",
@@ -282,6 +329,7 @@ class ApiEngine:
             # 中途止步的原因（当前只有"前置未通过"）：不写原因的话，一个全是 0 步的
             # exec IR 在报告层看起来跟"用例没有步骤"完全一样
             "halt": halt,
+            "authorization": _authorization_ir(authorization),
             "steps": [{
                 "index": sr.index, "action": sr.action, "status": sr.status,
                 "assertions": sr.assertions, "duration_ms": sr.duration_ms,

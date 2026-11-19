@@ -44,6 +44,9 @@ from .api_engine import ApiEngine
 from .manifest import attach_baseline
 from .preflight import preflight
 
+# 区分"没给签发回调"（不传参，沿用引擎自带授权）与"显式无授权"
+_NO_APPROVAL = object()
+
 __all__ = ["replay", "llm_sdk_present", "REPLAY_SCHEMA", "REPLAY_FILE"]
 
 REPLAY_SCHEMA = "p4-replay/1"
@@ -159,7 +162,8 @@ def replay(plans: Iterable[Mapping[str, Any]], *, base_url: str,
            reference: Mapping[str, Any] | None = None,
            require_reference: bool = False,
            persist: bool = True,
-           engine_factory: Any = None) -> dict:
+           engine_factory: Any = None, authorization_for: Any = None,
+           env_id: str | None = None) -> dict:
     """把一组计划连跑 `rounds` 轮，判定结论是否可复现。
 
     参数：
@@ -178,6 +182,10 @@ def replay(plans: Iterable[Mapping[str, Any]], *, base_url: str,
                          默认 ApiEngine。存在只为让"分歧检测"本身可被单测——
                          否则要造一个时好时坏的靶子，等于把确定性测试建立在不
                          确定的服务上。
+        authorization_for 签发回调 `(plan) -> approval`。replay 只做搬运，不自己签发：
+                         执行器自批自跑等于没有闸，签发方必须是调用方。
+                         不给则引擎拿不到授权，含写动作的计划会被拒（这是对的）。
+        env_id           授权绑定的环境标识，与 `authorization_for` 一起用。
 
     `deterministic=True` 只表示"这 N 轮结论一致"，不表示结论是 pass——一份稳定失败
     的用例同样 deterministic，那才是有用的失败。
@@ -242,8 +250,13 @@ def replay(plans: Iterable[Mapping[str, Any]], *, base_url: str,
         for pid, plan in zip(ids, plan_list):
             # 每份计划一个引擎实例：轮内隔离会话，但跨轮也隔离——见模块 docstring
             engine = make_engine(base_url, dict(data or {}))
+            approval = authorization_for(plan) if authorization_for else _NO_APPROVAL
             try:
-                execs[pid] = engine.run_plan(plan)
+                if approval is _NO_APPROVAL:
+                    execs[pid] = engine.run_plan(plan)
+                else:
+                    execs[pid] = engine.run_plan(plan, authorization=approval,
+                                                 env_id=env_id)
             finally:
                 # web 引擎持有一个浏览器 context（不开则泄漏，5 轮 x 3 计划就是 15 个），
                 # api 引擎没有 close，getattr 兜住
