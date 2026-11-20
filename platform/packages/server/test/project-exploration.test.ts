@@ -116,6 +116,34 @@ function runWritingReceipt(result: { ok: boolean; error?: string }): Exploration
   };
 }
 
+/** 全站模式 run 夹具：pages.json 多页产物（2 成功 1 失败），收尾步带「3/3 页」进度。 */
+function runWritingSiteReceipt(): ExplorationRun {
+  return (input: ExplorationRunInput) => {
+    let resolve!: (value: { ok: boolean; error: string | null }) => void;
+    const done = new Promise<{ ok: boolean; error: string | null }>((r) => { resolve = r; });
+    void (async () => {
+      await fs.mkdir(path.join(input.outDir, "shots", "pages"), { recursive: true });
+      const structure = (tag: string) => ({ interactive: [{ tag }], tables: [], breadcrumb: [] });
+      await fs.writeFile(path.join(input.outDir, "structure.json"), JSON.stringify(structure("button")));
+      await fs.writeFile(path.join(input.outDir, "apis.json"), JSON.stringify([{ method: "POST", path: "/x" }]));
+      await fs.writeFile(path.join(input.outDir, "pages.json"), JSON.stringify([
+        { route: "/gateway-admin/user/key-card/index", ok: true, controls: 14, tables: 1, structure: structure("button") },
+        { route: "/gateway-admin/user/package/index", ok: true, controls: 9, tables: 0, structure: structure("input") },
+        { route: "/gateway-admin/sysSetting/index", ok: false, reason: "redirected:/gateway-admin/login" },
+      ]));
+      await fs.writeFile(path.join(input.outDir, "explore-receipt.json"), JSON.stringify({
+        mode: "site", controls: 14, tables: 1, apis: 2, structure_digest: "abc12345", session_reused: true,
+        pages_total: 3, pages_ok: 2, pages_failed: 1,
+        limitations: ["全站逐页快照：只采页面结构与本页触发过的接口，不含跨页业务流程与状态迁移。"],
+      }));
+      input.onEvent({ kind: "step", index: 3, status: "done", detail: "登录成功" });
+      input.onEvent({ kind: "step", index: 4, status: "done", detail: "全站 2/3 页 · 目标页 14 控件" });
+      resolve({ ok: true, error: null });
+    })();
+    return { done, answer: async () => undefined, abort: () => undefined };
+  };
+}
+
 describe("exploration dispatch", () => {
   it("refuses to dispatch before the environment is registered", async () => {
     test = await createTestApp();
@@ -159,6 +187,43 @@ describe("exploration dispatch", () => {
     expect(body.knowledge.counts.wall).toBe(2);
     // flow 单页探索给不出：不写空层，免得把已有的链路资产擦掉。
     expect(body.knowledge.counts.flow).toBe(0);
+  });
+
+  it("site mode: multi-page receipt drives per-page registration and honest failure counts", async () => {
+    const projectId = await projectWithRegisteredEnv();
+    const mapsFixtureSite: ExplorationMerge = async ({ exploreDir }) => {
+      const mapsPath = path.join(exploreDir, "maps-test.json");
+      const maps = {
+        pages: [
+          { route: "/gateway-admin/user/key-card/index", registered: true, control_count: 14 },
+          { route: "/gateway-admin/user/package/index", registered: true, control_count: 9 },
+          { route: "/gateway-admin/sysSetting/index", registered: false, control_count: 0 },
+          { route: "/gateway-admin/login", registered: false, control_count: 0 },
+        ],
+        apis: [{ method: "post", path: "/gateway-admin/sysMenu/list", module: "菜单", required: ["sort"] }],
+        login: { captcha_type: "image", form_detected: true },
+        stats: { pages: 4, pages_registered: 2, apis: 1, controls: 23 },
+      };
+      await fs.mkdir(exploreDir, { recursive: true });
+      await fs.writeFile(mapsPath, JSON.stringify(maps));
+      return { mapsPath: "maps-test.json", maps };
+    };
+    const deps = depsOf(projectId, { run: runWritingSiteReceipt(), merge: mapsFixtureSite });
+    startExploration(deps, projectId, "test", {
+      targetUrl: "http://gateway.example.com/gateway-admin/user/key-card/index",
+      loginUrl: "http://gateway.example.com/gateway-admin/login",
+      username: "admin",
+      password: "secret",
+    });
+    const finished = await waitForStatus(deps, projectId, (view) => view?.status === "succeeded");
+    // 摘要如实回答三件事：什么模式、采到几页、几页没采到。
+    expect(finished.summary).toMatchObject({ mode: "site", pagesOk: 2, pagesFailed: 1 });
+    // 采集页步骤的 detail 带「2/3 页」：跑几页、卡在哪一眼可见。
+    const step4 = finished.steps.find((step) => step.index === 4);
+    expect(step4?.detail).toContain("2/3 页");
+    // 四层知识只按 maps 来：两张已渲染页出现在 module 层，失败页如实标「仅路由·未采控件」。
+    const moduleLayer = (finished.summary?.knowledgeLayers ?? []).includes("module");
+    expect(moduleLayer).toBe(true);
   });
 
   it("keeps a failed round failed: no knowledge, error kept, round number still consumed", async () => {

@@ -19,6 +19,7 @@ import type { KnowledgeAuthorizer } from "../../services/qa-knowledge-authorizat
 import type { KnowledgeReceiver } from "../../services/qa-knowledge-receiver.js";
 import { registerQaQualityTraceabilityRoutes } from "./qa-quality-traceability.js";
 import { registerQaTaskRoutes } from "./qa-tasks.js";
+import { registerQaPlatformTaskRoutes } from "./qa-platform-tasks.js";
 import { registerQaRunExecutionRoutes } from "./qa-run-execution.js";
 import { registerQaU2ContractRoutes } from "./qa-u2-contracts.js";
 import { registerQaU3SafetyRoutes } from "./qa-u3-safety.js";
@@ -97,6 +98,7 @@ export function agentsRoutes(deps: AgentsRouteDeps): Hono<AppEnv> {
   registerQaConfirmGateRoutes(app, deps);
   registerQaQualityTraceabilityRoutes(app, deps);
   registerQaTaskRoutes(app, deps);
+  registerQaPlatformTaskRoutes(app, deps);
   registerQaRunExecutionRoutes(app, deps);
   registerQaU2ContractRoutes(app, deps);
   registerQaU3SafetyRoutes(app, deps);

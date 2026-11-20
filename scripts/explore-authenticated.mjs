@@ -64,6 +64,14 @@ const captchaStrategy = args.get('captcha-strategy') ?? 'manual';
 /** 公开页模式：不登录、不填表，只采目标页（站点无需登录时用）。 */
 const publicMode = args.has('public');
 if (!['auto', 'manual'].includes(captchaStrategy)) throw new Error('--captcha-strategy 只接受 auto / manual');
+/**
+ * 站点模式：登录成功后按路由清单逐页采集全部页面（项目测试打底的「项目地图」）。
+ * 页面模式（默认）：只采 target-url 一页——兼容旧口径，公开页也走这条。
+ * 页数硬预算：探索预算是工程的护栏不是模型自觉（§15.1），默认 50 页封顶。
+ */
+const siteMode = args.get('mode') === 'site';
+const maxPages = Math.max(1, Math.min(Number.parseInt(args.get('max-pages') ?? '50', 10) || 50, 200));
+mkdirSync(resolve(shotsDir, 'pages'), { recursive: true });
 
 const log = (msg, data) => console.log(JSON.stringify({ at: new Date().toISOString(), msg, ...(data ? { data } : {}) }));
 /** 进度播报：stderr 的 @@ 行，可丢、可被平台解析；不影响探索结论。 */
@@ -384,6 +392,94 @@ async function login() {
   return false;
 }
 
+/* ------------------------------------ 全站模式 ------------------------------------ */
+
+/** 与引擎 explorer.extract_routes 同源的路由模式（§15.2）：JS bundle 直解路由表，零 token。 */
+const ROUTE_PATTERNS = [
+  /path\s*[:=]\s*["']([^"']+)["']/g,
+  /(?:push|replace|navigateTo|navigate|redirect)\s*\(\s*["'`](\/[^"'`]*)["'`]/g,
+  /replaceState\s*\([^,]*,[^,]*,\s*["'`](\/[^"'`]*)["'`]/g,
+  /href\s*=\s*["'](\/[^"'#]*)["']/g,
+  /to\s*[:=]\s*["'](\/\w[\w/\-:]*)["']/g,
+];
+const NOT_ROUTE = /[\s<>{}\\]|:\/\/|\$\{|\.\.\//;
+
+/** 归并一条候选路由；返回 null = 判定不是可访问页面。 */
+function normalizeRoute(raw, prefix) {
+  let p = (raw ?? '').trim();
+  if (!p || !p.startsWith('/') || p === '/') return null;
+  if (p.startsWith('http') || p.includes('*') || NOT_ROUTE.test(p)) return null;
+  if (p.includes(':')) return null;            // /order/:id 是参数模板，字面访问无意义
+  if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
+  if (!p.startsWith(`${prefix}/`) && p !== prefix) return null;  // 只采本应用前缀下的路由
+  if (/\/login$/i.test(p)) return null;        // 登录页已由「访问墙」知识层覆盖，不重复采
+  return p;
+}
+
+/** 汇总候选路由：菜单/链接（DOM）+ JS bundle 路由表，目标页排第一。 */
+async function discoverRoutes(targetPath, prefix) {
+  const found = new Set([targetPath]);
+  try {
+    const hrefs = await page.evaluate(() =>
+      [...document.querySelectorAll('a[href]')].map((a) => a.getAttribute('href')).filter(Boolean));
+    for (const href of hrefs) {
+      try {
+        const u = new URL(href, page.url());
+        if (u.origin === new URL(page.url()).origin) {
+          const normalized = normalizeRoute(u.pathname, prefix);
+          if (normalized) found.add(normalized);
+        }
+      } catch { /* 相对路径解析失败按没有处理 */ }
+    }
+  } catch { /* DOM 采集失败不拦全站 */ }
+  try {
+    const srcs = await page.evaluate(() =>
+      [...document.querySelectorAll('script[src]')]
+        .map((s) => s.src)
+        .filter((src) => { try { return new URL(src).origin === location.origin; } catch { return false; } }));
+    for (const src of srcs) {
+      try {
+        const res = await fetch(src, { signal: AbortSignal.timeout(15_000) });
+        if (!res.ok) continue;
+        const text = await res.text();
+        for (const pattern of ROUTE_PATTERNS) {
+          for (const match of text.matchAll(pattern)) {
+            const normalized = normalizeRoute(match[1], prefix);
+            if (normalized) found.add(normalized);
+          }
+        }
+      } catch { /* 单个 bundle 拉不到按没有处理 */ }
+    }
+    log('routes_discovered', { count: found.size, bundles: srcs.length, prefix });
+  } catch { /* bundle 解析失败不拦全站 */ }
+  return [...found].slice(0, maxPages);
+}
+
+/** 逐页采集：goto → pathname 校验（被重定向=权限墙，如实记不采结构）→ 结构 → 截图。 */
+async function collectPage(route) {
+  const entry = { route, ok: false, url: null, reason: null, controls: 0, tables: 0, structure: null };
+  try {
+    await page.goto(new URL(route, targetUrl).toString(), { waitUntil: 'networkidle', timeout: 45_000 });
+    await page.waitForTimeout(1500);
+    entry.url = page.url();
+    const finalPath = new URL(page.url()).pathname.replace(/\/$/, '');
+    if (finalPath !== route) {
+      entry.reason = `redirected:${finalPath || '/'}`;
+      return entry;
+    }
+    const seen = await structure();
+    entry.ok = true;
+    entry.controls = seen.interactive.length;
+    entry.tables = seen.tables.length;
+    entry.structure = seen;
+    const slug = route.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'root';
+    await page.screenshot({ path: resolve(shotsDir, 'pages', `${slug}.png`), fullPage: true }).catch(() => {});
+  } catch (error) {
+    entry.reason = String(error?.message ?? error).slice(0, 200);
+  }
+  return entry;
+}
+
 async function main() {
   let reused = existsSync(sessionPath) && !publicMode;
   if (reused) {
@@ -404,16 +500,44 @@ async function main() {
     } else if (!(await login())) throw new Error('登录未成功，已截图 login-failed.png');
   }
 
-  emit('step', { index: 4, name: '采集页面', status: 'running', detail: '打开目标页并采集控件/表格' });
+  emit('step', { index: 4, name: '采集页面', status: 'running', detail: siteMode ? '全站模式：目标页先行，随后逐页采集' : '打开目标页并采集控件/表格' });
   await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2000);
-  if (new URL(page.url()).pathname.replace(/\/$/, '') !== new URL(targetUrl).pathname.replace(/\/$/, '')) {
+  const targetPath = new URL(targetUrl).pathname.replace(/\/$/, '');
+  if (new URL(page.url()).pathname.replace(/\/$/, '') !== targetPath) {
     throw new Error('目标页未打开，实际导航到了其他路径；未将该页面登记为目标页探索结果');
   }
   await page.screenshot({ path: resolve(shotsDir, 'target.png'), fullPage: true });
   const seen = await structure();
   writeFileSync(resolve(outDir, 'structure.json'), JSON.stringify(seen, null, 2));
-  emit('step', { index: 4, name: '采集页面', status: 'done', detail: `${seen.interactive.length} 控件 · ${seen.tables.length} 表格` });
+
+  /** pages.json：全站模式多页产物（目标页也在内）；页面模式退化为单元素数组。 */
+  const pages = [{ route: targetPath, ok: true, url: page.url(), reason: null,
+    controls: seen.interactive.length, tables: seen.tables.length, structure: seen }];
+  if (siteMode) {
+    const prefix = `/${targetPath.split('/').filter(Boolean)[0] ?? ''}`;
+    const routes = (await discoverRoutes(targetPath, prefix)).filter((route) => route !== targetPath);
+    emit('step', { index: 4, name: '采集页面', status: 'running', detail: `全站模式：路由清单 ${routes.length + 1} 页（预算 ${maxPages}）` });
+    let k = 0;
+    for (const route of routes) {
+      k += 1;
+      emit('step', { index: 4, name: '采集页面', status: 'running', detail: `全站 ${k}/${routes.length} · ${route}` });
+      pages.push(await collectPage(route));
+    }
+    const failed = pages.filter((item) => !item.ok);
+    if (pages.length - failed.length === 0) {
+      throw new Error('全站探索没有采到任何页面（目标页与全部路由均未渲染成功）');
+    }
+    log('site_collected', {
+      total: pages.length, ok: pages.length - failed.length, failed: failed.length,
+      failed_routes: failed.map((item) => `${item.route} (${item.reason ?? '?'})`).slice(0, 10),
+    });
+    emit('step', { index: 4, name: '采集页面', status: 'done',
+      detail: `全站 ${pages.length - failed.length}/${pages.length} 页 · 目标页 ${seen.interactive.length} 控件` });
+  } else {
+    emit('step', { index: 4, name: '采集页面', status: 'done', detail: `${seen.interactive.length} 控件 · ${seen.tables.length} 表格` });
+  }
+  writeFileSync(resolve(outDir, 'pages.json'), JSON.stringify(pages, null, 2));
 
   await context.storageState({ path: sessionPath });
   const apiList = [...apis.values()]
@@ -444,15 +568,21 @@ async function main() {
   };
   const facts = {
     target_url: targetUrl,
+    mode: siteMode ? 'site' : 'page',
     structure_digest: createHash('sha256').update(JSON.stringify(stable)).digest('hex').slice(0, 16),
     controls: seen.interactive.length,
     tables: seen.tables.length,
     apis: apiList.length,
+    pages_total: pages.length,
+    pages_ok: pages.filter((item) => item.ok).length,
+    pages_failed: pages.filter((item) => !item.ok).length,
     session_reused: reused,
   };
   writeFileSync(resolve(outDir, 'explore-receipt.json'), JSON.stringify({ ...facts, limitations: [
     '只采结构性事实：控件标签/角色/CSS、表格列、接口路径与请求字段名；不采响应体与字段值。',
-    '单页面快照：不含业务流程、跳转链与跨页状态。',
+    siteMode
+      ? '全站逐页快照：只采页面结构与本页触发过的接口，不含跨页业务流程与状态迁移。'
+      : '单页面快照：不含业务流程、跳转链与跨页状态。',
     '登录成功只证明本次凭据被接受，不证明权限范围或业务可用。',
   ] }, null, 2));
   log('explored', facts);
