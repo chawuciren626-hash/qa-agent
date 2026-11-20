@@ -646,6 +646,10 @@ export class QaTaskRunRegistry {
     const ttl = Math.max(1000, Math.floor(input.ttlMs ?? 30 * 60 * 1000));
     return this.tx(() => {
       const nowMs = this.now();
+      // 顺手清一次全表过期租约（G6 资产治理的最小实体）：有效租约的行不可能过期，删的
+      // 只是 TTL 兜底之后的残行——包括容量缩到比历史峰值小之后 slot≥capacity 的那些
+      // （acquire 的接管循环只扫 [0, capacity)，扫不到它们，不清就永远留着）。
+      this.db.prepare("DELETE FROM qa_pool_leases WHERE lease_until <= ?").run(new Date(nowMs).toISOString());
       const leaseUntil = new Date(nowMs + ttl).toISOString();
       const rows = this.db
         .prepare("SELECT slot, project_id, holder_run_id, lease_until FROM qa_pool_leases WHERE pool = ?")
