@@ -79,3 +79,46 @@
 .qtd-ledger-table td{padding:7px 10px;border-bottom:1px solid light-dark(#eef2f7,#31405a);color:light-dark(#46566b,#cbd5e1);vertical-align:top}
 .qtd-ledger-ref{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
 @media(max-width:720px){.qtd-ledger{margin:0 12px 12px}.qtd-ledger-empty{margin:0 12px 12px}}
+
+/* 运行痕迹卡（P4 判据 1/4）：发起 / 开始 / 卡住三件事分开答；stalled 用最后活动判，锁在而进程不在不等阈值。 */
+.qtr{margin:0 clamp(12px,2vw,28px) 14px;border:1px solid light-dark(#e6eaf0,#374151);border-radius:10px;background:light-dark(#fbfcfe,#1b2432);flex:none}
+.qtr-error{padding:12px 14px;color:#d54941;font-size:12.5px}
+.qtr>summary{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;list-style:none;flex-wrap:wrap}
+.qtr>summary::-webkit-details-marker{display:none}
+.qtr>summary::before{content:"▸";color:light-dark(#8b95a1,#9ca3af);font-size:11px}
+.qtr[open]>summary::before{content:"▾"}
+.qtr-badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid transparent}
+.qtr-badge-bad{background:light-dark(#fdeeee,#3d2225);color:light-dark(#c03e3e,#f2a9a9)}
+.qtr-badge-warn{background:light-dark(#fdf3e3,#3a2f1c);color:light-dark(#9a6412,#e4bc74)}
+.qtr-badge-run{background:light-dark(#eaf2fb,#1e2f44);color:light-dark(#185fa5,#8db8e8)}
+.qtr-badge-done{background:light-dark(#e8f6ef,#1d3328);color:light-dark(#25855a,#7fcfa7)}
+.qtr-badge-unknown{background:light-dark(#f2f3f5,#2b3648);color:light-dark(#646a73,#a9b2bf)}
+.qtr-title{font-weight:650;color:light-dark(#24292f,#f3f4f6)}
+.qtr-statement{color:light-dark(#57606a,#cbd5e1);font-size:12.5px}
+.qtr-hint{margin-left:auto;color:light-dark(#8b95a1,#9ca3af);font-size:11.5px}
+.qtr-body{display:grid;gap:16px;padding:4px 14px 14px}
+.qtr-alert{display:flex;gap:10px;border-radius:10px;padding:12px 14px;font-size:12.5px;line-height:1.7;border:1px solid transparent}
+.qtr-alert b{font-weight:700}
+.qtr-alert-ic{font-weight:700;flex:none}
+.qtr-alert-red{background:light-dark(#fdeeee,#3d2225);border-color:light-dark(#f3d3d3,#5e3236);color:light-dark(#8f2f2f,#f0b9b9)}
+.qtr-alert-amber{background:light-dark(#fdf3e3,#3a2f1c);border-color:light-dark(#f0e0c2,#614d29);color:light-dark(#7a5312,#e4c68a)}
+.qtr-alert-blue{background:light-dark(#eaf2fb,#1e2f44);border-color:light-dark(#cfe0f3,#2f4a6b);color:light-dark(#12457d,#a5c6ec)}
+.qtr h3{font-size:12.5px;font-weight:650;color:light-dark(#24292f,#f3f4f6);margin-bottom:8px}
+.qtr-timeline{list-style:none;display:grid;gap:0;border:1px solid light-dark(#e6eaf0,#374151);border-radius:10px;padding:14px 16px;background:light-dark(#fff,#202b3d)}
+.qtr-node{display:grid;grid-template-columns:96px 1fr;gap:12px;align-items:start;position:relative;padding-bottom:14px;padding-left:18px}
+.qtr-node:last-child{padding-bottom:0}
+.qtr-node-dot{position:absolute;left:0;top:5px;width:9px;height:9px;border-radius:50%;background:light-dark(#fff,#202b3d);border:2px solid light-dark(#d5dbe5,#55647d);box-sizing:border-box}
+.qtr-node-done .qtr-node-dot{border-color:#2e9e6b;background:#2e9e6b}
+.qtr-node-now .qtr-node-dot{border-color:#2b6de8;background:#2b6de8}
+.qtr-node-bad .qtr-node-dot{border-color:#d45555;background:#d45555}
+.qtr-node:not(:last-child)::before{content:"";position:absolute;left:4px;top:14px;bottom:-2px;width:1px;background:light-dark(#e6eaf0,#374151)}
+.qtr-node-t{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:light-dark(#646a73,#a9b2bf);padding-top:1px;white-space:nowrap}
+.qtr-node-what b{display:block;font-size:12.5px;font-weight:600;color:light-dark(#24292f,#f3f4f6)}
+.qtr-node-what small{display:block;font-size:11.5px;color:light-dark(#8b95a1,#9ca3af);margin-top:3px;line-height:1.6}
+.qtr-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:0}
+.qtr-fact{border:1px solid light-dark(#e6eaf0,#374151);border-radius:10px;padding:11px 13px;background:light-dark(#fff,#202b3d)}
+.qtr-fact dt{font-size:11px;color:light-dark(#8b95a1,#9ca3af);margin-bottom:6px}
+.qtr-fact dd{margin:0;font-size:12.5px;font-weight:600;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:light-dark(#24292f,#f3f4f6);overflow-wrap:anywhere}
+.qtr-tip{display:inline-block;width:13px;height:13px;line-height:13px;text-align:center;border-radius:50%;background:light-dark(#f2f3f5,#2b3648);color:light-dark(#646a73,#a9b2bf);font-size:9px;margin-left:4px;cursor:help;font-family:inherit}
+.qtr-why{margin:0;border:1px dashed light-dark(#dbe2ec,#3b4d66);border-radius:10px;padding:12px 14px;font-size:12px;line-height:1.8;color:light-dark(#57606a,#cbd5e1)}
+@media(max-width:720px){.qtr{margin:0 12px 12px}}

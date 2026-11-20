@@ -217,6 +217,30 @@ def test_warning_drift_caps_confidence():
     assert result["confidence"] == "medium", result
 
 
+def test_credential_drift_gets_specific_guidance():
+    """凭据漂移：不改判定，只把"先查什么"点名（§6.1）。
+
+    环境密码改了，失败常以"登录失败/断言不符"出现，最容易被误判成脚本坏了。
+    warnings 档位已经压了 product 置信度，这里钉的是 notes 里的具体指向。
+    """
+    result = attribute_failure(failed_assert_ir(),
+                               preflight=preflight(status="comparable_with_warnings",
+                                                   warning=("credentials",)),
+                               replay=replay_report())
+    assert result["category"] == "product_bug", result
+    assert result["confidence"] == "medium", result
+    assert any("凭据" in note for note in result["notes"]), result["notes"]
+
+
+def test_warning_without_credential_drift_has_no_credential_note():
+    """阴性对照：凭据提示只该在凭据漂移时出现，不能变成万金油备注。"""
+    result = attribute_failure(failed_assert_ir(),
+                               preflight=preflight(status="comparable_with_warnings",
+                                                   warning=("files",)),
+                               replay=replay_report())
+    assert not any("凭据" in note for note in result["notes"]), result["notes"]
+
+
 def test_unstable_locator_downgrades_product():
     """断言比的可能不是那个元素：靠降级指纹定位到的元素，不能直接判产品。"""
     unstable = failed_assert()

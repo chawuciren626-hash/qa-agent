@@ -29,6 +29,7 @@ export default defineConfig({
     launcher: "src/launcher.ts",
     "pty-payload": "src/pty-payload.ts",
     server: "../server/dist/index.js",
+    "migrate-db": "../server/dist/migrate-db.js",
     penguin: "../cli/dist/penguin.js",
   },
   format: ["esm"],

@@ -14,6 +14,7 @@ import { ExecutionResults } from "./execution-results";
 import { DefectResults } from "./defect-results";
 import { ArtifactPreview, previewKind, type ArtifactPreviewData } from "./artifact-preview";
 import { ContextLedgerCard } from "./context-ledger-card";
+import { RunTraceCard } from "./run-trace-card";
 import "./task-detail.css";
 
 type RunIndex = { id: string; status: string };
@@ -163,6 +164,7 @@ export function QaTaskDetail() {
     {!loading && !task && !error && <p className="qtd-message">当前项目没有这个任务。</p>}
     {task && projectId && <ContextLedgerCard projectId={projectId} sessionId={sessionId}/>}
     {task && <div className="qtd-runbar"><label>本次运行 <select aria-label="选择任务运行" value={runId} disabled={task.runs.length === 0} onChange={event => { setRunId(event.target.value); setPreferredStage(""); setStageTab("result"); }}><option value="" disabled>请选择运行</option>{task.runs.map(run => <option key={run.id} value={run.id}>{run.id}</option>)}</select></label><button type="button" onClick={() => { setRunListRefresh(value => value + 1); setRefresh(value => value + 1); }}>刷新运行</button></div>}
+    {task && projectId && runId && <RunTraceCard projectId={projectId} sessionId={sessionId} runId={runId} refresh={refresh}/>}
     {task && task.runs.length === 0 && <div className="qtd-wrap"><p className="qtd-placeholder-caption">这项任务尚无已登记的运行。以下为默认阶段示意，实际阶段会按任务计划确定；可从任务会话开始测试。</p><nav className="qtd-flow" aria-label="默认流程阶段">{defaultStageIds.map((id, index) => <div className="qtd-flow-item" key={id}>{index > 0 && <span className="qtd-sep">››</span>}<div className="qtd-step"><span className="qtd-dot">{index + 1}</span><span><strong>{names[id]}</strong><small>未开始</small></span></div></div>)}</nav></div>}
     {task && task.runs.length > 0 && <div className="qtd-wrap qtd-run-detail">
       {!detail && !error && <p role="status" className="qtd-message">正在读取运行详情…</p>}

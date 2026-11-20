@@ -89,4 +89,25 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("资源池租约", () => {
     // 不还的话，一次手误就要等 TTL 到期才能再跑，而人只会看到"资源池满了"却不知道原因。
     expect((await startRun("run-next", "web")).status).toBe(201);
   });
+
+  it("acquire 顺手清掉过期租约残行（含容量缩小后 slot 超界的那些，G6 最小实体）", async () => {
+    const { QaTaskRunRegistry } = await import("../src/services/qa-task-run-registry.js");
+    const registry = new (QaTaskRunRegistry as unknown as new (db: unknown) => {
+      acquirePoolSlot(input: { projectId: string; pool: string; runId: string; capacity?: number }): { slot: number } | null;
+    })(app.deps.db);
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const future = new Date(Date.now() + 30 * 60_000).toISOString();
+    const seed = app.deps.db.prepare("INSERT INTO qa_pool_leases(pool, slot, project_id, holder_run_id, lease_until, created_at, updated_at) VALUES (?,?,?,?,?,?,?)");
+    seed.run("web", 0, "other-project", "run-old-alive", future, past, past);   // 有效租约：不能动
+    seed.run("web", 5, "other-project", "run-expired-tail", past, past, past);  // 过期 + 超出当前容量：清掉
+
+    const acquired = registry.acquirePoolSlot({ projectId: project, pool: "web", runId: "run-g6", capacity: 2 });
+    expect(acquired).not.toBeNull();
+
+    const rows = app.deps.db.prepare("SELECT slot, holder_run_id FROM qa_pool_leases WHERE pool='web' ORDER BY slot").all() as { slot: number; holder_run_id: string }[];
+    // 有效租约保留；超容量槽的过期残行已被清理，不会永远留在表里。
+    expect(rows.some(row => row.holder_run_id === "run-old-alive")).toBe(true);
+    expect(rows.some(row => row.holder_run_id === "run-expired-tail")).toBe(false);
+  });
 });

@@ -728,4 +728,35 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("Q3 quality traceability", () =
     expect(app.deps.db.prepare("SELECT baseline_hash FROM qa_runs WHERE project_id=? AND run_id=?").get(project, "run-pass"))
       .toMatchObject({ baseline_hash: null });
   });
+
+  it("answers 'which defects hang on this test point' by point_uid (P6/G4 reverse lookup)", async () => {
+    const { document, rule } = await importDesign();
+    expect(document.document.documentId).toBeTruthy();
+    expect(rule.ruleId).toBeTruthy();
+    const failure = executionRef("run-main");
+    await member.post(`${base}/tasks/session-task/runs/run-main/results`, {
+      expectedRevision: 1, invocationId: "inv-uid",
+      results: [{ caseId: "CASE-001", status: "failed", reason: "第 5 次后仍可登录", evidenceRefs: [failure] }]
+    });
+    const discovered = await member.post(`${base}/defects`, {
+      sessionId: "session-task", runId: "run-main",
+      title: "验证码锁定未生效", category: "product_defect", confidence: "medium",
+      severity: "Major", priority: "P1", expectedResult: "锁定 15 分钟", actualResult: "仍可登录",
+      relatedCases: ["CASE-001"], evidenceRefs: [failure]
+    });
+    expect(discovered.status, await discovered.clone().text()).toBe(201);
+    const defect = ((await discovered.json()) as Json).defect as Json;
+    // 反查的正向面：缺陷视图自己带 relatedPoints（由关联用例反推的稳定身份）。
+    expect(Array.isArray(defect.relatedPoints)).toBe(true);
+    expect(defect.relatedPoints.length).toBeGreaterThan(0);
+    const uid = defect.relatedPoints[0] as string;
+
+    const hit = (await json(await owner.get(`${base}/defects?pointUid=${encodeURIComponent(uid)}`))) as Json;
+    expect(hit.defects).toHaveLength(1);
+    expect(hit.defects[0]).toMatchObject({ defectId: defect.defectId, relatedPoints: [uid] });
+
+    // 阴性对照：同项目里一个从未关联过的 uid 反查不到任何缺陷。
+    const miss = (await json(await owner.get(`${base}/defects?pointUid=${"0".repeat(64)}`))) as Json;
+    expect(miss.defects).toHaveLength(0);
+  });
 });

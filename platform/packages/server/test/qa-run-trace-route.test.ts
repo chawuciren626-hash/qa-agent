@@ -149,4 +149,46 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("运行痕迹与报告追溯", 
     const run = (await json(await owner.get(`${base}/task-records/${session}/runs/${runId}`))) as Json;
     expect(run.run.startedAt).toBe(startedAt);
   });
+
+  it("health summary aggregates tool usage and session tokens for one run", async () => {
+    // 引擎根指到本测试的临时 root：tool-usage.jsonl 写这里，不碰仓库里的真实文件。
+    vi.stubEnv("AITEST_ENGINE_ROOT", app.root);
+    const designed = await owner.post(`${base}/tasks/${session}/runs/${runId}/design`, designPayload());
+    expect(designed.status, await designed.clone().text()).toBe(201);
+    const startedAt = await writeCrashedExecution();
+
+    const usageDir = path.join(app.root, "output", "runtime");
+    await fs.mkdir(usageDir, { recursive: true });
+    await fs.writeFile(path.join(usageDir, "tool-usage.jsonl"), [
+      JSON.stringify({ kind: "execution", at: startedAt, action: "browser_task", tools: ["login.captcha_chain"], degraded: ["login.rate_limit"], receipt: "r1", run_id: runId, stage: "execution" }),
+      JSON.stringify({ kind: "check", at: startedAt, action: "browser_task", tool_id: "login.captcha_chain", status: "failed", run_id: runId, stage: "execution" }),
+      // 别的 run 的行：不该被聚合进来。
+      JSON.stringify({ kind: "execution", at: startedAt, action: "other", tools: ["other.tool"], degraded: [], receipt: "r2", run_id: "run-other", stage: null })
+    ].join("\n") + "\n");
+
+    // 会话 token 用量：一条在 run 开始前（只进全量），一条在开始后（全量与窗口都进）。
+    const insert = app.deps.db.prepare(`INSERT INTO usage_records (ts,date,project_id,agent_id,session_id,origin_session_id,provider,model_id,cache_read,cache_write,output,total,status)
+      VALUES (?,?,?,?,?,NULL,'test','model-x',0,0,0,?,?)`);
+    insert.run(new Date(Date.parse(startedAt) - 60_000).toISOString(), "2026-11-20", project, "test_agent", session, 100, "completed");
+    insert.run(startedAt, "2026-11-20", project, "test_agent", session, 250, "completed");
+    insert.run(startedAt, "2026-11-20", project, "test_agent", session, 0, "failed");
+
+    const health = (await json(await owner.get(`${base}/task-records/${session}/runs/${runId}/health`))) as Json;
+    // 工具面只算本 run：一次实现调用、降级与失败检查如实分组。
+    expect(health.tools).toMatchObject({ executions: 1, invoked: ["login.captcha_chain"], degraded: ["login.rate_limit"], checks: { failed: 1 } });
+    // token 面：全量三条（350 tokens、1 失败），run 开始后的窗口只有后两条（250 tokens）。
+    expect(health.usage).toMatchObject({ requests: 3, tokens: 350, failedRequests: 1 });
+    expect(health.usageSinceStart).toMatchObject({ requests: 2, tokens: 250, from: startedAt });
+    // trace 事实同源：崩溃场景下 stalled 是健康摘要的一部分。
+    expect(health.trace).toMatchObject({ stalled: true, startedAt });
+  });
+
+  it("health summary reports honestly when the engine root has no tool usage file", async () => {
+    vi.stubEnv("AITEST_ENGINE_ROOT", path.join(app.root, "empty-engine"));
+    const health = (await json(await owner.get(`${base}/task-records/${session}/runs/${runId}/health`))) as Json;
+    // 没有工具流水 ≠ 零次调用：tools 如实为 null，指路字段仍给出应该去哪看。
+    expect(health.tools).toBeNull();
+    expect(health.toolsSource).toBe("output/runtime/tool-usage.jsonl");
+    expect(health.usage).toMatchObject({ requests: 0, tokens: 0 });
+  });
 });

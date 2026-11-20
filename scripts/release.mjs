@@ -16,7 +16,7 @@
  * 设计约束（踩坑得来，不要改）：
  *   · 校验清单 `aitest-source-runtime.json` 覆盖 app 下**所有**文件，因此发布过程禁止向 app 写
  *     任何清单外的文件——构建号戳必须留在仓库侧（output/release/），不能落进安装目录；
- *   · pause 必须在 deploy 之前、resume 必须在 finally 里（失败也要恢复，否则服务一直停着）；
+ *   · pause 必须在 deploy 之前；部署文件失败可恢复服务，迁移失败则保持暂停等待排查；
  *   · deploy 脚本自己会做「备份 → 换件 → 重签 → 自校验 → 失败回滚」，本脚本不重复实现，
  *     只负责编排与前置断言——两份实现必然漂移，这是 2026-11-19 的教训。
  */
@@ -25,14 +25,15 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { spawnSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadProductLayout } from "./product-layout.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const webDist = join(root, "platform/packages/web/dist");
 const serverDist = join(root, "platform/packages/desktop/dist/server.js");
+const migrationDist = join(root, "platform/packages/desktop/dist/migrate-db.js");
 const stampPath = join(root, "output/release/release-stamp.json");
 const deployScript = join(root, "scripts/deploy-project-management-local.mjs");
 const serviceScript = join(root, "scripts/local-service.mjs");
-
 const sha = file => createHash("sha256").update(readFileSync(file)).digest("hex");
 const die = message => { console.error(`release: ${message}`); process.exit(1); };
 const node = (args, options) => {
@@ -53,18 +54,21 @@ function walk(dir) {
 /** 构建号 = server.js 哈希 + web 产物树哈希。两者任一变化都必须换号——这正是 404 那个坑的防线。 */
 function buildStamp() {
   if (!existsSync(serverDist)) die(`缺少服务端构建产物：${relative(root, serverDist)}（先构建 desktop 包）`);
+  if (!existsSync(migrationDist)) die(`缺少迁移构建产物：${relative(root, migrationDist)}（先构建 desktop 包）`);
   if (!existsSync(join(webDist, "index.html"))) die(`缺少前端构建产物：${relative(root, webDist)}（先构建 web 包）`);
   const files = walk(webDist);
   const treeHash = createHash("sha256")
     .update(files.map(file => `${relative(webDist, file).replaceAll("\\", "/")}:${sha(file)}`).join("\n"))
     .digest("hex");
   const serverSha256 = sha(serverDist);
+  const migrationSha256 = sha(migrationDist);
   return {
-    buildId: createHash("sha256").update(`${serverSha256}\n${treeHash}`).digest("hex").slice(0, 16),
+    buildId: createHash("sha256").update(`${serverSha256}\n${migrationSha256}\n${treeHash}`).digest("hex").slice(0, 16),
     serverSha256,
+    migrationSha256,
     webTreeHash: treeHash,
     webFileCount: files.length,
-    newestArtifactAt: files.map(file => statSync(file).mtimeMs).concat([statSync(serverDist).mtimeMs])
+    newestArtifactAt: files.map(file => statSync(file).mtimeMs).concat([statSync(serverDist).mtimeMs, statSync(migrationDist).mtimeMs])
       .reduce((a, b) => Math.max(a, b), 0),
   };
 }
@@ -78,6 +82,7 @@ function assertConsistent(current, saved) {
   const problems = [];
   if (current.buildId !== saved.buildId) problems.push(`构建号不一致：产物 ${current.buildId} ≠ 戳 ${saved.buildId}`);
   if (current.serverSha256 !== saved.serverSha256) problems.push("server.js 在打戳后被改动");
+  if (current.migrationSha256 !== saved.migrationSha256) problems.push("migrate-db.js 在打戳后被改动");
   if (current.webTreeHash !== saved.webTreeHash) problems.push("web 产物在打戳后被改动");
   if (problems.length) die(`${problems.join("；")}\n  说明：构建产物与发布戳不同源，先重新构建再 --stamp，不要带着不一致的产物发布。`);
 }
@@ -110,6 +115,8 @@ function verifyInstalled(installed) {
   const deployedServer = join(app, "dist/server.js");
   if (!existsSync(deployedServer)) die("安装目录缺少 dist/server.js，安装不完整");
   if (sha(deployedServer) !== current.serverSha256) die("安装目录的 server.js 与当前构建不一致（部署未生效或被手动改动）");
+  const deployedMigration = join(app, "dist/migrate-db.js");
+  if (!existsSync(deployedMigration) || sha(deployedMigration) !== current.migrationSha256) die("安装目录的 migrate-db.js 与当前构建不一致");
   const deployedWeb = join(app, "web-dist");
   const files = walk(deployedWeb);
   if (files.length !== current.webFileCount) die(`安装目录 web-dist 文件数 ${files.length} ≠ 构建 ${current.webFileCount}`);
@@ -123,26 +130,36 @@ function release(installedArg, skipCheck) {
   const installation = join(installed, "installation.json");
 
   let paused = false;
+  let migrationFailed = false;
   try {
-    console.log("[1/3] 暂停本机服务（避免运行中进程持有旧文件句柄）");
+    console.log("[1/4] 暂停本机服务（避免运行中进程持有旧文件句柄）");
     node([serviceScript, "pause", installation], { cwd: installed });
     paused = true;
 
-    console.log("[2/3] 官方部署（备份 → 换件 → 重签清单 → 自校验，失败自动回滚）");
+    console.log("[2/4] 官方部署（备份 → 换件 → 重签清单 → 自校验，失败自动回滚）");
     node([deployScript, installed], { cwd: root });
 
-    console.log("[3/3] 恢复本机服务");
+    // §6.4 红线 3：schema 迁移走部署链。用**新部署的代码**在服务恢复前把库迁到当前版本——
+    // 迁移失败就让发布停在这里（服务保持 paused），而不是让服务带着旧 schema 起来、
+    // 把"表不存在"暴露成"功能点了没反应"。迁移幂等（账本记账），已最新则零写入。
+    console.log("[3/4] 数据库迁移（新代码对 web.db，失败则发布中止）");
+    const dataRoot = loadProductLayout(installation).paths.host_data;
+    try { node([join(installed, "runtime/penguin/resources/app/dist/migrate-db.js"), dataRoot], { cwd: root }); }
+    catch (error) { migrationFailed = true; throw error; }
+
+    console.log("[4/4] 恢复本机服务");
     node([serviceScript, "resume", installation], { cwd: installed });
     paused = false;
 
     const verified = verifyInstalled(installed);
     console.log(JSON.stringify({ status: "released", buildId: buildStamp().buildId, webFiles: verified.webFiles }));
   } catch (error) {
-    if (paused) {
+    if (paused && !migrationFailed) {
       // 部署失败也必须把服务恢复回来：停着的服务比旧版本更难排查。
       try { node([serviceScript, "resume", installation], { cwd: installed }); }
       catch { console.error("release: 服务恢复失败，请手动执行 local-service.mjs resume"); }
     }
+    if (migrationFailed) console.error("release: 数据库迁移失败，服务保持暂停；检查迁移结果后再恢复服务");
     throw error;
   }
 }

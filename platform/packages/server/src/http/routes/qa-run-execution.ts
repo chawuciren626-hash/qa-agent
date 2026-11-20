@@ -19,6 +19,7 @@
  *     结束后归还；租约到期也会自动空出来，所以崩溃的 run 不会永久占住设备。
  */
 import type { Context, Hono } from "hono";
+import type { DatabaseSync } from "node:sqlite";
 import type { AppEnv } from "../../auth/middleware.js";
 import { HttpError } from "../errors.js";
 import { readJson, requireValidId } from "../validate.js";
@@ -34,6 +35,7 @@ import {
 } from "../../services/qa-task-run-registry.js";
 import type { AgentsRouteDeps } from "./agents.js";
 import { readRunTrace } from "../../services/qa-run-trace.js";
+import { runHealthSummary } from "../../services/qa-run-health.js";
 
 const RUN_ID = /^run-[A-Za-z0-9-]+$/;
 const SESSION_ID = /^[A-Za-z0-9_-]+$/;
@@ -246,5 +248,21 @@ export function registerQaRunExecutionRoutes(app: Hono<AppEnv>, deps: AgentsRout
     const trace = readRunTrace(workspace, runId);
     if (!registered && !trace.present) throw new HttpError(404, "run_not_found", "运行记录不存在。");
     return c.json({ registered, run: registered ? run : null, trace });
+  });
+
+  /**
+   * 一次 run 的健康摘要（§6.5 缺口②）：工具调用 / 降级 / 检查诊断 + 会话 token 用量
+   * （全量与本 run 开始后的增量）。排障的"看哪里"从这里开始，不用再翻三条流水。
+   */
+  app.get("/qa/task-records/:sessionId/runs/:runId/health", async (c) => {
+    const { projectId } = scope(c);
+    const sessionId = sessionOf(c, projectId);
+    const runId = runIdOf(c);
+    const workspace = deps.sessionsRepo.findById(sessionId)?.workspace ?? "";
+    const run = registry.run(projectId, runId);
+    const registered = Boolean(run && run.sessionId === sessionId);
+    // 与 trace 路由同一纪律：登记行不在且 run 目录没有痕迹 → 这个 run 不存在。
+    if (!registered && !readRunTrace(workspace, runId).present) throw new HttpError(404, "run_not_found", "运行记录不存在。");
+    return c.json(runHealthSummary({ db: deps.db as unknown as DatabaseSync, engineRoot: (process.env.AITEST_ENGINE_ROOT ?? "").trim(), workspace }, sessionId, runId));
   });
 }

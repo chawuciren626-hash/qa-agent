@@ -131,6 +131,7 @@ export function registerQaQualityTraceabilityRoutes(app: Hono<AppEnv>, deps: Age
       severity: c.req.query("severity"),
       sessionId: c.req.query("sessionId"),
       runId: c.req.query("runId"),
+      pointUid: c.req.query("pointUid"),
       limit: limitOf(c),
       cursor: c.req.query("cursor")
     }));

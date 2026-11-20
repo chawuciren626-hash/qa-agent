@@ -288,9 +288,52 @@ def test_environment_baseline_spans_runs():
             "换了 run 目录仍应读到同一个环境基线"
         assert second["baseline"]["degraded"] is None
         assert second["baseline"]["preflight"]["prechecked"] is True
-
         assert os.path.isfile(os.path.join(run_a, BASELINE_FILE)), "每个 run 各自留采集证据"
         assert os.path.isfile(os.path.join(run_b, BASELINE_FILE))
+
+
+def test_plan_declared_credentials_reach_baseline_fingerprint():
+    """计划顶层 `credentials` 声明 → 自动并入采集 → 基线带指纹 → 轮换可检测（warning）。
+
+    §6.1 的真实缺口从来不是指纹算法，而是"生产链没人传 credential_refs"——
+    计划是最清楚这次登录哪个账号的一方，由它声明，replay 负责搬运。
+    """
+    data = {"username": "qa", "password": "qa-pass"}
+    with MockService() as service, tempfile.TemporaryDirectory() as env_dir, \
+            tempfile.TemporaryDirectory() as run_a, tempfile.TemporaryDirectory() as run_b:
+        declared = [dict(plan, credentials=["${cred:p4-account}"]) for plan in _plans()]
+        first = _replay(declared, base_url=service.base_url, data=data, rounds=2,
+                        run_dir=run_a, env_dir=env_dir, baseline_config=_baseline_config())
+        assert first["credentials"] == {"declared": ["${cred:p4-account}"], "into_baseline": True}
+        baseline = json.loads(open(os.path.join(env_dir, BASELINE_FILE), encoding="utf-8").read())
+        assert baseline["credentials"]["fingerprint"], "声明的凭据必须进基线指纹"
+        assert baseline["credentials"]["ref_count"] == 1
+
+        # 轮换：引用从 ${cred:p4-account} 换成 @v2 → 指纹变 → warning 级漂移（不 blocking）
+        rotated = [dict(plan, credentials=["${cred:p4-account@v2}"]) for plan in _plans()]
+        second = _replay(rotated, base_url=service.base_url, data=data, rounds=2,
+                         run_dir=run_b, env_dir=env_dir, baseline_config=_baseline_config())
+        assert second["baseline"]["preflight"]["status"] == "comparable_with_warnings"
+        drift = second["baseline"]["preflight"]["drift"] or []
+        assert any(item["section"] == "credentials" and item["kind"] == "changed"
+                   and item["severity"] == "warning" for item in drift), drift
+
+
+def test_declared_credentials_without_baseline_are_reported_not_collected():
+    """baseline_config=None 是"不采基线"的明确决定：计划声明不擅自开启采集。
+
+    反过来想就明白为什么：若采集开关取决于计划内容，"有没有基线"就变成
+    由计划里是否写了 credentials 决定——同一个调用方两次调用行为不同，
+    排障时永远猜不到基线为什么忽然出现了。
+    """
+    with MockService() as service, tempfile.TemporaryDirectory() as directory:
+        plans = [dict(plan, credentials=["${cred:p4-account}"]) for plan in _plans()]
+        report = _replay(plans, base_url=service.base_url,
+                         data={"username": "qa", "password": "qa-pass"}, rounds=2,
+                         run_dir=directory)
+        assert report["credentials"] == {"declared": ["${cred:p4-account}"], "into_baseline": False}
+        assert not os.path.isfile(os.path.join(directory, BASELINE_FILE)), \
+            "调用方没要基线，就不该落盘基线文件"
 
 
 def test_replay_aborts_when_environment_drifts():
