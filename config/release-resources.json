@@ -250,6 +250,7 @@
     "scripts/expected-provenance-check.mjs",
     "scripts/expectation-basis.mjs",
     "scripts/expected-source.mjs",
+    "scripts/explore-authenticated.mjs",
     "scripts/explore-task-url.mjs",
     "scripts/extend-run-plan.mjs",
     "scripts/extract-word-input.py",
