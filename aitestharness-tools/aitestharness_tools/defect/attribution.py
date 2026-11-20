@@ -152,8 +152,14 @@ def _env_standing(preflight: Mapping[str, Any] | None) -> tuple[str, list[str], 
 
     if status == "comparable_with_warnings":
         reasons = preflight.get("reasons") or []
-        return ("warnings",
-                [f"环境可比但有 warning 级漂移：{'; '.join(reasons[:3])}"], blocking_drift)
+        notes = [f"环境可比但有 warning 级漂移：{'; '.join(reasons[:3])}"]
+        # 凭据漂移值得单独点名：环境密码改了，失败常以"登录失败/断言不符"出现，
+        # 最容易被误判成脚本坏了或产品坏了（§6.1）。它已计入 warnings 档位压 product
+        # 置信度，这里补的是"该先查什么"的具体指向。
+        if any(item.get("section") == "credentials" and item.get("kind") == "changed"
+               for item in drift):
+            notes.append("凭据引用与基线不一致（疑似轮换或换账号）：登录/认证类失败先查凭据与会话，不要先改脚本。")
+        return ("warnings", notes, blocking_drift)
 
     if status == "comparable":
         return ("clean", [], blocking_drift)

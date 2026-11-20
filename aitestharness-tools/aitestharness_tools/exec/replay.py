@@ -84,6 +84,22 @@ def _plan_id(plan: Mapping[str, Any], index: int) -> str:
     return str(lineage.get("id") or f"plan-{index}")
 
 
+def _declared_credentials(plans: list[Mapping[str, Any]]) -> list[str]:
+    """收集各计划顶层 `credentials` 声明（引用形态，去重排序）。
+
+    为什么从计划收集而不是要求调用方记得传：`credential_refs` 此前只有测试夹具传过，
+    生产链路全空——指纹机制在，但没人喂。计划是最清楚"这次要登录哪个账号"的一方，
+    让它声明，replay 负责搬运。
+    """
+    refs: list[str] = []
+    for plan in plans:
+        for ref in plan.get("credentials") or ():
+            text = str(ref).strip()
+            if text:
+                refs.append(text)
+    return sorted(set(refs))
+
+
 def _outcome_key(exec_ir: Mapping[str, Any]) -> tuple:
     """结论指纹：参与确定性判定。刻意不含 actual 值（见模块 docstring 第 2 点）。"""
     steps = tuple(
@@ -174,7 +190,12 @@ def replay(plans: Iterable[Mapping[str, Any]], *, base_url: str,
         env_dir          环境基线目录（跨 run 共享）。不给则退回 run_dir——
                          给了它，下一个 run 换个 run_dir 也仍能读到参考基线，
                          否则每次都是"首次运行"，闸装上了也永远在放行
-        baseline_config  给 preflight 的采集配置；None 表示不采基线
+        baseline_config  给 preflight 的采集配置；None 表示不采基线。
+                         计划顶层 `credentials: [...]`（引用形态，如 `${cred:orders-admin}`）
+                         声明的凭据引用会在采集时自动并入 `credential_refs`——计划最清楚
+                         这次要登录哪个账号，不该要求调用方记得转抄。但 None 仍是"不采"，
+                         不会因计划声明了凭据就擅自开启；这种组合会在报告
+                         `credentials.into_baseline=false` 里如实标出
         reference        显式参考基线（测试用），优先级高于 run_dir 里的
         require_reference True = 没有历史参考就拒绝开跑
         persist          首轮采集是否落盘成参考基线
@@ -205,6 +226,15 @@ def replay(plans: Iterable[Mapping[str, Any]], *, base_url: str,
 
     directory = os.fspath(run_dir) if run_dir is not None else None
     env_dir_str = os.fspath(env_dir) if env_dir is not None else directory
+    # 计划声明的凭据引用并入基线采集：**只在调用方本来就要求采基线时**。
+    # baseline_config=None 是"这次不采基线"的明确决定，不因计划声明了凭据就擅自开启——
+    # 那会让"有没有基线"取决于计划内容而不是调用方意图。
+    declared_credentials = _declared_credentials(plan_list)
+    if declared_credentials and baseline_config is not None:
+        merged_refs = sorted({*declared_credentials,
+                              *(str(r).strip() for r in (baseline_config.get("credential_refs") or [])
+                                if str(r).strip())})
+        baseline_config = {**baseline_config, "credential_refs": merged_refs}
     run_id = f"replay-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
     started_at = _utc_now()
     sdk_before = set(llm_sdk_present())
@@ -238,6 +268,8 @@ def replay(plans: Iterable[Mapping[str, Any]], *, base_url: str,
                     "abort_reason": "preflight_denied",
                     "baseline": {"preflight": pre, "per_round": baseline_notes,
                                  "degraded": pre["degraded"]},
+                    "credentials": {"declared": declared_credentials,
+                                    "into_baseline": bool(declared_credentials) and baseline_config is not None},
                     "plans": [{"id": pid} for pid in ids], "rounds_requested": rounds,
                     "rounds_done": 0, "per_round": [], "divergence": None,
                     "llm": {"calls": 0, "sdk_present": sorted(sdk_before),
@@ -313,6 +345,10 @@ def replay(plans: Iterable[Mapping[str, Any]], *, base_url: str,
                      "degraded_note": _DEGRADED_NOTES.get(degraded),
                      # 跟谁比的：跨 run 共享的环境基线目录
                      "env_dir": env_dir_str},
+        # 计划声明的凭据引用。declared 非空而 into_baseline=False = 调用方没采基线——
+        # 如实标出来，不冒充"已纳入轮换检测"。
+        "credentials": {"declared": declared_credentials,
+                        "into_baseline": bool(declared_credentials) and baseline_config is not None},
         "llm": {"calls": 0, "sdk_present": sorted(sdk_before),
                 "loaded_during": loaded_during, "guard": guard},
         # 基线写回 run manifest：服务端只认 manifest，不认本地目录布局

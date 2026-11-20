@@ -48,9 +48,13 @@ SEVERITIES = ("blocking", "warning", "info")
 # 这些字段是"关于基线的元信息"，不是基线本身；进哈希会让同一环境每次采集都不一样
 _HASH_EXCLUDED = ("content_hash", "collected_at", "note")
 
-# 允许的凭据引用形态：URI 方案，或全大写环境变量式标识。用来挡住"直接把密码传进来"
+# 允许的凭据引用形态：URI 方案、全大写环境变量式标识、或声明性占位引用（`${cred:...}` /
+# `${env:...}`，与 irval 的 REF_NAMESPACES 同源）。用来挡住"直接把密码传进来"。
+# `${data.*}` / `${ctx.*}` **不在白名单**：那是变量池引用（业务数据、会话 token），
+# 指纹跟着它们漂会把"测试数据变了"误报成"凭据轮换了"。
 _REF_URI = re.compile(r"^[a-z][a-z0-9+.\-]*://\S+$")
 _REF_ENV = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
+_REF_PLACEHOLDER = re.compile(r"^\$\{(cred|env):[^}${\s]+\}$")
 
 
 # ------------------------------------------------------------------ 指纹
@@ -92,18 +96,23 @@ def digest_rows(rows: Iterable[Sequence[Any]]) -> dict:
 def credential_fingerprint(refs: Iterable[str]) -> str | None:
     """凭据引用集合的指纹。
 
-    refs 必须是**引用 ID**（`qa-secret://orders-admin@v3`、`CI_ORDERS_PASSWORD`），
-    不是密钥值。传进来的东西若不像引用，直接拒绝——这道闸比"事后提醒别写密码"有效。
+    refs 必须是**引用 ID**（`qa-secret://orders-admin@v3`、`CI_ORDERS_PASSWORD`、
+    `${cred:orders-admin}`），不是密钥值。传进来的东西若不像引用，直接拒绝——
+    这道闸比"事后提醒别写密码"有效。
+
+    三种形态覆盖三处声明位：平台凭据 URI、环境变量名、计划里的声明性占位
+    （只认 `cred:` / `env:` 命名空间——`${data.password}` 是变量池取值不是凭据声明）。
     """
     items: list[str] = []
     for ref in refs:
         text = str(ref).strip()
         if not text:
             continue
-        if not (_REF_URI.match(text) or _REF_ENV.match(text)):
+        if not (_REF_URI.match(text) or _REF_ENV.match(text) or _REF_PLACEHOLDER.match(text)):
             raise ValueError(
-                "credential refs must be references (scheme://... or UPPER_ENV_NAME), "
-                "never secret values — baseline.json is archived with the run")
+                "credential refs must be references (scheme://..., UPPER_ENV_NAME, "
+                "or ${cred:...}/${env:...}), never secret values — "
+                "baseline.json is archived with the run")
         items.append(text)
     if not items:
         return None

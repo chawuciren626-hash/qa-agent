@@ -144,6 +144,28 @@ def test_credential_refs_reject_raw_secret():
         raise AssertionError(f"raw secret accepted: {bad!r}")
 
 
+def test_credential_placeholder_form_is_accepted():
+    # 计划里的声明形态（`${cred:...}` / `${env:...}`，与 irval 的 REF_NAMESPACES 同源）。
+    # 没有这一形态，生产链里的凭据声明根本进不了基线——指纹机制在，却没人喂得进去。
+    fingerprint = credential_fingerprint(["${cred:orders-admin}", "${env:CI_PASSWORD}"])
+    assert fingerprint
+    # 与顺序无关：引用集合的指纹，不是出现顺序的指纹
+    assert fingerprint == credential_fingerprint(["${env:CI_PASSWORD}", "${cred:orders-admin}"])
+
+
+def test_data_pool_reference_is_not_a_credential():
+    # `${data.*}` / `${ctx.*}` 是变量池取值，不是凭据声明：指纹若跟着它们漂，
+    # 会把"测试数据变了"误报成"凭据轮换了"。大小写不同形、嵌套占位同样拒绝——
+    # 白名单收紧总比事后发现指纹被业务数据污染容易解释。
+    for bad in ("${data.password}", "${ctx.token}", "${cred:}", "${cred:a b}",
+                "${cred:${nested}}", "${CRED:orders-admin}", "password123!Aa"):
+        try:
+            credential_fingerprint([bad])
+        except ValueError:
+            continue
+        raise AssertionError(f"应拒绝非声明性引用: {bad!r}")
+
+
 def test_missing_section_is_unknown_not_equal():
     # 一侧没有 files 段 → 该段记 unknown，不能当作"一致"
     reference = build_baseline("test", sut_version="2026.11.19-1")
