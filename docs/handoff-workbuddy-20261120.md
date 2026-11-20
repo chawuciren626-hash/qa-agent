@@ -1,6 +1,6 @@
 # WorkBuddy → Codex 交接文档：全流程闭环 P0→P7（2026-11-19 ~ 11-20）
 
-> 交接人：WorkBuddy（GLM Agent）。本文档原覆盖 2026-11-19 17:07 起的 29 个提交；**2026-11-20 13:45 更新：前 24 个提交（3 前置 + 21 本轮 + 交接文档 `da3f0e1`）已由 codex 合入并推送**（origin/main 现为合并提交 `964e52c` "merge: integrate WorkBuddy P0-P7 delivery with main"）。**本文档当前聚焦「#22 之后」的全部未合并提交**：§2 表中 #22-#30，加上本文档历次更新自身的提交（文档提交每改一次就 +1，**准确数字以 `git rev-list --count origin/main..HEAD` 为准**，本文不与之竞速），建设计划（`docs/全流程闭环现状与建设计划-20261119.md`）已推进到 v22。
+> 交接人：WorkBuddy（GLM Agent）。本文档原覆盖 2026-11-19 17:07 起的 29 个提交；**2026-11-20 13:45 更新：前 24 个提交（3 前置 + 21 本轮 + 交接文档 `da3f0e1`）已由 codex 合入并推送**（origin/main 现为合并提交 `964e52c` "merge: integrate WorkBuddy P0-P7 delivery with main"）。****2026-11-20 16:40 二次更新：#22-#30 也已由 codex 合入 main**。当前未合并仅 4 个提交：#31-#33（探索全站模式）与 #34（平台任务列表切片）。建设计划已推进到 **v24**。文档提交每改一次就 +1，准确数字以 `git rev-list --count origin/main..HEAD` 为准，本文不与之竞速。
 > 交接对象：codex，用于合并、推送、部署与后续整合。
 > 逐切片的详细记录（问题、口径、验收、边界）见各提交附带的 `docs/p*.md`，本文只做索引。
 
@@ -12,7 +12,7 @@
 |---|---|
 | 分支 | `codex/remove-first-run-guide-20261118`（本地，**未推送、未设 upstream**） |
 | 与 origin/main 的关系 | **origin/main 已含前 24 个提交**（codex 合并 `964e52c`，2026-11-20 确认）；本地分支领先**若干提交**（= §2 表 #22-#30 + 本文档历次更新提交，准确数以 `git rev-list --count origin/main..HEAD` 为准），从 `da3f0e1` 之后分叉，合并应无冲突（触达文件不重叠） |
-| 工作区 | 9 个提交**无未提交残留**；仅 2 个不属于本轮的改动文件（见 §6） |
+| 工作区 | 提交后无本轮残留；工作区另有 codex 在途对接文件 6 处（`migrations/steps/2026-11-20-task-platform-integration.ts`、`src/integrations/`、`migrations/index.ts`/`project-service.ts`/`qa-shared-project-defaults.test.ts`/`task-platform-integration.test.ts` 修改）——**合并时不要带上**（见 §6） |
 
 3 个前置提交（已随合并 `964e52c` 进 main，列为背景，均为探索/qpm 线）：
 
@@ -57,7 +57,11 @@
 | 27 | `26f900e` | 11-20 11:58 | §6.5 | ⬜ 待合并｜一次 run 的健康摘要 `GET …/runs/:runId/health`（工具流水+token+trace 同源） | server |
 | 28 | `e8735a3` | 11-20 12:04 | G6 | ⬜ 待合并｜资产治理最小实体：acquire 顺手清过期租约残行 | server |
 | 29 | `bfad166` | 11-20 12:05 | 工程链 docs | ⬜ 待合并｜四切片记录 + 主计划 §6.2 订正/排期行/v22 | docs |
-| 30 | `ba8f208`+`a251ec0` | 11-20 13:45 | 交接 docs | ⬜ 待合并｜本文档两连更：29 提交口径 → 订正合并状态（前 24 已进 main） | docs |
+| 30 | `ba8f208`+`a251ec0` | 11-20 13:45 | 交接 docs | ✅ 已合并｜本文档两连更：29 提交口径 → 订正合并状态（前 24 已进 main） |
+| 31 | `bb07c70` | 11-20 14:xx | 探索 | ✅ 已合并｜全站模式：登录后按路由清单逐页采集，项目地图为测试任务打底 | 引擎脚本+server+scripts |
+| 32 | `cf4a230` | 11-20 14:xx | 探索 docs | ✅ 已合并｜切片记录 + 主计划 v23 | docs |
+| 33 | `4a44732` | 11-20 14:xx | 主计划 | ✅ 已合并｜v23 插行残留修复（行尾符被吃、双竖线） | docs |
+| 34 | `57f23e1` | 11-20 16:40 | 任务列表 | ⬜ 待合并｜**平台任务列表切片 TL-1/3/4**：来源双轨列表（platform_task_links+qa_local_tasks）、TLQ-1 开始测试闸前置、T4 补充字段/T5 本地任务口径、开始测试→真实会话→全流程阶段页；AI 分析为演示产出待真管线替换 | server+web+penguin/ui |
 
 各切片详细记录（均随提交入库）：
 
