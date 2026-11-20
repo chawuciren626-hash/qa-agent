@@ -10,6 +10,10 @@
  *   execution/execution.lock.json    执行开始（含 owner_pid）——跑完就删，剩下就是没跑完
  *   execution/execution-state.json   当前阶段 + 最后一次活动时间
  *   execution/attempts/<id>/attempt.json  每次尝试密封后的起止与结论
+ *   execution/dispatch.json          命令被调用那一刻（`run-ui-tests.mjs` 写的）
+ *
+ * 第三与第四份的区别是**刻度**：attempt 证明"进过尝试"，dispatch 证明"被调用过"。中间那段
+ * 是"执行器没起来 / 起来就退 / 参数就错"——在此之前这三个和"从没发起过"完全同形。
  *
  * 让执行器再回调一次平台需要一份平台凭据（执行器是 spawn 出来的子进程，拿不到会话令牌），
  * 而判断"开始/在进行/疑似中断"这三件事根本不需要凭据——执行器本来就在写这两份文件，
@@ -58,13 +62,37 @@ export interface RunExecutionTrace {
   blockReason: string | null;
 }
 
+/**
+ * 发起方的证据（`run-ui-tests.mjs` 在命令被调用那一刻写的）。
+ *
+ * 它回答「这次运行**被发起过**吗」，与 `execution.startedAt`（执行开始）是两个刻度：
+ * dispatch 在、execution 全空 = 发起了但执行器从没开始——这是此前完全不可见的一种失败
+ * （执行器没起来 / 起来就退，之前和"从没发起"长得一模一样）。
+ */
+export interface RunDispatchTrace {
+  /** 命令被调用的时刻。 */
+  dispatchedAt: string | null;
+  /** 发起方所属的平台会话；脱离会话直接跑 CLI 时为 null。 */
+  sessionId: string | null;
+  /** 发起方机器名；区分本机发起与跨机发起。 */
+  host: string | null;
+  /** 发起方进程号；同机时可用于判存活。 */
+  ownerPid: number | null;
+}
+
 export interface RunTraceView {
   runId: string;
   /** run 目录里有没有 manifest——没有就不是一次运行，谈不上发起。 */
   present: boolean;
   manifest: { status: string; manifestVersion: number | null; baselineHash: string | null; sha256: string } | null;
   execution: RunExecutionTrace;
-  /** 平台视角的执行开始时间（= `execution.startedAt`）。报告与 `qa_runs.started_at` 都用它。 */
+  /** 发起方证据；run 目录里没有 dispatch.json 时为 null。 */
+  dispatch: RunDispatchTrace | null;
+  /**
+   * 平台视角的**执行开始**时间（= `execution.startedAt`）。报告与 `qa_runs.started_at` 都用它。
+   * **dispatch 不参与**：`report_untraced` 靠这个字段拦「报告说跑过、实际没跑」，若 dispatch
+   * 也能填它，「发起了但执行器从没开始」的报告就能混过去。
+   */
   startedAt: string | null;
   /** 疑似中断：执行尚未收尾，且最后一次活动已经超过阈值。 */
   stalled: boolean;
@@ -148,6 +176,18 @@ function sealedAttempts(executionDir: string): { count: number; firstStartedAt: 
   return result;
 }
 
+/** 读发起方证据。version 不对、run_id 与目录不符都按"没读到"处理——不冒充。 */
+function readDispatch(executionDir: string, runId: string): RunDispatchTrace | null {
+  const raw = readJson(path.join(executionDir, "dispatch.json"));
+  if (!raw || raw.version !== 1 || raw.run_id !== runId) return null;
+  return {
+    dispatchedAt: instant(raw.dispatched_at),
+    sessionId: typeof raw.session_id === "string" && raw.session_id ? raw.session_id : null,
+    host: typeof raw.host === "string" && raw.host ? raw.host : null,
+    ownerPid: Number.isSafeInteger(raw.owner_pid) && (raw.owner_pid as number) > 0 ? (raw.owner_pid as number) : null,
+  };
+}
+
 /**
  * 读一次运行的执行痕迹。**不抛错**：读不到就返回空痕迹，让调用方自己决定怎么表述。
  *
@@ -161,6 +201,7 @@ export function readRunTrace(workspace: string, runId: string, options: { now?: 
     present: false,
     manifest: null,
     execution: { ...EMPTY_EXECUTION },
+    dispatch: null,
     startedAt: null,
     stalled: false,
     stalledReason: null,
@@ -192,6 +233,7 @@ export function readRunTrace(workspace: string, runId: string, options: { now?: 
   const state = readJson(path.join(executionDir, "execution-state.json"));
   const lock = readJson(path.join(executionDir, "execution.lock.json"));
   const attempts = sealedAttempts(executionDir);
+  const dispatch = readDispatch(executionDir, runId);
 
   const lockPid = lock ? pidLiveness(lock.owner_pid) : { status: "unknown" as const, orphaned: false };
   const stateStarted = state ? instant(state.started_at) : null;
@@ -239,6 +281,7 @@ export function readRunTrace(workspace: string, runId: string, options: { now?: 
       sha256: manifestSha256,
     },
     execution,
+    dispatch,
     startedAt: execution.startedAt,
     stalled,
     stalledReason,

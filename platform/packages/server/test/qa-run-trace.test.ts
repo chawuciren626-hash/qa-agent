@@ -49,6 +49,14 @@ function writeLock(pid: number, startedAt?: string): void {
   });
 }
 
+function writeDispatch(overrides: Record<string, unknown> = {}): void {
+  writeFile("execution/dispatch.json", {
+    version: 1, run_id: RUN, session_id: "session-2026-11-20-09-00-00-abcdef", host: "test-host",
+    dispatched_at: new Date(Date.now() - 10 * MINUTE).toISOString(), owner_pid: process.pid, headed: false,
+    ...overrides,
+  });
+}
+
 /** 一个"已退出"的 pid：进程真的存在过，所以不是靠猜一个大数字来碰运气。 */
 function deadPid(): number {
   const child = spawnSync(process.execPath, ["-e", ""]);
@@ -79,6 +87,49 @@ describe("readRunTrace", () => {
     expect(trace.manifest).toMatchObject({ status: "in_progress", manifestVersion: 3, baselineHash: "a".repeat(64) });
     expect(trace.manifest?.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(trace.execution).toMatchObject({ attempts: 0, locked: false, state: null });
+    expect(trace.dispatch).toBeNull();
+  });
+
+  it("dispatch 在、执行也在：两份事实都给出，startedAt 取执行开始而不是发起时刻", () => {
+    writeManifest();
+    writeDispatch();
+    writeState();
+    const trace = readRunTrace(workspace, RUN);
+    expect(trace.dispatch).toMatchObject({
+      dispatchedAt: expect.any(String), sessionId: "session-2026-11-20-09-00-00-abcdef",
+      host: "test-host", ownerPid: process.pid,
+    });
+    // dispatch 写在执行开始之前，但 startedAt 是"执行开始"的刻度
+    expect(trace.startedAt).not.toBe(trace.dispatch?.dispatchedAt);
+    expect(trace.startedAt).not.toBeNull();
+  });
+
+  it("只有 dispatch、没有执行痕迹：发起了但执行器从没开始——startedAt 必须为空", () => {
+    // 阴性对照：report_untraced 靠 startedAt 拦"报告说跑过、实际没跑"。
+    // dispatch 若也能填 startedAt，执行器从没起来的报告就能混过这道闸。
+    writeManifest();
+    writeDispatch();
+    const trace = readRunTrace(workspace, RUN);
+    expect(trace.present).toBe(true);
+    expect(trace.dispatch).toMatchObject({ dispatchedAt: expect.any(String), host: "test-host" });
+    expect(trace.startedAt).toBeNull();
+    expect(trace.execution).toMatchObject({ attempts: 0, locked: false, state: null });
+    // 执行从未开始，谈不上"中断"
+    expect(trace.stalled).toBe(false);
+  });
+
+  it("dispatch 坏掉、版本不对、run_id 不符：都按没读到处理，不冒充", () => {
+    writeManifest();
+    writeFile("execution/dispatch.json", "{坏掉的");
+    expect(readRunTrace(workspace, RUN).dispatch).toBeNull();
+    writeDispatch({ version: 2 });
+    expect(readRunTrace(workspace, RUN).dispatch).toBeNull();
+    writeDispatch({ run_id: "run-someone-else" });
+    expect(readRunTrace(workspace, RUN).dispatch).toBeNull();
+    // 时间字段坏掉：其余事实保留，时间给 null
+    writeDispatch({ dispatched_at: "not-a-time" });
+    const trace = readRunTrace(workspace, RUN);
+    expect(trace.dispatch).toMatchObject({ dispatchedAt: null, host: "test-host" });
   });
 
   it("执行中且最近有活动：有开始时间，但不算中断", () => {

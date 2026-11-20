@@ -55,12 +55,18 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("运行痕迹与报告追溯", 
   });
   let documentId: string | null = null;
 
-  /** 执行器写到一半崩了：锁还在，持锁进程已经没了。 */
+  /** 执行器写到一半崩了：发起记录在、锁还在、持锁进程已经没了。 */
   const writeCrashedExecution = async () => {
     const invocationId = randomUUID();
     const startedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const execution = path.join(runDir(), "execution");
     await fs.mkdir(path.join(execution, "attempts"), { recursive: true });
+    // 发起记录比执行开始早：真实顺序就是"先调用命令，执行器才开始写自己的痕迹"
+    await fs.writeFile(path.join(execution, "dispatch.json"), JSON.stringify({
+      version: 1, run_id: runId, session_id: session, host: "test-host",
+      dispatched_at: new Date(Date.parse(startedAt) - 2 * 60 * 1000).toISOString(),
+      owner_pid: process.pid, headed: false,
+    }));
     await fs.writeFile(path.join(execution, "execution-state.json"), JSON.stringify({
       version: 2, run_id: runId, invocation_id: invocationId, status: "running", phase: "playwright",
       started_at: startedAt, updated_at: new Date().toISOString()
@@ -127,6 +133,11 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("运行痕迹与报告追溯", 
     const startedAt = await writeCrashedExecution();
     const crashed = (await json(await owner.get(`${base}/task-records/${session}/runs/${runId}/trace`))) as Json;
     expect(crashed.trace.startedAt).toBe(startedAt);
+    // 发起事实跟着出来：被调用过（早于执行开始 2 分钟）、归属这个会话
+    expect(crashed.trace.dispatch).toMatchObject({
+      dispatchedAt: new Date(Date.parse(startedAt) - 2 * 60 * 1000).toISOString(),
+      sessionId: session,
+    });
     // 锁在、进程不在：不用等 30 分钟阈值，这就是"跑到一半死了"
     expect(crashed.trace.execution).toMatchObject({ locked: true, pidStatus: "dead", orphaned: true });
     expect(crashed.trace.stalled).toBe(true);
