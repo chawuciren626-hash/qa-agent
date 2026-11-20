@@ -15,7 +15,9 @@ const server = file => import(pathToFileURL(resolve(root, 'platform/packages/ser
 const require = createRequire(resolve(root, 'platform/packages/server/package.json'));
 const { zipSync } = require('fflate');
 const { defaultSystemConfig, parseSkillFrontmatter } = await import(pathToFileURL(resolve(root, 'platform/packages/core/dist/index.js')).href);
-export const STANDARD_VERSION = '2026.11.16.1';
+export const STANDARD_VERSION = '2026.11.20.1';
+const STANDARD_SKILL_LABEL = 'V1.1.0';
+const skillLabelOverrides = { 'playwright-execution': 'V1.0.1' };
 const names = {
   default_agent: '通用智能体', test_agent: '软件测试总控智能体', requirement_analysis_agent: '需求分析智能体',
   test_point_agent: '测试点智能体', test_case_agent: '测试用例智能体', automation_execution_agent: '自动化执行智能体',
@@ -76,10 +78,9 @@ export function standardManifest() {
 
 /** One synchronous SQLite transaction, including dependency pins, models and menu defaults. */
 export async function initializeStandardData(store, resources = standardManifest()) {
-  const { controlRoutes, seedControlGroups, seedPluginCategories } = await server('standard-data.js');
+  const { controlRoutes, seedControlGroups, seedPluginCategories, defaultSkillCategory } = await server('standard-data.js');
   // Create service-owned auxiliary tables before the transaction, using the normal route setup.
   controlRoutes(store);
-  const { centralSkillRoutes, defaultSkillCategory } = await server('standard-data.js');
   const db = store.db;
   db.exec('CREATE TABLE IF NOT EXISTS standard_data_baselines(resource_key TEXT PRIMARY KEY,resource_id TEXT NOT NULL,source_hash TEXT NOT NULL,version TEXT NOT NULL,created_at TEXT NOT NULL)');
   const created = [], preserved = [];
@@ -116,6 +117,12 @@ export async function initializeStandardData(store, resources = standardManifest
       }
       const saved = store.save('deployment-initializer', { ...definition, payload });
       const published = store.publish('deployment-initializer', saved.id, saved.revision);
+      if (definition.kind === 'skills') {
+        const label = skillLabelOverrides[payload.skillName] ?? STANDARD_SKILL_LABEL;
+        db.prepare(`INSERT INTO central_skill_versions(resource_id,label,resource_version,change_note,state,created_at,updated_at)
+          VALUES (?,?,?,?,'published',?,?)`).run(published.id, label, published.version,
+          `Standard deployment baseline ${STANDARD_VERSION}`, published.updatedAt, published.updatedAt);
+      }
       existing.set(key, published);
       db.prepare('INSERT INTO standard_data_baselines VALUES(?,?,?,?,?)').run(key, published.id, sha(JSON.stringify(body(published))), STANDARD_VERSION, new Date().toISOString());
       created.push(key);
@@ -128,8 +135,6 @@ export async function initializeStandardData(store, resources = standardManifest
       if (item.kind === 'skills') db.prepare('INSERT OR IGNORE INTO central_skill_assignments VALUES(?,?)').run(String(item.payload.skillName), defaultSkillCategory(String(item.payload.skillName)));
       if (item.kind === 'plugins') db.prepare('INSERT OR IGNORE INTO public_plugin_category_assignments VALUES(?,?)').run(item.id, 'other');
     }
-    // Register Skill version labels through the same migration used on normal service startup.
-    centralSkillRoutes(store);
     for (const resource of existing.values()) if (resource.kind === 'agents' && resource.published) store.versionBundle(resource.id, resource.version);
     db.exec('COMMIT');
     return { version: STANDARD_VERSION, created, preserved, resources: resources.length };

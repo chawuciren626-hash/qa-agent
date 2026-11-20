@@ -18,12 +18,29 @@ test('fresh deployment publishes complete archives and pinned role dependencies;
   assert.deepEqual(standardManifest(), manifest, 'archives are deterministic');
   const first = await initializeStandardData(store, manifest);
   assert.equal(first.created.length, manifest.length);
+  const versions = store.db.prepare(`SELECT s.label,s.resource_version,s.state FROM central_skill_versions s
+    JOIN public_resources r ON r.id=s.resource_id
+    WHERE r.id=? ORDER BY s.label`);
+  for (const skill of store.list().filter(r => r.kind === 'skills')) {
+    const source = manifest.find(r => r.kind === 'skills' && r.payload.skillName === skill.payload.skillName);
+    assert.equal(skill.payload.archiveBase64, source.payload.archiveBase64);
+    assert.deepEqual(versions.all(skill.id).map(row => ({ ...row })), [{ label: skill.payload.skillName === 'playwright-execution' ? 'V1.0.1' : 'V1.1.0',
+      resource_version: skill.version, state: 'published' }]);
+  }
   for (const agent of store.list().filter(r => r.kind === 'agents')) {
     const bundle = store.versionBundle(agent.id, agent.version);
     assert.ok(bundle.resources.length >= 2);
+    for (const dependency of bundle.resources.filter(r => ['skills', 'plugins'].includes(r.kind))) {
+      assert.equal(dependency.version, store.get(dependency.id).version);
+    }
   }
+  assert.ok(store.db.prepare(`SELECT 1 FROM central_tool_agents a JOIN central_tools t ON t.id=a.tool_id
+    WHERE t.name='testpoint.coverage' AND t.enabled=1 AND a.agent_id='test_point_agent'`).get());
   const before = store.db.prepare('SELECT * FROM public_resources ORDER BY id').all();
   const models = store.db.prepare('SELECT * FROM central_model_config').all();
+  const catalog = await store.modelConfig.readRaw('central-model-catalog');
+  assert.ok(Object.keys(catalog.providers).length > 0);
+  assert.ok(catalog.models.some(m => m.provider === catalog.default_model.provider && m.model_id === catalog.default_model.model_id));
   assert.equal(store.system.menuItems().length, 11);
   assert.equal(store.db.prepare('SELECT count(*) AS n FROM public_admin_menus').get().n, 1);
   const second = await initializeStandardData(store, manifest);
@@ -34,6 +51,10 @@ test('fresh deployment publishes complete archives and pinned role dependencies;
 test('administrator edits, draft, model selection, menu visibility and removed tool links survive repeat', async t => {
   const store = fixture(t);
   await initializeStandardData(store);
+  const skill = store.list().find(r => r.kind === 'skills');
+  const labels = store.db.prepare('SELECT * FROM central_skill_versions WHERE resource_id=?');
+  store.db.prepare("UPDATE central_skill_versions SET label='V1.0.0' WHERE resource_id=?").run(skill.id);
+  const beforeLabels = labels.all(skill.id);
   const agent = store.list().find(r => r.kind === 'agents');
   store.save('admin', { kind: agent.kind, name: '管理员改名', description: agent.description,
     payload: { ...agent.payload, agentsMd: '管理员维护的指令' }, audience: agent.audience, revision: agent.revision }, agent.id);
@@ -41,6 +62,7 @@ test('administrator edits, draft, model selection, menu visibility and removed t
   store.system.setMenus('admin', store.system.menuItems().map(r => r.key === 'overview' ? { ...r, visible: false } : r));
   store.db.exec('DELETE FROM central_tool_agents; UPDATE central_tools SET enabled=0');
   await initializeStandardData(store);
+  assert.deepEqual(labels.all(skill.id), beforeLabels);
   assert.equal(store.get(agent.id, true).name, '管理员改名');
   assert.equal(store.get(agent.id, true).payload.agentsMd, '管理员维护的指令');
   assert.deepEqual((await store.modelConfig.readRaw('central-model-catalog')).models, []);
