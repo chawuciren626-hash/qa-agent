@@ -14,7 +14,9 @@
  * 边界：
  *   - 不判定结果对错：status / counts 都来自 manifest，本层不重新解读；
  *   - 不自动重跑：疑似中断只在读时标 `stalled`，由人决定重跑（真机上有写操作）；
- *   - 不做派发：谁在什么时候发起执行，是会话/阶段编排的事，不在这条路由里。
+ *   - 不做派发：谁在什么时候发起执行，是会话/阶段编排的事，不在这条路由里；
+ *   - 管资源池但不调度：声明了池的 run 必须先拿到槽位，拿不到直接拒（不排队、不忙等），
+ *     结束后归还；租约到期也会自动空出来，所以崩溃的 run 不会永久占住设备。
  */
 import type { Context, Hono } from "hono";
 import type { AppEnv } from "../../auth/middleware.js";
@@ -60,6 +62,12 @@ export function registerQaRunExecutionRoutes(app: Hono<AppEnv>, deps: AgentsRout
     return runId;
   };
 
+  /** 结束（或发起失败）时归还槽位。槽位可能已被 TTL 过期后的别人接管，那时什么都不做。 */
+  const releaseLeaseOf = (projectId: string, run: { runId: string; resourcePool: string | null }): void => {
+    if (!run.resourcePool || !(RESOURCE_POOLS as readonly string[]).includes(run.resourcePool)) return;
+    registry.releasePoolSlotOfRun({ projectId, pool: run.resourcePool as ResourcePool, runId: run.runId });
+  };
+
   /**
    * 开始：发起执行的那一刻登记一行 `running`。
    *
@@ -92,6 +100,32 @@ export function registerQaRunExecutionRoutes(app: Hono<AppEnv>, deps: AgentsRout
     if (body.dispatch !== undefined && (!body.dispatch || typeof body.dispatch !== "object" || Array.isArray(body.dispatch))) {
       throw new HttpError(400, "invalid_run", "发起载荷必须是对象。");
     }
+    /*
+     * 资源池：声明了池就必须先拿到槽位。
+     *
+     * 物理设备只有那么多（Android 1-2 台、小程序 1-2 个），两个 run 抢同一台设备的结果是双方
+     * 都出现"偶发失败"——而偶发失败最容易被归因成 flaky，flaky 又会被重试掩盖（§14.2 那个
+     * 失效模式）。所以这里**拒绝**而不是排队：产品里没有队列，"发起会话就跑"是用户看到的行为，
+     * 排到半小时后再跑等于骗人。拒了至少能说清是谁占着、什么时候到期。
+     *
+     * 不声明池则不受管——池是物理事实，猜一个（比如默认 web）会把纯 API 的 run 也卡住。
+     */
+    let lease: { slot: number; leaseUntil: string } | null = null;
+    if (resourcePool) {
+      lease = registry.acquirePoolSlot({ projectId, pool: resourcePool, runId });
+      if (!lease) {
+        const status = registry.poolStatus(resourcePool);
+        const holders = status.holders
+          .filter((holder) => !holder.expired)
+          .map((holder) => `${holder.runId}（至 ${holder.leaseUntil}）`)
+          .join("、");
+        throw new HttpError(
+          409,
+          "pool_full",
+          `资源池 ${resourcePool} 没有空槽位（容量 ${status.capacity}）：${holders || "租约刚被释放，请重试"}。`,
+        );
+      }
+    }
     try {
       const run = registry.startRun({
         projectId,
@@ -105,8 +139,10 @@ export function registerQaRunExecutionRoutes(app: Hono<AppEnv>, deps: AgentsRout
         dispatch: (body.dispatch as Record<string, unknown> | undefined) ?? {},
         title: typeof body.title === "string" ? body.title : undefined,
       });
-      return c.json({ run }, 201);
+      return c.json({ run, lease }, 201);
     } catch (error) {
+      // 登记没成，槽位必须还回去，否则这次拼错 id 会白占一个设备直到 TTL 到期。
+      if (lease && resourcePool) registry.releasePoolSlot({ projectId, pool: resourcePool, slot: lease.slot, runId });
       // 同一个 run_id 被发起两次：调用方拼错了 id，不是并发冲突，直接报出来。
       if (String((error as Error).message).includes("already exists")) {
         throw new HttpError(409, "run_exists", "该运行标识已存在，不能重复发起。");
@@ -173,6 +209,9 @@ export function registerQaRunExecutionRoutes(app: Hono<AppEnv>, deps: AgentsRout
         manifestSha256: body.manifestSha256,
         counts,
       });
+      // 结束即归还：不归还的话，下一个 run 要等到 TTL 到期才能用这台设备，而"刚跑完一个"
+      // 恰恰是最常见的连续调用场景。中断的不走这里——执行器崩了不会调它，租约交给 TTL 兜底。
+      releaseLeaseOf(projectId, run);
       return c.json({ run });
     } catch (error) {
       const message = String((error as Error).message);

@@ -680,6 +680,18 @@ export class QaTaskRunRegistry {
     return Number(result.changes ?? 0) > 0;
   }
 
+  /**
+   * 按 run 释放：结束一次执行时调用方不一定记得槽号，而槽号在 TTL 过期后可能已经换人。
+   * 条件里带 `holder_run_id`，所以即使槽位被接管也不会误删别人的；返回释放了几行——
+   * 0 说明租约早就过期了，这**不是错误**（崩溃过的 run 本来就该由 TTL 兜底）。
+   */
+  releasePoolSlotOfRun(input: { projectId: string; pool: ResourcePool; runId: string }): number {
+    const result = this.db
+      .prepare("DELETE FROM qa_pool_leases WHERE pool = ? AND project_id = ? AND holder_run_id = ?")
+      .run(input.pool, input.projectId, input.runId) as { changes?: number };
+    return Number(result.changes ?? 0);
+  }
+
   /** 当前池占用情况（排障用：谁在跑、还剩几个槽）。 */
   poolStatus(pool: ResourcePool, capacity?: number): {
     capacity: number;

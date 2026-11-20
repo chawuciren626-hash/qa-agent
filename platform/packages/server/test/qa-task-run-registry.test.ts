@@ -278,6 +278,19 @@ describe("资源池租约", () => {
     expect(registry.releasePoolSlot({ projectId: "p", pool: "android", slot: 0, runId: "run-1" })).toBe(true);
     expect(registry.poolStatus("android").free).toBe(1);
   });
+
+  it("按 run 释放只还自己的槽位；租约已被接管时一行都不删", () => {
+    registry.acquirePoolSlot({ projectId: "p", pool: "web", runId: "run-1", ttlMs: 1000 });
+    clock += 2000;
+    expect(registry.acquirePoolSlot({ projectId: "p", pool: "web", runId: "run-2" })?.slot).toBe(0);
+    // run-1 崩溃后迟到归还：槽位已经换人，不能把 run-2 踢下去
+    expect(registry.releasePoolSlotOfRun({ projectId: "p", pool: "web", runId: "run-1" })).toBe(0);
+    expect(registry.poolStatus("web").holders[0]?.runId).toBe("run-2");
+    // run_id 只在项目内唯一：换一个项目用同一个 run_id 也不能删别人的租约
+    expect(registry.releasePoolSlotOfRun({ projectId: "other", pool: "web", runId: "run-2" })).toBe(0);
+    expect(registry.releasePoolSlotOfRun({ projectId: "p", pool: "web", runId: "run-2" })).toBe(1);
+    expect(registry.poolStatus("web").free).toBe(1);
+  });
 });
 
 describe("settleRun / attachBatch", () => {
