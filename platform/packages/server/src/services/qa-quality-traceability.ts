@@ -1499,6 +1499,8 @@ export class QaQualityTraceabilityStore {
     severity?: string;
     sessionId?: string;
     runId?: string;
+    /** P6/G4 反查：这个测试点（稳定身份）上挂了哪些缺陷——"同一 bug 下轮不再漏"的查询面。 */
+    pointUid?: string;
     limit?: number;
     cursor?: string;
   }): { defects: DefectView[]; nextCursor: string | null } {
@@ -1520,6 +1522,12 @@ export class QaQualityTraceabilityStore {
     if (input.runId || input.sessionId) {
       where.push("EXISTS (SELECT 1 FROM qa_defect_occurrences o WHERE o.defect_id=qa_defects.defect_id AND (? IS NULL OR o.run_id=?) AND (? IS NULL OR o.session_id=?))");
       params.push(input.runId ?? null, input.runId ?? null, input.sessionId ?? null, input.sessionId ?? null);
+    }
+    if (input.pointUid) {
+      // json_each 精确匹配数组元素：related_points_json 是稳定身份（内容哈希）数组，
+      // 按 uid 整值匹配而不是 LIKE 子串——哈希截断的子串互为前缀时 LIKE 会误伤。
+      where.push("EXISTS (SELECT 1 FROM json_each(qa_defects.related_points_json) WHERE json_each.value=?)");
+      params.push(input.pointUid);
     }
     const cursor = decodeCursor(input.cursor, "invalid_defect");
     if (cursor) {
