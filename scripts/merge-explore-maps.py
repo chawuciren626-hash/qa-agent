@@ -32,8 +32,61 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]          # 仓库根（scripts/ 的上一级）
 sys.path.insert(0, str(ROOT / "aitestharness-tools"))
 
-from aitestharness_tools.explore.explorer import extract_controls   # noqa: E402
+from aitestharness_tools.explore.explorer import extract_controls, is_page_route   # noqa: E402
 from aitestharness_tools.knowledge.maps import build_maps           # noqa: E402
+
+
+def render_env_report(maps: dict, *, round_no: int | None) -> str:
+    """探索回写报告：环境页展示的当前状态来自合并后的地图（建档快照 + 探索事实）。"""
+    pages = maps.get("pages") or []
+    apis_list = maps.get("apis") or []
+    login = maps.get("login") or {}
+    meta = maps.get("_build_meta") or {}
+    exploration = meta.get("exploration") or {}
+    registered = [p for p in pages if p.get("registered")]
+    routes_only = [p for p in pages if not p.get("registered")]
+    modules = sorted({a.get("module") or "default" for a in apis_list})
+    lines = [
+        f"# 项目环境报告：{maps.get('project', '')}（环境 {maps.get('env', '')}）",
+        "",
+        f"- 数据来源：建档 + 探索" + (f" round-{round_no}" if round_no else "") +
+        "（每次探索成功后自动回写刷新；原始建档快照保留在同目录 bootstrap-report-*.md）",
+        f"- 地址：{exploration.get('explored_at') or '—'}",
+        f"- 更新时间：{maps.get('probed_at', '—')}",
+        "",
+        "## 一、页面",
+        "",
+        f"- 已建档（登录后真实渲染并采集控件）：**{len(registered)}** / {len(pages)}",
+        f"- 仅路由（未渲染建档）：{len(routes_only)}",
+        "",
+    ]
+    if registered:
+        lines += ["| 路由 | 控件数 |", "| --- | --- |"]
+        lines += [f"| `{p.get('route')}` | {p.get('control_count', 0)} |" for p in registered]
+        lines.append("")
+    if routes_only:
+        lines += ["以下页面只有路由、尚未渲染建档（用例设计前需补探，不要当作已看过页面）：", ""]
+        lines += [f"- `{p.get('route')}`" for p in routes_only[:15]]
+        if len(routes_only) > 15:
+            lines.append(f"- …（其余 {len(routes_only) - 15} 条略）")
+        lines.append("")
+    lines += [
+        "## 二、接口",
+        "",
+        f"- 接口数：**{len(apis_list)}**"
+        + (f"（模块：{', '.join(modules)}）" if modules else ""),
+        "",
+        "## 三、登录",
+        "",
+        f"- 表单识别：{'是' if login.get('form_detected') else '否（本次探索未经过登录）'}",
+        f"- 会话固化：{'已固化' if login.get('session_saved') else '未固化'}",
+        f"- 会话复用：{'是' if login.get('session_reused') else '否'}",
+        "",
+    ]
+    note = meta.get("note")
+    if note:
+        lines += ["## 四、探索说明", "", f"- {note}", ""]
+    return "\n".join(lines) + "\n"
 
 
 def main() -> int:
@@ -50,6 +103,13 @@ def main() -> int:
     # 这里统一补前导斜杠，调用方传 gateway-admin/user/key-card/index 也能用。
     parser.add_argument("--explore-dir", default=None, help="默认 output/explore/<project>")
     parser.add_argument("--capture-dir", default=None, help="默认 output/real-acceptance/<project>")
+    parser.add_argument("--bootstrap-maps", default=None,
+                        help="建档 maps 文件；其静态路由/接口与探索结果取并集（经页面过滤）")
+    parser.add_argument("--report-out", default=None,
+                        help="探索回写报告输出路径；给定即生成，覆盖前先自行备份")
+    parser.add_argument("--round", type=int, default=None, help="探索轮次（报告标注用）")
+    parser.add_argument("--public-mode", action="store_true",
+                        help="本次探索未经过登录（公开页模式）：登录事实如实记否")
     parser.add_argument("--username-field", default=None)
     parser.add_argument("--password-field", default=None)
     parser.add_argument("--captcha-type", default=None)
@@ -113,11 +173,10 @@ def main() -> int:
             if not route.endswith("/index") and route != "dashboard/index":
                 continue
             routes.append(f"{prefix}/{route}")
-        # 兜底：静态建档抓到、但菜单树里没有的路由（如登录页、改密页）
-        for extra in (f"{prefix}/login", "/profile/password"):
-            if extra not in routes:
-                routes.append(extra)
-        return sorted(set(routes + [target]))
+        # 建档基线的静态路由与本次探索的真实页面取并集。这里不再硬编码任何具体项目的
+        # 页面：旧版写死的 `{prefix}/login`、`/profile/password` 在换项目后变成地图里的
+        # 幽灵页面（实测 saucedemo 被注入了 `//login`），幽灵路由会误导用例设计。
+        return sorted({*routes, *baseline_routes, target})
 
     def api_module(path: str) -> str:
         parts = [p for p in path.split("/") if p]
@@ -133,7 +192,9 @@ def main() -> int:
             for entry in load(explore_dir, name, []) or load(capture_dir, name, []):
                 parsed = urlparse(entry.get("path") or entry.get("url") or "")
                 path = parsed.path
-                if not path.startswith(f"{prefix}/v2/"):
+                # 只要求落在应用前缀内：`/v2/` 是旧验收项目的接口约定，写死在这里
+                # 会让其他项目的全部接口被静默过滤掉（实测 saucedemo 接口归零）。
+                if not path.startswith(prefix):
                     continue
                 key = ((entry.get("method") or "GET").upper(), path)
                 fields: list[str] = list(entry.get("request_fields") or [])
@@ -152,13 +213,41 @@ def main() -> int:
                     continue
                 rows[key] = {"method": key[0], "path": path,
                              "module": api_module(path), "required": sorted(fields)}
+        # 建档基线的 OpenAPI 接口并入：探索只采到本页触发的请求，静态契约是它的补充不是重复。
+        for entry in baseline_apis:
+            key = (entry["method"], entry["path"])
+            if key not in rows:
+                rows[key] = entry
         return sorted(rows.values(), key=lambda item: (item["path"], item["method"]))
 
     login = {
-        "form_detected": True,
-        "session_saved": True,
-        "session_reused": True,
+        "form_detected": not args.public_mode,
+        "session_saved": not args.public_mode,
+        "session_reused": not args.public_mode,
     }
+
+    # 建档基线（--bootstrap-maps）：静态解析到的路由与 OpenAPI 接口是探索的补充。
+    # 路由要过 is_page_route——建档那次抓到的 CSS/favicon/manifest 引用不该跟着进新地图。
+    baseline_routes: list[str] = []
+    baseline_apis: list[dict] = []
+    if args.bootstrap_maps:
+        base = load(Path(args.bootstrap_maps).parent, Path(args.bootstrap_maps).name, {}) or {}
+        for row in base.get("pages") or []:
+            route = row.get("route") if isinstance(row, dict) else row
+            if isinstance(route, str) and is_page_route(route):
+                baseline_routes.append(route)
+        for route in base.get("routes") or []:
+            if isinstance(route, str) and is_page_route(route):
+                baseline_routes.append(route)
+        for entry in base.get("apis") or []:
+            if not isinstance(entry, dict) or not entry.get("path"):
+                continue
+            baseline_apis.append({
+                "method": (entry.get("method") or "GET").upper(),
+                "path": entry["path"],
+                "module": entry.get("module") or "default",
+                "required": sorted(entry.get("required") or []),
+            })
     for key, value in (("username_field", args.username_field),
                        ("password_field", args.password_field),
                        ("captcha_type", args.captcha_type)):
@@ -240,9 +329,20 @@ def main() -> int:
     (explore_dir / f"{stem}.json").write_text(
         json.dumps(maps, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    report_file = None
+    if args.report_out:
+        # 探索回写报告：环境页展示的"当前状态"来自合并后的地图，而不是停留在建档时刻
+        # 的快照——否则报告说"未发现登录表单"、探索却登录成功，用户只能来回猜。
+        report_path = Path(args.report_out)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            render_env_report(maps, round_no=args.round), encoding="utf-8")
+        report_file = str(report_path)
+
     stats = maps["stats"]
     print(json.dumps({
         "maps": str(explore_dir / f"{stem}.yaml"),
+        "report": report_file,
         "pages": stats["pages"],
         "pages_registered": stats["pages_registered"],
         "apis": stats["apis"],

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 __all__ = ["DEFAULT_BUDGET", "TERMINATION", "BudgetGuard", "extract_routes", "extract_controls",
            "detect_stack", "DANGEROUS_ACTIONS", "action_policy", "ExplorationReport",
-           "controls_to_test_points"]
+           "controls_to_test_points", "is_page_route"]
 
 # §15.2 默认硬预算（达到即停，无论还有多少没试；预算由工程制定，不靠模型自觉）
 DEFAULT_BUDGET = {"inspect_pages": 50, "probe_pages": 10, "actions_per_page": 5}
@@ -85,6 +85,26 @@ _NAV_PATTERNS = (
 # 明显不是路由的串（模板片段、选择器、外链、变量插值）
 _NOT_ROUTE = re.compile(r'[\s<>${}\\]|://|\$\{|\.\./|^/\*')
 
+# 静态资源与站点元文件不是页面：href 提取会扫到 <link>/<script> 引用，不过滤的话
+# favicon.ico、manifest.json、构建产物 CSS 全被当成页面（实测 saucedemo 建档把
+# `assets/index-*.css` 报成路由，真实业务页反而零登记）。.json 一并过滤：数据端点
+# 属于接口清单，不该以"页面"身份进地图。
+_STATIC_EXT = re.compile(
+    r"\.(css|js|mjs|cjs|map|png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|eot|otf|"
+    r"mp4|webm|mp3|wav|pdf|zip|gz|json|xml|txt)$",
+    re.I,
+)
+_NON_PAGE_PATHS = {"/favicon.ico", "/robots.txt", "/sitemap.xml",
+                   "/manifest.json", "/manifest.webmanifest"}
+
+
+def is_page_route(route: str) -> bool:
+    """判断一条候选路由是不是"可能被渲染的页面"。过滤规则在 bootstrap 与探索两侧共用。"""
+    route = str(route or "")
+    if _STATIC_EXT.search(route):
+        return False
+    return route.lower() not in _NON_PAGE_PATHS
+
 
 def extract_routes(js_text: str, base_prefix: str = "") -> dict:
     """从 JS bundle 提取路由清单（§15.2 阶段① 最高价值产出）。
@@ -110,8 +130,9 @@ def extract_routes(js_text: str, base_prefix: str = "") -> dict:
                 prefixes.add(p)        # 拼接前缀，如 '/order/' + id
                 continue
             found.add((base_prefix.rstrip("/") + p) if base_prefix else p)
-    # 过滤明显非路由（如 css 选择器式短串）
-    routes = sorted(r for r in found if r.startswith("/") or ":" in r)
+    # 过滤明显非路由（如 css 选择器式短串）与静态资源（href 会扫到 <link>/<script> 引用）
+    routes = sorted(r for r in found
+                    if (r.startswith("/") or ":" in r) and is_page_route(r))
     return {"routes": routes, "prefixes": sorted(prefixes),
             "count": len(routes), "source": "js_bundle",
             "note": "零 LLM；比逐个点击快百倍（§15.2 关键发现）"}

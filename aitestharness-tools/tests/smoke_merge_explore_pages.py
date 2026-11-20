@@ -92,6 +92,92 @@ def main() -> int:
                   f"registered={registered}")
             check("单页口径 meta 标注 page", maps2.get("_build_meta", {}).get("exploration", {}).get("mode") == "page")
 
+        # 根前缀应用（如 saucedemo）：prefix='/' 时旧版会把 `/` + '/login' 拼成 '//login'，
+        # 并写死注入 '/profile/password'——幽灵路由不能进地图；apis 也不该被 /v2/ 过滤清零。
+        explore_dir3 = Path(tmp) / "explore3"
+        explore_dir3.mkdir(parents=True)
+        login_structure = {"interactive": [
+            {"tag": "input", "type": "text", "name": "user-name", "id": "user-name"},
+            {"tag": "input", "type": "password", "name": "password", "id": "password"},
+            {"tag": "input", "type": "submit", "name": "login-button", "id": "login-button"},
+        ], "tables": [], "breadcrumb": []}
+        inventory_structure = {"interactive": [{"tag": "div", "name": "item"}] * 6, "tables": [], "breadcrumb": []}
+        (explore_dir3 / "pages.json").write_text(json.dumps([
+            {"route": "/", "ok": True, "controls": 3, "tables": 0, "structure": login_structure},
+            {"route": "/inventory.html", "ok": True, "controls": 6, "tables": 0, "structure": inventory_structure},
+        ]), encoding="utf-8")
+        (explore_dir3 / "apis.json").write_text(json.dumps([
+            {"method": "POST", "path": "/api/unique-events/submit", "request_fields": ["application"]},
+        ]), encoding="utf-8")
+        report_out = Path(tmp) / "maps-root" / "env-report-root.md"
+        proc3 = run_merge(explore_dir3, [
+            "--target-route", "", "--pages", str(explore_dir3 / "pages.json"),
+            "--report-out", str(report_out), "--round", "1",
+        ])
+        check("根前缀 merge exits 0", proc3.returncode == 0, proc3.stderr[-300:])
+        if proc3.returncode == 0:
+            maps3 = json.loads((explore_dir3 / "maps-test.json").read_text(encoding="utf-8"))
+            routes3 = {p["route"] for p in maps3.get("pages", [])}
+            check("不注入幽灵路由 //login", "//login" not in routes3, f"routes={sorted(routes3)}")
+            check("不注入幽灵路由 /profile/password", "/profile/password" not in routes3, f"routes={sorted(routes3)}")
+            inv = next((p for p in maps3.get("pages", []) if p["route"] == "/inventory.html"), {})
+            check("根前缀业务页登记控件", inv.get("registered") is True and inv.get("control_count") == 6,
+                  f"page={inv}")
+            paths3 = {a["path"] for a in maps3.get("apis", [])}
+            check("根前缀 apis 不被 /v2/ 过滤清零", "/api/unique-events/submit" in paths3,
+                  f"apis={sorted(paths3)}")
+            check("回写报告已生成", report_out.exists(), f"report={report_out}")
+            if report_out.exists():
+                text = report_out.read_text(encoding="utf-8")
+                check("回写报告标注 round", "round-1" in text)
+                check("回写报告列出已建档页", "/inventory.html" in text)
+
+        # 建档基线并集：真实路由并入、静态资源（CSS/favicon/manifest）被页面过滤拦下；
+        # 公开页模式登录事实如实记否。
+        explore_dir4 = Path(tmp) / "explore4"
+        explore_dir4.mkdir(parents=True)
+        maps_dir = Path(tmp) / "maps-baseline"
+        maps_dir.mkdir(parents=True)
+        (maps_dir / "maps-root.yaml").write_text(json.dumps({
+            "pages": [
+                {"route": "/assets/index-aSZoiKGF.css", "registered": False},
+                {"route": "/favicon.ico", "registered": False},
+                {"route": "/manifest.json", "registered": False},
+                {"route": "/legacy.html", "registered": False},
+            ],
+            "apis": [{"method": "GET", "path": "/openapi/health", "module": "default", "required": []}],
+        }), encoding="utf-8")
+        (explore_dir4 / "pages.json").write_text(json.dumps([
+            {"route": "/", "ok": True, "controls": 3, "tables": 0, "structure": login_structure},
+        ]), encoding="utf-8")
+        (explore_dir4 / "apis.json").write_text("[]", encoding="utf-8")
+        proc4 = run_merge(explore_dir4, [
+            "--target-route", "", "--pages", str(explore_dir4 / "pages.json"),
+            "--bootstrap-maps", str(maps_dir / "maps-root.yaml"), "--public-mode",
+        ])
+        check("基线并集 merge exits 0", proc4.returncode == 0, proc4.stderr[-300:])
+        if proc4.returncode == 0:
+            maps4 = json.loads((explore_dir4 / "maps-test.json").read_text(encoding="utf-8"))
+            routes4 = {p["route"] for p in maps4.get("pages", [])}
+            check("基线真实路由并入", "/legacy.html" in routes4, f"routes={sorted(routes4)}")
+            check("基线静态资源不并入", not (routes4 & {"/assets/index-aSZoiKGF.css", "/favicon.ico", "/manifest.json"}),
+                  f"routes={sorted(routes4)}")
+            paths4 = {a["path"] for a in maps4.get("apis", [])}
+            check("基线 OpenAPI 接口并入", "/openapi/health" in paths4, f"apis={sorted(paths4)}")
+            check("公开模式登录事实记否", maps4.get("login", {}).get("form_detected") is False,
+                  f"login={maps4.get('login')}")
+
+    # 路由提取的静态资源过滤：href 会扫到 <link>/<script> 引用，页面与资源必须分开。
+    from aitestharness_tools.explore.explorer import extract_routes, is_page_route
+    extracted = extract_routes(
+        'href="/assets/index-aSZoiKGF.css" href="/favicon.ico" to:"/login" '
+        'push("/inventory.html") path:"/cart.html"')
+    check("extract_routes 过滤静态资源", extracted["routes"] == ["/cart.html", "/inventory.html", "/login"],
+          f"routes={extracted['routes']}")
+    check("is_page_route 页面放行资源拦截",
+          is_page_route("/inventory.html") and not is_page_route("/manifest.json")
+          and not is_page_route("/assets/index-aSZoiKGF.css"))
+
     report()
     return 0
 
