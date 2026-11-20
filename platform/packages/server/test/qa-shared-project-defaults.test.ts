@@ -5,32 +5,27 @@ import { expect, it } from "vitest";
 import { provisionQaProject } from "../src/services/qa-project-defaults.js";
 import { qaEngineModule } from "../src/services/qa-engine.js";
 import { createTestApp } from "./helpers.js";
-import type { AuthState } from "../src/hmr/capabilities.js";
 
-it.skipIf(!process.env.AITEST_ENGINE_ROOT)("creates QA roles as references with separate empty memories", async () => {
+it.skipIf(!process.env.AITEST_ENGINE_ROOT)("creates QA roles from the current local template", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "qa-shared-project-"));
   try {
-    const roles = await provisionQaProject(root, "project_a", true);
+    const roles = await provisionQaProject(root, "project_a", false);
     expect(roles.length).toBeGreaterThan(0);
     for (const role of roles) {
       const state = path.join(root, "project_a", "agents", role, "agent_state");
-      expect(JSON.parse(await fs.readFile(path.join(state, "shared-agent.json"), "utf8"))).toEqual({ version: 1, agentId: role });
-      await expect(fs.stat(path.join(state, "system_config.yaml"))).rejects.toThrow();
-      await expect(fs.stat(path.join(state, "skills"))).rejects.toThrow();
+      await expect(fs.stat(path.join(state, "shared-agent.json"))).rejects.toThrow();
+      expect((await fs.stat(path.join(state, "system_config.yaml"))).isFile()).toBe(true);
+      expect((await fs.stat(path.join(state, "skills"))).isDirectory()).toBe(true);
       expect((await fs.stat(path.join(state, "memory", "user", "MEMORY.md"))).isFile()).toBe(true);
     }
-    expect(JSON.parse(await fs.readFile(path.join(root, "project_a", "qa-project.json"), "utf8")).source).toBe("shared-agent-service");
+    expect(JSON.parse(await fs.readFile(path.join(root, "project_a", "qa-project.json"), "utf8")).source).toBe("bundled-testing-template");
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-it.skipIf(!process.env.AITEST_ENGINE_ROOT)("initializes explicitly created Projects with separate memories and shared professional-role references", async () => {
+it.skipIf(!process.env.AITEST_ENGINE_ROOT)("initializes explicitly created Projects from the local professional-role template", async () => {
   const app = await createTestApp();
-  const prior = process.env.AITEST_SHARED_AGENT_RUNTIME;
   try {
     const roles = (qaEngineModule("qa-project-bootstrap").qaRoles() as { id: string }[]).map(role => role.id);
-    const authState = app.boot.tree.api<AuthState>("RuntimeModule", "AuthState");
-    authState.accountClient = { listSharedRoleIds: async () => roles } as unknown as AuthState["accountClient"];
-    process.env.AITEST_SHARED_AGENT_RUNTIME = "1";
     const userId = "shared_user";
     await app.deps.adminService.createUser(userId, "local-test-password");
     const owner = { userId, isAdmin: false } as Parameters<typeof app.deps.projectService.createProject>[0];
@@ -40,9 +35,9 @@ it.skipIf(!process.env.AITEST_ENGINE_ROOT)("initializes explicitly created Proje
     for (const projectId of [`${userId}-default_project`, `${userId}-second`, `${userId}-third`]) {
       for (const role of roles) {
         const state = path.join(app.root, projectId, "agents", role, "agent_state");
-        expect(JSON.parse(await fs.readFile(path.join(state, "shared-agent.json"), "utf8"))).toEqual({ version: 1, agentId: role });
-        await expect(fs.stat(path.join(state, "AGENTS.md"))).rejects.toThrow();
-        await expect(fs.stat(path.join(state, "skills"))).rejects.toThrow();
+        await expect(fs.stat(path.join(state, "shared-agent.json"))).rejects.toThrow();
+        expect((await fs.stat(path.join(state, "AGENTS.md"))).isFile()).toBe(true);
+        expect((await fs.stat(path.join(state, "skills"))).isDirectory()).toBe(true);
         expect((await fs.stat(path.join(state, "memory", "user", "MEMORY.md"))).isFile()).toBe(true);
       }
     }
@@ -57,21 +52,13 @@ it.skipIf(!process.env.AITEST_ENGINE_ROOT)("initializes explicitly created Proje
     for (const projectId of [`${userId}-second`, `${userId}-third`, "other_user-default_project"]) {
       expect(await fs.readFile(memory(projectId), "utf8")).not.toContain("private marker");
     }
-  } finally {
-    if (prior === undefined) delete process.env.AITEST_SHARED_AGENT_RUNTIME;
-    else process.env.AITEST_SHARED_AGENT_RUNTIME = prior;
-    await app.cleanup();
-  }
+  } finally { await app.cleanup(); }
 });
 
-it.skipIf(!process.env.AITEST_ENGINE_ROOT)("ordinary Projects do not require default_agent, while the administrator assistant catalog does", async () => {
+it.skipIf(!process.env.AITEST_ENGINE_ROOT)("ordinary Projects do not require default_agent, while the administrator assistant catalog uses the local template", async () => {
   const app = await createTestApp();
-  const prior = process.env.AITEST_SHARED_AGENT_RUNTIME;
   try {
     const roles = (qaEngineModule("qa-project-bootstrap").qaRoles() as { id: string }[]).map(role => role.id);
-    const authState = app.boot.tree.api<AuthState>("RuntimeModule", "AuthState");
-    authState.accountClient = { listSharedRoleIds: async () => roles } as unknown as AuthState["accountClient"];
-    process.env.AITEST_SHARED_AGENT_RUNTIME = "1";
     await app.deps.adminService.createUser("role_boundary", "local-test-password");
     const owner = { userId: "role_boundary", isAdmin: false } as Parameters<typeof app.deps.projectService.createProject>[0];
     const project = await app.deps.projectService.createProject(owner, "role_boundary-ordinary");
@@ -80,11 +67,7 @@ it.skipIf(!process.env.AITEST_ENGINE_ROOT)("ordinary Projects do not require def
     for (const role of roles) expect((await fs.stat(path.join(agentDir, role))).isDirectory()).toBe(true);
 
     const admin = { userId: "admin", isAdmin: true } as Parameters<typeof app.deps.projectService.createProject>[0];
-    await expect(app.deps.projectService.createProject(admin, "admin_agent_catalog"))
-      .rejects.toMatchObject({ code: "shared_roles_incomplete" });
-  } finally {
-    if (prior === undefined) delete process.env.AITEST_SHARED_AGENT_RUNTIME;
-    else process.env.AITEST_SHARED_AGENT_RUNTIME = prior;
-    await app.cleanup();
-  }
+    const catalog = await app.deps.projectService.createProject(admin, "admin_agent_catalog");
+    expect(catalog.projectId).toBe("admin_agent_catalog");
+  } finally { await app.cleanup(); }
 });

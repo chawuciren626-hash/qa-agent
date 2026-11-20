@@ -451,11 +451,11 @@ export function centralToolRoutes(store: ControlStore): Hono<AppEnv> {
     for (const item of SEED) {
       const now = new Date().toISOString();
       const id = `tool_${item.name.replace(/[^a-z0-9]/g, "_")}`;
-      insert.run(id, item.name, item.displayName, item.summary, item.description, item.categoryId, item.permissions,
+      const inserted = insert.run(id, item.name, item.displayName, item.summary, item.description, item.categoryId, item.permissions,
         JSON.stringify(item.parameters), JSON.stringify(item.returns), item.implemented ? 1 : 0, implPathOf(item.name),
         item.implemented ? "2026-01-01T00:00:00.000Z" : now, now);
       const row = db.prepare("SELECT id FROM central_tools WHERE name=?").get(item.name) as { id: string } | undefined;
-      if (row) for (const agent of item.agents) link.run(row.id, agent);
+      if (row && inserted.changes) for (const agent of item.agents) link.run(row.id, agent);
     }
     // impl_path 属于「代码事实」，不是管理员配置：每次启动按 IMPL_PATHS 覆盖 builtin 行，
     // 否则改了代码路径、老库里还是旧值，CI 过了但运行时仍是错的。
@@ -465,7 +465,7 @@ export function centralToolRoutes(store: ControlStore): Hono<AppEnv> {
     // 代码落地后刷新 builtin 行的文案与启停状态。只刷新 summary 仍是「（规划中）」模板的行——
     // 管理员改过描述或手动停用的行不动，避免覆盖管理员操作。
     const refresh = db.prepare("UPDATE central_tools SET display_name=?,summary=?,description=?,enabled=1,updated_at=? WHERE name=? AND builtin=1 AND summary LIKE '（规划中）%'");
-    for (const item of SEED) refresh.run(item.displayName, item.summary, item.description, new Date().toISOString(), item.name);
+    for (const item of SEED.filter(item => item.implemented)) refresh.run(item.displayName, item.summary, item.description, new Date().toISOString(), item.name);
   };
 
   const admin = (c: { var: { user: { isAdmin: boolean } } }) => { if (!c.var.user.isAdmin) throw new HttpError(403, "admin_required", "仅管理员可以管理工具。"); };

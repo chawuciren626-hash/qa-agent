@@ -47,14 +47,6 @@ export function qaBindProject(
   value.bindings[sessionId] = groupId;
   qaWrite(scope, value, storage);
 }
-// Separate from project groups so clearing a group does not reset first-use setup.
-export function qaCompleteFirstRun(projectId, userId, storage = globalThis.localStorage) {
-  try { storage.setItem(qaScope(projectId, userId, storage) + '.onboarding', 'completed'); } catch {}
-}
-export function qaFirstRunCompleted(projectId, userId, sessions = [], storage = globalThis.localStorage) {
-  try { if (storage.getItem(qaScope(projectId, userId, storage) + '.onboarding') === 'completed') return true; } catch {}
-  return sessions.some(s => s.agentId === 'test_agent' && !s.origin?.length && s.source !== 'subagent' && s.source !== 'benchmark' && !String(s.source).startsWith('org_') && s.hasTrace === true);
-}
 export function qaProjectForSession(projects, bindings, session) {
   const bound = bindings[session.sessionId];
   if (bound) return projects.find((p) => p.id === bound) || null;
@@ -183,22 +175,6 @@ export const qaScenes = [
     ],
   },
 ];
-export const qaFirstTaskPrompt = "请为以下需求设计 3 条测试用例，交付 Excel，不执行测试：登录页的用户名和密码均为必填；用户名为空时提示‘请输入用户名’，密码为空时提示‘请输入密码’。覆盖两项必填校验和正常填写场景。";
-export function qaModelSetup(catalog, agentConfig) {
-  const configured=agentConfig?.config?.model;
-  const ref=configured?.provider && configured?.modelId ? configured : catalog?.defaultModel;
-  const model=Array.isArray(catalog?.models)?catalog.models.find(m=>m.provider===ref?.provider&&m.modelId===ref?.modelId):null;
-  if(!model)return {status:'missing_model',label:'尚未选择可用的总控模型',ref:null,stamp:null};
-  return {status:model.effective?.apiKeySource&&model.effective.apiKeySource!=='none'?'configured':'needs_check',label:model.displayName||model.modelId,
-    ref:{provider:model.provider,modelId:model.modelId},stamp:JSON.stringify([model.provider,model.modelId,catalog.updatedAt??null,model.effective?.baseUrl??null,model.effective?.clientType??null,model.effective?.apiKeySource??null])};
-}
-export async function qaProbeConfiguredModel(request,base) {
-  const load=async()=>{const [models,config]=await Promise.all([request(base+'/models'),request(base+'/agents/test_agent/config')]);return qaModelSetup(models,config);};
-  const before=await load();if(!before.ref)return {status:'missing_model'};
-  const result=await request(base+'/models/test',{method:'POST',body:before.ref});
-  const after=await load();if(after.stamp!==before.stamp)return {status:'changed',model:after};
-  return {status:result?.ok===true?'connected':'failed',model:after};
-}
 // Persist turn numbers, not reducer item IDs: prepending history rebuilds item IDs.
 export function qaReadBookmarks(key, storage = globalThis.localStorage) {
   try { const value=JSON.parse(storage.getItem(key)||'[]');return Array.isArray(value)?[...new Set(value.filter(n=>Number.isSafeInteger(n)&&n>=0))]:[]; } catch { return []; }

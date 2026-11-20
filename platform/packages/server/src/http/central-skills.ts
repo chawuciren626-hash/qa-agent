@@ -9,7 +9,7 @@ import { resourceDependencies, type ControlStore, type PublicResource } from "./
 
 const defaults = [["common","通用"],["req","需求分析"],["design","测试设计"],["case","用例生成"],["web","Web 自动化"],["api","接口自动化"],["app","App 自动化"],["mini","小程序自动化"],["report","测试报告"],["defect","缺陷管理"]];
 /** Preserve the 59764 list's automatic stages for skills without a manual assignment. */
-function defaultSkillCategory(name:string):string {
+export function defaultSkillCategory(name:string):string {
   const value=name.toLowerCase();
   if(/miniprogram|mini.app|小程序/.test(value))return "mini";
   if(/android|ios|mobile/.test(value))return "app";

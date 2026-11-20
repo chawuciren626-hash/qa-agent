@@ -14,6 +14,8 @@ import type { AppEnv } from "../auth/middleware.js";
 import { HttpError } from "./errors.js";
 import { modelsRoutes } from "./routes/models.js";
 
+import { presetProviderTable, presetModelEntries, presetPromotions, PRESET_DEFAULT_MODEL } from "../model-catalog/seed.js";
+
 export const CENTRAL_MODEL_CATALOG_ID = "central-model-catalog";
 interface CatalogDocument { raw: RawTable; promotions: ModelPromotion[]; modelScopeToken?: unknown }
 
@@ -57,6 +59,12 @@ export class CentralModelConfig extends ProjectConfigService {
       replaceAll: (_id, rows) => this.save({ ...this.document(), promotions: [...rows] }),
       replaceProvider: (_id, provider, rows) => this.save({ ...this.document(), promotions: [...this.document().promotions.filter(p => p.provider !== provider), ...rows] }),
     };
+  }
+  /** Deployment seed; an existing catalogue, including deliberate empty settings, is owned by the administrator. */
+  initializeDefaults(): boolean {
+    if (this.db.prepare("SELECT 1 FROM central_model_config WHERE id=1").get()) return false;
+    this.save({ raw: { providers: presetProviderTable(), models: presetModelEntries(), default_model: { ...PRESET_DEFAULT_MODEL } }, promotions: presetPromotions() });
+    return true;
   }
   private document(): CatalogDocument {
     const row = this.db.prepare("SELECT ciphertext FROM central_model_config WHERE id=1").get() as { ciphertext: string } | undefined;

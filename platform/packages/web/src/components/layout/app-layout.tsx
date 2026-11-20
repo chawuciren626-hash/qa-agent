@@ -306,7 +306,7 @@ function CollapsedRail({ onExpand }: { onExpand: () => void }) {
   );
 }
 
-export function AppLayout({ navigation, toolbar }: { navigation?: ReactNode; toolbar?: ReactNode } = {}) {
+export function AppLayout({ navigation, toolbar, localHostFeatures = true }: { navigation?: ReactNode; toolbar?: ReactNode; localHostFeatures?: boolean } = {}) {
   const { currentProject } = useProject();
   const { user, desktopMode, sessionVia } = useAuth();
   // The docks belong to the conversation they were arranged in, so switching Sessions
@@ -334,7 +334,7 @@ export function AppLayout({ navigation, toolbar }: { navigation?: ReactNode; too
   // The single eager owner of the update checks (use-update-badges.ts): one request per
   // browser session, so a dot can be there on a fresh load instead of waiting for someone to
   // open the sidebar menu. Every other anchor reads the same caches passively.
-  const badges = useUpdateBadges(true);
+  const badges = useUpdateBadges(localHostFeatures);
   // The drawer holds the sidebar, so the drawer button is named after what the sidebar lists:
   // conversations in development mode, channels in company mode.
   const company = useCompany();
@@ -445,7 +445,7 @@ export function AppLayout({ navigation, toolbar }: { navigation?: ReactNode; too
         <>
           {/* The App info dialog, opened from the account menu's App info row and the draft
               page's version badge alike; mounted here so it outlives both. */}
-          <AppInfoDialog />
+          {localHostFeatures && <AppInfoDialog />}
           <ChangePasswordDialog
             open={changePasswordOpen}
             onClose={() => setChangePasswordOpen(false)}
@@ -509,7 +509,7 @@ export function AppLayout({ navigation, toolbar }: { navigation?: ReactNode; too
       {/* The built-in browser's pages (desktop app only): they live here, outside every page,
           and are laid over the dock's browser tab by coordinates — a webview moved in the DOM
           reloads, so navigating the app must never re-parent one. */}
-      <BuiltinBrowserLayer />
+      {localHostFeatures && <BuiltinBrowserLayer />}
       <AppPalette />
     </AppShell>
   );

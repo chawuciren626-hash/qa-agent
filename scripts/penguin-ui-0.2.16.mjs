@@ -83,7 +83,7 @@ export function patchClientBundle216(source) {
     ['typeof t.workspace=="string"&&(n.workspace=t.workspace),typeof t.machineId', 'typeof t.workspace=="string"&&(n.workspace=t.workspace),(t.qaProjectId===null||typeof t.qaProjectId=="string")&&(n.qaProjectId=t.qaProjectId),Number.isInteger(t.qaScene)&&t.qaScene>=0&&t.qaScene<3&&(n.qaScene=t.qaScene),typeof t.machineId'],
     ['rn=f.useCallback(async(pe,Yt=null)=>{if(!T||un.current)return!1;', 'rn=f.useCallback(async(pe,Yt=null)=>{if(!T){Pe("软件测试智能体尚未就绪，请刷新后重试");return!1}if(un.current)return!1;'],
     ['await yh(wn,{input:pe,...Yt?{goal:Yt}:{}})', 'await yh(wn,{input:qaScenesEnabled?[{type:"text",text:"测试场景："+qaScenes[qaScene].name},...pe]:pe,...Yt?{goal:Yt}:{}})'],
-    ['b(de?.session??{...at.session,sessionId:Pt.sessionId}),ft(),Xee(Pt.sessionId)', 'b(de?.session??{...at.session,sessionId:Pt.sessionId}),qaCompleteFirstRun(e,k),(()=>{try{qaBindProject(e,k,qaProjectId,Pt.sessionId)}catch{Pe("任务已发起，但项目归属保存失败；可在任务列表中继续")}})(),ft(),Xee(Pt.sessionId)'],
+    ['b(de?.session??{...at.session,sessionId:Pt.sessionId}),ft(),Xee(Pt.sessionId)', 'b(de?.session??{...at.session,sessionId:Pt.sessionId}),(()=>{try{qaBindProject(e,k,qaProjectId,Pt.sessionId)}catch{Pe("任务已发起，但项目归属保存失败；可在任务列表中继续")}})(),ft(),Xee(Pt.sessionId)'],
     ['[e,T,H,V,q,A,N,b,ft,i]),Re=f.useRef(null)', '[e,T,H,V,q,A,N,b,ft,i,qaProjectId,qaScene,k]),Re=f.useRef(null)'],
     ['s.jsxs("div",{className:"mt-2 flex flex-wrap items-center gap-2",children:[s.jsx(Q_e,{agents:R,selected:Ct,onSelect:cn,empty:J_e(L,y)}),s.jsx(dm,{projectId:e,workspace:A,machineId:N,onChange:Dn,chooseMachine:!0,...T?{agentId:T}:{}}),s.jsx(TFe,{available:A.trim()!==""})]})', 'null'],
     ['className:"anim-fade flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-6 md:px-4"', 'className:"qa-welcome anim-fade flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-6 md:px-4"'],
@@ -93,5 +93,5 @@ export function patchClientBundle216(source) {
     ['appName:"PenguinHarness",nav:{chat:"对话",newChat:"新建对话"', 'appName:"AITestHarness",nav:{chat:"任务",newChat:"新建任务"'],
   ];
   for(const [before,after] of pairs) source=replace(source,before,after);
-  return 'import { createWorkspaceUI, qaBindProject, qaCompleteFirstRun, qaScenes, qaScenesEnabled, qaBrandLogo } from "./qa-delivery-ui.js";\n'+source;
+  return 'import { createWorkspaceUI, qaBindProject, qaScenes, qaScenesEnabled, qaBrandLogo } from "./qa-delivery-ui.js";\n'+source;
 }

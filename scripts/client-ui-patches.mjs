@@ -61,7 +61,7 @@ export const clientPatchPairs = [
   ],
   [
     "m(wt?.session??Ae.session),Ze(),GO(Ke.sessionId)",
-    'm(wt?.session??Ae.session),qaCompleteFirstRun(e,p),(()=>{try{qaBindProject(e,p,qaProjectId,Ke.sessionId)}catch{ze("任务已发起，但项目归属保存失败；可在任务列表中继续")}})(),Ze(),GO(Ke.sessionId)',
+    'm(wt?.session??Ae.session),(()=>{try{qaBindProject(e,p,qaProjectId,Ke.sessionId)}catch{ze("任务已发起，但项目归属保存失败；可在任务列表中继续")}})(),Ze(),GO(Ke.sessionId)',
   ],
   [
     "[e,v,j,T,k,x.source,m,Ze,a]),rt=f.useRef(null)",
@@ -111,7 +111,7 @@ export function patchClientBundle(source) {
     result = result.replace(before, after);
   }
   return (
-    'import { createWorkspaceUI, qaBindProject, qaCompleteFirstRun, qaScenes, qaScenesEnabled, qaBrandLogo } from "./qa-delivery-ui.js";\n' +
+    'import { createWorkspaceUI, qaBindProject, qaScenes, qaScenesEnabled, qaBrandLogo } from "./qa-delivery-ui.js";\n' +
     result
   );
 }

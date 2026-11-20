@@ -21,6 +21,7 @@ export default defineConfig({
   // so it has no reason to be a tsup entry or a subpath export.
   entry: {
     index: "src/index.ts",
+    "standard-data": "src/standard-data.ts",
     "api/types": "src/api/types.ts",
     lock: "src/lock.ts",
     // "./machine-status": what `penguin server status` prints. A CONTROLLER runs that command

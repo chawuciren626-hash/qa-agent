@@ -222,7 +222,8 @@ export function AdminLayout() {
   const centralAssistant = useContext(CentralAssistantContext);
   const { currentProject, projects, projectsLoading, reloadProjects, setCurrentProjectId } = useProject();
   const location = useLocation();
-  const section = location.pathname.split("/")[2] ?? "";
+  // React Router strips the /admin basename before exposing useLocation().
+  const section = location.pathname.split("/")[1] ?? "";
   const [creating, setCreating] = useState(false);
   const [projectError, setProjectError] = useState("");
   const configProjectId = "admin_agent_catalog";
@@ -240,7 +241,7 @@ export function AdminLayout() {
   }, [needsConfigProject, projectsLoading, creating, projectError, catalogExists, currentProject?.projectId, reloadProjects, setCurrentProjectId]);
   const navigation = <AdminNavigation central={centralAssistant} userView={userViewUrl() ?? "/user/"}/>;
   if (needsConfigProject && (projectsLoading || creating || currentProject?.projectId !== configProjectId)) return <div className="admin-shell">{navigation}<main className="admin-main"><PageFrame><PageHeader title={section === "skills" ? "技能管理" : section === "chat" ? "管理员助手" : "智能体管理"} />{projectError ? <p role="alert">{projectError}</p> : <p role="status">正在准备管理员配置项目…</p>}</PageFrame></main></div>;
-  return <AppLayout navigation={navigation} />;
+  return <AppLayout navigation={navigation} localHostFeatures={!centralAssistant} />;
 }
 
 export function AdminAccountsPage() {

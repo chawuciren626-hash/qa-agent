@@ -79,7 +79,7 @@ import { setDockConversation } from "../dock/dock-terminal";
 import { StartDashboard } from "./start-dashboard";
 import { AdminAssistantDashboard } from "./admin-assistant-dashboard";
 import { QaHero } from "../qa/workspace-ui";
-import { qaBindProject, qaCompleteFirstRun } from "../../../../../../penguin/ui/workspace-ui.mjs";
+import { qaBindProject } from "../../../../../../penguin/ui/workspace-ui.mjs";
 import { clearDraft, draftKey, loadDraft, saveDraft } from "./draft-cache";
 import type { DraftCache } from "./draft-cache";
 import {
@@ -817,7 +817,6 @@ export function DraftView({
         // list does not contain.
         add(fresh?.session ?? { ...created.session, sessionId: res.sessionId });
         if (testingProject) {
-          qaCompleteFirstRun(projectId, userId);
           try { qaBindProject(projectId, userId, qaProjectId, res.sessionId); }
           catch { toastError("任务已发起，但工作空间归属保存失败；可在项目视图中继续"); }
         }

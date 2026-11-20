@@ -434,11 +434,23 @@ export class ControlStore {
 }
 const AGENT_GROUPS = [["common","通用","#64748b"],["req","需求分析","#7b61ff"],["design","测试设计","#0ea5a4"],["case","用例生成","#2ea86e"],["web","Web 自动化","#e8833a"],["api","接口自动化","#d97706"],["app","App 自动化","#8b5cf6"],["mini","小程序自动化","#07a35a"],["defect","缺陷管理","#e8618c"],["report","测试报告","#3b82d4"]] as const;
 const BUILTIN_AGENT_GROUPS:Record<string,string>={
-  default_agent:"common",test_agent:"common",requirement_analysis_agent:"req",
+  general_agent:"common",default_agent:"common",test_agent:"common",requirement_analysis_agent:"req",
   test_point_agent:"design",test_case_agent:"case",automation_execution_agent:"web",
   api_automation_agent:"api",android_test_agent:"app",miniprogram_test_agent:"mini",
   defect_analysis_agent:"defect",test_report_agent:"report",
 };
+export function seedControlGroups(store:ControlStore):void {
+    const insert=store.db.prepare("INSERT OR IGNORE INTO public_agent_groups VALUES (?,?,?,1)");
+    for(const row of AGENT_GROUPS)insert.run(...row);
+    const assign=store.db.prepare("INSERT OR IGNORE INTO public_agent_group_assignments VALUES (?,?)");
+    for(const agent of store.list(true).filter(resource=>resource.kind==="agents")){
+      const stage=BUILTIN_AGENT_GROUPS[String(agent.payload.agentId??"")];
+      if(stage)assign.run(agent.id,stage);
+    }
+}
+export function seedPluginCategories(store:ControlStore):void {
+  const seed=store.db.prepare("INSERT OR IGNORE INTO public_plugin_categories VALUES (?,?,?)");for(const [id,name] of [["agent_evolution","Agent 自进化"],["office","办公效率"],["software","软件开发"],["ai_apps","AI 应用开发"],["other","其他"]] as [string,string][])seed.run(id,name,"2026-01-01T00:00:00.000Z");
+}
 export function controlRoutes(store:ControlStore):Hono<AppEnv>{
   const app=new Hono<AppEnv>();app.use("*",bodyLimit({maxSize:CONTROL_BODY_LIMIT}));
   app.use("/admin/*",async(c,next)=>{if(!c.var.user.isAdmin)throw new HttpError(403,"admin_required","仅管理员可以访问管理后台。");await next();});
@@ -481,21 +493,13 @@ export function controlRoutes(store:ControlStore):Hono<AppEnv>{
     const scope=privateScope(user.userId,body.scope,body.projectId),name=identifier(body.name);
     return c.json({deleted:store.privateAgents.delete(id,scope,kind,name)});
   });
-  const seedGroups=()=>{
-    const insert=store.db.prepare("INSERT OR IGNORE INTO public_agent_groups VALUES (?,?,?,1)");
-    for(const row of AGENT_GROUPS)insert.run(...row);
-    const assign=store.db.prepare("INSERT OR IGNORE INTO public_agent_group_assignments VALUES (?,?)");
-    for(const agent of store.list(true).filter(resource=>resource.kind==="agents")){
-      const stage=BUILTIN_AGENT_GROUPS[String(agent.payload.agentId??"")];
-      if(stage)assign.run(agent.id,stage);
-    }
-  };
+  const seedGroups=()=>seedControlGroups(store);
   app.get("/admin/agent-groups",c=>{seedGroups();return c.json({stages:store.db.prepare("SELECT id,name,color,builtin FROM public_agent_groups ORDER BY builtin DESC,id").all(),assignments:store.db.prepare("SELECT resource_id AS resourceId,group_id AS stageId FROM public_agent_group_assignments").all()});});
   app.post("/admin/agent-groups",async c=>{seedGroups();const body=await c.req.json() as {name?:string;color?:string};const name=str(body.name,40).trim(),color=str(body.color,7);if(!/^#[a-fA-F0-9]{6}$/.test(color))fail("阶段颜色无效。");const id=`stage_${randomUUID().replaceAll("-","").slice(0,12)}`;store.db.prepare("INSERT INTO public_agent_groups VALUES (?,?,?,0)").run(id,name,color);return c.json({id,name,color,builtin:0},201);});
   app.put("/admin/agent-groups/assign",async c=>{seedGroups();const body=await c.req.json() as {resourceId?:string;stageId?:string};const resourceId=str(body.resourceId,100),stageId=str(body.stageId,100);if(!store.db.prepare("SELECT 1 FROM public_agent_groups WHERE id=?").get(stageId)||store.get(resourceId,true).kind!=="agents")fail("阶段或智能体无效。");store.db.prepare("INSERT INTO public_agent_group_assignments VALUES (?,?) ON CONFLICT(resource_id) DO UPDATE SET group_id=excluded.group_id").run(resourceId,stageId);return c.json({ok:true});});
   app.put("/admin/agent-groups/:id",async c=>{seedGroups();const body=await c.req.json() as {name?:string;color?:string};const name=str(body.name,40).trim(),color=str(body.color,7);if(!/^#[a-fA-F0-9]{6}$/.test(color))fail("阶段颜色无效。");const result=store.db.prepare("UPDATE public_agent_groups SET name=?,color=? WHERE id=?").run(name,color,c.req.param("id"));if(!result.changes)throw new HttpError(404,"stage_missing","阶段不存在。");return c.json({ok:true});});
   app.delete("/admin/agent-groups/:id",c=>{seedGroups();const id=c.req.param("id");if(store.db.prepare("SELECT 1 FROM public_agent_group_assignments WHERE group_id=?").get(id))throw new HttpError(409,"stage_not_empty","请先移走此阶段下的智能体。");const row=store.db.prepare("SELECT builtin FROM public_agent_groups WHERE id=?").get(id) as {builtin:number}|undefined;if(!row)throw new HttpError(404,"stage_missing","阶段不存在。");if(row.builtin)throw new HttpError(409,"builtin_stage","内置阶段不可删除。");store.db.prepare("DELETE FROM public_agent_groups WHERE id=?").run(id);return c.json({ok:true});});
-  app.get("/admin/central-plugin-categories",c=>{const seed=store.db.prepare("INSERT OR IGNORE INTO public_plugin_categories VALUES (?,?,?)");for(const [id,name] of [["agent_evolution","Agent 自进化"],["office","办公效率"],["software","软件开发"],["ai_apps","AI 应用开发"],["other","其他"]] as [string,string][])seed.run(id,name,"2026-01-01T00:00:00.000Z");return c.json({categories:store.db.prepare("SELECT id,name FROM public_plugin_categories ORDER BY created_at,id").all(),assignments:store.db.prepare("SELECT resource_id AS resourceId,category_id AS categoryId FROM public_plugin_category_assignments").all()});});
+  app.get("/admin/central-plugin-categories",c=>{seedPluginCategories(store);return c.json({categories:store.db.prepare("SELECT id,name FROM public_plugin_categories ORDER BY created_at,id").all(),assignments:store.db.prepare("SELECT resource_id AS resourceId,category_id AS categoryId FROM public_plugin_category_assignments").all()});});
   app.post("/admin/central-plugin-categories",async c=>{const body=object(await c.req.json());const name=str(body.name,40).trim();const id=`plugin_${randomUUID().replaceAll("-","").slice(0,12)}`;store.db.prepare("INSERT INTO public_plugin_categories VALUES (?,?,?)").run(id,name,new Date().toISOString());return c.json({id,name},201);});
   app.put("/admin/central-plugin-categories/assign",async c=>{const body=object(await c.req.json());const resourceId=str(body.resourceId,100),categoryId=str(body.categoryId,100);if(store.get(resourceId,true).kind!=="plugins"||!store.db.prepare("SELECT 1 FROM public_plugin_categories WHERE id=?").get(categoryId))fail("插件或分类无效。");store.db.prepare("INSERT INTO public_plugin_category_assignments VALUES (?,?) ON CONFLICT(resource_id) DO UPDATE SET category_id=excluded.category_id").run(resourceId,categoryId);return c.json({ok:true});});
   app.delete("/admin/central-plugin-categories/assignment/:id",c=>{store.db.prepare("DELETE FROM public_plugin_category_assignments WHERE resource_id=?").run(c.req.param("id"));return c.json({ok:true});});

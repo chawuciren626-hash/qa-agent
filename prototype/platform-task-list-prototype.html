@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>平台任务列表 · 原型（T1~T4 口径）</title>
+<style>
+  :root{
+    --text:#1f2329; --muted:#8f959e; --muted2:#646a73; --line:#e6e9ef; --line2:#eef0f4;
+    --hover:#f1f3f6; --pri:#185fa5; --pri-bg:#eaf2fb; --pri-line:#cfe0f3;
+    --green:#2e9e6b; --green-bg:#e8f6ef; --red:#d45555; --red-bg:#fdeeee;
+    --amber:#b8781a; --amber-bg:#fdf3e3; --orange:#c05621; --orange-bg:#fdf0e7;
+    --grey-bg:#f2f3f5; --bg:#fff;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:#f5f6f8;color:var(--text);font-size:13.5px;-webkit-font-smoothing:antialiased}
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+  input,textarea{font:inherit;color:inherit}
+
+  .pg-bar{height:46px;display:flex;align-items:center;gap:14px;padding:0 16px;background:#0f172a;color:#cbd5e1;
+    font-size:12px;position:sticky;top:0;z-index:100}
+  .pg-bar b{color:#fff;font-weight:600;font-size:12.5px}
+  .pg-hint{margin-left:auto;color:#7c8ba1;font-size:11.5px;max-width:60%;text-align:right;line-height:1.5}
+  .pg-hint b{color:#e2e8f0;font-weight:600}
+
+  .app{max-width:1280px;margin:0 auto;background:var(--bg);min-height:calc(100vh - 46px);
+    box-shadow:0 0 0 1px var(--line);padding:0 28px 60px}
+
+  /* 项目工作区页签（T3：平台任务挂在与既有页签同级） */
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);padding-top:14px}
+  .tab{padding:9px 14px 10px;font-size:13px;color:var(--muted2);border-radius:8px 8px 0 0;position:relative}
+  .tab:hover{background:var(--hover)}
+  .tab.on{color:var(--pri);font-weight:600}
+  .tab.on::after{content:"";position:absolute;left:8px;right:8px;bottom:-1px;height:2px;background:var(--pri)}
+  .tab .new{display:inline-block;margin-left:6px;font-size:10px;font-weight:700;color:#fff;background:var(--pri);
+    border-radius:8px;padding:1px 6px;vertical-align:1px}
+
+  .head{display:flex;align-items:flex-end;gap:14px;margin-top:20px}
+  .head h1{font-size:18px;font-weight:700}
+  .head p{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.6}
+  .head .right{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .btn{padding:6px 13px;border-radius:8px;border:1px solid var(--line);font-size:12.5px;font-weight:600;background:#fff;
+    display:inline-flex;align-items:center;gap:6px}
+  .btn:hover{background:var(--hover)}
+  .btn.pri{background:var(--pri);border-color:var(--pri);color:#fff}
+  .btn.pri:hover{background:#14508c}
+  .btn.dis{color:var(--muted);cursor:not-allowed;background:#fff}
+  .btn.dis:hover{background:#fff}
+  .btn.sm{padding:4px 10px;font-size:12px;border-radius:7px}
+  .btn.ghost{border-color:transparent;color:var(--pri)}
+  .btn.ghost:hover{background:var(--pri-bg)}
+  .btn .cd{font-family:var(--mono);font-size:11px}
+
+  .alert{display:flex;gap:10px;margin:16px 0 0;border-radius:10px;padding:11px 14px;font-size:12.5px;line-height:1.7}
+  .alert.blue{background:var(--pri-bg);color:#12457d;border:1px solid var(--pri-line)}
+  .alert b{font-weight:700}
+
+  /* 状态分段计数条 */
+  .segbar{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}
+  .seg{display:flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:20px;padding:5px 13px;
+    font-size:12.5px;background:#fff;color:var(--muted2);transition:border-color .12s,box-shadow .12s}
+  .seg:hover{border-color:var(--pri-line)}
+  .seg.on{border-color:var(--pri);box-shadow:0 0 0 1px var(--pri) inset;color:var(--text);font-weight:600}
+  .seg .n{font-family:var(--mono);font-weight:700;font-size:12px}
+  .seg i{width:8px;height:8px;border-radius:50%;flex:none}
+  .seg-count{margin-left:auto;align-self:center;font-size:11.5px;color:var(--muted)}
+  .seg-count label{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
+
+  /* 列表 */
+  .tbl{width:100%;border-collapse:collapse;margin-top:14px;background:#fff}
+  .tbl th{font-size:11px;font-weight:600;color:var(--muted);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);
+    letter-spacing:.3px;white-space:nowrap}
+  .tbl td{padding:11px 10px;border-bottom:1px solid var(--line2);vertical-align:middle;font-size:12.5px}
+  .tbl tr:hover td{background:#fafbfc}
+  .tno{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--pri);cursor:pointer;display:inline-flex;align-items:center;gap:4px}
+  .tno:hover{text-decoration:underline}
+  .tno svg{opacity:.55}
+  .title-cell b{font-weight:600;display:flex;align-items:center;gap:6px}
+  .edot{width:6px;height:6px;border-radius:50%;background:var(--orange);flex:none}
+  .edot+hint,.title-cell .editspan{font-size:10.5px;color:var(--orange);font-weight:500}
+  .sub{font-size:11px;color:var(--muted);margin-top:3px}
+
+  .pill{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap}
+  .p-wait{background:var(--amber-bg);color:var(--amber)}
+  .p-ready{background:var(--pri-bg);color:var(--pri)}
+  .p-run{background:#e6f4fb;color:#1c6d96}
+  .p-impact{background:var(--orange-bg);color:var(--orange)}
+  .p-done{background:var(--green-bg);color:var(--green)}
+  .p-term{background:var(--grey-bg);color:var(--muted2)}
+  .p-src-p{background:var(--pri-bg);color:var(--pri)}
+  .p-src-l{background:#f0e9fb;color:#6b46c1}
+  .txt,.sel{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12.5px;background:#fff}
+  .txt:focus,.sel:focus{outline:none;border-color:var(--pri);box-shadow:0 0 0 2px var(--pri-bg)}
+  .pri-b{color:var(--red);font-weight:700}
+  .pri-m{color:var(--amber);font-weight:700}
+  .pri-l{color:var(--muted2);font-weight:600}
+  .ai-tag{font-size:11px;color:var(--muted2)}
+  .ai-tag .star{color:var(--pri);font-weight:700}
+
+  .ops{display:flex;gap:2px;white-space:nowrap}
+  .empty{padding:36px;text-align:center;color:var(--muted);font-size:12.5px}
+
+  /* 抽屉 */
+  .mask{position:fixed;inset:0;background:rgba(15,23,42,.32);z-index:200;display:none}
+  .drawer{position:fixed;top:0;right:-560px;width:560px;bottom:0;background:#fff;z-index:210;box-shadow:-8px 0 30px rgba(15,23,42,.14);
+    transition:right .22s ease;display:flex;flex-direction:column}
+  .drawer.open{right:0}
+  .mask.show{display:block}
+  .dw-head{padding:16px 20px 12px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;gap:10px}
+  .dw-head h2{font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px}
+  .dw-head .no{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:4px}
+  .dw-close{margin-left:auto;width:28px;height:28px;border-radius:8px;font-size:15px;color:var(--muted2)}
+  .dw-close:hover{background:var(--hover)}
+  .dw-body{flex:1;overflow:auto;padding:16px 20px 28px}
+  .dw-sec{margin-bottom:22px}
+  .dw-sec>h3{font-size:12px;font-weight:700;color:var(--muted2);letter-spacing:.4px;margin-bottom:10px;
+    display:flex;align-items:center;gap:8px}
+  .dw-sec>h3 .tag{font-size:10px;font-weight:700;color:var(--pri);background:var(--pri-bg);border-radius:8px;padding:1px 7px}
+  .fgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px}
+  .frow{font-size:12.5px;line-height:1.5}
+  .frow dt{font-size:11px;color:var(--muted);margin-bottom:2px}
+  .frow dd{font-weight:500}
+  .frow dd.mono{font-family:var(--mono);font-size:12px}
+  .verline{display:flex;align-items:center;gap:0;margin-top:4px;flex-wrap:wrap}
+  .vnode{display:flex;align-items:center;gap:6px;font-size:11.5px;font-family:var(--mono);color:var(--muted2)}
+  .vnode i{width:9px;height:9px;border-radius:50%;background:#fff;border:2px solid var(--line)}
+  .vnode.cur i{border-color:var(--pri);background:var(--pri)}
+  .vnode.cur{color:var(--text);font-weight:600}
+  .varrow{color:var(--line);margin:0 8px;font-size:11px}
+  .vtime{font-size:10.5px;color:var(--muted);font-family:var(--mono)}
+
+  .sum-block{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px;background:#fcfcfd}
+  .sum-block h4{font-size:12px;font-weight:700;margin-bottom:7px;display:flex;align-items:center;gap:6px}
+  .sum-block ul{padding-left:16px;font-size:12.5px;line-height:1.8;color:var(--text)}
+  .sum-block .reason{font-size:11.5px;color:var(--muted2);margin-top:6px;line-height:1.6}
+  .sum-foot{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:11px;color:var(--muted)}
+  .sum-foot .mono{font-family:var(--mono)}
+  .risk li{color:#8f2f2f}
+  .openq li{color:#7a5312}
+
+  .impact-box{border:1px solid #f0d8c4;background:var(--orange-bg);border-radius:10px;padding:13px 15px}
+  .impact-box h4{font-size:12.5px;font-weight:700;color:var(--orange);margin-bottom:6px}
+  .impact-box p{font-size:12px;line-height:1.7;color:#7a4215}
+  .impact-box .chg{font-size:11.5px;font-family:var(--mono);background:#fff;border:1px solid #f0d8c4;border-radius:7px;
+    padding:7px 10px;margin-top:8px;color:var(--muted2);line-height:1.7}
+  .impact-acts{display:flex;gap:8px;margin-top:11px}
+
+  .prog-item{border:1px solid var(--line);border-radius:10px;padding:11px 13px;margin-bottom:8px;background:#fff}
+  .prog-item .l1{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600}
+  .prog-item .l2{display:flex;gap:14px;margin-top:5px;font-size:11.5px;color:var(--muted)}
+  .prog-item .l2 .mono{font-family:var(--mono)}
+
+  .local-note{border:1px dashed var(--pri-line);background:var(--pri-bg);border-radius:10px;padding:11px 13px;
+    font-size:12px;line-height:1.7;color:#12457d}
+  .local-note b{font-weight:700}
+
+  /* 编辑弹窗 */
+  .modal{position:fixed;inset:0;z-index:300;display:none;align-items:center;justify-content:center}
+  .modal.show{display:flex}
+  .modal .mbox{width:520px;background:#fff;border-radius:14px;box-shadow:0 18px 60px rgba(15,23,42,.25);overflow:hidden}
+  .m-head{padding:15px 20px 12px;border-bottom:1px solid var(--line);display:flex;align-items:center}
+  .m-head h2{font-size:14.5px;font-weight:700}
+  .m-body{padding:16px 20px}
+  .m-sec-label{font-size:11px;font-weight:700;color:var(--muted2);letter-spacing:.4px;margin:0 0 8px}
+  .m-sec-label+.readonly{border:1px solid var(--line);border-radius:9px;background:var(--grey-bg);padding:10px 12px;
+    font-size:12px;color:var(--muted2);line-height:1.7;margin-bottom:16px}
+  .field{margin-bottom:14px}
+  .field label{display:block;font-size:12px;font-weight:600;margin-bottom:5px}
+  .field label small{font-weight:400;color:var(--muted);margin-left:6px}
+  .field textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12.5px;
+    min-height:58px;resize:vertical;line-height:1.6}
+  .field textarea:focus{outline:none;border-color:var(--pri);box-shadow:0 0 0 2px var(--pri-bg)}
+  .m-foot{padding:12px 20px 16px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid var(--line2)}
+  .m-hint{font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:14px;padding:8px 11px;background:var(--pri-bg);
+    border-radius:8px;color:#12457d}
+
+  /* toast */
+  #toasts{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:400;display:flex;flex-direction:column;gap:8px;align-items:center}
+  .toast{background:#1f2937;color:#f3f4f6;font-size:12.5px;padding:9px 16px;border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.22);
+    max-width:560px;line-height:1.6;animation:tin .18s ease}
+  .toast.ok{background:#14532d}
+  .toast.warn{background:#7c2d12}
+  @keyframes tin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  .spin{display:inline-block;width:11px;height:11px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;
+    animation:sp .7s linear infinite}
+  .spin.dark{border-color:var(--pri-line);border-top-color:var(--pri)}
+  @keyframes sp{to{transform:rotate(360deg)}}
+
+  .foot{margin-top:30px;padding-top:14px;border-top:1px dashed var(--line);font-size:11.5px;color:var(--muted);line-height:1.9}
+  .foot code{font-family:var(--mono);font-size:11px;background:var(--grey-bg);padding:1px 5px;border-radius:4px;color:var(--text)}
+</style>
+</head>
+<body>
+<div class="pg-bar">
+  <b>原型 · 平台任务列表（任务平台对接）</b>
+  <span id="scenario">口径 T1~T4 · 挂载于项目工作区页签</span>
+  <span class="pg-hint">这是<b>原型</b>，不动真实前端。口径依据《AITestHarness平台任务列表建设方案-2026-11-20》T1~T4 与 TLQ-1~5 确认结论。</span>
+</div>
+
+<div class="app">
+  <!-- T3：挂载位置演示 -->
+  <div class="tabs">
+    <span class="tab">项目视图</span>
+    <span class="tab">项目环境</span>
+    <span class="tab">定时任务</span>
+    <span class="tab">项目资料</span>
+    <span class="tab on">平台任务<span class="new">新</span></span>
+  </div>
+
+  <div class="head">
+    <div>
+      <h1>平台任务</h1>
+      <p>gov 用户端产品线 · 来源「平台同步」+ 本地新建（T5）· 平台数据由 AITestHarness 定时拉取（1 分钟/次），任务平台不主动推送</p>
+    </div>
+    <div class="right">
+      <button class="btn" id="syncBtn">⟳ 立即同步</button>
+      <button class="btn pri" onclick="openCreate()">＋ 新建任务</button>
+      <button class="btn" onclick="toast('演示：跳转任务平台凭据配置（另见对接方案）','ok')">对接设置</button>
+    </div>
+  </div>
+
+  <div class="alert blue">
+    <b>口径提示</b>
+    <span>平台任务：「开始测试」需 AI 分析完成才可点（TLQ-1）；「编辑」仅限补充性字段，交接包原文不可动（T4）。本地新建任务（T5）：不走平台拉取，AI 分析可选，创建后即可开始。手动同步 60s 内去重（TLQ-4）；平台任务号可跳转深链（TLQ-5）。</span>
+  </div>
+
+  <div class="segbar" id="segbar"></div>
+  <div style="display:flex;align-items:center;margin-top:10px">
+    <div class="seg-count" style="margin-left:0"><label><input type="checkbox" id="showTerm"> 显示已终止</label></div>
+    <div class="seg-count" id="rowCount"></div>
+  </div>
+
+  <table class="tbl">
+    <thead>
+      <tr>
+        <th>任务号</th><th>任务名称</th><th>优先级</th><th>包版本</th><th>轮次</th>
+        <th>AI 建议</th><th>状态</th><th style="text-align:right">操作</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div class="empty" id="empty" style="display:none">当前筛选下没有任务</div>
+
+  <div class="foot">
+    <b>原型范围说明</b><br>
+    ① 行操作四件套：<b>编辑</b>=补充性字段弹窗（T4）；<b>查看</b>=右侧详情抽屉；<b>AI 分析</b>=失败重试 / 重新分析（T2，自动分析为主路径，此按钮是人工入口）；<b>开始测试</b>=创建/复用测试工作会话（TLQ-1 未分析禁用）。<br>
+    ② 状态机：<code>待分析 → 可开始 → 进行中 → 已回传</code>；新版本到达进入 <code>待确认影响</code>；已终止默认隐藏（TLQ-2）。<br>
+    ③ 编辑过的条目带橙点「已编辑」，编辑字段作为 AI 分析附加输入且不被平台同步覆盖（T4）。<br>
+    ④ 详情抽屉三段式：平台资料（含包版本时间线与平台深链）/ AI 分析结论（标"AI 建议"）/ 测试进展（含影响待确认区块）。<br>
+    ⑤ <b>新建任务</b>（T5）：本地自建测试任务，来源标「本地」，无包版本/轮次/平台深链；创建后直接「可开始」，AI 分析<b>可选</b>（非必经，平台任务仍是入库自动分析）；开始测试不强制先分析。<br>
+    ⑥ 「开始测试」「进入测试工作」打开的是<b>既有全流程阶段页面</b>（需求分析→场景与测试点→用例设计→测试执行→缺陷分析→测试报告），列表模块只做入口跳转，不重建流程页。
+  </div>
+</div>
+
+<!-- 详情抽屉 -->
+<div class="mask" id="mask" onclick="closeDrawer()"></div>
+<aside class="drawer" id="drawer">
+  <div class="dw-head">
+    <div>
+      <h2 id="dwTitle"></h2>
+      <div class="no" id="dwNo"></div>
+    </div>
+    <button class="dw-close" onclick="closeDrawer()">✕</button>
+  </div>
+  <div class="dw-body" id="dwBody"></div>
+</aside>
+
+<!-- 编辑弹窗 -->
+<div class="modal" id="editModal">
+  <div class="mbox">
+    <div class="m-head"><h2>编辑补充性字段</h2><button class="dw-close" onclick="closeEdit()" style="margin-left:auto">✕</button></div>
+    <div class="m-body">
+      <div class="m-hint" id="mHint">平台交接包为不可变版本快照，这里只能编辑本地补充性字段；保存后作为 AI 分析的附加输入，且不会被平台后续同步覆盖（T4）。</div>
+      <div id="mPlatformSec">
+        <p class="m-sec-label">平台原文（只读）</p>
+        <div class="readonly" id="mReadonly"></div>
+        <p class="m-sec-label">本地补充字段（可编辑）</p>
+        <div class="field">
+          <label>本地标题备注 <small>仅本地列表展示，不改平台任务名</small></label>
+          <textarea id="mTitleNote" placeholder="例如：重点核对 v3 新增的批量导入开关"></textarea>
+        </div>
+        <div class="field">
+          <label>测试重点备注 <small>拼接进 AI 分析上下文，优先级低于包原文</small></label>
+          <textarea id="mFocusNote" placeholder="例如：登录态在多标签页之间的同步行为本次必须覆盖"></textarea>
+        </div>
+      </div>
+      <div id="mLocalSec" style="display:none">
+        <div class="field">
+          <label>任务名称 <small>* 必填</small></label>
+          <input type="text" id="mLocalTitle" class="txt" placeholder="例如：登录页错误提示文案核对">
+        </div>
+        <div class="field">
+          <label>优先级</label>
+          <select id="mLocalPri" class="sel">
+            <option value="high">高</option>
+            <option value="medium" selected>中</option>
+            <option value="low">低</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>需求描述 / 测试背景 <small>作为 AI 分析主输入</small></label>
+          <textarea id="mLocalDesc" style="min-height:86px" placeholder="描述要测什么、背景与预期，例如：登录失败时错误提示不明确，需要核对各失败场景的文案与建议动作"></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" onclick="closeEdit()">取消</button>
+      <button class="btn pri" onclick="saveEdit()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+/* ---------- 样例数据 ---------- */
+const T = {
+  wait:{label:'待分析',cls:'p-wait',c:'#b8781a'},
+  ready:{label:'可开始',cls:'p-ready',c:'#185fa5'},
+  run:{label:'进行中',cls:'p-run',c:'#1c6d96'},
+  impact:{label:'待确认影响',cls:'p-impact',c:'#c05621'},
+  done:{label:'已回传',cls:'p-done',c:'#2e9e6b'},
+  term:{label:'已终止',cls:'p-term',c:'#8f959e'},
+};
+let tasks=[
+ {id:'FB202611090001',title:'gov 用户端登录优化',pri:'high',ver:3,round:3,ai:'high',aiReason:'平台优先级=高 + 复杂度=复杂 + 预估3天',st:'ready',
+  line:'gov 用户端（主）· 数据平台（关联）',ftype:'requirement',hours:24,submitter:'张工',assignee:'李工',edited:true,
+  titleNote:'v3 新增批量导入开关，重点核对',focusNote:'登录态多标签页同步行为必须覆盖',
+  analyzedAt:'2026-11-20 10:32',sessionId:'session-a1',runs:[{rid:'run-1fd819e7',verdict:'待审核',stat:'用例 24 · 缺陷 0'}],
+  points:['统一登录入口的会话保持策略','第三方凭据登录的异常兜底','批量导入开关对登录流程的影响'],
+  scope:['登录页主流程回归','凭据卡管理页联动','多标签页会话同步'],risks:['测试环境凭据池容量不足，可能影响并发登录验证'],openq:['批量导入开关灰度范围待与研发确认']},
+ {id:'FB202611020002',title:'淘宝渠道 API Key 管理页',pri:'medium',ver:1,round:1,ai:null,aiReason:null,st:'wait',fail:true,
+  line:'gov 用户端（主）',ftype:'requirement',hours:12,submitter:'王工',assignee:'李工',
+  points:[],scope:[],risks:[],openq:[]},
+ {id:'FB202611180003',title:'订单导出明细增加税号字段',pri:'low',ver:1,round:1,ai:null,aiReason:null,st:'wait',
+  line:'数据平台（主）',ftype:'data_fix',hours:6,submitter:'赵工',assignee:'李工',
+  points:[],scope:[],risks:[],openq:[]},
+ {id:'FB202611010004',title:'报表中心权限隔离修复',pri:'medium',ver:2,round:2,ai:'medium',aiReason:'平台优先级=中 + 复杂度=中',st:'run',
+  line:'gov 用户端（主）',ftype:'bug',hours:10,submitter:'张工',assignee:'李工',
+  analyzedAt:'2026-11-19 16:55',sessionId:'session-b2',runs:[{rid:'run-2cb343d7',verdict:'已完成',stat:'用例 25 · 缺陷 0'}],
+  points:['角色权限矩阵覆盖','越权访问拦截','报表导出数据边界'],scope:['权限矩阵全量回归','两个越权场景验证'],risks:[],openq:[]},
+ {id:'FB202611150005',title:'卡密卡池分页查询优化',pri:'high',ver:2,round:3,ai:'high',aiReason:'平台优先级=高 + 复杂度=中',st:'impact',
+  line:'gov 用户端（主）· 计费网关（关联）',ftype:'requirement',hours:16,submitter:'王工',assignee:'李工',
+  analyzedAt:'2026-11-18 09:20',sessionId:'session-c3',runs:[{rid:'run-6d8827fc',verdict:'执行中',stat:'用例 18 · 缺陷 1'}],
+  points:['分页查询性能阈值','深页码数据一致性'],scope:['分页组件回归','大卡池数据源压测'],risks:[],openq:[],
+  changeSummary:'v1 → v2：变更 2 处 —— ① 卡池分页默认 pageSize 20→50；② 新增 section 筛选参数'},
+ {id:'FB202610280006',title:'网关限流配置页面',pri:'medium',ver:1,round:1,ai:'medium',aiReason:'平台优先级=中 + 复杂度=简单',st:'done',
+  line:'计费网关（主）',ftype:'requirement',hours:8,submitter:'赵工',assignee:'李工',
+  analyzedAt:'2026-11-16 14:00',sessionId:'session-d4',runs:[{rid:'run-0ea88ea7',verdict:'通过',stat:'用例 15 · 缺陷 0 · 已回传 11-17'}],
+  points:['限流阈值配置生效','超限响应码校验'],scope:['配置页 CRUD','限流触发验证'],risks:[],openq:[]},
+ {id:'FB202610250007',title:'对接文档下载入口调整',pri:'low',ver:1,round:1,ai:'low',aiReason:'平台优先级=低 + 复杂度=简单',st:'done',
+  line:'gov 用户端（主）',ftype:'question',hours:4,submitter:'王工',assignee:'李工',
+  analyzedAt:'2026-11-15 11:00',sessionId:'session-e5',runs:[{rid:'run-992cccd3',verdict:'通过',stat:'用例 6 · 缺陷 0 · 已回传 11-16'}],
+  points:['下载入口位置','权限可见性'],scope:['文档中心页回归'],risks:[],openq:[]},
+ {id:'FB202610120008',title:'历史数据迁移核对工具',pri:'low',ver:2,round:2,ai:'low',aiReason:'人工终止：等下一版本一并处理',st:'term',
+  line:'数据平台（主）',ftype:'data_fix',hours:20,submitter:'张工',assignee:'李工',
+  analyzedAt:'2026-11-10 10:00',sessionId:'session-f6',runs:[{rid:'run-8a11cc02',verdict:'已封存',stat:'用例 9 · 缺陷 2'}],
+  points:[],scope:[],risks:[],openq:[]},
+ {id:'LOCAL-001',source:'local',title:'登录页错误提示文案核对',pri:'low',ver:null,round:null,ai:null,aiReason:null,st:'ready',
+  line:'本地任务',ftype:null,hours:null,submitter:null,assignee:null,
+  desc:'登录失败时错误提示不明确，需要核对各失败场景（密码错误/账号锁定/网络超时）的文案与建议动作是否一致。',
+  points:[],scope:[],risks:[],openq:[],runs:[]},
+];
+let nextLocal=2;
+let seg='all', editingId=null, analyzing=new Set();
+
+/* ---------- 渲染 ---------- */
+function segCounts(){
+  const c={all:0,wait:0,ready:0,run:0,impact:0,done:0,term:0};
+  tasks.forEach(t=>{c.all++;c[t.st]++});
+  return c;
+}
+function renderSeg(){
+  const c=segCounts();
+  const items=[['all','全部'],['wait','待分析'],['ready','可开始'],['run','进行中'],['impact','待确认影响'],['done','已回传'],['term','已终止']];
+  document.getElementById('segbar').innerHTML=items.map(([k,l])=>{
+    const hidden=k==='term';
+    return `<button class="seg ${seg===k?'on':''}" onclick="setSeg('${k}')" ${hidden?'title="默认隐藏，勾选「显示已终止」后可见（TLQ-2）"':''}>
+      <i style="background:${k==='all'?'#8f959e':T[k].c}"></i>${l}<span class="n">${c[k]}</span></button>`;
+  }).join('')+
+  `<span class="seg-count" id="rc2"></span>`;
+  updateRowCount();
+}
+function updateRowCount(){
+  const list=visible();
+  document.getElementById('rowCount').textContent=`共 ${list.length} 条`;
+}
+function visible(){
+  const showTerm=document.getElementById('showTerm').checked;
+  return tasks.filter(t=>{
+    if(seg!=='all'&&t.st!==seg)return false;
+    if(t.st==='term'&&!showTerm)return false;
+    return true;
+  });
+}
+function priHtml(p){return p==='high'?'<span class="pri-b">高</span>':p==='medium'?'<span class="pri-m">中</span>':'<span class="pri-l">低</span>'}
+function aiHtml(t){
+  if(t.st==='wait'&&t.fail)return '<span class="ai-tag" style="color:var(--red)">分析失败</span>';
+  if(!t.ai)return '<span class="ai-tag">—</span>';
+  const star=t.id==='FB202611090001'?'<span class="star">★建议先做</span> · ':'';
+  return `<span class="ai-tag">${star}${t.ai==='high'?'<span class="pri-b">高</span>':t.ai==='medium'?'<span class="pri-m">中</span>':'<span class="pri-l">低</span>'}</span>`;
+}
+function opsHtml(t){
+  const ops=[];
+  ops.push(`<button class="btn sm" onclick="openEdit('${t.id}')">编辑</button>`);
+  ops.push(`<button class="btn sm" onclick="openDrawer('${t.id}')">查看</button>`);
+  if(t.st!=='done'&&t.st!=='term'){
+    if(t.st==='wait'){
+      const busy=analyzing.has(t.id);
+      ops.push(`<button class="btn sm ghost" onclick="doAnalyze('${t.id}')" id="ai-${t.id}">${busy?'<span class="spin dark"></span> 分析中…':(t.fail?'重试分析':'AI 分析')}</button>`);
+      ops.push(`<button class="btn sm dis" title="AI 分析未完成，开始测试不可用（TLQ-1）">开始测试</button>`);
+    }else{
+      ops.push(`<button class="btn sm ghost" onclick="doAnalyze('${t.id}')" id="ai-${t.id}">${t.ai?'重新分析':'AI 分析'}</button>`);
+      if(t.st==='ready')ops.push(`<button class="btn sm pri" onclick="doStart('${t.id}')">开始测试</button>`);
+      if(t.st==='run')ops.push(`<button class="btn sm pri" onclick="toast('演示：打开既有测试工作会话 ${t.sessionId||''}（全流程阶段页：需求分析→场景与测试点→用例设计→测试执行→缺陷分析→测试报告）','ok')">进入测试工作</button>`);
+      if(t.st==='impact')ops.push(`<button class="btn sm pri" onclick="openDrawer('${t.id}')">确认影响</button>`);
+    }
+  }
+  if(t.st==='done')ops.push(`<button class="btn sm" onclick="toast('演示：查看回传结果与历史','ok')">查看结果</button>`);
+  if(t.st==='term')ops.push(`<button class="btn sm" onclick="toast('演示：查看封存结果','ok')">查看封存</button>`);
+  return `<div class="ops">${ops.join('')}</div>`;
+}
+function renderTable(){
+  const list=visible();
+  document.getElementById('tbody').innerHTML=list.map(t=>`
+   <tr>
+     <td><span class="tno" onclick="toast('演示：新窗口打开平台深链 /tasks/active?taskId=${t.id}（TLQ-5）','ok')">${t.id}
+       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M7 17L17 7M9 7h8v8"/></svg></span></td>
+     <td class="title-cell"><b>${t.edited?'<span class="edot"></span>':''}${t.title}${t.edited?'<span class="editspan">已编辑</span>':''}</b>
+       <div class="sub"><span class="pill ${t.source==='local'?'p-src-l':'p-src-p'}" style="font-size:10px;padding:1px 7px;margin-right:5px">${t.source==='local'?'本地':'平台'}</span>${t.line}</div></td>
+     <td>${priHtml(t.pri)}</td>
+     <td style="font-family:var(--mono);font-size:12px">${t.source==='local'?'—':'v'+t.ver}</td>
+     <td>${t.source==='local'?'—':'第 '+t.round+' 轮'}</td>
+     <td>${aiHtml(t)}</td>
+     <td><span class="pill ${T[t.st].cls}">${T[t.st].label}</span></td>
+     <td>${opsHtml(t)}</td>
+   </tr>`).join('');
+  document.getElementById('empty').style.display=list.length?'none':'block';
+  updateRowCount();
+}
+function setSeg(k){seg=k;renderSeg();renderTable()}
+document.getElementById('showTerm').addEventListener('change',()=>{renderSeg();renderTable()});
+
+/* ---------- 操作 ---------- */
+function toast(msg,cls){
+  const d=document.createElement('div');d.className='toast '+(cls||'');d.textContent=msg;
+  document.getElementById('toasts').appendChild(d);
+  setTimeout(()=>d.remove(),3800);
+}
+let syncCd=null;
+document.getElementById('syncBtn').addEventListener('click',function(){
+  if(syncCd){toast('手动同步 60s 内去重，请等倒计时结束（TLQ-4）','warn');return}
+  toast('已触发一次事件拉取：新事件 0 · 新版本 0','ok');
+  let s=8;this.innerHTML=`⟳ <span class="cd">${s}s</span>`;this.classList.add('dis');
+  syncCd=setInterval(()=>{s--;if(s<=0){clearInterval(syncCd);syncCd=null;this.innerHTML='⟳ 立即同步';this.classList.remove('dis')}
+    else this.innerHTML=`⟳ <span class="cd">${s}s</span>`},1000);
+});
+function doAnalyze(id){
+  const t=tasks.find(x=>x.id===id);
+  analyzing.add(id);renderTable();
+  const btn=document.getElementById('ai-'+id);if(btn)btn.innerHTML='<span class="spin dark"></span> 分析中…';
+  setTimeout(()=>{
+    analyzing.delete(id);
+    t.fail=false;
+    t.ai=t.pri==='high'?'high':t.pri==='medium'?'medium':'low';
+    if(t.source==='local'){
+      t.aiReason='本地任务：基于需求描述生成（无平台优先级因子）';
+      t.points=['（演示）依据需求描述提取的测试要点 1','（演示）测试要点 2'];
+      t.scope=['（演示）建议覆盖范围 1','（演示）建议覆盖范围 2'];
+      t.analyzedAt='2026-11-20 15:41';
+    }else{
+      t.aiReason='平台优先级='+(t.pri==='high'?'高':t.pri==='medium'?'中':'低')+'（演示数据）';
+      t.analyzedAt='2026-11-20 15:27';
+    }
+    t.st=t.st==='wait'?'ready':t.st;
+    renderSeg();renderTable();
+    toast(`「${t.title}」AI 分析完成：结构化结论已回填`,'ok');
+  },1400);
+}
+function doStart(id){
+  const t=tasks.find(x=>x.id===id);
+  t.st='run';t.sessionId=t.sessionId||('session-new-'+id.slice(-4));
+  renderSeg();renderTable();
+  toast(`已创建测试工作会话（上下文：${t.source==='local'?'任务信息'+(t.ai?'+AI 分析结论':''):'交接包 v'+t.ver+(t.ai?'+AI 分析结论':'')}），打开既有全流程阶段页：需求分析→场景与测试点→用例设计→测试执行→缺陷分析→测试报告`,'ok');
+}
+
+/* ---------- 编辑 / 新建弹窗 ---------- */
+const HINT_PLATFORM='平台交接包为不可变版本快照，这里只能编辑本地补充性字段；保存后作为 AI 分析的附加输入，且不会被平台后续同步覆盖（T4）。';
+const HINT_LOCAL='本地任务不走平台拉取，创建后直接进入「可开始」状态；可点「AI 分析」让 AI 根据需求描述产出结构化测试建议（可选，非必经）。';
+const HINT_LOCAL_EDIT='本地任务字段全部本地可编辑，不影响任何平台数据；内容修改后建议重新 AI 分析。';
+function setModalMode(mode){ /* 'platform' | 'local-create' | 'local-edit' */
+  document.getElementById('mPlatformSec').style.display=mode==='platform'?'block':'none';
+  document.getElementById('mLocalSec').style.display=mode==='platform'?'none':'block';
+  document.getElementById('mHint').textContent=mode==='platform'?HINT_PLATFORM:mode==='local-create'?HINT_LOCAL:HINT_LOCAL_EDIT;
+}
+function openCreate(){
+  editingId=null;
+  document.querySelector('#editModal .m-head h2').textContent='新建本地任务';
+  setModalMode('local-create');
+  document.getElementById('mLocalTitle').value='';
+  document.getElementById('mLocalPri').value='medium';
+  document.getElementById('mLocalDesc').value='';
+  document.getElementById('editModal').classList.add('show');
+}
+function openEdit(id){
+  editingId=id;const t=tasks.find(x=>x.id===id);
+  if(t.source==='local'){
+    document.querySelector('#editModal .m-head h2').textContent='编辑本地任务';
+    setModalMode('local-edit');
+    document.getElementById('mLocalTitle').value=t.title;
+    document.getElementById('mLocalPri').value=t.pri;
+    document.getElementById('mLocalDesc').value=t.desc||'';
+  }else{
+    document.querySelector('#editModal .m-head h2').textContent='编辑补充性字段';
+    setModalMode('platform');
+    document.getElementById('mReadonly').innerHTML=
+      `任务号 <b style="font-family:var(--mono)">${t.id}</b> · 包版本 v${t.ver} · 第 ${t.round} 轮 · ${t.line}<br>`+
+      `平台任务名：${t.title} · 反馈类型 ${t.ftype} · 优先级 ${t.pri==='high'?'高':t.pri==='medium'?'中':'低'} · 预估 ${t.hours}h<br>`+
+      `<span style="color:var(--muted)">平台原始需求正文与结构化数据在此只读展示，本弹窗不提供编辑入口。</span>`;
+    document.getElementById('mTitleNote').value=t.titleNote||'';
+    document.getElementById('mFocusNote').value=t.focusNote||'';
+  }
+  document.getElementById('editModal').classList.add('show');
+}
+function closeEdit(){document.getElementById('editModal').classList.remove('show')}
+function saveEdit(){
+  if(!editingId){ /* 新建本地任务 */
+    const title=document.getElementById('mLocalTitle').value.trim();
+    if(!title){toast('任务名称必填','warn');return}
+    const pri=document.getElementById('mLocalPri').value;
+    const desc=document.getElementById('mLocalDesc').value.trim();
+    const id='LOCAL-'+String(nextLocal++).padStart(3,'0');
+    tasks.unshift({id,source:'local',title,pri,ver:null,round:null,ai:null,aiReason:null,st:'ready',
+      line:'本地任务',ftype:null,hours:null,submitter:null,assignee:null,desc,
+      points:[],scope:[],risks:[],openq:[],runs:[]});
+    closeEdit();renderSeg();renderTable();
+    toast(`本地任务「${title}」已创建，状态=可开始；可点「AI 分析」生成结构化测试建议（可选）`,'ok');
+    return;
+  }
+  const t=tasks.find(x=>x.id===editingId);
+  if(t.source==='local'){
+    const nt=document.getElementById('mLocalTitle').value.trim();
+    if(!nt){toast('任务名称必填','warn');return}
+    const changed=t.desc!==document.getElementById('mLocalDesc').value.trim();
+    t.title=nt;t.pri=document.getElementById('mLocalPri').value;
+    t.desc=document.getElementById('mLocalDesc').value.trim();
+    closeEdit();renderTable();
+    toast(changed&&t.ai?'本地任务已保存。内容有修改，建议点「AI 分析」重新分析。':'本地任务已保存。','ok');
+    return;
+  }
+  t.titleNote=document.getElementById('mTitleNote').value.trim();
+  t.focusNote=document.getElementById('mFocusNote').value.trim();
+  t.edited=!!(t.titleNote||t.focusNote);
+  closeEdit();renderTable();
+  toast('已保存补充性字段（不被平台同步覆盖）。资料已修改，建议点「AI 分析」重新分析。','ok');
+}
+
+/* ---------- 详情抽屉 ---------- */
+function openDrawer(id){
+  const t=tasks.find(x=>x.id===id);
+  const isLocal=t.source==='local';
+  document.getElementById('dwTitle').innerHTML=`${t.title} <span class="pill ${T[t.st].cls}" style="vertical-align:2px">${T[t.st].label}</span>`;
+  document.getElementById('dwNo').textContent=isLocal?`${t.id} · 本地任务`:`${t.id} · 包版本 v${t.ver} · 第 ${t.round} 轮`;
+  const hasAnalysis=t.ai&&!t.fail;
+  document.getElementById('dwBody').innerHTML=`
+   <div class="dw-sec">
+    <h3>${isLocal?'任务信息':'平台资料'}</h3>
+    <dl class="fgrid">
+      <div class="frow"><dt>${isLocal?'任务来源':'产品线'}</dt><dd>${isLocal?'本地新建':t.line}</dd></div>
+      <div class="frow"><dt>反馈类型</dt><dd>${t.ftype||'—'}</dd></div>
+      <div class="frow"><dt>${isLocal?'优先级':'平台优先级'}</dt><dd>${priHtml(t.pri)}</dd></div>
+      <div class="frow"><dt>预估工时</dt><dd>${t.hours!=null?t.hours+'h':'—'}</dd></div>
+      ${isLocal?'':`<div class="frow"><dt>提交人</dt><dd>${t.submitter||'—'}</dd></div>
+      <div class="frow"><dt>处理人</dt><dd>${t.assignee||'—'}</dd></div>`}
+    </dl>
+    ${isLocal?`
+      <div class="frow" style="margin-top:10px"><dt>需求描述 / 测试背景</dt><dd>
+        <div class="local-note" style="margin-top:4px">${t.desc||'（未填写）'}</div></dd></div>`
+    :`
+      <div class="frow" style="margin-top:10px"><dt>包版本时间线</dt><dd>
+        <div class="verline">${verline(t)}</div></dd></div>
+      <div class="frow" style="margin-top:10px"><dt>平台深链（TLQ-5）</dt><dd>
+        <span class="tno" onclick="toast('演示：新窗口打开 /tasks/active?taskId=${t.id}','ok')">/tasks/active?taskId=${t.id} ↗</span></dd></div>
+      ${t.edited?`<div class="local-note" style="margin-top:12px"><b>本地补充字段（T4，不被同步覆盖）</b><br>
+        ${t.titleNote?'标题备注：'+t.titleNote+'<br>':''}${t.focusNote?'测试重点备注：'+t.focusNote:''}</div>`:''}`}
+   </div>
+
+   <div class="dw-sec">
+    <h3>AI 分析结论 <span class="tag">AI 建议</span></h3>
+    ${hasAnalysis?`
+      <div class="sum-block"><h4>需求要点</h4><ul>${t.points.map(p=>`<li>${p}</li>`).join('')}</ul></div>
+      <div class="sum-block"><h4>建议测试范围</h4><ul>${t.scope.map(p=>`<li>${p}</li>`).join('')}</ul></div>
+      <div class="sum-block"><h4>建议优先级：${t.ai==='high'?'高':t.ai==='medium'?'中':'低'}</h4>
+        <div class="reason">${t.aiReason||''}</div></div>
+      ${t.risks.length?`<div class="sum-block"><h4>风险点</h4><ul class="risk">${t.risks.map(p=>`<li>${p}</li>`).join('')}</ul></div>`:''}
+      ${t.openq.length?`<div class="sum-block"><h4>待确认问题</h4><ul class="openq">${t.openq.map(p=>`<li>${p}</li>`).join('')}</ul></div>`:''}
+      <div class="sum-foot">分析时间 <span class="mono">${t.analyzedAt||'—'}</span> · 来源：${isLocal?'基于需求描述的 AI 分析':'第一阶段需求分析（S3，非重复结构化）'}
+        <button class="btn sm ghost" style="margin-left:auto" onclick="toast('演示：进入测试工作会话查看完整分析','ok')">进入会话查看完整分析</button></div>`
+    :`<div class="sum-block" style="color:var(--muted2)">${t.fail?'上次自动分析失败，可在列表点「重试分析」（T2）。':isLocal?'尚未分析：可点「AI 分析」基于需求描述生成结构化测试建议（可选）。':'尚未分析：交接包入库后自动触发第一阶段分析（T2），完成后此处展示结构化结论。'}</div>`}
+   </div>
+
+   <div class="dw-sec">
+    <h3>测试进展</h3>
+    ${!isLocal&&t.st==='impact'?`
+      <div class="impact-box">
+        <h4>影响待确认（v${t.ver} 到达）</h4>
+        <p>${t.changeSummary||'新包版本已验证入库，等待影响确认。'}</p>
+        <div class="impact-acts">
+          <button class="btn sm pri" onclick="toast('演示：确认影响 → 补充分析（重跑受影响阶段）','ok')">补充分析</button>
+          <button class="btn sm" onclick="toast('演示：确认影响 → 范围回归（创建回归 run）','ok')">范围回归</button>
+          <button class="btn sm" onclick="toast('演示：无影响 → 需填写一句话理由并落审计（TLQ-3）','warn')">无影响</button>
+        </div>
+      </div><div style="height:10px"></div>`:''}
+    ${t.runs&&t.runs.length?t.runs.map(r=>`
+      <div class="prog-item">
+        <div class="l1"><span class="mono" style="font-size:11.5px">${r.rid}</span><span class="pill ${r.verdict==='已完成'||r.verdict==='通过'?'p-done':r.verdict==='执行中'?'p-run':'p-wait'}">${r.verdict}</span></div>
+        <div class="l2"><span class="mono">${r.stat}</span></div>
+      </div>`).join('')
+    :`<div style="color:var(--muted2);font-size:12.5px">暂无测试运行记录。${isLocal?'点「开始测试」将创建测试工作会话并打开既有全流程阶段页。':''}</div>`}
+   </div>`;
+  document.getElementById('mask').classList.add('show');
+  document.getElementById('drawer').classList.add('open');
+}
+function verline(t){
+  const n=Math.min(t.ver,4),items=[];
+  for(let i=1;i<=n;i++){
+    items.push(`<span class="vnode ${i===t.ver?'cur':''}"><i></i>v${i}${i===t.ver?' <span class="vtime">当前</span>':''}</span>`);
+    if(i<n)items.push('<span class="varrow">→</span>');
+  }
+  if(t.ver>4)items.push('<span class="vnode">…</span>');
+  return items.join('');
+}
+function closeDrawer(){
+  document.getElementById('mask').classList.remove('show');
+  document.getElementById('drawer').classList.remove('open');
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeDrawer();closeEdit()}});
+
+renderSeg();renderTable();
+</script>
+</body>
+</html>

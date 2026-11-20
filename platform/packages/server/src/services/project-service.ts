@@ -98,18 +98,13 @@ export class ProjectService implements ProjectLifecycle {
    * that also runs default_agent.
    */
   private async sharedRolesReady(
-    userId: string,
-    options: { requireDefaultAgent?: boolean } = {},
+    _userId: string,
+    _options: { requireDefaultAgent?: boolean } = {},
   ): Promise<boolean> {
-    // The QA runtime must first supply its safety hooks from a shared, versioned location.
-    if (!qaEnabled || !this.authState.accountClient || process.env.AITEST_SHARED_AGENT_RUNTIME !== "1") return false;
-    const qaRoles = (qaEngineModule("qa-project-bootstrap").qaRoles() as { id: string }[])
-      .map(role => role.id);
-    const required = options.requireDefaultAgent ? ["default_agent", ...qaRoles] : qaRoles;
-    const available = new Set(await this.authState.accountClient.listSharedRoleIds(userId));
-    const missing = required.filter(id => !available.has(id));
-    if (missing.length) throw new HttpError(503, "shared_roles_incomplete", `共享智能体或本机适配器尚未就绪：${missing.join(", ")}`);
-    return true;
+    // Agent resources are managed as one current local version. Project creation
+    // provisions the bundled roles directly and must not depend on a publication
+    // catalog or a remote shared-agent version.
+    return false;
   }
 
   // Access control lives in ProjectAccess (services/project-access.ts); these delegate so

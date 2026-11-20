@@ -26,6 +26,11 @@ export class AdminSystemStore {
     `);
   }
 
+  initializeDefaults(): void {
+    this.db.prepare("INSERT OR IGNORE INTO public_admin_menus(id,items) VALUES(1,?)").run(JSON.stringify(defaultMenus()));
+    this.db.prepare("INSERT OR IGNORE INTO public_role_menus(id,items) VALUES(1,?)").run(JSON.stringify(defaultMenus().filter(item => item.group === "main").map(item => item.key)));
+  }
+
   menuItems(): AdminMenuItem[] {
     const row = this.db.prepare("SELECT items FROM public_admin_menus WHERE id=1").get();
     if (!row) return defaultMenus();
