@@ -28,7 +28,7 @@
  *     --login-url https://host/admin/login \
  *     --target-url https://host/admin/user/key-card/index \
  *     --config <login-config.json> --creds <credentials.json> --out <dir> [--session <state.json>] \
- *     [--captcha-strategy auto|manual] [--discover-login]
+ *     [--captcha-strategy auto|manual] [--discover-login] [--mode site|page] [--max-pages N]
  */
 import { chromium } from '@playwright/test';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -37,10 +37,14 @@ import { createHash } from 'node:crypto';
 import { confidenceGate, parseArithmetic, validateLoginConfig } from './login-captcha-chain.mjs';
 
 const args = new Map();
-for (let i = 2; i < process.argv.length; i += 2) {
+/** 无值开关：不能按 key/value 两两配对，否则会把后面的参数当值吃掉（--discover-login 后跟 --mode site 时 site 落到 key 位报 Unexpected argument）。 */
+const FLAG_ARGS = new Set(['discover-login', 'public']);
+for (let i = 2; i < process.argv.length; i++) {
   const key = process.argv[i];
   if (!key?.startsWith('--')) throw new Error(`Unexpected argument ${key}`);
-  args.set(key.slice(2), process.argv[i + 1]);
+  const name = key.slice(2);
+  if (FLAG_ARGS.has(name)) { args.set(name, ''); continue; }
+  args.set(name, process.argv[++i]);
 }
 const need = (name) => {
   const value = args.get(name);

@@ -11,6 +11,7 @@ import { apiClient, createTestApp, loginAdmin, type TestApp } from "./helpers.js
 import {
   abortExploration,
   answerCaptcha,
+  buildExplorationArgv,
   captchaImagePath,
   deriveKnowledge,
   latestExploration,
@@ -331,6 +332,54 @@ describe("exploration dispatch", () => {
       .toThrowError(/用户名和密码/);
     await expect(answerCaptcha(deps, projectId, "test", "not-exist", "1")).rejects.toThrowError(/不存在/);
     expect(listExplorations(deps.db, projectId, "test")).toEqual([]);
+  });
+});
+
+describe("探索脚本 argv（无值开关不得吃掉 --mode site）", () => {
+  const base = {
+    targetUrl: "http://gateway.example.com/admin/user/index",
+    loginUrl: null,
+    credsFile: "/tmp/creds.json",
+    outDir: "/tmp/out",
+    sessionFile: "/tmp/session.json",
+    configFile: null,
+    publicMode: false,
+  };
+
+  /** 老脚本按 i+=2 配对：无值开关出现在末尾之外、或后面还有参数，site 就会落到 key 位。 */
+  function assertOldPairingSafe(argv: string[]): void {
+    const noValueFlags = new Set(["--discover-login", "--public"]);
+    for (let i = 1; i < argv.length; i += 2) {
+      const key = argv[i];
+      expect(key?.startsWith("--"), `第 ${i} 位应为参数名，实际 ${key}`).toBe(true);
+      if (!noValueFlags.has(key ?? "")) {
+        expect(argv[i + 1]?.startsWith("--"), `--${key} 的值不应是另一个参数`).toBe(false);
+      }
+    }
+  }
+
+  it("自动发现登录时 --mode site 成对、--discover-login 落末尾", () => {
+    const argv = buildExplorationArgv({ ...base, configFile: null }, "/engine/scripts/explore-authenticated.mjs");
+    assertOldPairingSafe(argv);
+    expect(argv.slice(-3)).toEqual(["--mode", "site", "--discover-login"]);
+    expect(argv[argv.length - 3]).toBe("--mode");
+    expect(argv[argv.length - 2]).toBe("site");
+    expect(argv[argv.length - 1]).toBe("--discover-login");
+  });
+
+  it("显式登录配置时无 --discover-login，仍保持全站模式", () => {
+    const argv = buildExplorationArgv({ ...base, configFile: "/tmp/login.json" }, "/engine/scripts/explore.js");
+    assertOldPairingSafe(argv);
+    expect(argv).toContain("--config");
+    expect(argv).not.toContain("--discover-login");
+    expect(argv[argv.indexOf("--mode") + 1]).toBe("site");
+  });
+
+  it("公开页模式不加 --mode，仅末尾 --public", () => {
+    const argv = buildExplorationArgv({ ...base, publicMode: true }, "/engine/scripts/explore.js");
+    assertOldPairingSafe(argv);
+    expect(argv).not.toContain("--mode");
+    expect(argv[argv.length - 1]).toBe("--public");
   });
 });
 

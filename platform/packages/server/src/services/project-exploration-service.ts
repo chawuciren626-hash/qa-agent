@@ -730,6 +730,33 @@ function parseLoginConfig(value: unknown): Record<string, unknown> | null {
 }
 
 /**
+ * 构造探索脚本 argv。
+ * 无值开关（--discover-login / --public）必须放末尾：老版脚本按 i+=2 两两配对，
+ * 若后面还有 --mode site 会把 site 当 key 报 "Unexpected argument site"（全站模式首次实跑撞到）。
+ * 新脚本已支持无值 flag，此处仍保持兼容。
+ */
+export function buildExplorationArgv(
+  input: Pick<ExplorationRunInput, "targetUrl" | "loginUrl" | "credsFile" | "outDir" | "sessionFile" | "configFile" | "publicMode">,
+  script: string,
+): string[] {
+  const argv = [
+    script,
+    "--login-url", input.loginUrl ?? input.targetUrl,
+    "--target-url", input.targetUrl,
+    "--creds", input.credsFile,
+    "--out", input.outDir,
+    "--session", input.sessionFile,
+    "--captcha-strategy", "auto",
+  ];
+  if (input.configFile) argv.push("--config", input.configFile);
+  // 登录态探索默认全站模式：登录后按路由清单逐页采集（项目地图是测试任务的打底资料）。
+  if (!input.publicMode) argv.push("--mode", "site");
+  if (!input.configFile) argv.push("--discover-login");
+  if (input.publicMode) argv.push("--public");
+  return argv;
+}
+
+/**
  * 生产执行器：写配置/凭据临时文件 → spawn node 跑探索脚本 → 逐行解析 @@ 事件。
  * 凭据文件 0600、结束即删；stdout 只留尾巴用于解释失败原因。
  */
@@ -752,20 +779,7 @@ export function spawnExplorationRun(engineRoot: string): ExplorationRun {
       );
       answerPath = path.join(input.outDir, "answer.json");
       const script = path.join(engineRoot, "scripts", "explore-authenticated.mjs");
-      const argv = [
-        script,
-        "--login-url", input.loginUrl ?? input.targetUrl,
-        "--target-url", input.targetUrl,
-        "--creds", input.credsFile,
-        "--out", input.outDir,
-        "--session", input.sessionFile,
-        "--captcha-strategy", "auto",
-      ];
-      if (input.configFile) argv.push("--config", input.configFile);
-      else argv.push("--discover-login");
-      if (input.publicMode) argv.push("--public");
-      // 登录态探索默认全站模式：登录后按路由清单逐页采集（项目地图是测试任务的打底资料）。
-      else argv.push("--mode", "site");
+      const argv = buildExplorationArgv(input, script);
       child = spawn(process.execPath, argv, { cwd: engineRoot, windowsHide: true });
       let pending = "";
       child.stdout?.setEncoding("utf8");
