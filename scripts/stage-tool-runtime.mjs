@@ -18,7 +18,7 @@ export const STAGE_TOOLS = Object.freeze({
   'plan.gates': { stage: ['test_cases', 'execution', 'api_execution'], source: 'plan/gates.py', payload: '{"plan":planIR,"case":caseIR}' },
   'report.reviewer': { stage: 'report', source: 'report/reviewer.py', payload: '{"execs":execIR[]}' },
   'defect.evidence': { stage: 'defects', source: 'defect/evidence.py', payload: '{"exec_ir":execIR,"failed_step":step?,"baseline":snapshot?,"history":execIR[]?}' },
-  'defect.tools': { stage: 'defects', source: 'defect/tools.py', payload: '{"evidence_packs":evidencePack[],"existing":defectIR[]?,"history":execIR[]?}' },
+  'defect.tools': { stage: 'defects', source: 'defect/tools.py', payload: '{"evidence_packs":evidencePack[],"existing":defectIR[]?,"history":execIR[]?,"exec_ir":execIR?,"preflight":object?,"replay":object?}' },
   'regression.impact': { stage: ['execution', 'api_execution', 'report'], source: 'regression/impact.py', payload: '{"cases":caseIR[],"changed_requirements":string[]?,"changed_modules":string[]?,"explicit_ids":string[]?}' },
   'regression.select': { stage: ['execution', 'api_execution', 'report'], source: 'regression/selector.py', payload: '{"cases":caseIR[],"tier":"smoke"|"core"|"full","budget_s":number?}' },
 });
@@ -60,7 +60,7 @@ export function validateToolPayload(toolId, payload) {
     'testpoint.coverage': ['requirements', 'test_points', 'cases', 'enforce'],
     'irval.check': ['document'], 'plan.gates': ['plan', 'case'], 'report.reviewer': ['execs'],
     'defect.evidence': ['exec_ir', 'failed_step', 'baseline', 'history'],
-    'defect.tools': ['evidence_packs', 'existing', 'history'],
+    'defect.tools': ['evidence_packs', 'existing', 'history', 'exec_ir', 'preflight', 'replay'],
     'regression.impact': ['explicit_ids', 'changed_requirements', 'changed_modules', 'changed_fragments', 'similar_cases', 'cases', 'quarantine_ids'],
     'regression.select': ['cases', 'tier', 'budget_s'],
   }[toolId];
@@ -73,7 +73,8 @@ export function validateToolPayload(toolId, payload) {
     'defect.tools': ['evidence_packs'], 'regression.select': ['cases'],
   }[toolId] ?? [];
   for (const key of required) if (!(key in payload)) fail(`missing ${key}`);
-  for (const key of ['requirement', 'document', 'plan', 'case', 'exec_ir', 'failed_step', 'baseline']) {
+  for (const key of ['requirement', 'document', 'plan', 'case', 'exec_ir', 'failed_step', 'baseline',
+    'preflight', 'replay']) {
     if (payload[key] !== undefined && !object(payload[key])) fail(`${key} must be an object`);
   }
   for (const key of ['requirements', 'test_points', 'cases', 'execs', 'evidence_packs', 'existing',

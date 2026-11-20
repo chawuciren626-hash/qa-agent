@@ -93,7 +93,15 @@ const PAYLOAD_SCHEMAS = Object.freeze({
     required: ['exec_ir'],
     properties: { exec_ir: { type: 'object' }, failed_step: { type: 'object' }, baseline: { type: 'object' }, history: { type: 'array' } },
   },
-  'defect.tools': { required: ['evidence_packs'], properties: { evidence_packs: { type: 'array' }, existing: { type: 'array' }, history: { type: 'array' } } },
+  'defect.tools': {
+    required: ['evidence_packs'],
+    properties: {
+      evidence_packs: { type: 'array' }, existing: { type: 'array' }, history: { type: 'array' },
+      // 三分归因（P7/M4）：给了 exec_ir 才走归因，preflight / replay 是环境与
+      // 可复现性两路事实，缺一路归因就会降置信度——这是有意的降级，不是失败。
+      exec_ir: { type: 'object' }, preflight: { type: 'object' }, replay: { type: 'object' },
+    },
+  },
   'regression.impact': {
     required: [],
     properties: {
