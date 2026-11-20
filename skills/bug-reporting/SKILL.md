@@ -1,12 +1,23 @@
 ---
 name: bug-reporting
-version: 2026.11.02.2
+version: 2026.11.02.3
 description: 基于测试失败结果、日志和截图分类问题，生成可追溯的 Bug 草稿。
+task: failure_attribution
+stage: defects
+tools: ["defect.evidence", "defect.tools", "irval.check"]
+sections:
+  criteria: ["阶段工具执行协议（强制）", "统一产物交付契约", "质量标准", "禁止事项", "处理规则"]
+  knowledge: ["严重程度分级", "专业方法", "适用场景"]
+  steps: ["独立任务（task）", "生命周期模式（lifecycle）", "输入", "输出", "工作步骤"]
 ---
 
 # Bug 记录 Skill
 
 路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+
+## 阶段工具执行协议（强制）
+
+缺陷阶段先调用 `defect.evidence` 和 `defect.tools`，并用 `irval.check` 校验缺陷 IR；无失败时不得虚构缺陷，有失败时不得跳过取证工具。每条缺陷必须引用真实执行回执、证据包和工具回执路径。回执缺失、证据不足或工具失败时标记 needs_review/partial，不得凭 Agent 推断补齐。
 
 task和lifecycle遇到多种可能原因时，均可按需读取已安装的qa-investigation及其失败分类参考。只利用本次材料分析，不因此补建执行批次、启动复测或把反复失败直接定为产品缺陷。
 

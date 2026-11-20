@@ -43,7 +43,9 @@ export function pythonEngineToolRunner(engineRoot: string, timeoutMs = DEFAULT_T
   return (toolId, payload) => new Promise((resolve, reject) => {
     const child = execFile(
       pythonExecutable(python),
-      ["-m", "aitestharness_tools.runtime_cli", toolId],
+      // The bundled Windows Python is isolated and ignores PYTHONPATH. Inject
+      // the package root explicitly before running the module.
+      ["-c", "import runpy,sys; sys.path.insert(0,sys.argv[1]); sys.argv=sys.argv[2:]; runpy.run_module('aitestharness_tools.runtime_cli',run_name='__main__')", packageRoot, "runtime_cli.py", toolId],
       {
         cwd: engineRoot,
         env: {

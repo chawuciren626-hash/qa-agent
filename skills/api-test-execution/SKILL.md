@@ -1,12 +1,20 @@
 ---
 name: api-test-execution
-version: 2026.11.02.1
+version: 2026.11.02.2
 description: 使用独立 HTTP worker 执行已设计的接口场景，保存逐请求断言证据，处理关联、凭据引用、取消和部分结果；不启动浏览器。
+sections:
+  criteria: ["阶段工具执行协议（强制）"]
+  knowledge: []
+  steps: ["输入与产出", "工作步骤"]
 ---
 
 # 接口执行
 
 路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+
+## 阶段工具执行协议（强制）
+
+接口执行必须通过 `api_task` 调用真实 API worker，并取得 `exec.api_engine` 的逐请求回执；不得由 Agent 手写请求、响应或通过结论。执行前使用选集/闸门工具的已有回执，执行后调用 `collect` 和 `validate_artifacts`。阶段回复必须列出工具、场景、请求回执和未执行原因；回执缺失或结果未知时只能交付 partial。
 
 ## 输入与产出
 

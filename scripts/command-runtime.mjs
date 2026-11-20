@@ -1,6 +1,6 @@
 import { dataPath, directoryContext } from './directory-context.mjs';
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { delimiter, isAbsolute, resolve, basename } from 'node:path';
+import { delimiter, dirname, isAbsolute, resolve, basename } from 'node:path';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -16,16 +16,42 @@ function executable(path) {
   return existsSync(path) && statSync(path).isFile() && (process.platform !== 'win32' || /\.exe$/i.test(path));
 }
 
-export function pythonCandidates(env = process.env) {
+export function pythonCandidates(env = process.env, engineRootOverride = null) {
   if (env.QA_PYTHON) {
+    // 子任务可能继承宿主留下的旧 QA_PYTHON（例如已删除的 python311 路径）。
+    // 这不应遮蔽安装布局中已验证的内置 Python；有效的显式配置仍保持最高优先级。
     if (!isAbsolute(env.QA_PYTHON) || !executable(env.QA_PYTHON)) return [];
     return [realpathSync(env.QA_PYTHON)];
   }
-  const local=assertPlainPath(resolve(applicationDataRoot(resolve(import.meta.dirname,'..'),env),'runtime/python.json'));
-  if(existsSync(local)) {
-    const config=JSON.parse(readFileSync(local,'utf8'));
-    if(config.version!==1 || !isAbsolute(config.executable ?? '') || !executable(config.executable)) return [];
-    return [realpathSync(config.executable)];
+  // Packaged server code runs from dist/, so its module directory is not the
+  // managed engine root. Callers with an explicit root must win over that
+  // source-layout heuristic when resolving installation.json and qa runtime.
+  const engineRoot = resolve(engineRootOverride || resolve(import.meta.dirname, '..'));
+  const configuredFiles = [];
+  // PenguinHarness 子任务有时只保留工作区上下文，没有继承 QA_APP_DATA_ROOT。
+  // 安装布局本身已经声明了 Python 路径；读取它不会改变用户环境，也不会静默安装依赖。
+  for (const installationPath of [resolve(engineRoot, 'installation.json'), resolve(engineRoot, '../../installation.json')]) {
+    if (!existsSync(installationPath)) continue;
+    try {
+      const installation = JSON.parse(readFileSync(installationPath, 'utf8'));
+      const candidate = installation?.paths?.python;
+      if (typeof candidate === 'string' && candidate) {
+        const absolute = isAbsolute(candidate) ? candidate : resolve(installationPath, '..', candidate);
+        if (executable(absolute)) configuredFiles.push(absolute);
+      }
+      const qaData = installation?.paths?.qa_data;
+      if (typeof qaData === 'string' && qaData) configuredFiles.push(resolve(dirname(installationPath), qaData, 'runtime', 'python.json'));
+    } catch { /* malformed installation metadata falls through to PATH */ }
+  }
+  // 只有安装布局没有声明可用解释器时，才回退到用户级默认配置或 PATH。
+  try { configuredFiles.push(assertPlainPath(resolve(applicationDataRoot(engineRoot,env),'runtime/python.json'))); } catch { /* 子任务环境可能没有继承 QA_APP_DATA_ROOT，继续使用 PATH。 */ }
+  for (const local of [...new Set(configuredFiles)]) {
+    if (executable(local)) return [realpathSync(local)];
+    if (!existsSync(local)) continue;
+    try {
+      const config=JSON.parse(readFileSync(local,'utf8'));
+      if(config.version===1 && isAbsolute(config.executable ?? '') && executable(config.executable)) return [realpathSync(config.executable)];
+    } catch { /* invalid config falls through to the next candidate */ }
   }
   const paths = Object.entries(env).find(([key]) => key.toLowerCase() === 'path')?.[1] ?? '';
   const names = process.platform === 'win32' ? ['python.exe', 'python3.exe'] : ['python3', 'python'];

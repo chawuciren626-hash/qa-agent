@@ -220,7 +220,8 @@
   width: 100%; border: 1px solid var(--qa-border, #e6e9ef); border-radius: 8px;
   padding: 8px 11px; font-size: 13px; background: #fff; color: var(--qa-text, #1f2329); resize: none;
 }
-.qpm-form-row input.font-mono { width: 0; flex: 1; }
+/* font-mono 输入框与普通输入框同宽：早期横向表单行的 flex 压缩规则已废弃，
+   保留会在纵向表单行（width:0）把输入框塌成只剩内边距的小方块，文字无回显。 */
 .qpm-form-row input:focus, .qpm-form-row textarea:focus { border-color: #185fa5; outline: none; }
 .qpm-form-row input:disabled, .qpm-form-row textarea:disabled { background: #f6f8fb; }
 .qpm-count { font-size: 11px; color: var(--qa-muted, #8f959e); text-align: right; }

@@ -12,6 +12,8 @@
  * "没跑过"，0 表示"跑过且确实一个也没有"，两者在 UI 上是不同的字。
  */
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "../hmr/capabilities.js";
@@ -34,6 +36,7 @@ export interface EnvironmentRow {
   api_modules: string | null;
   login_captcha: string | null;
   maps_path: string | null;
+  maps_hash: string | null;
   report_path: string | null;
   last_error: string | null;
   probed_at: string | null;
@@ -84,6 +87,8 @@ export interface EnvironmentView {
   probedAt: string | null;
   lastError: string | null;
   mapsPath: string | null;
+  /** 地图内容指纹（P6/G9）。null = 这一环境还没登记过地图版本（不是"没有地图"）。 */
+  mapsHash: string | null;
   reportPath: string | null;
   /** 固定五行，按 index 升序；没跑过的步骤 status=idle。 */
   steps: BootstrapStep[];
@@ -108,6 +113,7 @@ function rowToView(row: EnvironmentRow): EnvironmentView {
     probedAt: row.probed_at,
     lastError: row.last_error,
     mapsPath: row.maps_path,
+    mapsHash: row.maps_hash,
     reportPath: row.report_path,
     steps: parseSteps(row.steps_json),
     revision: row.revision,
@@ -388,12 +394,25 @@ function finishBootstrap(deps: BootstrapDeps, projectId: string, env: string, re
     const rel = path.relative(projectRoot, target);
     return rel.startsWith("..") ? null : rel.split(path.sep).join("/");
   };
+  /**
+   * 地图内容指纹（P6/G9）。用内容而不是 mtime：重建一次但地图没变，不该让所有 plan 变 stale；
+   * 读不到文件时返回 null 而不是抛——建档本身已经成功，指纹只是版本标记，
+   * 因为算不出指纹而把整次建档判失败是把辅助信息当成了主结果。
+   */
+  const mapsFingerprint = (target: string | undefined): string | null => {
+    if (!target) return null;
+    try {
+      return createHash("sha256").update(readFileSync(target)).digest("hex");
+    } catch {
+      return null;
+    }
+  };
   if (result.ok) {
     const pages = result.report?.pages ?? {};
     const apis = result.report?.apis ?? {};
     deps.db.prepare(
       `UPDATE project_environments SET status='registered', pages_total=?, pages_registered=?, apis_total=?,
-         api_modules=?, login_captcha=?, maps_path=?, report_path=?, last_error=NULL, probed_at=?,
+         api_modules=?, login_captcha=?, maps_path=?, maps_hash=?, report_path=?, last_error=NULL, probed_at=?,
          revision=revision+1 WHERE project_id=? AND env=?`,
     ).run(
       typeof pages.total === "number" ? pages.total : null,
@@ -402,6 +421,7 @@ function finishBootstrap(deps: BootstrapDeps, projectId: string, env: string, re
       JSON.stringify(Array.isArray(apis.modules) ? apis.modules : []),
       result.report?.login?.captcha_type ?? null,
       relative(result.paths?.maps),
+      mapsFingerprint(result.paths?.maps),
       relative(result.paths?.report),
       new Date().toISOString(),
       projectId,
@@ -412,7 +432,7 @@ function finishBootstrap(deps: BootstrapDeps, projectId: string, env: string, re
   // 失败：清空摘要（上一轮的页面数不再代表这个地址），只留原因。
   deps.db.prepare(
     `UPDATE project_environments SET status='failed', pages_total=NULL, pages_registered=NULL, apis_total=NULL,
-       api_modules=NULL, login_captcha=NULL, maps_path=NULL, report_path=NULL, last_error=?,
+       api_modules=NULL, login_captcha=NULL, maps_path=NULL, maps_hash=NULL, report_path=NULL, last_error=?,
        probed_at=?, revision=revision+1 WHERE project_id=? AND env=?`,
   ).run(result.error ?? "建档失败", new Date().toISOString(), projectId, env);
 }
@@ -447,7 +467,9 @@ function pythonBootstrapRun(engineRoot: string): BootstrapRun {
     const payload = JSON.stringify({ project: projectId, env, target_url: baseUrl, out: outDir, progress: true });
     // spawn 而不是 execFile：进度在 stderr 上逐行来，必须边跑边读。等进程结束再
     // 一次性拿 buffer，五步进度就退化成"结束瞬间五条一起到"，抽屉里永远是假动画。
-    const child = spawn(python, ["-m", "aitestharness_tools.runtime_cli", "onboard.bootstrap"], {
+    // The bundled Windows Python is isolated and ignores PYTHONPATH. Inject the
+    // source package root explicitly before running the module.
+    const child = spawn(python, ["-c", "import runpy,sys; sys.path.insert(0,sys.argv[1]); sys.argv=sys.argv[2:]; runpy.run_module('aitestharness_tools.runtime_cli',run_name='__main__')", packageRoot, "runtime_cli.py", "onboard.bootstrap"], {
       cwd: engineRoot,
       env: {
         ...process.env,

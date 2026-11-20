@@ -84,7 +84,7 @@ def main() -> int:
         for extra in (f"{prefix}/login", "/profile/password"):
             if extra not in routes:
                 routes.append(extra)
-        return sorted(set(routes))
+        return sorted(set(routes + [target]))
 
     def api_module(path: str) -> str:
         parts = [p for p in path.split("/") if p]
@@ -98,7 +98,7 @@ def main() -> int:
         sources = ("apis.json", "network-final.json", "explore-network.json", "harvest-network.json")
         for name in sources:
             for entry in load(explore_dir, name, []) or load(capture_dir, name, []):
-                parsed = urlparse(entry.get("url") or "")
+                parsed = urlparse(entry.get("path") or entry.get("url") or "")
                 path = parsed.path
                 if not path.startswith(f"{prefix}/v2/"):
                     continue
@@ -160,10 +160,17 @@ def main() -> int:
     }
 
     explore_dir.mkdir(parents=True, exist_ok=True)
-    import yaml
     stem = f"maps-{args.env}"
-    (explore_dir / f"{stem}.yaml").write_text(
-        yaml.safe_dump(maps, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    # PyYAML is not part of the managed Python runtime. JSON is a valid YAML 1.2
+    # document, so use it as a dependency-free fallback for the YAML asset while
+    # retaining the normal PyYAML output when it is available.
+    try:
+        import yaml
+    except ModuleNotFoundError:
+        yaml_text = json.dumps(maps, ensure_ascii=False, indent=2)
+    else:
+        yaml_text = yaml.safe_dump(maps, allow_unicode=True, sort_keys=False)
+    (explore_dir / f"{stem}.yaml").write_text(yaml_text, encoding="utf-8")
     (explore_dir / f"{stem}.json").write_text(
         json.dumps(maps, ensure_ascii=False, indent=2), encoding="utf-8")
 

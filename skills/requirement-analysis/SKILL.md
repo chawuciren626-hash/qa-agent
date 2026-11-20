@@ -1,12 +1,23 @@
 ---
 name: requirement-analysis
-version: 2026.11.02.2
+version: 2026.11.02.3
 description: 分析需求中的功能、业务规则、风险和待澄清问题。
+task: requirement_extract
+stage: analysis
+tools: ["requirement.testability", "requirement.acceptance", "irval.check"]
+sections:
+  criteria: ["阶段工具执行协议（强制）", "质量标准", "禁止事项"]
+  knowledge: ["专业方法", "适用场景"]
+  steps: ["独立任务（task）", "生命周期模式（lifecycle）", "输入", "输出", "工作步骤"]
 ---
 
 # 需求分析 Skill
 
 路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+
+## 阶段工具执行协议（强制）
+
+本阶段不能由 Agent 直接凭模型推理替代工具。进入 lifecycle 阶段后，先调用 `requirement.testability`、`requirement.acceptance` 和 `irval.check`，并按派发契约调用 `diagnose_analysis`；每个工具都必须取得真实 receipt/tool_checks。工具回执必须进入阶段回复和分析产物引用，说明工具、输入、结果、回执路径及是否阻断。没有回执、回执失败或工具停用时，只能交付 blocked/partial，不得生成“分析完成”结论。工具负责机械解析和校验，Agent 只负责解释结果、保留原文语义和记录未决问题。
 
 材料有歧义、矛盾或不可测表述时，按需读[需求缺口与风险取舍](references/requirement-gaps.md)。适用于task和lifecycle，不新增文档上传后的固定确认节点。
 

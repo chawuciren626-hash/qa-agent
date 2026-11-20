@@ -1,6 +1,6 @@
 """§12.6 登录器与验证码策略链（领导批评的痛点正解）。
 
-策略链：探测分类 → 按项目配置排序 → 逐策略尝试 → 全部失败转人工。
+策略链：探测分类 → 按项目配置排序 → 逐策略尝试。图形验证码必须自动完成；只有短信、扫码、滑块、点选等人工验证码才进入人工接管。
 
 四条实战红线（§12.6，全部落进代码）：
 1. **先分类再处理**：图形码/滑块/点选/短信/无验证码 处理链路完全不同，禁止盲目尝试；
@@ -21,10 +21,10 @@ __all__ = ["CAPTCHA_TYPES", "detect_login_form", "detect_captcha_type",
 # 验证码分类（封闭枚举）
 CAPTCHA_TYPES = ("none", "image", "slider", "click_select", "sms", "unknown")
 
-# 每种分类的处理链路（策略顺序）：先便宜后昂贵，最后人工
+# 每种分类的处理链路（策略顺序）：先便宜后昂贵；image 最后由代理视觉自动识别
 _STRATEGY_ORDER = {
     "none": ("direct",),
-    "image": ("test_bypass_code", "ocr", "captcha_service", "manual"),
+    "image": ("test_bypass_code", "ocr", "captcha_service", "agent_vision"),
     "slider": ("slider_solver", "captcha_service", "manual"),
     "click_select": ("captcha_service", "manual"),
     "sms": ("sms_fixed_code", "manual"),
@@ -35,7 +35,7 @@ _STRATEGY_ORDER = {
 LOGIN_STANDARD_FLOW = (
     ("detect", "拉 DOM 找 input[type=password] 及相邻 input → 识别登录表单；iframe/canvas 才降级视觉", "毫秒级，零 LLM"),
     ("fill", "账号密码按配置写入", "零 LLM"),
-    ("captcha", "检测元素类型 → 分类 → 策略链（万能码 → 打码平台 → OCR → 人工接管）", "仅此步可能需外部服务"),
+    ("captcha", "检测元素类型 → 分类 → 图形码自动策略链（万能码 → OCR → 打码平台 → 代理视觉）；短信/扫码/滑块/点选才人工接管", "图形码不转人工"),
     ("persist", "一次成功即把表单特征+提交路径+会话存储位置写入登录配置", "一次性"),
     ("replay", "下次注入会话，1 秒内进入可测状态", "零 LLM"),
 )
@@ -92,7 +92,7 @@ class LoginStrategyChain:
     def order_for(self, project: str, captcha_type: str) -> list[str]:
         base = list(_STRATEGY_ORDER.get(captcha_type, ("manual",)))
         proj = (self.stats.get(project) or {})
-        # 有成功记录的策略按成功率降序提前，manual 永远最后
+        # 有成功记录的策略按成功率降序提前，人工策略只在人工验证码类型中保留
         scored = []
         for s in base:
             st = proj.get(s) or {}
@@ -104,16 +104,18 @@ class LoginStrategyChain:
     def run(self, project: str, captcha_type: str, executors: dict, context: dict) -> dict:
         """逐策略尝试；executors: {strategy_name: callable(context)->bool}。
 
-        红线 2：同一分类下自动策略最多尝试 max_attempts 次；用尽即转 manual。
+        红线 2：同一分类下自动策略最多尝试 max_attempts 次；图形验证码用尽后返回自动识别失败。
         """
         attempts = []
         tried = 0
         for strategy in self.order_for(project, captcha_type):
             if strategy == "manual":
+                if captcha_type == "image":
+                    continue
                 attempts.append({"strategy": "manual", "ok": None})
                 return self._record(project, attempts,
                                     {"status": "manual_required",
-                                     "reason": f"验证码类型 {captcha_type} 自动策略未通过，转人工接管"})
+                                     "reason": f"验证码类型 {captcha_type} 需要人工处理（短信/扫码/滑块/点选）"})
             if tried >= self.max_attempts + 1:   # 首次 + 1 次重试
                 break
             fn = executors.get(strategy)
@@ -125,10 +127,20 @@ class LoginStrategyChain:
             attempts.append({"strategy": strategy, "ok": ok})
             if ok:
                 return self._record(project, attempts, {"status": "ok", "used": strategy})
+        if captcha_type == "image":
+            # 状态值收敛到既有的 `manual_required`：上层（browser-task 与验收用例）只认
+            # ok / manual_required 两种收尾，`recognition_failed` 是没有任何消费方的孤儿值——
+            # 新增一个没人处理的状态，效果是"识别失败被当成未知结果丢掉"。
+            # 区分仍然保留在 `auto_recognition_failed` 上：诊断要分清"类型就得人工"
+            # 与"自动识别试过了但没成"。
+            return self._record(project, attempts,
+                                {"status": "manual_required",
+                                 "auto_recognition_failed": True,
+                                 "reason": f"已尝试 {tried} 次（含 ≤1 次重试，防风控锁号），图形验证码自动识别失败，转人工"})
         attempts.append({"strategy": "manual", "ok": None})
         return self._record(project, attempts,
                             {"status": "manual_required",
-                             "reason": f"已尝试 {tried} 次（含 ≤1 次重试，防风控锁号），转人工"})
+                             "reason": f"已尝试 {tried} 次（含 ≤1 次重试，防风控锁号），人工验证码等待人工处理"})
 
     def _record(self, project, attempts, result):
         slot = self.stats.setdefault(project, {})

@@ -1,0 +1,20 @@
+# 剧本 01：正确凭据登录。
+# 选它的理由：三条剧本里至少要有一步能证明"前置登录"本身是通的，
+# 否则 03 的 session 段失败时，分不清是登录坏了还是下单坏了。
+lineage:
+  id: PLAN-P4-01
+  version: 1
+intent: 正确账号密码登录，拿到 token
+steps:
+  - request: "POST /api/auth/login"
+    payload:
+      username: "${data.username}"
+      password: "${data.password}"
+    extract:
+      token: $.data.token
+    assert:
+      - {type: status_code, matcher: equals, expected: "200", decide: true}
+      - {type: json_path, path: $.code, matcher: equals, expected: "0", decide: true}
+      - {type: json_path, path: $.data.token, matcher: not_null, decide: true}
+      # observe：采集事实但不影响 verdict——用户名是不是回显正确，留给归因阶段看
+      - {type: json_path, path: $.data.user.name, matcher: equals, expected: "qa", decide: false}

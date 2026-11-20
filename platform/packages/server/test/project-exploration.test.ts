@@ -22,6 +22,8 @@ import {
   type ExplorationRunInput,
   type ExplorationView,
 } from "../src/services/project-exploration-service.js";
+import { explorationKnowledgeSync } from "../src/services/exploration-knowledge-sync.js";
+import type { ToolRunner } from "../src/services/qa-knowledge-tool.js";
 
 let test: TestApp | undefined;
 afterEach(async () => {
@@ -277,5 +279,110 @@ describe("maps → knowledge layers", () => {
     expect(layers.map((layer) => layer.layer)).toEqual(["module", "interface", "wall"]);
     expect(layers[1]?.entries[0]).toMatchObject({ key: "POST /x" });
     expect(deriveKnowledge({ pages: [], apis: [], login: null })).toEqual([]);
+  });
+});
+
+describe("exploration → 项目资料联动（B1）", () => {
+  /** 顶替 Python knowledge.build：原样回传知识项（位置已由 TS 侧直接给出）。 */
+  const fakeKnowledgeRunner: ToolRunner = async (toolId, payload) => {
+    if (toolId !== "knowledge.build") throw new Error(`unexpected tool: ${toolId}`);
+    const items = (payload.items as Record<string, unknown>[]) ?? [];
+    return {
+      clauses: [],
+      knowledge: {
+        items: items.map((item, index) => ({ ...item, id: `kb-${index}` })),
+        stats: { items: items.length, by_type: {}, dropped: 0, duplicates: 0 },
+        content_hash: "fake-semantic-hash",
+        _build_meta: { version: payload.version, actor: payload.actor, dropped: [], duplicates: [] },
+      },
+    };
+  };
+
+  function syncDepsOf(projectId: string, sync?: ExplorationDeps["knowledgeSync"]): ExplorationDeps {
+    return depsOf(projectId, {
+      run: runWritingReceipt({ ok: true }),
+      merge: mapsFixture,
+      knowledgeSync: sync ?? explorationKnowledgeSync({ db: test!.deps.db, engineRoot: "engine-root", run: fakeKnowledgeRunner }),
+    });
+  }
+
+  it("成功轮把探索资产落成项目资料并构建知识版本：位置对得上、摘要带构建信息", async () => {
+    const projectId = await projectWithRegisteredEnv();
+    const deps = syncDepsOf(projectId);
+    startExploration(deps, projectId, "test", {});
+    const finished = await waitForStatus(deps, projectId, (view) => view?.status === "succeeded");
+
+    const kb = finished.summary?.knowledgeBuild as { documentId: string; revision: number; buildVersion: number; unchanged: boolean; itemCount: number } | undefined;
+    expect(kb).toBeDefined();
+    expect(kb!.documentId).toBe("doc-explore-test");
+    expect(kb!.buildVersion).toBe(1);
+    expect(kb!.unchanged).toBe(false);
+    // 2 模块 + 2 接口 + 2 访问墙，全部进知识。
+    expect(kb!.itemCount).toBe(6);
+
+    const doc = test!.deps.db
+      .prepare("SELECT title, status, current_revision FROM qa_documents WHERE project_id=? AND document_id=?")
+      .get(projectId, "doc-explore-test") as { title: string; status: string; current_revision: number };
+    expect(doc.status).toBe("active");
+    expect(doc.title).toBe("环境探索快照（test）");
+    expect(doc.current_revision).toBe(1);
+    expect(kb!.revision).toBe(1);
+
+    const content = (test!.deps.db
+      .prepare("SELECT content FROM qa_document_revisions WHERE document_id=? AND revision=1")
+      .get("doc-explore-test") as { content: string }).content;
+    const docLines = content.split("\n");
+    const buildRow = test!.deps.db
+      .prepare("SELECT items_json FROM qa_knowledge_builds WHERE project_id=? AND version=1")
+      .get(projectId) as { items_json: string };
+    const items = JSON.parse(buildRow.items_json) as { type: string; name: string; source: { file: string; line: number } }[];
+    expect(items).toHaveLength(6);
+    for (const item of items) {
+      // 原文位置必须是真证据：file 指向快照资料，行号那行真的写着这条事实。
+      expect(item.source.file).toBe("doc-explore-test");
+      expect(docLines[item.source.line - 1]).toContain(item.name);
+    }
+    const types = new Set(items.map((item) => item.type));
+    expect(types).toEqual(new Set(["entity", "constraint", "rule"]));
+  });
+
+  it("同一份事实重跑：不修订资料、构建沿用既有版本（unchanged）", async () => {
+    const projectId = await projectWithRegisteredEnv();
+    const firstDeps = syncDepsOf(projectId);
+    startExploration(firstDeps, projectId, "test", {});
+    await waitForStatus(firstDeps, projectId, (view) => view?.status === "succeeded");
+
+    const secondDeps = syncDepsOf(projectId);
+    startExploration(secondDeps, projectId, "test", {});
+    const second = await waitForStatus(secondDeps, projectId, (view) => view?.round === 2 && view.status === "succeeded");
+    const kb = second.summary?.knowledgeBuild as { revision: number; buildVersion: number; unchanged: boolean } | undefined;
+    expect(kb).toBeDefined();
+    expect(kb!.unchanged).toBe(true);
+    expect(kb!.buildVersion).toBe(1);
+    expect(kb!.revision).toBe(1);
+
+    const revisions = test!.deps.db
+      .prepare("SELECT count(*) AS n FROM qa_document_revisions WHERE document_id=?")
+      .get("doc-explore-test") as { n: number };
+    expect(revisions.n).toBe(1);
+    const builds = test!.deps.db
+      .prepare("SELECT count(*) AS n FROM qa_knowledge_builds WHERE project_id=?")
+      .get(projectId) as { n: number };
+    expect(builds.n).toBe(1);
+  });
+
+  it("联动失败不改探索结论：轮次成功，摘要如实带 error", async () => {
+    const projectId = await projectWithRegisteredEnv();
+    const deps = syncDepsOf(projectId, async () => {
+      throw new Error("知识引擎不可用");
+    });
+    startExploration(deps, projectId, "test", {});
+    const finished = await waitForStatus(deps, projectId, (view) => view?.status === "succeeded");
+    const kb = finished.summary?.knowledgeBuild as { error: string } | undefined;
+    expect(kb).toBeDefined();
+    expect(kb!.error).toContain("知识引擎不可用");
+    // 环境四层知识照常回写：联动失败不该连累探索本身的产出。
+    const knowledge = latestExploration(deps.db, projectId, "test");
+    expect(knowledge?.summary?.knowledgeLayers).toEqual(["module", "interface", "wall"]);
   });
 });

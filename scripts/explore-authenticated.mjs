@@ -291,7 +291,7 @@ async function readCaptchaText() {
 }
 
 /**
- * 验证码策略链：测试后门码 → 本地算术识别（置信度≥0.9）→ 打码服务（未接线）→ 人工。
+ * 验证码策略链：测试后门码 → 本地算术识别（置信度≥0.9）→ 已配置打码服务 → 代理视觉自动识别；短信/扫码/滑块/点选才人工。
  * 自动成功时不写 answer.json、不暂停；全失败才落人工握手。
  */
 async function solveCaptchaByStrategy() {
@@ -385,18 +385,17 @@ async function login() {
 }
 
 async function main() {
-  // 不给配置时先登录页渲染一次做识别：后面的会话复用判定也要用 config。
-  if (!config && !publicMode) {
-    await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 60000 });
-    await page.waitForTimeout(800);
-    config = await discoverLoginConfig();
-  }
   let reused = existsSync(sessionPath) && !publicMode;
   if (reused) {
+    emit('step', { index: 3, name: '登录', status: 'running', detail: '检查已保存登录态' });
     await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
-    if (/login/i.test(page.url()) || (await locatorFor(page, config.password_target).count()) > 0) {
+    const targetPath = new URL(targetUrl).pathname.replace(/\/$/, '');
+    const currentPath = new URL(page.url()).pathname.replace(/\/$/, '');
+    if (currentPath !== targetPath || (await page.locator('input[type="password"]:visible').count()) > 0) {
       log('session_expired', { note: '保存的会话已失效，改为重新登录' });
       reused = false;
+    } else {
+      emit('step', { index: 3, name: '登录', status: 'done', detail: '已保存登录态有效，目标页可访问' });
     }
   }
   if (!reused) {
@@ -408,6 +407,9 @@ async function main() {
   emit('step', { index: 4, name: '采集页面', status: 'running', detail: '打开目标页并采集控件/表格' });
   await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2000);
+  if (new URL(page.url()).pathname.replace(/\/$/, '') !== new URL(targetUrl).pathname.replace(/\/$/, '')) {
+    throw new Error('目标页未打开，实际导航到了其他路径；未将该页面登记为目标页探索结果');
+  }
   await page.screenshot({ path: resolve(shotsDir, 'target.png'), fullPage: true });
   const seen = await structure();
   writeFileSync(resolve(outDir, 'structure.json'), JSON.stringify(seen, null, 2));

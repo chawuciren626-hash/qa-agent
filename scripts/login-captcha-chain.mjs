@@ -12,7 +12,7 @@ export const CAPTCHA_TYPES = Object.freeze(['none', 'image', 'slider', 'click_se
 
 export const STRATEGY_ORDER = Object.freeze({
   none: ['direct'],
-  image: ['test_bypass_code', 'ocr', 'captcha_service', 'manual'],
+  image: ['test_bypass_code', 'ocr', 'captcha_service', 'agent_vision'],
   slider: ['slider_solver', 'captcha_service', 'manual'],
   click_select: ['captcha_service', 'manual'],
   sms: ['sms_fixed_code', 'manual'],
@@ -116,7 +116,7 @@ export function confidenceGate(solution, minimum = MIN_SOLVE_CONFIDENCE) {
   return { accepted: true };
 }
 
-// 红线 3：有成功记录的策略按成功率降序提前；manual 永远最后。
+// 红线 3：有成功记录的策略按成功率降序提前；人工策略只在人工验证码类型中保留。
 export function strategyOrder(captchaType, stats = {}, project = '') {
   const base = STRATEGY_ORDER[captchaType] ?? ['manual'];
   const projectStats = stats[project] ?? {};

@@ -4,6 +4,10 @@ version: 2026.11.02.1
 description: 通过ADB后端在真实Android设备或模拟器上执行应用启动、控件操作、UI断言、截图与失败取证；区分动作完成、断言通过与基础设施异常，结果未知时不重放，供自动化执行角色在Android派发范围内使用。
 metadata:
   scope: android-adb-backend
+sections:
+  criteria: ["核心原则"]
+  knowledge: ["请求格式与证据"]
+  steps: ["操作流程", "1. 环境检查", "2. 启动与观察", "3. 操作", "4. 结束与交付", "失败与恢复"]
 ---
 
 # Android 执行 Skill

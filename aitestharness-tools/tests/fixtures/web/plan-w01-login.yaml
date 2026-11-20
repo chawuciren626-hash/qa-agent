@@ -1,0 +1,49 @@
+# 剧本 W01：正确凭据登录后进入订单列表。
+# 这是 Web 链路的最小正向贯通：导航 → 定位 → 输入 → 点击 → 导航后等待 → 断言。
+# 三个定位指纹故意按 testid → role+name → label 降级排列：testid 命不中时仍应能跑通，
+# 但降级必须被记录（locator_hit / degraded 会进 evidence）。
+lineage:
+  id: PLAN-WEB-01
+  version: 1
+intent: 正确账号密码登录，进入订单列表并看到 2 条订单
+steps:
+  - action: goto
+    target:
+      url: /login
+    assert:
+      - {type: url_contains, value: /login, level: decide}
+      - {type: visible, target: {testid: login-form}, level: decide}
+
+  - action: fill
+    target:
+      locators:
+        - {testid: login-username}
+        - {role: textbox, name: 用户名}
+        - {label: 用户名}
+    value: "${data.username}"
+    assert:
+      # observe：回显是否正确只采集事实，不让它决定 verdict（真正的判定在下一步）
+      - {type: value_equals, target: {testid: login-username},
+         expected: "${data.username}", level: observe}
+
+  - action: fill
+    target:
+      locators:
+        - {testid: login-password}
+        - {label: 密码}
+    value: "${data.password}"
+
+  - action: click
+    target:
+      locators:
+        - {testid: login-submit}
+        - {role: button, name: 登录}
+    wait:
+      - {type: element_visible, target: {testid: order-table}, timeout_ms: 8000}
+      - {type: network_idle, idle_ms: 300, timeout_ms: 8000}
+    assert:
+      - {type: url_contains, value: /orders, level: decide}
+      - {type: visible, target: {testid: order-table}, level: decide}
+      - {type: text_visible, value: "共 2 条", level: decide}
+      # 否定断言同样要能判：登录页的表单不该还在
+      - {type: hidden, target: {testid: login-form}, level: decide}

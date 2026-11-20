@@ -1,12 +1,23 @@
 ---
 name: test-report-writing
-version: 2026.11.02.2
+version: 2026.11.02.3
 description: 根据真实测试结果和缺陷记录生成测试报告与风险建议。
+task: report_insight
+stage: report
+tools: ["report.reviewer", "irval.check"]
+sections:
+  criteria: ["阶段工具执行协议（强制）", "统一产物交付契约", "质量标准", "禁止事项", "报告规则", "当前用户交付约定"]
+  knowledge: ["证据解释（所有模式）", "通用交付模板", "适用场景"]
+  steps: ["独立任务（task）", "生命周期模式（lifecycle）", "输入", "输出", "工作步骤"]
 ---
 
 # 测试报告生成 Skill
 
 路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+
+## 阶段工具执行协议（强制）
+
+报告阶段必须先调用 `report.reviewer` 和 `irval.check`，并通过 `export_report`、`validate_artifacts` 形成报告。覆盖率、通过率、缺陷数量和结论只能来自真实工具回执与执行证据；不得自行计算、补造或把未测写成通过。阶段回复必须列出工具调用、回执路径、事实范围和 partial/未测限制。
 
 组织摘要、覆盖说明或上线建议时，按需读[报告结论与统计口径](references/conclusion-and-coverage.md)。该参考适用于两种模式，沿用现有统计事实源与HTML导出，不增加交付门槛。
 

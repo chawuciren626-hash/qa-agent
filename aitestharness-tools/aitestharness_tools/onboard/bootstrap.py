@@ -98,9 +98,34 @@ class Probe:
     @property
     def session(self):
         if self._session is None:
-            import requests
-            self._session = requests.Session()
-            self._session.headers["User-Agent"] = "AITestHarness-Bootstrap/1.0"
+            try:
+                import requests
+                self._session = requests.Session()
+                self._session.headers["User-Agent"] = "AITestHarness-Bootstrap/1.0"
+            except ModuleNotFoundError:
+                # The bundled Python is intentionally dependency-isolated. Keep
+                # project onboarding runnable with the standard library when the
+                # optional requests package is absent.
+                from urllib.request import Request, build_opener
+
+                class _Response:
+                    def __init__(self, response):
+                        self.status_code = response.status
+                        self.url = response.geturl()
+                        self.headers = response.headers
+                        self.content = response.read()
+
+                class _Session:
+                    def __init__(self):
+                        self.headers = {}
+                        self._opener = build_opener()
+
+                    def get(self, url, timeout, allow_redirects=True):
+                        request = Request(url, headers=self.headers, method="GET")
+                        return _Response(self._opener.open(request, timeout=timeout))
+
+                self._session = _Session()
+                self._session.headers["User-Agent"] = "AITestHarness-Bootstrap/1.0"
         return self._session
 
     def get(self, url: str, max_bytes: int | None = None) -> dict:
@@ -690,9 +715,18 @@ def write_bundle(out_dir: str | Path, maps: dict, report: dict) -> dict:
     maps_path = out / f"maps-{report.get('env') or 'default'}.yaml"
     rep_path = out / f"bootstrap-report-{report.get('env') or 'default'}.md"
 
-    import yaml
-    for path, content in ((maps_path, yaml.safe_dump(maps, allow_unicode=True,
-                                                     sort_keys=False)),
+    # The managed desktop ships an isolated Python runtime.  PyYAML is not part of
+    # that runtime, while the maps document is JSON-compatible YAML, so keep the
+    # deterministic tool usable without an optional third-party package.
+    try:
+        import yaml
+        maps_content = yaml.safe_dump(maps, allow_unicode=True, sort_keys=False)
+    except ModuleNotFoundError as error:
+        if error.name != "yaml":
+            raise
+        import json
+        maps_content = json.dumps(maps, ensure_ascii=False, indent=2) + "\n"
+    for path, content in ((maps_path, maps_content),
                           (rep_path, render_report_markdown(report))):
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(content, encoding="utf-8")

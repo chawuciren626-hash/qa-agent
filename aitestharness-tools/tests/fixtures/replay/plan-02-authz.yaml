@@ -1,0 +1,14 @@
+# 剧本 02：未携带凭证访问订单详情，必须被拦。
+# 选它的理由：这是"负向用例"，断言的是 401 而不是 200——
+# 如果执行链路只会跑正向流程，负向一旦被误判成 fail，噪声会盖掉真缺陷。
+lineage:
+  id: PLAN-P4-02
+  version: 1
+intent: 未登录访问订单详情应返回 401
+steps:
+  - request: "GET /api/orders/1001"
+    assert:
+      - {type: status_code, matcher: equals, expected: "401", decide: true}
+      - {type: json_path, path: $.code, matcher: equals, expected: "401", decide: true}
+      # observe：确认返回的是"未登录"而不是"订单不存在"，否则断言 401 就太宽了
+      - {type: json_path, path: $.msg, matcher: contains, expected: "登录", decide: false}

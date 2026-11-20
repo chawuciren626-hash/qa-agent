@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, realpathSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createHash, randomUUID, randomBytes } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
@@ -33,6 +33,27 @@ const privatePath = dir => resolve(dir, 'execution/browser-private.json');
 const statePath = dir => resolve(dir, 'execution/browser-state.json');
 const load = path => JSON.parse(readFileSync(path, 'utf8'));
 const sleep = ms => new Promise(done => setTimeout(done, ms));
+// 测试环境常把账号密码作为一个受保护引用传入。只在两个字段完全相同、且内容
+// 明显符合组合凭据格式时拆分；普通用户名/密码不会被猜测或改写。
+export function splitCombinedCredential(username, password) {
+  if (typeof username !== 'string' || typeof password !== 'string' || username !== password) return null;
+  const raw = username.trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && typeof parsed.username === 'string' && typeof parsed.password === 'string' && parsed.username && parsed.password)
+      return { username: parsed.username, password: parsed.password, format: 'json' };
+  } catch { /* 继续尝试受控的纯文本格式 */ }
+  for (const separator of ['\r\n', '\n', '\r', '\t']) {
+    const parts = raw.split(separator).map(value => value.trim()).filter(Boolean);
+    if (parts.length === 2) return { username: parts[0], password: parts[1], format: separator === '\t' ? 'tab' : 'lines' };
+  }
+  const colon = raw.indexOf(':');
+  if (colon > 0 && colon < raw.length - 1 && !raw.slice(0, colon).includes('://')) {
+    return { username: raw.slice(0, colon).trim(), password: raw.slice(colon + 1).trim(), format: 'colon' };
+  }
+  return null;
+}
 // 登录结果的观察窗口。成功与失败在同一窗口里并行采样：真实站点的错误提示
 // 往往 3 秒内自愈，串行"先等成功再探失败"会系统性错过它（见 1F 真实验收记录）。
 const LOGIN_SIGNAL_WINDOW_MS = 8000;
@@ -548,7 +569,7 @@ async function worker(root,runId) {
     try {handle=await locator(config.captcha_image_target).elementHandle({timeout:3000});} catch {handle=null;}
     if(!handle) {
       phases.recognition={...recognition,strategy_attempts:strategyAttempts,at:new Date().toISOString()};
-      return {status:'captcha_unresolved',operation_started:attempt>1,phases,next_action:'supply_project_test_code_or_pause_for_human_login_never_guess_submit'};
+      return {status:'captcha_unresolved',operation_started:attempt>1,phases,next_action:'automatic_image_recognition_failed_no_human_fallback'};
     }
     if(credentials) {
       await locator(config.username_target).fill(credentials.username);
@@ -560,7 +581,7 @@ async function worker(root,runId) {
     finally {await handle.dispose();}
     if(!fingerprint || !buffer) {
       phases.recognition={...recognition,strategy_attempts:strategyAttempts,at:new Date().toISOString()};
-      return {status:'recognition_unavailable',operation_started:!!credentials,phases,reason:'captcha_image_fingerprint_unavailable',next_action:'configure_captcha_text_target_or_test_code_or_pause_for_human_login'};
+      return {status:'recognition_unavailable',operation_started:!!credentials,phases,reason:'captcha_image_fingerprint_unavailable',next_action:'automatic_image_recognition_unavailable'};
     }
     writeFileSync(resolve(dir,imagePath),buffer,{mode:0o600});
     writeJson(captchaPendingPath(),{version:1,login_request_id:loginRequestId,attempt,config_path:configPath,config_sha256:phases.classification.config_sha256,classification:phases.classification,fingerprint,image_path:imagePath,strategy_attempts:strategyAttempts,recognition,attempts,at:new Date().toISOString()},{mode:0o600});
@@ -666,9 +687,11 @@ async function worker(root,runId) {
   async function performLogin(op,recordPath) {
     assert(page && state.status==='ready','Start the browser task before automated login');
     const source=readRunFile(dir,op.config_path);
+    const combined=splitCombinedCredential(op.username,op.password);
+    const loginOp=combined ? {...op,username:combined.username,password:combined.password} : op;
     assert(source.data.toString('utf8').includes(op.quote),'Login config needs a verbatim supplied excerpt');
     const config=validateLoginConfig(JSON.parse(source.data.toString('utf8')));
-    secrets.add(op.username);secrets.add(op.password);
+    secrets.add(loginOp.username);secrets.add(loginOp.password);
     if(config.test_code) secrets.add(config.test_code);
     assert(!cases.some(c=>c.case_id===config.success_check.case_id),'Use a unique case_id for each actual assertion');
     assertBrowserDesignCheck(dir,load(resolve(dir,'manifest.json')),config.success_check);
@@ -719,17 +742,17 @@ async function worker(root,runId) {
         }
         if(!solution) {
           // 本地无解：配置声明了图形码目标时交代理视觉读图回传，否则如实报未完成（绝不猜测提交）。
-          if(config.captcha_image_target) return await captureCaptchaRecognition({loginRequestId:op.request_id,configPath:op.config_path,config,phases,attempt,attempts,strategyAttempts,recognition,credentials:attempt===1?{username:op.username,password:op.password}:null});
+          if(config.captcha_image_target) return await captureCaptchaRecognition({loginRequestId:op.request_id,configPath:op.config_path,config,phases,attempt,attempts,strategyAttempts,recognition,credentials:attempt===1?{username:loginOp.username,password:loginOp.password}:null});
           phases.recognition={...recognition,strategy_attempts:strategyAttempts,at:new Date().toISOString()};
-          return {status:'captcha_unresolved',operation_started:attempt>1,phases,next_action:'supply_project_test_code_or_pause_for_human_login_never_guess_submit'};
+          return {status:'captcha_unresolved',operation_started:attempt>1,phases,next_action:'automatic_image_recognition_failed_no_human_fallback'};
         }
         recognition={...recognition,strategy_attempts:strategyAttempts};
       }
-      const outcome=await submitLoginAttempt({op,config,phases,attempt,attempts,recognition,solution,recordPath,fillCredentials:attempt===1});
+      const outcome=await submitLoginAttempt({op:loginOp,config,phases,attempt,attempts,recognition,solution,recordPath,fillCredentials:attempt===1});
       if(outcome.kind!=='failure') return outcome.result;
       attempts=outcome.attempts;
     }
-    return {status:'login_failed_after_bounded_retries',phases:{...phases,submission:{attempts}},next_action:'report_failed_login_no_further_automatic_retry_use_human_login'};
+    return {status:'login_failed_after_bounded_retries',phases:{...phases,submission:{attempts}},next_action:'report_failed_login_after_bounded_automatic_retries'};
   }
   // 一次性回传：绑定指纹+置信度门控，消费待识别状态后继续填码/提交/判定/会话保存。识别执行器=代理视觉。
   async function performRecognize(op,recordPath) {
@@ -746,7 +769,7 @@ async function worker(root,runId) {
     try {current=await captchaFingerprint(config);} catch {current=null;}
     if(!current || current!==pending.fingerprint) {clearCaptchaScratch(pending);return {status:'captcha_changed',operation_started:false,next_action:'rerun_login_to_capture_the_current_captcha_no_stale_answer_submit'};}
     const gate=confidenceGate({answer:op.answer,confidence:op.confidence});
-    if(!gate.accepted) return {status:'recognition_low_confidence',operation_started:false,reason:gate.reason,confidence_minimum:MIN_SOLVE_CONFIDENCE,next_action:'rerecognize_or_pause_for_human_login_never_guess_submit'};
+    if(!gate.accepted) return {status:'recognition_low_confidence',operation_started:false,reason:gate.reason,confidence_minimum:MIN_SOLVE_CONFIDENCE,next_action:'rerecognize_current_captcha_or_report_automatic_failure'};
     unlinkSync(captchaPendingPath());
     secrets.add(op.answer);
     const recognition={strategy:AGENT_VISION_STRATEGY,accepted:true,confidence:op.confidence,basis:'screenshot_recognition_return',executor:'agent_vision'};
@@ -754,7 +777,7 @@ async function worker(root,runId) {
     const outcome=await submitLoginAttempt({op,config,phases,attempt:pending.attempt,attempts:pending.attempts,recognition,solution:{answer:op.answer,confidence:op.confidence},recordPath,fillCredentials:false});
     if(outcome.kind==='success') {clearCaptchaScratch(pending);return outcome.result;}
     if(outcome.kind==='unknown') {clearCaptchaScratch(pending);return outcome.result;}
-    if(pending.attempt>=MAX_CAPTCHA_SUBMITS) {clearCaptchaScratch(pending);return {status:'login_failed_after_bounded_retries',phases:{...phases,submission:{attempts:outcome.attempts}},next_action:'report_failed_login_no_further_automatic_retry_use_human_login'};}
+    if(pending.attempt>=MAX_CAPTCHA_SUBMITS) {clearCaptchaScratch(pending);return {status:'login_failed_after_bounded_retries',phases:{...phases,submission:{attempts:outcome.attempts}},next_action:'report_failed_login_after_bounded_automatic_retries'};}
     return await captureCaptchaRecognition({loginRequestId:pending.login_request_id,configPath:pending.config_path,config,phases:{classification:pending.classification},attempt:pending.attempt+1,attempts:outcome.attempts,strategyAttempts:[{strategy:AGENT_VISION_STRATEGY,accepted:false,reason:'explicit_failure'}],recognition:{strategy:AGENT_VISION_STRATEGY,accepted:false,reason:'explicit_failure',executor:'agent_vision'}});
   }
   async function perform(request) {
@@ -887,7 +910,7 @@ async function worker(root,runId) {
         assert(page && state.status==='ready','Start the browser task before probing login');
         const summary=await collectLoginDom(page);
         const form=classifyLoginForm(summary),captcha=classifyCaptcha(summary);
-        result={status:state.status,classification:form,captcha,strategy_order:strategyOrder(captcha.type,loginStats),interpretation:'只读分类，不是识别结果，也不构成自动登录成功',next_action:['none','image'].includes(captcha.type)?'login_with_archived_config_or_human_login':'pause_for_human_login_this_type_has_no_automatic_strategy'};
+        result={status:state.status,classification:form,captcha,strategy_order:strategyOrder(captcha.type,loginStats),interpretation:'只读分类，不是识别结果，也不构成自动登录成功',next_action:['none','image'].includes(captcha.type)?'login_with_archived_config_and_automatic_captcha_chain':'pause_only_for_sms_qr_slider_or_click_select'};
       } else if(op.type==='login') {
         result=await performLogin(op,recordPath);
       } else if(op.type==='login_recognize') {
@@ -942,7 +965,11 @@ async function worker(root,runId) {
           writeJson(resolve(dir,'execution/browser-coverage.json'),designCoverage);
           paths.push('execution/browser-coverage.json');
         }
-        const observation={...state,mode:'interactive_browser',command_id:commandId,summary:scrub(op.summary),cleanup,limitations:[...op.limitations.map(scrub),...(unacknowledged?['An operation acknowledgement remains unresolved; retain its receipt and do not replay the write.']:[]),...(cleanup.possible_residuals?[`Tracked test data may remain: ${cleanup.possible_residuals}. See ${dataLedgerPath}; do not repeat uncertain cleanup.`]:[]),...(state.capture_warnings?[`Screenshots unavailable for ${state.capture_warnings} operations; use retained structured observations.`]:[]),'Application-initiated HTTP APIs supported; new cross-origin documents, popups, downloads and WebSockets are not supported.'],partial:incomplete,evidence:paths.map(p=>({path:p,sha256:readRunFile(dir,p).sha256}))};
+        const stageReceiptPaths=existsSync(resolve(dir,'audit/stage-tools'))
+          ? readdirSync(resolve(dir,'audit/stage-tools')).filter(name=>name.endsWith('.json')).map(name=>`audit/stage-tools/${name}`)
+          : [];
+        const observation={...state,mode:'interactive_browser',command_id:commandId,summary:scrub(op.summary),tool_receipts:stageReceiptPaths,
+          limitations:[...op.limitations.map(scrub),...(unacknowledged?['An operation acknowledgement remains unresolved; retain its receipt and do not replay the write.']:[]),...(cleanup.possible_residuals?[`Tracked test data may remain: ${cleanup.possible_residuals}. See ${dataLedgerPath}; do not repeat uncertain cleanup.`]:[]),...(state.capture_warnings?[`Screenshots unavailable for ${state.capture_warnings} operations; use retained structured observations.`]:[]),'Application-initiated HTTP APIs supported; new cross-origin documents, popups, downloads and WebSockets are not supported.'],partial:incomplete,evidence:paths.concat(stageReceiptPaths).map(p=>({path:p,sha256:readRunFile(dir,p).sha256}))};
         if(state.dialog_issues) observation.limitations.push('Native dialog handling or expected-dialog observation remains unverified. See browser-dialogs.json and per-operation dialog receipts; do not replay actions to improve evidence.');
         writeJson(resolve(dir,'execution/exploration.json'),observation);
         result={status:'closed',partial:incomplete,summary,statistics,coverage,cleanup,artifacts:['execution/exploration.json','execution/test_results.json',...(dataLedger.items.length?[dataLedgerPath]:[])],exploration_sha256:readRunFile(dir,'execution/exploration.json').sha256};

@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运行痕迹与"疑似中断"展示 · 原型（P4 判据 1/4）</title>
+<style>
+  :root{
+    --text:#1f2329; --muted:#8f959e; --muted2:#646a73; --line:#e6e9ef; --line2:#eef0f4;
+    --hover:#f1f3f6; --pri:#185fa5; --pri-bg:#eaf2fb; --pri-line:#cfe0f3;
+    --green:#2e9e6b; --green-bg:#e8f6ef; --red:#d45555; --red-bg:#fdeeee;
+    --amber:#b8781a; --amber-bg:#fdf3e3; --grey-bg:#f2f3f5; --bg:#fff;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:#f5f6f8;color:var(--text);font-size:13.5px;-webkit-font-smoothing:antialiased}
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+
+  .pg-bar{height:46px;display:flex;align-items:center;gap:14px;padding:0 16px;background:#0f172a;color:#cbd5e1;
+    font-size:12px;position:sticky;top:0;z-index:100}
+  .pg-bar b{color:#fff;font-weight:600;font-size:12.5px}
+  .pg-hint{margin-left:auto;color:#7c8ba1;font-size:11.5px;max-width:56%;text-align:right;line-height:1.5}
+  .pg-hint b{color:#e2e8f0;font-weight:600}
+
+  .app{display:flex;min-height:calc(100vh - 46px);background:var(--bg);max-width:1360px;margin:0 auto;
+    box-shadow:0 0 0 1px var(--line)}
+  .rail{width:300px;flex:none;border-right:1px solid var(--line);background:#fcfcfd;padding:16px 12px;overflow:auto}
+  .rail h2{font-size:12px;color:var(--muted);letter-spacing:.4px;font-weight:600;padding:0 6px 10px}
+  .run{border:1px solid var(--line);border-radius:10px;background:#fff;padding:11px 12px;margin-bottom:8px;
+    text-align:left;width:100%;display:block;transition:border-color .12s,box-shadow .12s}
+  .run:hover{border-color:var(--pri-line);box-shadow:0 1px 6px rgba(24,95,165,.08)}
+  .run.on{border-color:var(--pri);box-shadow:0 0 0 1px var(--pri) inset}
+  .run .rid{font-family:var(--mono);font-size:12px;font-weight:600}
+  .run .meta{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11.5px;color:var(--muted)}
+  .dot{width:6px;height:6px;border-radius:50%;flex:none}
+
+  .badge{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600}
+  .b-run{background:var(--pri-bg);color:var(--pri)}
+  .b-stall{background:var(--red-bg);color:var(--red)}
+  .b-done{background:var(--green-bg);color:var(--green)}
+  .b-unknown{background:var(--grey-bg);color:var(--muted2)}
+
+  .main{flex:1;min-width:0;padding:22px 30px 56px}
+  .head h1{font-size:19px;font-weight:700;letter-spacing:-.2px;font-family:var(--mono)}
+  .head p{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.7;max-width:760px}
+
+  .alert{display:flex;gap:10px;margin:16px 0 0;border-radius:10px;padding:12px 14px;font-size:12.5px;line-height:1.7}
+  .alert.red{background:var(--red-bg);color:#8f2f2f;border:1px solid #f3d3d3}
+  .alert.amber{background:var(--amber-bg);color:#7a5312;border:1px solid #f0e0c2}
+  .alert.blue{background:var(--pri-bg);color:#12457d;border:1px solid var(--pri-line)}
+  .alert b{font-weight:700}
+  .alert .ic{font-weight:700;flex:none}
+
+  .sec{margin-top:22px}
+  .sec h3{font-size:13px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+  .sec h3 small{font-weight:400;color:var(--muted);font-size:11.5px}
+
+  .timeline{border:1px solid var(--line);border-radius:10px;padding:16px 18px;background:#fff}
+  .node{display:grid;grid-template-columns:14px 96px 1fr;gap:12px;align-items:start;position:relative;padding-bottom:16px}
+  .node:last-child{padding-bottom:0}
+  .node .bar{position:relative;height:100%;display:flex;justify-content:center}
+  .node .bar i{width:9px;height:9px;border-radius:50%;background:#fff;border:2px solid var(--line);margin-top:4px;z-index:1}
+  .node.done .bar i{border-color:var(--green);background:var(--green)}
+  .node.now .bar i{border-color:var(--pri);background:var(--pri)}
+  .node.bad .bar i{border-color:var(--red);background:var(--red)}
+  .node:not(:last-child) .bar::after{content:"";position:absolute;top:13px;bottom:-16px;width:1px;background:var(--line)}
+  .node .t{font-family:var(--mono);font-size:11.5px;color:var(--muted2);padding-top:1px}
+  .node .what b{font-size:12.5px;font-weight:600}
+  .node .what span{display:block;font-size:11.5px;color:var(--muted);margin-top:3px;line-height:1.6}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+  .cell{border:1px solid var(--line);border-radius:10px;padding:11px 13px;background:#fff}
+  .cell dt{font-size:11px;color:var(--muted);margin-bottom:6px}
+  .cell dd{font-size:13px;font-weight:600;font-family:var(--mono);word-break:break-all}
+  .cell dd.sm{font-size:12px;font-weight:500}
+  .cell dt .q{display:inline-block;width:13px;height:13px;line-height:13px;text-align:center;border-radius:50%;
+    background:var(--grey-bg);color:var(--muted2);font-size:9px;margin-left:4px;cursor:help;font-family:sans-serif}
+
+  .why{border:1px solid var(--line);border-radius:10px;background:#fcfcfd;padding:14px 16px;font-size:12.5px;
+    color:var(--muted2);line-height:1.85}
+  .why code{font-family:var(--mono);font-size:11.5px;background:var(--grey-bg);padding:1px 5px;border-radius:4px;color:var(--text)}
+  .why .bad{color:var(--red);font-weight:600}
+  .why .good{color:var(--green);font-weight:600}
+
+  .acts{display:flex;gap:8px;margin-top:18px;flex-wrap:wrap}
+  .btn{padding:7px 14px;border-radius:8px;border:1px solid var(--line);font-size:12.5px;font-weight:600;background:#fff}
+  .btn:hover{background:var(--hover)}
+  .btn.pri{background:var(--pri);border-color:var(--pri);color:#fff}
+  .btn.pri:hover{background:#14508c}
+  .btn.dis{color:var(--muted);cursor:not-allowed}
+
+  .foot{margin-top:26px;padding-top:14px;border-top:1px dashed var(--line);font-size:11.5px;color:var(--muted);line-height:1.8}
+</style>
+</head>
+<body>
+<div class="pg-bar">
+  <b>原型 · 运行痕迹 / 疑似中断展示</b>
+  <span id="scenario">场景：执行器崩溃（锁未释放）</span>
+  <span class="pg-hint">这是<b>原型</b>，不动真实前端。数据取自 <b>GET /qa/task-records/:session/runs/:runId/trace</b> 的字段形状。</span>
+</div>
+
+<div class="app">
+  <aside class="rail">
+    <h2>本任务的运行（最近 4 次）</h2>
+    <div id="runs"></div>
+  </aside>
+
+  <main class="main">
+    <div class="head">
+      <h1 id="title">run-20261119-b7</h1>
+      <p id="subtitle"></p>
+    </div>
+    <div id="alert"></div>
+
+    <section class="sec">
+      <h3>时间线 <small>每个时刻都来自某一份具体文件，不是推算</small></h3>
+      <div class="timeline" id="timeline"></div>
+    </section>
+
+    <section class="sec">
+      <h3>事实 <small>悬停带问号的项可看口径</small></h3>
+      <div class="grid" id="facts"></div>
+    </section>
+
+    <section class="sec">
+      <h3>为什么这样判<small>同一个词在两处不能给两个答案</small></h3>
+      <div class="why" id="why"></div>
+    </section>
+
+    <div class="acts">
+      <button class="btn pri" id="act-rerun">重新发起（新 run_id）</button>
+      <button class="btn" id="act-ack">标记已人工处置</button>
+      <button class="btn dis" title="原型不接真实日志">查看执行日志</button>
+      <button class="btn dis" title="原型不接真实接口">打开 run 目录</button>
+    </div>
+
+    <div class="foot">
+      口径说明：`startedAt` 只认执行器写的 <code>execution-state.json</code> / 执行锁；`manifest.json`
+      只能证明"这次运行存在过"，不能证明"执行开始了"。`stalled` 用<b>最后一次活动</b>判，不用开始时间判；
+      锁在而进程不在时不等阈值，直接判疑似中断。
+    </div>
+  </main>
+</div>
+
+<script>
+const runs = [
+  {
+    id: "run-20261119-b7",
+    label: "崩溃：锁没释放",
+    badge: "stall",
+    badgeText: "疑似中断",
+    subtitle: `发起 11:02，执行 11:02 开始；11:07 之后没有任何新活动，持锁进程已退出。`,
+    alert: { kind: "red", icon: "!", html: `<b>执行锁未释放且持锁进程已退出</b>：疑似执行器崩溃或被强制结束。这不是「用例失败」，也不代表「没跑过」——它是一次没有收尾的执行。需人工确认残留（浏览器实例 / 测试数据）后重跑，<b>不要自动续跑</b>：真机上有写操作，自动续跑等于重复执行。` },
+    timeline: [
+      { cls: "done", t: "11:02:11", b: "运行创建（create-run）", s: `manifest.json 写入。只证明「这次运行存在」，不证明执行开始。` },
+      { cls: "done", t: "11:02:40", b: "执行开始", s: `execution-state.json 写入；执行锁记下 owner_pid。startedAt 取的就是这一刻。` },
+      { cls: "now",  t: "11:07:03", b: "最后一次活动", s: `phase=playwright。之后状态文件再没被更新过。` },
+      { cls: "bad",  t: "—",        b: "没有结束", s: `没有密封尝试（attempt.json），锁也没删。所以不能说「跑完了」，更不能说「失败了」。` }
+    ],
+    facts: [
+      { k: "平台登记", v: "已登记", cls: "sm" },
+      { k: "执行开始 startedAt", v: "11:02:40" },
+      { k: "最后活动", v: "11:07:03" },
+      { k: "密封尝试 attempts", v: "0", tip: `每次重跑密封一条 attempt.json；0 = 一次都没跑完` },
+      { k: "当前阶段", v: "playwright" },
+      { k: "持锁进程", v: "pid 18344 · 已退出", cls: "sm" },
+      { k: "中断判定", v: "stalled = true（不等阈值）", cls: "sm", tip: `pid 证据优先于时间阈值` },
+      { k: "manifest sha256", v: "9f3c…a71e", cls: "sm" }
+    ],
+    why: `<span class="bad">不要用「开始到现在超过 30 分钟」判中断</span>：真机跑 40 分钟是正常的，那样会把所有长跑标成中断，人一旦见过一次误报就不再信这个标记。这里的证据是<b>持锁进程已经不在</b>——执行器正常收尾会删锁，剩下的锁只有两种含义：还在跑，或者跑到一半死了。同机可以用 pid 区分；跨机时 pid 不可信，只能退回时间阈值并标「需人工确认」。`
+  },
+  {
+    id: "run-20261119-b6",
+    label: "执行中，最近有活动",
+    badge: "run",
+    badgeText: "执行中",
+    subtitle: `已跑 42 分钟，2 分钟前还在更新阶段。虽然超过 30 分钟阈值，但不算中断。`,
+    alert: { kind: "blue", icon: "i", html: `<b>这是「长跑」，不是「卡住」</b>：开始时间早于阈值，但最后一次活动在 2 分钟前。判中断只看最后活动，不看运行时长。` },
+    timeline: [
+      { cls: "done", t: "10:20:08", b: "运行创建", s: `manifest.json 写入。` },
+      { cls: "done", t: "10:20:31", b: "执行开始", s: `startedAt = 10:20:31（已 42 分钟）。` },
+      { cls: "now",  t: "11:00:44", b: "最后一次活动", s: `phase=playwright（第 3 个用例）。` },
+      { cls: "",     t: "—",        b: "尚未结束", s: `锁还在，持锁进程仍存活。` }
+    ],
+    facts: [
+      { k: "平台登记", v: "已登记", cls: "sm" },
+      { k: "执行开始 startedAt", v: "10:20:31" },
+      { k: "最后活动", v: "11:00:44" },
+      { k: "密封尝试 attempts", v: "0" },
+      { k: "当前阶段", v: "playwright" },
+      { k: "持锁进程", v: "pid 20811 · 存活", cls: "sm" },
+      { k: "中断判定", v: "stalled = false", cls: "sm", tip: `最后活动未超过阈值` },
+      { k: "manifest sha256", v: "4b10…c02d", cls: "sm" }
+    ],
+    why: `同一个 run 的 startedAt 与 lastActivityAt 相差 40 分钟，而 stalled 仍为 false——这正是「用最后活动判」与「用开始时间判」的差别。阈值随接口一起返回，读的人不必猜它是 30 分钟还是 10 分钟。`
+  },
+  {
+    id: "run-20261119-b5",
+    label: "正常收尾",
+    badge: "done",
+    badgeText: "已完成",
+    subtitle: `执行 8 分 12 秒，锁已释放，密封尝试 1 次；报告已可追溯。`,
+    alert: null,
+    timeline: [
+      { cls: "done", t: "09:58:02", b: "运行创建", s: `manifest.json。` },
+      { cls: "done", t: "09:58:20", b: "执行开始", s: `startedAt = 09:58:20。` },
+      { cls: "done", t: "10:06:32", b: "执行结束", s: `attempt.json 密封，execution 锁删除。` },
+      { cls: "done", t: "10:07:10", b: "报告发布", s: `报告可追溯到 09:58:20 这个发起时刻。` }
+    ],
+    facts: [
+      { k: "平台登记", v: "已登记", cls: "sm" },
+      { k: "执行开始 startedAt", v: "09:58:20" },
+      { k: "执行结束 finishedAt", v: "10:06:32" },
+      { k: "密封尝试 attempts", v: "1" },
+      { k: "当前阶段", v: "finished" },
+      { k: "持锁进程", v: "—（已释放）", cls: "sm" },
+      { k: "中断判定", v: "stalled = false", cls: "sm" },
+      { k: "manifest sha256", v: "e7a2…0f55", cls: "sm" }
+    ],
+    why: `收尾之后就不再谈中断，哪怕最后一次活动已经是 40 分钟前。finishedAt 取最晚一条密封尝试的时间，startedAt 取最早一条——重跑过两次的 run 也能看出「第一次什么时候开始」。`
+  },
+  {
+    id: "run-20261119-b4",
+    label: "目录有、平台没登记",
+    badge: "unknown",
+    badgeText: "未登记",
+    subtitle: `工作区里有这次运行的目录与执行痕迹，qa_runs 里没有对应行。`,
+    alert: { kind: "amber", icon: "?", html: `<b>这是一处有价值的不一致</b>：它说明这次执行绕过了所有服务端写入就开跑了（或登记那一步失败了）。平台<b>不会替它补一行</b>——补上就把「曾经没登记」这个事实抹掉了。要不要补登记、还是直接重跑，由人决定。` },
+    timeline: [
+      { cls: "done", t: "09:31:00", b: "运行创建", s: `manifest.json 写入。` },
+      { cls: "done", t: "09:31:12", b: "执行开始", s: `execution-state.json 写入。` },
+      { cls: "bad",  t: "—",        b: "平台无登记行", s: `设计 / 结果 / 报告三个写入点都没出现过这次 run_id。` }
+    ],
+    facts: [
+      { k: "平台登记", v: "未登记", cls: "sm" },
+      { k: "执行开始 startedAt", v: "09:31:12" },
+      { k: "最后活动", v: "09:44:20" },
+      { k: "密封尝试 attempts", v: "1" },
+      { k: "当前阶段", v: "finished" },
+      { k: "持锁进程", v: "—（已释放）", cls: "sm" },
+      { k: "中断判定", v: "stalled = false", cls: "sm" },
+      { k: "manifest status", v: "completed", cls: "sm" }
+    ],
+    why: `这类运行以前根本看不见：平台只认自己登记过的行，工作区里的目录则只出现在概览页的另一份列表里。现在两个来源都摆在一起，「看见过」与「登记过」分开表述，不一致本身就是信息。`
+  }
+];
+
+const $ = id => document.getElementById(id);
+const badgeClass = b => ({ stall: "b-stall", run: "b-run", done: "b-done", unknown: "b-unknown" })[b];
+
+function renderRail(active) {
+  $("runs").innerHTML = runs.map(r => `
+    <button class="run ${r.id === active ? "on" : ""}" data-id="${r.id}">
+      <div class="rid">${r.id}</div>
+      <div class="meta">
+        <span class="badge ${badgeClass(r.badge)}">${r.badgeText}</span>
+        <span>${r.label}</span>
+      </div>
+    </button>`).join("");
+  document.querySelectorAll(".run").forEach(el => el.onclick = () => select(el.dataset.id));
+}
+
+function select(id) {
+  const r = runs.find(x => x.id === id);
+  if (!r) return;
+  renderRail(id);
+  $("scenario").textContent = "场景：" + r.label;
+  $("title").textContent = r.id;
+  $("subtitle").textContent = r.subtitle;
+  $("alert").innerHTML = r.alert ? `<div class="alert ${r.alert.kind}"><span class="ic">${r.alert.icon}</span><div>${r.alert.html}</div></div>` : "";
+  $("timeline").innerHTML = r.timeline.map(n => `
+    <div class="node ${n.cls}">
+      <div class="bar"><i></i></div>
+      <div class="t">${n.t}</div>
+      <div class="what"><b>${n.b}</b><span>${n.s}</span></div>
+    </div>`).join("");
+  $("facts").innerHTML = r.facts.map(f => `
+    <dl class="cell">
+      <dt>${f.k}${f.tip ? `<span class="q" title="${f.tip}">?</span>` : ""}</dt>
+      <dd class="${f.cls || ""}">${f.v}</dd>
+    </dl>`).join("");
+  $("why").innerHTML = r.why;
+  $("act-rerun").classList.toggle("dis", r.badge === "done");
+}
+
+$("act-rerun").onclick = () => alert(`原型：重新发起会生成新的 run_id（旧的保持「疑似中断」，作为历史证据）。`);
+$("act-ack").onclick = () => alert(`原型：只记录「人已确认处置」，不修改执行痕迹，也不改 verdict。`);
+
+select("run-20261119-b7");
+</script>
+</body>
+</html>

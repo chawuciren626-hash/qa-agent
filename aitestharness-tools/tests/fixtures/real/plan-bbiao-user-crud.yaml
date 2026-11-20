@@ -1,0 +1,232 @@
+# 真实系统剧本：用户管理 · 创建用户 → 列表验证 → 注销清理
+#
+# 这是 E2E-1 第一条**真正写库**的用例。与 v2 的"填表不提交"相比，多了两件必须守住的事：
+#
+#   1. 创建成功与否，由**数据**说话：点完"创建用户"再查一次列表，那一行必须在，
+#      且只有一行。不靠 toast 文案、不靠"弹窗关了"——弹窗关掉但后端报错是这类系统
+#      最常见的形态。
+#   2. 创建的账号必须被清掉，且清理不能依赖"这次跑通了"：清理写在 teardown 里，
+#      主步骤失败也照跑，并且单独反验"状态仍为有效的探针账号"已经为 0。
+#
+# ── 实测事实（不是推断，全部来自真机）───────────────────────────────────────
+#   · 列表接口：POST /bbiao-backend/v2/sysEmployee/page（不是 userManage/*）；
+#   · 行内操作只有 编辑信息 / 注销 / 锁定 / 编辑角色 / 重置密码，**没有删除**；
+#   · 注销 = 软删：确认框「确认要注销该账户?」→ 该行**仍在列表**，状态改为「注销」，
+#     操作列变空。用户名不会被释放，所以**同名不能重复创建**；
+#     清理的判据因此不是"行没了"，而是"这一行不再有效"；
+#   · 选中"所属角色"后下拉浮层不收起，会盖住"创建用户"按钮（可见 ≠ 可点），
+#     必须显式点一下弹窗标题把浮层收掉；实测按 Escape 有关掉整个弹窗的风险，不用；
+#   · 行作用域定位：`:text-is()` 在 el-table 的 td 上命中 0，只有 `:has-text()` 稳定；
+#     但**不要**因此写 `td:nth-child(3):has-text("x")`——那是位置假设，加一列就静默
+#     点到隔壁列。改为 scope 表达（`container` + `column_name`），列号由引擎按表头
+#     文本在运行时解析：真实表头 = 序列/昵称/用户名/所属角色/手机号/状态/创建时间/操作；
+#   · 等待条件必须唯一：`element_visible {css: tr.el-table__row}` 会命中 10 行、
+#     被"多命中拒绝执行"拒掉；等"列表已加载"要从网络上等（request_done）。
+#
+# ── 重跑前必做 ─────────────────────────────────────────────────────────────
+#   全局替换用户名（下面 5 处 `qa_probe_20261119b`）与手机号，换成没用过的值：
+#   注销不释放用户名，同名再创建会被后端拒绝。
+lineage:
+  id: PLAN-BBIAO-USER-CRUD
+  version: 1
+title: 系统用户管理 - 创建用户并注销清理（写库闭环）
+driver: web
+
+steps:
+  # ---- 进入用户管理 ------------------------------------------------------
+  - action: goto
+    target: {url: /bbiao-admin/system/user/index}
+    wait:
+      - {type: element_visible, target: {placeholder: 输入用户名}, timeout_ms: 20000}
+      # 等列表首次加载落定：不等就填查询条件，会被"初始列表的响应"覆盖回去，
+      # 表现是"点了查询、断言却说没过滤"——排查时会一路怀疑到产品头上
+      - {type: request_done, pattern: "POST /sysEmployee/page", timeout_ms: 20000}
+    assert:
+      - {type: url_contains, value: /system/user/index, level: decide}
+      - {type: text_visible, value: 添加用户, level: decide}
+
+  - action: click
+    target: {role: button, name: 添加用户}
+    wait:
+      - {type: element_visible, target: {label: 昵称}, timeout_ms: 15000}
+    assert:
+      - {type: text_visible, value: 添加系统用户, level: decide}
+
+  # ---- 填写表单 ----------------------------------------------------------
+  - action: fill
+    target: {label: 昵称}
+    value: QA自动化探针
+    assert:
+      - {type: value_equals, target: {label: 昵称}, expected: QA自动化探针, level: decide}
+
+  - action: fill
+    target: {label: 手机号码}
+    value: "13900000020"
+    assert:
+      - {type: value_equals, target: {label: 手机号码}, expected: "13900000020", level: observe}
+
+  - action: fill
+    target: {label: 用户名}
+    value: qa_probe_20261119b
+    assert:
+      - {type: value_equals, target: {label: 用户名}, expected: qa_probe_20261119b, level: decide}
+
+  # 密码框 type=text（明文可见，v1 已单独记为缺陷），填写行为与普通输入框一致
+  - action: fill
+    target: {label: 用户密码}
+    value: QaProbe@2026
+    assert:
+      - {type: value_equals, target: {label: 用户密码}, expected: QaProbe@2026, level: observe}
+
+  - action: click
+    target: {label: 所属角色：}
+    wait:
+      - {type: element_visible, target: {text: 测试}, timeout_ms: 10000}
+
+  - action: click
+    target: {text: 测试}
+    assert:
+      - {type: value_equals, target: {label: 所属角色：}, expected: 测试, level: decide}
+
+  # ---- 收起下拉浮层（否则"创建用户"按钮被盖住，点击会被拦截）--------------
+  - action: click
+    target: {text: 添加系统用户}
+    wait:
+      - {type: element_visible, target: {role: button, name: 创建用户}, timeout_ms: 5000}
+    assert:
+      - {type: hidden, target: {text: 测试}, level: decide}
+
+  # ---- 提交（真写库）-----------------------------------------------------
+  - action: click
+    target: {role: button, name: 创建用户}
+    wait:
+      # 点击返回时请求已发出，等它落定
+      - {type: network_idle, timeout_ms: 20000}
+
+  # ---- 验证数据真的存在，且只有一条 --------------------------------------
+  - action: fill
+    target: {placeholder: 输入用户名}
+    value: qa_probe_20261119b
+
+  - action: click
+    target: {role: button, name: 查询}
+    wait:
+      - {type: request_done, pattern: "POST /sysEmployee/page", timeout_ms: 20000}
+      # 请求返回 ≠ 表格已重绘；再等一次 network_idle，把"创建后自动刷新"的
+      # 尾随响应也收干净，否则断言可能读到被覆盖回未过滤状态的表格
+      - {type: network_idle, timeout_ms: 15000}
+      # 定位用 scope（作用域 + 条件），按**表头文本**解析列号，不写列序号
+      - type: element_visible
+        target:
+          scope:
+            container: {css: "tr.el-table__row"}
+            where: [{column_name: 用户名, text: qa_probe_20261119b}]
+        timeout_ms: 20000
+    assert:
+      # 恰好一行：多了说明历史残留没清干净，少了说明没创建成功
+      - type: count_equals
+        target:
+          scope:
+            container: {css: "tr.el-table__row"}
+            where: [{column_name: 用户名, text: qa_probe_20261119b}]
+        expected: 1
+        level: decide
+      - {type: text_visible, value: qa_probe_20261119b, level: decide}
+
+# ---- 清理：注销探针账号（主步骤失败也执行）-------------------------------
+# 为什么是"注销"而不是"删除"：行内操作里没有删除。注销是这套系统提供的最强移除手段，
+# 已与实际使用方确认按此清理。它留下"注销"状态的行，所以反验判的是"不再有效"。
+teardown:
+  steps:
+    # 重新进列表：主步骤可能停在弹窗里，清理要从一个确定的页面状态开始
+    - action: goto
+      target: {url: /bbiao-admin/system/user/index}
+      wait:
+        - {type: element_visible, target: {placeholder: 输入用户名}, timeout_ms: 20000}
+        - {type: request_done, pattern: "POST /sysEmployee/page", timeout_ms: 20000}
+
+    - action: fill
+      target: {placeholder: 输入用户名}
+      value: qa_probe_20261119b
+
+    - action: click
+      target: {role: button, name: 查询}
+      wait:
+        - {type: request_done, pattern: "POST /sysEmployee/page", timeout_ms: 20000}
+        - {type: network_idle, timeout_ms: 15000}
+        - type: element_visible
+          target:
+            scope:
+              container: {css: "tr.el-table__row"}
+              where: [{column_name: 用户名, text: qa_probe_20261119b}]
+          timeout_ms: 20000
+
+    # 行作用域：只点"用户名列恰好是探针账号"的那一行里的注销。
+    # 命中 2 行会被"多命中拒绝执行"挡下，不会点到别人的账号。
+    # 列按表头文本解析、不写列序号：真实表头是
+    # 序列/昵称/用户名/所属角色/手机号/状态/创建时间/操作，
+    # 将来加一列"备注"放前面，写死 nth-child(3) 的定位会静默点到隔壁列。
+    - action: click
+      target:
+        scope:
+          container: {css: "tr.el-table__row"}
+          where: [{column_name: 用户名, text: qa_probe_20261119b}]
+        # 内层仍用子串匹配而非 role+name：这套后台的按钮里有图标节点和空白，
+        # 可访问名不一定逐字等于"注销"。这里只替换掉"外层的列序号假设"这一件事，
+        # 一次只改一个变量，真机失败时才归因得清。
+        css: 'button:has-text("注销")'
+      wait:
+        - {type: element_visible, target: {css: ".el-message-box"}, timeout_ms: 10000}
+      assert:
+        - {type: text_visible, value: 确认要注销该账户, level: decide}
+
+    - action: click
+      target: {role: button, name: 确认}
+      wait:
+        - {type: network_idle, timeout_ms: 20000}
+
+    # 反验：整页重载 + 重新查询。重载是为了排除"页面只是把行从 DOM 里摘了"
+    - action: goto
+      target: {url: /bbiao-admin/system/user/index}
+      wait:
+        - {type: element_visible, target: {placeholder: 输入用户名}, timeout_ms: 20000}
+        - {type: request_done, pattern: "POST /sysEmployee/page", timeout_ms: 20000}
+
+    - action: fill
+      target: {placeholder: 输入用户名}
+      value: qa_probe_20261119b
+
+    - action: click
+      target: {role: button, name: 查询}
+      wait:
+        - {type: request_done, pattern: "POST /sysEmployee/page", timeout_ms: 20000}
+        - {type: network_idle, timeout_ms: 15000}
+      assert:
+        # 仍然"有效"的探针账号必须为 0：行还在但状态已变为注销，也算清理成功
+        - type: hidden
+          target:
+            scope:
+              container: {css: "tr.el-table__row"}
+              where:
+                - {column_name: 用户名, text: qa_probe_20261119b}
+                - {column_name: 状态, text: 有效}
+          level: decide
+        # 阴性对照：证明查询条件确实生效了。没有这一条，"0 行"既可能是清理成功，
+        # 也可能是过滤没提交、当前页里本来就没有这个账号——后者会把残留报成已清理。
+        - type: hidden
+          target:
+            scope:
+              container: {css: "tr.el-table__row"}
+              where: [{column_name: 用户名, text: sbkjadmin}]
+          level: decide
+
+  # 最终反验独立于清理步骤的成败：清理步骤全绿也不等于清理成功
+  verify_gone:
+    - name: qa_probe_20261119b（状态仍为有效）
+      target:
+        scope:
+          container: {css: "tr.el-table__row"}
+          where:
+            - {column_name: 用户名, text: qa_probe_20261119b}
+            - {column_name: 状态, text: 有效}
+      note: 命中 0 即"该账号已不再有效"；命中 >=1 说明清理没成功，账号还留在被测系统里

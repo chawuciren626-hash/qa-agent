@@ -11,7 +11,10 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 import { HttpError } from "../http/errors.js";
+import { pointUid } from "./qa-point-identity.js";
 import { parseEvidenceRefs, type EvidenceRef, type KnowledgeDb } from "./qa-project-knowledge.js";
+import { QaTaskRunRegistry, readRunFacts, type RunObservation } from "./qa-task-run-registry.js";
+import { readRunTrace } from "./qa-run-trace.js";
 
 export const RISK_LEVELS = ["high", "medium", "low"] as const;
 export const RESULT_STATUSES = ["passed", "failed", "skipped", "blocked"] as const;
@@ -22,6 +25,12 @@ export const DEFECT_PRIORITIES = ["P0", "P1", "P2", "P3", "unknown"] as const;
 export const DEFECT_CONFIDENCES = ["low", "medium", "strong"] as const;
 export const REPORT_CONCLUSIONS = ["passed", "failed", "partial", "blocked", "not_run"] as const;
 export const QUALITY_GATES = ["blocked", "review_required", "risk_present", "informational"] as const;
+
+/**
+ * 报告结论里"我跑过并得到了结果"的那几种。只有这几种要求报告能追到执行痕迹：
+ * `blocked` / `not_run` 本身就是"没跑成"，要求它们有痕迹等于逼人补假数据。
+ */
+const TRACED_CONCLUSIONS: ReadonlySet<string> = new Set(["passed", "failed", "partial"]);
 
 export const DESIGN_MAX_POINTS = 2000;
 export const DESIGN_MAX_CASES = 5000;
@@ -39,6 +48,21 @@ export type DefectPriority = (typeof DEFECT_PRIORITIES)[number];
 export type DefectConfidence = (typeof DEFECT_CONFIDENCES)[number];
 export type ReportConclusion = (typeof REPORT_CONCLUSIONS)[number];
 export type QualityGate = (typeof QUALITY_GATES)[number];
+
+/**
+ * 一个测试点在一个 run 里由多条用例共同决定结论时，取"最坏"的那一条。
+ * 顺序：failed > blocked > skipped > passed。理由与 `readCoverage` 里逐点收敛的口径一致——
+ * 只要有一条失败，这个点就不算通过；把多条用例平均或取最好看，会让覆盖率虚高。
+ */
+const RESULT_STATUS_SEVERITY: Record<ResultStatus, number> = { failed: 4, blocked: 3, skipped: 2, passed: 1 };
+
+function worstResultStatus(statuses: Iterable<ResultStatus>): ResultStatus | null {
+  let worst: ResultStatus | null = null;
+  for (const status of statuses) {
+    if (!worst || RESULT_STATUS_SEVERITY[status] > RESULT_STATUS_SEVERITY[worst]) worst = status;
+  }
+  return worst;
+}
 
 export interface TraceSession {
   projectId: string;
@@ -63,6 +87,8 @@ export interface DesignBatch {
 
 export interface TestPointView {
   pointKey: string;
+  /** 跨批次稳定身份（P6/G4）；缺省 = 该行是未回填的历史数据。 */
+  pointUid?: string;
   module: string;
   feature: string;
   description: string;
@@ -107,8 +133,29 @@ export interface CaseResultView {
   updatedAt: string;
 }
 
+/**
+ * 一个测试点的跨批次历史（P6/G4），**只算本次运行之前**。
+ *
+ * 为什么只算之前：这个字段的用途是回答"上一轮跑过没有""这条缺陷以前是不是就挂在这个点上"。
+ * 把当前运行算进来，`lastRunId` 永远等于当前 run，等于没回答。
+ */
+export interface PointHistory {
+  /** 历史上（不含本次）有多少个运行设计过这个测试点。 */
+  runs: number;
+  /** 其中有多少个运行真的执行过它（至少一条关联用例有结果）。 */
+  executedRuns: number;
+  /** 最近一次设计它的运行；null = 这是全新测试点。 */
+  lastRunId: string | null;
+  /** 那次运行里它的结论；null = 设计了但没跑。 */
+  lastStatus: ResultStatus | null;
+  /** 挂在它上面的缺陷数（项目级、全部状态）。历史缺陷没记 uid，所以这个数只会少不会多。 */
+  defects: number;
+}
+
 export interface PointCoverage {
   pointKey: string;
+  /** 跨批次稳定身份；null = 该行没回填过 uid（历史数据），不能参与跨批次归并。 */
+  pointUid: string | null;
   module: string;
   feature: string;
   risk: RiskLevel;
@@ -116,6 +163,7 @@ export interface PointCoverage {
   status: "passed" | "failed" | "blocked" | "partial" | "untested";
   caseCounts: { passed: number; failed: number; skipped: number; blocked: number; notRun: number };
   untestedReason: string | null;
+  history: PointHistory;
 }
 
 export interface Coverage {
@@ -141,6 +189,28 @@ export interface Coverage {
   gate: { qualityGate: QualityGate; conclusion: ReportConclusion; allPassed: boolean; complete: boolean; evidenceComplete: boolean; reasons: string[] };
   points: PointCoverage[];
   untested: { kind: "point" | "case"; id: string; reason: string }[];
+  /**
+   * 项目级覆盖率（按 uid 跨批次去重，P6/G4）。
+   *
+   * 与上面的 `counts` / `rates` **不是一回事**，也**不参与 gate 判定**：
+   * `counts` 回答"本轮设计的点覆盖了多少"，`identity` 回答"这个项目历史上到底覆盖了哪些点"。
+   * 把历史执行过算成本轮已覆盖，等于拿过去给现在背书——gate 会从"本轮有没有跑"悄悄变成
+   * "以前跑过没"，那正是假绿。
+   */
+  identity: {
+    /** 项目历史上出现过的测试点（按 uid 去重）。 */
+    distinctPoints: number;
+    /** 其中至少被某一个运行执行过的。 */
+    executedPoints: number;
+    /** 从设计出来就没跑过的（含"设计了但每轮都没执行"）。 */
+    neverExecutedPoints: number;
+    /** 没有 uid、无法参与跨批次归并的行数（历史未回填）。单列，不推测归并。 */
+    untrackedPoints: number;
+    /** 本批次里此前历史出现过的点（复用）。 */
+    reusedPoints: number;
+    /** 本批次里首次出现的点（新增）。 */
+    newPoints: number;
+  };
 }
 
 export interface DefectView {
@@ -158,10 +228,18 @@ export interface DefectView {
   analysis: string;
   duplicateOf?: string;
   relatedCases: string[];
+  /**
+   * 这条缺陷挂在哪些测试点上（跨批次稳定的 uid，P6/G4）。
+   * 历史缺陷没有这个信息 → 空数组（表示"当时没记"，不表示"没有关联测试点"）。
+   */
+  relatedPoints: string[];
   evidenceRefs: EvidenceRef[];
   originSessionId: string;
   originRunId: string;
   firstSeenAt: string;
+  /** 首次 / 最后一次见到这条缺陷的环境；'' = 未指定。跨环境复现靠这两列看出来。 */
+  firstSeenEnv: string;
+  lastSeenEnv: string;
   updatedAt: string;
   revision: number;
   eventCount: number;
@@ -210,6 +288,8 @@ export interface ReportIndexView {
   sessionId: string;
   runId: string;
   batchId: string;
+  /** 发布时冻结的归属环境；'' = 当时未指定。报告必须自己能回答"哪个环境"。 */
+  env: string;
   designRevision: number;
   revision: number;
   status: "published" | "superseded";
@@ -246,6 +326,8 @@ interface BatchRow {
 
 interface PointRow {
   point_key: string;
+  /** P6/G4：跨批次稳定身份；NULL = 该行尚未回填（历史数据）。 */
+  point_uid?: string | null;
   module: string;
   feature: string;
   description: string;
@@ -299,10 +381,14 @@ interface DefectRow {
   analysis: string;
   duplicate_of: string | null;
   related_cases_json: string;
+  /** P6/G4 迁移新增；老快照里可能没有这一列，读时按 '[]' 兜底。 */
+  related_points_json?: string;
   evidence_refs_json: string;
   origin_session_id: string;
   origin_run_id: string;
   first_seen_at: string;
+  first_seen_env: string;
+  last_seen_env: string;
   updated_at: string;
   revision: number;
   event_count: number;
@@ -359,6 +445,7 @@ interface ReportRow {
   batch_id: string;
   revision: number;
   status: "published" | "superseded";
+  env: string;
   html_path: string;
   html_sha256: string;
   conclusion: ReportConclusion;
@@ -464,6 +551,8 @@ const decodeCursor = (raw: string | undefined, code: string): { updatedAt: strin
 export class QaQualityTraceabilityStore {
   private readonly now: () => number;
   private readonly id: () => string;
+  /** 已校验的 manifest 在这里登记成可查询的 run 行；本类不产生 run，只索引它。 */
+  private readonly runs: QaTaskRunRegistry;
 
   constructor(
     private readonly db: KnowledgeDb,
@@ -472,6 +561,7 @@ export class QaQualityTraceabilityStore {
   ) {
     this.now = options.now ?? (() => Date.now());
     this.id = options.id ?? randomUUID;
+    this.runs = new QaTaskRunRegistry(db, this.now, this.id);
   }
 
   private tx<T>(fn: () => T): T {
@@ -484,6 +574,11 @@ export class QaQualityTraceabilityStore {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  /** 这次运行归属的环境；run 未登记时返回 ''（未指定），不冒充默认环境。 */
+  private envOfRun(projectId: string, runId: string): string {
+    return this.runs.run(projectId, runId)?.env ?? "";
   }
 
   private count(sql: string, ...params: unknown[]): number {
@@ -503,7 +598,7 @@ export class QaQualityTraceabilityStore {
     return session;
   }
 
-  private assertNewRun(session: TraceSession, sessionId: string, runId: string): void {
+  private assertNewRun(session: TraceSession, sessionId: string, runId: string): RunObservation {
     try {
       if (!session.workspace) throw Error("missing workspace");
       const workspace = fsSync.realpathSync(path.resolve(session.workspace));
@@ -513,15 +608,51 @@ export class QaQualityTraceabilityStore {
       if (fsSync.realpathSync(manifestPath) !== manifestPath) throw Error("linked manifest");
       const stat = fsSync.lstatSync(manifestPath);
       if (!stat.isFile() || stat.size > 1024 * 1024) throw Error("invalid manifest");
-      const manifest = JSON.parse(fsSync.readFileSync(manifestPath, "utf8")) as {
+      const raw = fsSync.readFileSync(manifestPath, "utf8");
+      const manifest = JSON.parse(raw) as {
         run_id?: unknown; manifest_version?: unknown; directory_context?: { mode?: unknown; session_id?: unknown };
       };
       if (manifest.run_id !== runId || !Number.isInteger(manifest.manifest_version) ||
           (manifest.directory_context?.mode === "isolated" && manifest.directory_context.session_id !== sessionId)) {
         throw Error("run identity mismatch");
       }
+      // 校验通过即登记：run 的存在由这份 manifest 定义，这里只把核过的结果索引成行。
+      const facts = readRunFacts(manifest);
+      // manifest 没声明基线时，认随 run 落盘的 baseline.json（由 exec/baseline.py 采集）。
+      facts.baselineHash = facts.baselineHash ?? this.baselineHashOf(runDir);
+      return {
+        facts,
+        manifestPath: `output/runs/${runId}/manifest.json`,
+        manifestSha256: sha256(raw),
+        // 执行可能已经开始了（设计阶段就在跑真机）。有痕迹就带上，让 started_at 是执行器
+        // 写下的真实时刻，而不是"平台第一次看见这次运行"的时间。
+        startedAt: readRunTrace(workspace, runId, { now: this.now() }).startedAt,
+      };
     } catch {
       throw new HttpError(400, "run_not_found", "运行清单不存在或不属于当前任务，不能登记新的设计批次。");
+    }
+  }
+
+  /**
+   * 从 run 目录读环境基线指纹（`baseline.json` 由 exec/baseline.py 采集写入）。
+   *
+   * 只取 `content_hash` 并校验格式：基线由 Python 侧采集并自校验完整性，服务端只做索引。
+   * 任何非法字符串都不许进 `qa_runs.baseline_hash`——那一列是"两次运行环境是否一致"的
+   * 唯一凭据，脏值会让可比性判定变成随机数。读不到或格式不对一律返回 null（= 未采集）：
+   * 基线缺失是常态而不是故障，不该因此让登记失败。
+   */
+  private baselineHashOf(runDir: string): string | null {
+    try {
+      const target = path.join(runDir, "baseline.json");
+      const stat = fsSync.lstatSync(target);
+      if (!stat.isFile() || stat.size > 256 * 1024) return null;
+      if (fsSync.realpathSync(target) !== target) return null;
+      const payload = JSON.parse(fsSync.readFileSync(target, "utf8")) as { content_hash?: unknown };
+      return typeof payload.content_hash === "string" && /^[a-f0-9]{64}$/.test(payload.content_hash)
+        ? payload.content_hash
+        : null;
+    } catch {
+      return null;
     }
   }
 
@@ -578,6 +709,7 @@ export class QaQualityTraceabilityStore {
   private mapPoint(row: PointRow): TestPointView {
     return {
       pointKey: row.point_key,
+      ...(row.point_uid ? { pointUid: row.point_uid } : {}),
       module: row.module,
       feature: row.feature,
       description: row.description,
@@ -668,7 +800,18 @@ export class QaQualityTraceabilityStore {
     // Existing Q3 batches predate manifest checks; keep them readable and editable.
     // A new run must have a real manifest in this session's workspace.
     if (!this.latestBatchRow(input.projectId, input.sessionId, input.runId)) {
-      this.assertNewRun(session, input.sessionId, input.runId);
+      const observation = this.assertNewRun(session, input.sessionId, input.runId);
+      // 一次运行在 DB 里的第一次露面：此刻登记，之后的结果与报告都挂在同一行上。
+      this.runs.observeRun({
+        projectId: input.projectId,
+        sessionId: input.sessionId,
+        userId: input.userId,
+        facts: observation.facts,
+        manifestPath: observation.manifestPath,
+        manifestSha256: observation.manifestSha256,
+        kind: "design",
+        startedAt: observation.startedAt,
+      });
     }
     if (!Array.isArray(input.points) || !input.points.length || input.points.length > DESIGN_MAX_POINTS) {
       throw new HttpError(400, "invalid_design", `测试点必须是 1 至 ${DESIGN_MAX_POINTS} 项。`);
@@ -687,6 +830,27 @@ export class QaQualityTraceabilityStore {
       if (pointKeys.has(point.pointKey)) throw new HttpError(400, "invalid_design", "测试点编号重复。");
       pointKeys.add(point.pointKey);
     }
+    // 跨批次稳定身份（P6/G4）：同一份证据/模块/功能/描述，在哪一批都算出同一个 uid。
+    // 批次内重复必须当场拦下：两条描述相同却各自编号的测试点，后面覆盖率会算成两个点，
+    // 而它们其实是同一件事——这种"设计里就重复"的错误越早发现越便宜。
+    const pointUids = points.map((point) => pointUid({
+      module: point.module,
+      feature: point.feature,
+      description: point.description,
+      evidenceRefs: point.evidenceRefs,
+    }));
+    const uidSeen = new Map<string, number>();
+    points.forEach((point, index) => {
+      const uid = pointUids[index]!;
+      const previous = uidSeen.get(uid);
+      if (previous !== undefined) {
+        throw new HttpError(400, "duplicate_point",
+          `测试点 ${point.pointKey} 与 ${points[previous]!.pointKey} 的稳定身份相同（模块/功能/描述一致）；`
+          + "同一批次里不允许两条描述相同的测试点——要么合并，要么把真正的差异写进描述。");
+      }
+      uidSeen.set(uid, index);
+    });
+
     const cases = input.cases.map((item) => this.parseCase(input.projectId, item, "invalid_design", pointKeys));
     const caseKeys = new Set<string>();
     for (const item of cases) {
@@ -720,14 +884,14 @@ export class QaQualityTraceabilityStore {
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         batchId, input.projectId, input.sessionId, input.runId, revision, "open", JSON.stringify(normalizedSource), points.length, cases.length, contentHash, at, input.userId
       );
-      for (const point of points) {
+      points.forEach((point, index) => {
         this.db.prepare(`INSERT INTO qa_test_points
-          (row_id,batch_id,project_id,point_key,module,feature,description,risk,coverage_type_json,evidence_refs_json,source,source_locator,execution_layer,created_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-          `tp-${this.id()}`, batchId, input.projectId, point.pointKey, point.module, point.feature, point.description, point.risk,
+          (row_id,batch_id,project_id,point_key,point_uid,module,feature,description,risk,coverage_type_json,evidence_refs_json,source,source_locator,execution_layer,created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          `tp-${this.id()}`, batchId, input.projectId, point.pointKey, pointUids[index], point.module, point.feature, point.description, point.risk,
           JSON.stringify(point.coverageType), JSON.stringify(point.evidenceRefs), point.source, point.sourceLocator, point.executionLayer ?? null, at
         );
-      }
+      });
       for (const item of cases) {
         this.db.prepare(`INSERT INTO qa_test_cases
           (row_id,batch_id,project_id,case_key,title,priority,type,preconditions_json,test_data_json,steps_json,expected,automation_feasible,related_point_key,evidence_refs_json,design_contract_json,created_at)
@@ -738,6 +902,7 @@ export class QaQualityTraceabilityStore {
         );
       }
     });
+    this.runs.attachBatch(input.projectId, input.runId, batchId);
     return { created: true, batch: this.mapBatch(this.batchRow(input.projectId, batchId)!) };
   }
 
@@ -836,6 +1001,11 @@ export class QaQualityTraceabilityStore {
       }
       this.db.prepare("UPDATE qa_design_batches SET status='frozen' WHERE batch_id=?").run(batch.batch_id);
     });
+    // 结果落了，run 的统计就定了。未登记的 run（未见过 manifest）静默跳过——缺的是索引，
+    // 不是数据，不该让一次正常的结果上报失败。
+    const tally = this.db.prepare("SELECT status, COUNT(*) AS n FROM qa_case_results WHERE project_id=? AND run_id=? GROUP BY status")
+      .all(input.projectId, input.runId) as { status: string; n: number }[];
+    if (tally.length) this.runs.settleRun(input.projectId, input.runId, Object.fromEntries(tally.map((row) => [row.status, Number(row.n)])));
     return { idempotent: changed === 0, designRevision: batch.revision, invocationId, stored: parsed.length, coverage: this.readCoverage(input.projectId, input.sessionId, input.runId) };
   }
 
@@ -845,6 +1015,107 @@ export class QaQualityTraceabilityStore {
     if (!batch) throw new HttpError(404, "design_not_found", "本次运行还没有设计批次。");
     const rows = this.db.prepare("SELECT * FROM qa_case_results WHERE project_id=? AND run_id=? ORDER BY case_key").all(projectId, runId) as ResultRow[];
     return { designRevision: batch.revision, results: rows.map((row) => this.mapResult(row)) };
+  }
+
+  /**
+   * 项目级测试点盘点（P6/G4）：按 uid 把同一件事在各个批次里认成同一个点。
+   *
+   * 三件事必须分开，混起来就会给出错的数：
+   *   1. **本批次**（`pointViews`）= 这次设计的点各自覆盖成什么样 —— 只看本运行；
+   *   2. **历史**（`PointHistory`）= 同一个点以前被设计/执行过几次、上次什么结论 —— 只看本次之前；
+   *   3. **项目级总量**（`identity`）= 这个项目至今覆盖了多少个不同的点 —— 含本次。
+   *
+   * 取「每个 run 的最新一批」：同一 run 内改设计会追加 revision，旧 revision 的点与用例都还在表里；
+   * 把它们一起算会把「改了三次描述」数成三个测试点，而这正是 uid 要消灭的噪声。
+   *
+   * 没有 uid 的历史行不猜：计入 `untrackedPoints`，不参与任何按 uid 的归并。
+   */
+  private pointRollup(projectId: string, currentRunId: string, currentPoints: PointRow[]): {
+    historyByUid: Map<string, PointHistory>;
+    identity: Coverage["identity"];
+  } {
+    const rows = this.db.prepare(`SELECT b.run_id AS run_id, b.created_at AS batch_at,
+            p.point_uid AS uid, c.case_key AS case_key, r.status AS status
+       FROM qa_design_batches b
+       JOIN qa_test_points p ON p.batch_id = b.batch_id
+       LEFT JOIN qa_test_cases c ON c.batch_id = b.batch_id AND c.related_point_key = p.point_key
+       LEFT JOIN qa_case_results r ON r.project_id = b.project_id AND r.run_id = b.run_id AND r.case_key = c.case_key
+      WHERE b.project_id = ?
+        AND b.revision = (SELECT MAX(b2.revision) FROM qa_design_batches b2
+                           WHERE b2.project_id = b.project_id AND b2.session_id = b.session_id AND b2.run_id = b.run_id)
+      ORDER BY b.created_at, b.run_id`).all(projectId) as {
+      run_id: string;
+      batch_at: string;
+      uid: string | null;
+      case_key: string | null;
+      status: ResultStatus | null;
+    }[];
+
+    interface UidAgg { otherRuns: Set<string>; executedOtherRuns: Set<string>; executedAny: boolean; lastRunId: string | null; lastStatuses: Set<ResultStatus> }
+    const aggs = new Map<string, UidAgg>();
+    for (const row of rows) {
+      const uid = row.uid ?? "";
+      if (!uid) continue;
+      let agg = aggs.get(uid);
+      if (!agg) {
+        agg = { otherRuns: new Set(), executedOtherRuns: new Set(), executedAny: false, lastRunId: null, lastStatuses: new Set() };
+        aggs.set(uid, agg);
+      }
+      if (row.status) agg.executedAny = true;
+      if (row.run_id === currentRunId) continue;
+      agg.otherRuns.add(row.run_id);
+      if (row.status) agg.executedOtherRuns.add(row.run_id);
+      // 行已按 batch_at 升序排好，所以「最后遇到的新 run」就是最近一次设计过它的运行。
+      // 同一 run 的多条用例要合起来看：不能"最后一条用例 passed 就算 passed"。
+      if (row.run_id !== agg.lastRunId) {
+        agg.lastRunId = row.run_id;
+        agg.lastStatuses = new Set();
+      }
+      if (row.status) agg.lastStatuses.add(row.status);
+    }
+
+    const defectsByUid = new Map<string, number>();
+    for (const row of this.db.prepare("SELECT related_points_json FROM qa_defects WHERE project_id=?").all(projectId) as { related_points_json: string }[]) {
+      for (const uid of new Set(parseJson<string[]>(row.related_points_json, []))) {
+        defectsByUid.set(uid, (defectsByUid.get(uid) ?? 0) + 1);
+      }
+    }
+
+    const historyByUid = new Map<string, PointHistory>();
+    let executedPoints = 0;
+    for (const [uid, agg] of aggs) {
+      if (agg.executedAny) executedPoints++;
+      historyByUid.set(uid, {
+        runs: agg.otherRuns.size,
+        executedRuns: agg.executedOtherRuns.size,
+        lastRunId: agg.lastRunId,
+        lastStatus: worstResultStatus(agg.lastStatuses),
+        defects: defectsByUid.get(uid) ?? 0
+      });
+    }
+
+    let reusedPoints = 0;
+    let newPoints = 0;
+    for (const point of currentPoints) {
+      const uid = point.point_uid ?? "";
+      if (!uid) continue;
+      if ((historyByUid.get(uid)?.runs ?? 0) > 0) reusedPoints++;
+      else newPoints++;
+    }
+    const untrackedPoints = (this.db.prepare("SELECT count(*) AS n FROM qa_test_points WHERE project_id=? AND (point_uid IS NULL OR point_uid='')")
+      .get(projectId) as { n: number }).n;
+
+    return {
+      historyByUid,
+      identity: {
+        distinctPoints: aggs.size,
+        executedPoints,
+        neverExecutedPoints: aggs.size - executedPoints,
+        untrackedPoints,
+        reusedPoints,
+        newPoints
+      }
+    };
   }
 
   readCoverage(projectId: string, sessionId: string, runId: string): Coverage {
@@ -864,6 +1135,9 @@ export class QaQualityTraceabilityStore {
     };
     const pointViews: PointCoverage[] = [];
     const untested: Coverage["untested"] = [];
+    // 项目级盘点只读一次，逐点循环里按 uid 取历史（避免每个点一次查询）
+    const rollup = this.pointRollup(projectId, runId, points);
+    const emptyHistory: PointHistory = { runs: 0, executedRuns: 0, lastRunId: null, lastStatus: null, defects: 0 };
     const casesByPoint = new Map<string, CaseRow[]>();
     for (const item of cases) {
       const list = casesByPoint.get(item.related_point_key) ?? [];
@@ -911,15 +1185,18 @@ export class QaQualityTraceabilityStore {
         if (stats.passed + stats.failed > 0) risk[point.risk].executed++;
       }
       risk[point.risk].points++;
+      const uid = point.point_uid ?? "";
       pointViews.push({
         pointKey: point.point_key,
+        pointUid: uid || null,
         module: point.module,
         feature: point.feature,
         risk: point.risk,
         coveredBy: related.map((item) => item.case_key),
         status,
         caseCounts: stats,
-        untestedReason: reason
+        untestedReason: reason,
+        history: (uid ? rollup.historyByUid.get(uid) : undefined) ?? emptyHistory
       });
     }
     const pointCoverage = counts.points ? counts.coveredPoints / counts.points : 0;
@@ -961,7 +1238,8 @@ export class QaQualityTraceabilityStore {
       risk,
       gate: { qualityGate, conclusion, allPassed, complete, evidenceComplete, reasons },
       points: pointViews,
-      untested
+      untested,
+      identity: rollup.identity
     };
   }
 
@@ -989,10 +1267,13 @@ export class QaQualityTraceabilityStore {
       analysis: row.analysis,
       ...(row.duplicate_of ? { duplicateOf: row.duplicate_of } : {}),
       relatedCases: parseJson(row.related_cases_json, []),
+      relatedPoints: parseJson(row.related_points_json ?? "[]", []),
       evidenceRefs: parseJson(row.evidence_refs_json, []),
       originSessionId: row.origin_session_id,
       originRunId: row.origin_run_id,
       firstSeenAt: row.first_seen_at,
+      firstSeenEnv: row.first_seen_env ?? "",
+      lastSeenEnv: row.last_seen_env ?? "",
       updatedAt: row.updated_at,
       revision: row.revision,
       eventCount: row.event_count
@@ -1052,6 +1333,28 @@ export class QaQualityTraceabilityStore {
     this.db.prepare("UPDATE qa_defects SET status=?,revision=revision+1,event_count=?,last_event_hash=?,updated_at=? WHERE defect_id=?")
       .run(input.toStatus, sequence, hash, input.at, input.defect.defect_id);
     return { sequence, hash };
+  }
+
+  /**
+   * 用例 → 测试点 uid（P6/G4）。
+   *
+   * `case_key` / `point_key` 只在批次内唯一，所以缺陷只记 `related_cases_json` 时，
+   * "这条缺陷属于哪个测试点"换个批次就断了。这里按 `related_point_key` 跳到测试点行取 uid，
+   * 拿到的是跨批次稳定的身份。
+   *
+   * 取不到 uid（历史行未回填、或列值为空）时**不编造**：直接不返回这一条。让缺陷挂点少一个，
+   * 好过挂一个错的——挂错之后"这个测试点历史上出过几次缺陷"就永久错了，而且没有痕迹。
+   *
+   * 结果排序去重：同一缺陷可能由同批次的多个用例指向同一测试点，调用方要的是集合而不是顺序。
+   */
+  private pointUidsOfBatchCases(batchId: string, caseKeys: string[]): string[] {
+    if (caseKeys.length === 0) return [];
+    const placeholders = caseKeys.map(() => "?").join(",");
+    const rows = this.db.prepare(`SELECT DISTINCT p.point_uid AS uid
+        FROM qa_test_cases c
+        JOIN qa_test_points p ON p.batch_id=c.batch_id AND p.point_key=c.related_point_key
+       WHERE c.batch_id=? AND c.case_key IN (${placeholders})`).all(batchId, ...caseKeys) as { uid: string | null }[];
+    return [...new Set(rows.map((row) => row.uid).filter((uid): uid is string => typeof uid === "string" && uid !== ""))].sort();
   }
 
   private fingerprintOf(input: { fingerprint?: unknown; category: DefectCategory; title: string; relatedCases: string[]; expectedResult: string; actualResult: string }): string {
@@ -1115,6 +1418,10 @@ export class QaQualityTraceabilityStore {
       duplicateOf = text(input.duplicateOf, 100, "invalid_defect", "重复缺陷");
       this.defectRow(input.projectId, duplicateOf);
     }
+    // 缺陷挂测试点（P6/G4）：case_key 只在批次内有意义，uid 才能跨批次问"这个测试点历史上
+    // 出过几次"。关联用例已经校验过属于本批次，所以直接按该批次的测试点取 uid，不再多查一次
+    // 「run 的最新批次」——两次查询之间批次可能又升了一版，那就成了用 A 批的用例查 B 批的点。
+    const relatedPoints = this.pointUidsOfBatchCases(batch.batch_id, relatedCases);
     const fingerprint = this.fingerprintOf({ fingerprint: input.fingerprint, category, title, relatedCases, expectedResult, actualResult });
     const existing = this.db.prepare("SELECT * FROM qa_defects WHERE project_id=? AND fingerprint=?").get(input.projectId, fingerprint) as DefectRow | undefined;
     const at = iso(this.now());
@@ -1136,6 +1443,20 @@ export class QaQualityTraceabilityStore {
           VALUES (?,?,?,?,?,?,?,?,?)`).run(
           `occ-${this.id()}`, existing.defect_id, input.projectId, input.sessionId, input.runId, relatedCases[0], JSON.stringify(refs), at, at
         );
+        // 同一条缺陷可能从不同用例/不同批次复现，测试点归属要求并集：只记第一次会把
+        // "这条缺陷影响哪几个测试点"永久截断在第一次观测上。排序是为了让"同一组归属"
+        // 无论观测顺序如何都存成同一个值——否则同样两条 uid 会因先后不同而写成两个样子。
+        const knownPoints = new Set((JSON.parse(existing.related_points_json || "[]") as string[]));
+        const merged = [...new Set([...knownPoints, ...relatedPoints])].sort();
+        if (merged.length !== knownPoints.size) {
+          this.db.prepare("UPDATE qa_defects SET related_points_json=? WHERE defect_id=?")
+            .run(JSON.stringify(merged), existing.defect_id);
+        }
+        // 跨环境复现是有价值的信号：同一条缺陷在另一个环境再次出现，记到最后环境上。
+        const env = this.envOfRun(input.projectId, input.runId);
+        if (env) {
+          this.db.prepare("UPDATE qa_defects SET last_seen_env=? WHERE defect_id=?").run(env, existing.defect_id);
+        }
         this.appendEvent({
           projectId: input.projectId, defect: existing, action: "observed", fromStatus: existing.status, toStatus: existing.status,
           userId: input.userId, reason: "", evidenceRefs: refs, at
@@ -1147,14 +1468,15 @@ export class QaQualityTraceabilityStore {
       throw new HttpError(409, "defect_limit", "项目缺陷数量已达上限。");
     }
     const defectId = `bug-${this.id()}`;
+    const seenEnv = this.envOfRun(input.projectId, input.runId);
     this.tx(() => {
       this.db.prepare(`INSERT INTO qa_defects
         (defect_id,project_id,fingerprint,title,category,status,confidence,severity,priority,expected_result,actual_result,analysis,duplicate_of,
-         related_cases_json,evidence_refs_json,origin_session_id,origin_run_id,first_seen_at,updated_at,revision,event_count,last_event_hash,created_at,created_by)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+         related_cases_json,related_points_json,evidence_refs_json,origin_session_id,origin_run_id,first_seen_at,first_seen_env,last_seen_env,updated_at,revision,event_count,last_event_hash,created_at,created_by)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         defectId, input.projectId, fingerprint, title, category, initialStatus, confidence, severity, priority,
-        expectedResult, actualResult, analysis, duplicateOf ?? null, JSON.stringify(relatedCases), JSON.stringify(refs),
-        input.sessionId, input.runId, at, at, 0, 0, "", at, input.userId
+        expectedResult, actualResult, analysis, duplicateOf ?? null, JSON.stringify(relatedCases), JSON.stringify(relatedPoints), JSON.stringify(refs),
+        input.sessionId, input.runId, at, seenEnv, seenEnv, at, 0, 0, "", at, input.userId
       );
       this.db.prepare(`INSERT INTO qa_defect_occurrences
         (occurrence_id,defect_id,project_id,session_id,run_id,case_key,evidence_refs_json,observed_at,created_at)
@@ -1401,7 +1723,7 @@ export class QaQualityTraceabilityStore {
 
   // ---------------------------------------------------------------- reports
 
-  private async assertReportRun(session: TraceSession, runId: string): Promise<void> {
+  private async assertReportRun(session: TraceSession, runId: string): Promise<RunObservation> {
     if (!session.workspace) throw new HttpError(400, "report_run_invalid", "任务没有可核验的工作区。");
     try {
       const workspace = await fs.realpath(path.resolve(session.workspace));
@@ -1411,8 +1733,17 @@ export class QaQualityTraceabilityStore {
       if (await fs.realpath(manifestPath) !== manifestPath) throw Error("linked manifest");
       const stat = await fs.lstat(manifestPath);
       if (!stat.isFile() || stat.size > 1024 * 1024) throw Error("invalid manifest size");
-      const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as { run_id?: unknown; manifest_version?: unknown };
+      const raw = await fs.readFile(manifestPath, "utf8");
+      const manifest = JSON.parse(raw) as { run_id?: unknown; manifest_version?: unknown };
       if (manifest.run_id !== runId || !Number.isInteger(manifest.manifest_version)) throw Error("manifest identity mismatch");
+      const facts = readRunFacts(manifest);
+      facts.baselineHash = facts.baselineHash ?? this.baselineHashOf(runDir);
+      return {
+        facts,
+        manifestPath: `output/runs/${runId}/manifest.json`,
+        manifestSha256: sha256(raw),
+        startedAt: readRunTrace(workspace, runId, { now: this.now() }).startedAt,
+      };
     } catch {
       throw new HttpError(400, "report_run_invalid", "运行清单不存在或与当前任务不匹配，不能发布报告索引。");
     }
@@ -1455,6 +1786,7 @@ export class QaQualityTraceabilityStore {
       sessionId: row.session_id,
       runId: row.run_id,
       batchId: row.batch_id,
+      env: row.env ?? "",
       designRevision: parseJson<{ designRevision?: number }>(row.coverage_json, {}).designRevision ?? 0,
       revision: row.revision,
       status: row.status,
@@ -1530,11 +1862,29 @@ export class QaQualityTraceabilityStore {
     if (positiveInt(input.expectedDesignRevision, "invalid_report", "expectedDesignRevision") !== batch.revision) {
       throw new HttpError(409, "design_revision_conflict", "设计批次版本已变化。");
     }
-    await this.assertReportRun(session, input.runId);
+    const observation = await this.assertReportRun(session, input.runId);
+    // 发报告同样是一次"看见这个 run"：登记或刷新，并取回要冻结进报告行的 env。
+    const run = this.runs.observeRun({
+      projectId: input.projectId,
+      sessionId: input.sessionId,
+      userId: input.userId,
+      facts: observation.facts,
+      manifestPath: observation.manifestPath,
+      manifestSha256: observation.manifestSha256,
+      startedAt: observation.startedAt,
+    });
     const coverage = this.readCoverage(input.projectId, input.sessionId, input.runId);
     const conclusion = oneOf(input.conclusion, REPORT_CONCLUSIONS, "invalid_report", "报告结论");
     if (!this.allowedConclusions(coverage).has(conclusion)) {
       throw new HttpError(400, "report_overstates_results", "报告结论与执行事实不一致，不能把未完成或失败写成通过。");
+    }
+    // 判据 1 的收口：**声称跑过的报告，必须追得到执行开始的那一刻**。
+    // 只要求 passed / failed / partial——这三种结论本质上是"我跑过并得到了结果"；
+    // blocked 与 not_run 恰恰是"没跑成"，要求它们有执行痕迹等于逼人补一行假数据。
+    // 凭据必须是执行器写的那份（锁 / 状态 / 密封尝试），不接受 Agent 手写的结果文件：
+    // 后者只能证明"有人写了 JSON"，不能证明"浏览器真的开过"。
+    if (TRACED_CONCLUSIONS.has(conclusion) && !run.startedAt) {
+      throw new HttpError(400, "report_untraced", "报告结论称本次运行产生过结果，但运行目录里没有执行器留下的执行痕迹（execution-state / 执行锁 / 密封尝试），无法追溯到发起时刻。");
     }
     const htmlPath = safeRelative(input.htmlPath, "invalid_report", "报告文件路径");
     const htmlSha256 = normalizeHash(input.htmlSha256, "invalid_report", "报告文件哈希");
@@ -1612,16 +1962,17 @@ export class QaQualityTraceabilityStore {
         .get(input.projectId, input.sessionId, input.runId) as { n: number | null }).n ?? 0;
       const contentHash = sha256(canonical({
         projectId: input.projectId, sessionId: input.sessionId, runId: input.runId, batchId: batch.batch_id,
+        env: run.env,
         revision: revision + 1, htmlPath, htmlSha256, conclusion, qualityGate, counts, coverage: coverageSummary,
         untested, evidence, limitations, openDefects, fingerprint
       }));
       this.db.prepare("UPDATE qa_report_indexes SET status='superseded' WHERE project_id=? AND session_id=? AND run_id=? AND status='published'")
         .run(input.projectId, input.sessionId, input.runId);
       this.db.prepare(`INSERT INTO qa_report_indexes
-        (report_id,project_id,session_id,run_id,batch_id,revision,status,html_path,html_sha256,conclusion,quality_gate,counts_json,coverage_json,
+        (report_id,project_id,session_id,run_id,batch_id,revision,status,env,html_path,html_sha256,conclusion,quality_gate,counts_json,coverage_json,
          untested_json,evidence_json,limitations_json,open_defects_json,results_fingerprint,created_at,created_by,content_hash)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        reportId, input.projectId, input.sessionId, input.runId, batch.batch_id, revision + 1, "published", htmlPath, htmlSha256,
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        reportId, input.projectId, input.sessionId, input.runId, batch.batch_id, revision + 1, "published", run.env, htmlPath, htmlSha256,
         conclusion, qualityGate, JSON.stringify(counts), JSON.stringify(coverageSummary), JSON.stringify(untested), JSON.stringify(evidence),
         JSON.stringify(limitations), JSON.stringify(openDefects), fingerprint, at, input.userId, contentHash
       );

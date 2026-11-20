@@ -35,8 +35,16 @@ def invoke(tool_id: str, payload: dict) -> object:
                                    False)
     if tool_id == "defect.tools":
         from .defect.tools import dedup_defects, identify_heisenbug
-        return {"dedup": dedup_defects(payload["evidence_packs"], payload.get("existing")),
-                "heisenbugs": identify_heisenbug(payload.get("history", []))}
+        result = {"dedup": dedup_defects(payload["evidence_packs"], payload.get("existing")),
+                  "heisenbugs": identify_heisenbug(payload.get("history", []))}
+        # 三分归因只在给了执行 IR 时才算：没有 IR 就没有可归因的失败，
+        # 此时返回空结论比返回一个"看起来像结论"的默认值更安全。
+        if payload.get("exec_ir"):
+            from .defect.attribution import attribute_failure
+            result["attribution"] = attribute_failure(
+                payload["exec_ir"], preflight=payload.get("preflight"),
+                replay=payload.get("replay"), history=payload.get("history"))
+        return result
     if tool_id == "regression.impact":
         from .regression.impact import select_by_change
         return select_by_change(payload.get("explicit_ids"), payload.get("changed_requirements"),

@@ -2,6 +2,10 @@
 name: test-asset-management
 version: 2026.11.02.1
 description: 管理可复用测试规则、测试数据策略、定位器、断言、接口契约和缺陷模式。
+sections:
+  criteria: ["使用规则"]
+  knowledge: ["资产目录"]
+  steps: ["输入与产出", "生命周期"]
 ---
 
 # 测试资产管理 Skill

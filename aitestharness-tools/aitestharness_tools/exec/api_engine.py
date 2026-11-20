@@ -10,7 +10,15 @@
   - driver: api, request: "POST /api/login", payload: {...}（支持 ${data.*} 引用）
   - assert: [{type: status_code, matcher: equals, expected: "200", decide: true},
              {type: json_path, path: $.code, matcher: equals, expected: "0", decide: true}]
+  - extract: {token: $.data.token}   # 从本步响应取值写入变量池，供后续步骤 ${data.token} 引用
 前置/登录态：通过 session 段（可选）先执行登录请求并把响应 token 写入变量。
+
+变量池的两条边界（为什么 extract 必须显式声明、不能自动推断）：
+  · 计划里出现 `${data.token}` 而没有任何一步 extract 过 token，应当在编译期被判死
+    （那是"计划依赖了一个不存在的来源"，属于未声明上下文），而不是在执行期拿到
+    字面量 `${data.token}` 发出去、再以一个看不懂的 401 结束；
+  · extract 的 key 一旦写入变量池，后续所有步骤都能看到它——所以 key 名是接口契约的
+    一部分，不是局部变量。重名覆盖只允许同一 session 内的登录刷新（见 `session`）。
 """
 from __future__ import annotations
 
@@ -24,6 +32,8 @@ import requests
 
 from ..common.version import (CapabilityRegistry, runtime_stamp,
                               default_registry)
+from .authorization import authorize_plan
+from .consistency import not_verified_note, pick_repeatable
 
 __all__ = ["ApiEngine", "run_plan"]
 
@@ -40,7 +50,8 @@ def _resolve(data_ref_text, data: dict):
                 if not isinstance(cur, dict) or k not in cur:
                     return m.group(0)  # 解析不了就原样保留，闸3会拦硬编码
                 cur = cur[k]
-            return str(cur) if not isinstance(cur, (dict, list)) else cur
+            # re.sub 的回调必须返回字符串：dict/list 值若原样返回会抛 TypeError
+            return cur if isinstance(cur, str) else json.dumps(cur, ensure_ascii=False, default=str)
         return _DATA_REF.sub(repl, data_ref_text)
     if isinstance(data_ref_text, dict):
         return {k: _resolve(v, data) for k, v in data_ref_text.items()}
@@ -93,28 +104,64 @@ def _apply_matcher(actual, matcher: str, expected) -> bool:
 
 @dataclass
 class StepResult:
-    index: int
+    # session 段的前置步骤没有业务步骤序号，用 "s1"/"login" 这类标识，不挤占 0..n 的编号
+    index: int | str
     action: str
     status: str                    # pass / fail / error
     assertions: list = field(default_factory=list)
     evidence: dict = field(default_factory=dict)
     duration_ms: int = 0
+    extracted: dict = field(default_factory=dict)
+
+
+def _authorization_ir(gate: dict | None) -> dict:
+    """授权判定的 IR 投影。字段与 web_engine 的同名函数保持一致——
+    报告层不该因为"这条用例是 api 还是 web"而读两套字段名。"""
+    if not gate:
+        return {"status": "not_evaluated", "allow": None}
+    return {
+        "status": gate.get("status"),
+        "allow": gate.get("allow"),
+        "verdict": gate.get("verdict"),
+        "approval_id": gate.get("approval_id"),
+        "issued_by": gate.get("issued_by"),
+        "expires_at": gate.get("expires_at"),
+        "plan_hash": gate.get("plan_hash"),
+        "env_id": gate.get("env_id"),
+        "required_actions": gate.get("required_actions") or [],
+        "trust": gate.get("trust"),
+        "reasons": gate.get("reasons") or [],
+    }
+
+
+# 哨兵：区分"未传参"与"显式传 None（无授权）"
+_UNSET = object()
 
 
 class ApiEngine:
     """确定性 HTTP 执行器。base_url 与 data 在构造时注入，plan 中不落任何环境细节。"""
 
     def __init__(self, base_url: str, data: dict | None = None, timeout: int = 30,
-                 registry: CapabilityRegistry | None = None):
+                 registry: CapabilityRegistry | None = None,
+                 authorization: dict | None = None, env_id: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.data = data or {}
+        # 写操作授权（P4 判据 3）：与 web 侧同一个闸、同一套语义
+        self.authorization = authorization
+        self.env_id = env_id
         self.timeout = timeout
         self.session = requests.Session()
         # 能力包注册表：执行期会被冻结（§24.7），stamp 由此产出
         self.registry = registry if registry is not None else default_registry()
 
-    def run_plan(self, plan: dict) -> dict:
-        """执行一份 type: api 的 plan，返回 exec IR 正文（不含公共头，由上层补 lineage）。"""
+    def run_plan(self, plan: dict, *, authorization=_UNSET, env_id=_UNSET) -> dict:
+        """执行一份 type: api 的 plan，返回 exec IR 正文（不含公共头，由上层补 lineage）。
+
+        `authorization` / `env_id` 可覆盖构造值：replay 的引擎由工厂造、计划后到，
+        拿不到计划就无法在构造时签授权。用哨兵区分"没传"与"显式无授权"。
+        """
+        approval = self.authorization if authorization is _UNSET else authorization
+        scope_id = self.env_id if env_id is _UNSET else env_id
         # 版本冻结 + stamp 在会话开始时取一次：执行期间任何能力包变更都抛错，
         # 保证同一份 exec IR 里记的版本就是实际跑的版本。
         scope = self.registry.frozen_scope()
@@ -123,7 +170,33 @@ class ApiEngine:
             started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             step_results: list[StepResult] = []
             verdict = "pass"
+            consistency = {"status": "not_run", "reason": "未执行到一致性检查", "repeats": 0}
+            halt = None
+            # 授权判定必须在 session 之前：登录本身是 POST，等它跑完再判等于
+            # "已经建了会话才问允不允许"——顺序反了
+            gate = authorize_plan(plan, approval, env_id=scope_id)
+            if not gate["allow"]:
+                return self._build_exec(
+                    plan, [], gate["verdict"], started, stamp,
+                    halt={"stage": "authorization", "step": None, "attribution": "script",
+                          "because": "；".join(gate["reasons"])},
+                    consistency={"status": "skipped", "reason": "未获授权，未执行",
+                                 "repeats": 0},
+                    authorization=gate)
+            # 前置（session 段）：登录 / 取 token。失败即不进入业务步骤——
+            # 拿未登录态去跑业务断言，只会把"登录失败"伪装成一串业务失败，
+            # 归因阶段再想把它拆开就得逐个反推，代价远高于在此处止步。
+            for j, step in enumerate(plan.get("session") or []):
+                sr = self._run_step(f"session-{j}", step)
+                step_results.append(sr)
+                if sr.status != "pass":
+                    verdict = "inconclusive"
+                    halt = {"stage": "session", "step": sr.index,
+                            "because": "前置登录/取凭证未通过，业务步骤未执行"}
+                    break
             for i, step in enumerate(plan.get("steps") or []):
+                if halt is not None:
+                    break
                 sr = self._run_step(i, step)
                 step_results.append(sr)
                 if sr.status == "fail":
@@ -138,19 +211,26 @@ class ApiEngine:
                     verdict = "inconclusive"
                     break
             if verdict == "pass":
-                verdict = self._consistency(plan)  # N=3 一致性复跑（引擎内最小实现）
-        return self._build_exec(plan, step_results, verdict, started, stamp)
+                verdict, consistency = self._consistency(plan)  # N=3，仅限安全步骤
+            else:
+                consistency = {"status": "skipped", "reason": "结论已非 pass，无需复跑",
+                               "repeats": 0}
+        return self._build_exec(plan, step_results, verdict, started, stamp, halt, consistency,
+                                authorization=gate)
 
-    def _run_step(self, i: int, step: dict) -> StepResult:
+    def _run_step(self, i: int | str, step: dict) -> StepResult:
         t0 = time.time()
         method, path = None, None
+        # request 也要解析变量：`GET /api/orders/${data.order_id}` 是真实用例的常态，
+        # 只解析 payload/headers 会让"上一步拿到的 id"没法用在路径上
+        raw_request = str(_resolve(str(step.get("request") or ""), self.data))
         m = re.match(r"^(GET|POST|PUT|PATCH|DELETE)\s+(\S+)$",
-                     str(step.get("request") or ""), re.I)
+                     raw_request, re.I)
         if m:
             method, path = m.group(1).upper(), m.group(2)
         else:
             method = str(step.get("method") or "GET").upper()
-            path = str(step.get("endpoint") or "")
+            path = str(_resolve(str(step.get("endpoint") or ""), self.data))
         payload = _resolve(step.get("payload") or step.get("data"), self.data)
         headers = _resolve(step.get("headers") or {}, self.data)
         try:
@@ -192,26 +272,44 @@ class ApiEngine:
             })
             if a.get("decide") and not passed:
                 sr.status = "fail"
+        # 变量提取：只认显式 extract 声明（见模块 docstring 的两条边界）。
+        # 提取到的是**敏感值**（token/会话 id），所以只写变量池与 evidence（短期），
+        # 不写 exec IR（长期资产不留入参，决议 #2）。
+        for key, path in (step.get("extract") or {}).items():
+            value, err = _json_get(body, path)
+            if err is not None:
+                sr.evidence.setdefault("extract_errors", {})[str(key)] = err
+                continue
+            self.data[str(key)] = value
+            sr.extracted[str(key)] = _safe(value)
         return sr
 
-    def _consistency(self, plan: dict, n: int = 3) -> str:
-        """N=3 一致性（最小实现）：关键步骤（首个 decide 请求）复跑 n 次比对 verdict。"""
-        first = None
-        for s in plan.get("steps") or []:
-            if any(a.get("decide") for a in (s.get("assert") or [])):
-                first = s
-                break
-        if first is None:
-            return "pass"
-        outcomes = set()
-        for _ in range(n - 1):
-            sr = self._run_step(-1, first)
-            outcomes.add("fail" if any(a["decide"] and not a["passed"] for a in sr.assertions)
-                         else "pass")
-        outcomes.discard("pass")
-        return "flaky" if outcomes else "pass"
+    def _consistency(self, plan: dict, n: int = 3) -> tuple[str, dict]:
+        """N=3 一致性（最小实现）：在**允许复跑**的步骤上重复 n 次比对结论。
 
-    def _build_exec(self, plan, step_results, verdict, started, stamp=None) -> dict:
+        复跑对象不是"第一个 decide 步骤"，而是"第一个 decide 且不会产生副作用的步骤"
+        （见 exec/consistency.py）。选不出对象时如实记 not_verified：
+        静默返回 pass 等于宣称"已验证可复现"，而实际一次都没验证。
+        """
+        picked = pick_repeatable(plan.get("steps") or [], "api")
+        if picked is None:
+            return "pass", {"status": "not_verified",
+                            "reason": not_verified_note(plan.get("steps") or [], "api"),
+                            "repeats": 0}
+        outcomes = {}
+        for _ in range(n - 1):
+            sr = self._run_step(picked["index"], picked["step"])
+            failed = [a for a in sr.assertions if a["decide"] and not a["passed"]]
+            key = "fail" if failed else "pass"
+            outcomes[key] = outcomes.get(key, 0) + 1
+        info = {"status": "flaky" if "fail" in outcomes else "verified",
+                "target": picked["index"], "reason": picked["reason"],
+                "repeats": n - 1,
+                "outcomes": outcomes}
+        return ("flaky" if "fail" in outcomes else "pass"), info
+
+    def _build_exec(self, plan, step_results, verdict, started, stamp=None, halt=None,
+                    consistency=None, authorization=None) -> dict:
         stamp = stamp or runtime_stamp(self.registry)
         return {
             "type": "exec",
@@ -225,9 +323,18 @@ class ApiEngine:
             "started_at": started,
             "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "verdict": verdict,
+            # 一致性检查的实际范围：verified / flaky / not_verified / skipped。
+            # 这一栏存在的意义是让"没验证"和"验证过"在报告里长得不一样。
+            "consistency": consistency or {"status": "not_run", "repeats": 0},
+            # 中途止步的原因（当前只有"前置未通过"）：不写原因的话，一个全是 0 步的
+            # exec IR 在报告层看起来跟"用例没有步骤"完全一样
+            "halt": halt,
+            "authorization": _authorization_ir(authorization),
             "steps": [{
                 "index": sr.index, "action": sr.action, "status": sr.status,
                 "assertions": sr.assertions, "duration_ms": sr.duration_ms,
+                # 只记提取了哪些 key，不记值：token 之类不许进长期资产
+                "extracted_keys": sorted(sr.extracted),
             } for sr in step_results],
             "evidence_refs": [f"evidence://{plan.get('lineage', {}).get('id')}/step-{sr.index}"
                               for sr in step_results if sr.evidence],
@@ -239,6 +346,13 @@ def _safe(v):
 
 
 def run_plan(plan: dict, base_url: str, data: dict | None = None,
-             registry: CapabilityRegistry | None = None) -> dict:
-    """便捷入口：构造引擎并执行。"""
-    return ApiEngine(base_url, data, registry=registry).run_plan(plan)
+             registry: CapabilityRegistry | None = None, *,
+             authorization: dict | None = None, env_id: str = "local") -> dict:
+    """便捷入口：构造引擎并执行。
+
+    `authorization` 与 `env_id` 透传给引擎（判据 3 的闸在引擎里）。便捷入口曾漏掉这两个
+    参数，于是"用便捷入口就绕过了授权闸"——不是实现了绕过，而是唯一能跑的入口没有
+    开口，调用方只能去掉闸。授权仍然是记录（有 id / 签发人 / 范围），不是布尔开关。
+    """
+    return ApiEngine(base_url, data, registry=registry).run_plan(
+        plan, authorization=authorization, env_id=env_id)

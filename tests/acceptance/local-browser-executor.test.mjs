@@ -47,13 +47,34 @@ test('browser routing requires host opt-in and bound session; never routes arbit
   assert.throws(()=>localBrowserSpawn(f.root,{...f,cmd:f.cmd.replace('output/action-requests/request.json','../outside.json')}),/plain current-session/);
 });
 
-test('privileged executor rejects nonbrowser actions and mismatched sessions before calling action engine',async t=>{
+test('deterministic stage tools route through the bound host executor',async t=>{
+  const f=fixture(t),request={action:'run_stage_tool',run_id:'run-synthetic',stage:'analysis',tool_id:'requirement.testability',payload:{requirement:{id:'R1',title:'Login'}}};
+  writeFileSync(f.file,JSON.stringify(request));
+  assert.equal(localBrowserSpawn(f.root,{...f,hostEnv:{...f.hostEnv,AITEST_STAGE_TOOL_EXECUTION:'off'}}),null);
+  const spec=localBrowserSpawn(f.root,{...f,hostEnv:{...f.hostEnv,AITEST_STAGE_TOOL_EXECUTION:'local',QA_PYTHON:'C:/managed/python.exe'}});
+  assert.deepEqual(JSON.parse(spec.input).request,request);
+  assert.equal(spec.env.QA_STAGE_TOOL_EXECUTION,'local');
+  assert.equal(spec.env.QA_PYTHON,'C:/managed/python.exe');
+  assert.equal(spec.env.API_KEY,undefined);
+  writeFileSync(f.file,JSON.stringify({action:'create_run'}));
+  assert.deepEqual(JSON.parse(spec.input).request,request);
+  const previous=process.env.QA_DIRECTORY_CONTEXT;
+  process.env.QA_DIRECTORY_CONTEXT=f.controlEnv.QA_DIRECTORY_CONTEXT;
+  t.after(()=>{if(previous===undefined)delete process.env.QA_DIRECTORY_CONTEXT;else process.env.QA_DIRECTORY_CONTEXT=previous;});
+  let calls=0;
+  const result=await executeLocalBrowser(f.root,{session:f.session,request},{execute:async(root,session,read)=>{
+    calls++;assert.equal(session,f.session);assert.deepEqual(JSON.parse(read()),request);return {status:'completed'};
+  }});
+  assert.equal(result.status,'completed');assert.equal(calls,1);
+});
+
+test('privileged executor rejects uncontrolled actions and mismatched sessions before calling action engine',async t=>{
   const f=fixture(t),previous=process.env.QA_DIRECTORY_CONTEXT;
   process.env.QA_DIRECTORY_CONTEXT=f.controlEnv.QA_DIRECTORY_CONTEXT;
   t.after(()=>{if(previous===undefined)delete process.env.QA_DIRECTORY_CONTEXT;else process.env.QA_DIRECTORY_CONTEXT=previous;});
   let calls=0;
   const execute=async(root,session,read)=>{calls++;assert.equal(session,f.session);assert.deepEqual(JSON.parse(read()),f.request);return {status:'synthetic_only'};};
-  await assert.rejects(()=>executeLocalBrowser(f.root,{session:f.session,request:{action:'create_run'}},{execute}),/Only controlled browser/);
+  await assert.rejects(()=>executeLocalBrowser(f.root,{session:f.session,request:{action:'create_run'}},{execute}),/Only controlled actions/);
   await assert.rejects(()=>executeLocalBrowser(f.root,{session:'other',request:f.request},{execute}),/session mismatch/);
   assert.equal(calls,0);
   assert.equal((await executeLocalBrowser(f.root,{session:f.session,request:f.request},{execute})).status,'synthetic_only');
@@ -94,4 +115,38 @@ test('local executor launches Chromium for an owned synthetic exploration and re
   assert.equal(observation.browser_runtime.execution_backend,'local_browser_executor');
   assert.equal(observation.browser_runtime.agent_sandbox_applied,false);
   assert.equal(observation.browser_cleanup.status,'close_acknowledged');
+});
+
+test('local executor runs an owned deterministic stage tool and records host execution', {skip:!process.env.QA_PYTHON},async t=>{
+  const f=fixture(t),root=resolve(import.meta.dirname,'../..');
+  const context={...JSON.parse(f.controlEnv.QA_DIRECTORY_CONTEXT),engine_root:root};
+  const previous=process.env.QA_DIRECTORY_CONTEXT;
+  process.env.QA_DIRECTORY_CONTEXT=JSON.stringify(context);
+  t.after(()=>{if(previous===undefined)delete process.env.QA_DIRECTORY_CONTEXT;else process.env.QA_DIRECTORY_CONTEXT=previous;});
+  const agentRoot=resolve(f.cwd,'synthetic-agents'),traces=resolve(agentRoot,'test_agent/traces/2026-11-09');
+  mkdirSync(traces,{recursive:true});
+  writeFileSync(resolve(traces,`${f.session}_001.jsonl`),JSON.stringify({type:'session_meta',payload:{session_id:f.session,agent_state:resolve(agentRoot,'test_agent/agent_state'),workspace:f.cwd}}));
+  const call=request=>executeAction(root,f.session,()=>JSON.stringify(request),{agentRoot});
+  const created=await call({action:'create_run'});assert.equal(created.exit_code,0,JSON.stringify(created));
+  const run_id=created.run_id;
+  for(const request of [
+    {action:'archive_input',name:'requirement.txt',text:'The operator can create a user.'},
+    {action:'plan_run',stages:['analysis']},
+    {action:'dispatch',stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis']},
+  ]) {const result=await call({...request,run_id});assert.equal(result.exit_code,0,JSON.stringify(result));}
+  const request={action:'run_stage_tool',run_id,stage:'analysis',tool_id:'requirement.testability',payload:{requirement:{id:'R1',title:'Create user',description:'The operator can create a user.',expected:'User appears in list.',preconditions:'Operator is signed in.'}}};
+  writeFileSync(f.file,JSON.stringify(request));
+  const spec=localBrowserSpawn(root,{...f,hostEnv:{...process.env,AITEST_STAGE_TOOL_EXECUTION:'local'},controlEnv:{...f.controlEnv,QA_DIRECTORY_CONTEXT:JSON.stringify(context),PENGUIN_AGENT_ROOT:agentRoot}});
+  const result=await new Promise((done,reject)=>{
+    const child=spawn(spec.argv[0],spec.argv.slice(1),{cwd:f.cwd,env:spec.env,windowsHide:true,stdio:['pipe','pipe','pipe']});
+    let out='',err='';child.stdout.on('data',x=>out+=x);child.stderr.on('data',x=>err+=x);child.on('error',reject);
+    child.on('close',code=>done({code,out,err}));child.stdin.end(spec.input);
+  });
+  assert.equal(result.code,0,JSON.stringify(result));
+  const action=JSON.parse(result.out);
+  assert.equal(action.exit_code,0,JSON.stringify(action));
+  const receipt=JSON.parse(readFileSync(resolve(f.cwd,'output/runs',run_id,action.result.tool_receipt),'utf8'));
+  assert.equal(receipt.status,'completed');
+  assert.equal(receipt.execution_location,'local_machine');
+  assert.equal(receipt.tool_id,'requirement.testability');
 });

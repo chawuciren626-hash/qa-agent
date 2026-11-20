@@ -223,6 +223,37 @@ describe("QA confirm gate (A3/A4)", () => {
     } finally { await app.cleanup(); }
   });
 
+  /**
+   * 卡点归谁点。批准 / 退回决定"这一段产物能不能往下走"，是背书不是干活，所以只归所有者；
+   * 送审仍对成员开放。在这之前两个动作都只校验"是项目成员"，只读成员也能把卡点点掉——而
+   * 同一产品里缺陷确认、复测登记、报告发布早已是 owner-only，口径不一致最终会被当成
+   * "权限判定时灵时不灵"。
+   */
+  it("approve/reject are owner-only; submit stays open to members", async () => {
+    const { app, owner, project, base } = await setup();
+    try {
+      const member = apiClient(app.app, (await provisionUser(app.app, "cfg_member")).cookie);
+      expect((await owner.post(`/api/projects/${project}/members`, { userId: "cfg_member" })).status).toBe(201);
+
+      const batch = await createBatch(owner, base);
+      for (const id of ["C-409", "REQ-201", "REQ-202", "REQ-203"]) {
+        await owner.post(`${base}/batches/${batch.batchId}/items/${id}/review`, { decision: "pass" });
+      }
+      // 成员能送审：准备材料本来就是成员干的活
+      expect((await member.post(`${base}/batches/${batch.batchId}/submit`, {})).status).toBe(200);
+
+      const denied = await member.post(`${base}/batches/${batch.batchId}/approve`, {});
+      expect(denied.status).toBe(403);
+      expect(((await denied.json()) as Json).error.code).toBe("project_owner_required");
+      expect((await member.post(`${base}/batches/${batch.batchId}/reject`, { reason: "补充证据" })).status).toBe(403);
+
+      // 拒绝没有留下半截状态：所有者照样能退回，批次仍停在 reviewing
+      const before = (await (await member.get(`${base}/batches/${batch.batchId}`)).json()) as Json;
+      expect(before.batch.status).toBe("reviewing");
+      expect((await owner.post(`${base}/batches/${batch.batchId}/reject`, { reason: "补充证据" })).status).toBe(200);
+    } finally { await app.cleanup(); }
+  });
+
   it("rejects malformed items and duplicate ids", async () => {
     const { app, owner, base } = await setup();
     try {

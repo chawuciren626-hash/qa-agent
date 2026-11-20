@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import { executeAction } from '../../scripts/structured-actions.mjs';
 import { CAPTCHA_TYPES, classifyLoginForm, classifyCaptcha, parseArithmetic, confidenceGate, strategyOrder, recordStrategyOutcome, validateLoginConfig, MAX_CAPTCHA_SUBMITS, MIN_SOLVE_CONFIDENCE, loginSessionFile, loginSessionMetaFile, loginCaptchaPendingFile, loginCaptchaImageFile, AGENT_VISION_STRATEGY, resolveCaptchaType } from '../../scripts/login-captcha-chain.mjs';
-import { validateBrowserOperation } from '../../scripts/browser-task.mjs';
+import { splitCombinedCredential, validateBrowserOperation } from '../../scripts/browser-task.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const pause = ms => new Promise(done => setTimeout(done, ms));
@@ -38,15 +38,21 @@ test('arithmetic captcha parsing computes strictly and never evaluates arbitrary
   assert.equal(confidenceGate({ answer: '7', confidence: 0.5 }).reason, 'low_confidence');
 });
 
-test('strategy order keeps manual last, sorts by project success rate and bounds retries', () => {
-  assert.deepEqual(strategyOrder('image'), ['test_bypass_code', 'ocr', 'captcha_service', 'manual']);
+test('strategy order keeps agent vision as the final automatic image strategy and bounds retries', () => {
+  assert.deepEqual(strategyOrder('image'), ['test_bypass_code', 'ocr', 'captcha_service', 'agent_vision']);
   const stats = {};
   recordStrategyOutcome(stats, 'proj', 'ocr', true);
   recordStrategyOutcome(stats, 'proj', 'ocr', true);
   recordStrategyOutcome(stats, 'proj', 'test_bypass_code', false);
-  assert.deepEqual(strategyOrder('image', stats, 'proj'), ['ocr', 'test_bypass_code', 'captcha_service', 'manual']);
+  assert.deepEqual(strategyOrder('image', stats, 'proj'), ['ocr', 'test_bypass_code', 'captcha_service', 'agent_vision']);
   assert.deepEqual(strategyOrder('sms'), ['sms_fixed_code', 'manual']);
   assert.equal(MAX_CAPTCHA_SUBMITS, 2);
+});
+
+test('combined protected credentials are split only when both login fields carry the same composite value', () => {
+  assert.deepEqual(splitCombinedCredential('{"username":"qa-user","password":"qa-pass"}', '{"username":"qa-user","password":"qa-pass"}'), { username: 'qa-user', password: 'qa-pass', format: 'json' });
+  assert.deepEqual(splitCombinedCredential('qa-user\nqa-pass', 'qa-user\nqa-pass'), { username: 'qa-user', password: 'qa-pass', format: 'lines' });
+  assert.equal(splitCombinedCredential('qa-user', 'qa-pass'), null);
 });
 
 test('login config validation rejects unknown fields, bad targets and missing success metadata', () => {

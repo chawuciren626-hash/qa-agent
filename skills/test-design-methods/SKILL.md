@@ -7,6 +7,10 @@ metadata:
   source: fugazi/test-automation-skills-agents
   revision: 65a72d5e74def3c23143bef8757e72cb68e91032
   adapted-from: qa-manual-istqb
+sections:
+  criteria: ["输出与边界"]
+  knowledge: []
+  steps: []
 ---
 
 # 测试设计方法

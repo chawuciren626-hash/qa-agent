@@ -34,6 +34,7 @@ import type { SessionIndex } from "../../mechanisms/sessions.js";
 import type { Access, ProjectConfigStore } from "../../mechanisms/projects.js";
 import type { Machines } from "../../machines/service.js";
 import { ModelBalances } from "../../services/model-balance.js";
+import { readChannelHealth, recordChannelHealth } from "../../services/channel-health.js";
 
 /** What this route group reaches — bound by its module (src/modules). */
 export interface ModelsRouteDeps {
@@ -317,8 +318,7 @@ export function modelsRoutes(deps: ModelsRouteDeps | ModelCatalogRouteDeps): Hon
       deps.projectConfigService.getGroupBalanceKey(projectId, provider),
   });
 
-  app.get("/", async (c) => {
-    // Defensive id validation.
+  app.get("/", async (c) => {    // Defensive id validation.
     const projectId = requireValidId(c, "projectId");
     deps.access.requireProjectAccess(c.var.user.userId, projectId);
     return c.json(await deps.projectConfigService.getModels(projectId));
@@ -463,7 +463,19 @@ export function modelsRoutes(deps: ModelsRouteDeps | ModelCatalogRouteDeps): Hon
       if (typeof body.fastMode !== "boolean") throw badRequest("fastMode must be a boolean.");
       req.fastMode = body.fastMode;
     }
-    return c.json(await deps.projectConfigService.testModel(projectId, req));
+    const result = await deps.projectConfigService.testModel(projectId, req);
+    // A connectivity test is a stronger signal than a protocol probe (it made a real call),
+    // so it overwrites the same key. Failure is recorded too: "this channel was down at
+    // 10:12" is the fact that explains the stage that stalled at 10:13.
+    recordChannelHealth({
+      projectId,
+      baseUrl: req.baseUrl ?? "",
+      protocol: req.clientType ?? null,
+      probes: [],
+      source: "test",
+      status: result.ok ? "reachable" : "unreachable",
+    });
+    return c.json(result);
   });
 
   // Protocol auto-detection (owner): probes which generic protocol client the base URL
@@ -505,7 +517,25 @@ export function modelsRoutes(deps: ModelsRouteDeps | ModelCatalogRouteDeps): Hon
         req.modelId = requireString(body, "modelId", { minLen: 1, maxLen: 200 });
       }
     }
-    return c.json(await deps.projectConfigService.detectProtocol(projectId, req));
+    const result = await deps.projectConfigService.detectProtocol(projectId, req);
+    // §6.2「管理端配了 ≠ 运行时能用」：这条探测结果原来只活在页面内存里（刷新即失忆，
+    // 运行期也无从得知）。写进 output/runtime/channel-health.json，让管理端与运行期
+    // 读同一份事实。没有 engine root 时不写也不假装写——`recorded:false` 会体现在 /health 的 enforced。
+    recordChannelHealth({
+      projectId,
+      baseUrl: result.baseUrl ?? req.baseUrl,
+      protocol: result.detected ?? null,
+      probes: result.probes,
+      source: "detect",
+    });
+    return c.json(result);
+  });
+
+  /** Channel health as the run time sees it; a project member may read it, only owners write (via detect/test). */
+  app.get("/health", c => {
+    const projectId = requireValidId(c, "projectId");
+    deps.access.requireProjectAccess(c.var.user.userId, projectId);
+    return c.json(readChannelHealth(projectId));
   });
 
   // Endpoint model listing (owner): given a base URL plus the protocol /detect reported,
