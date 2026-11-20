@@ -23,7 +23,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "../hmr/capabilities.js";
 import { HttpError } from "../http/errors.js";
-import { createHypothesis, replaceKnowledgeLayer, type KnowledgeEntryInput, type KnowledgeLayer } from "./environment-knowledge-service.js";
+import { createHypothesis, listHypotheses, replaceKnowledgeLayer, type KnowledgeEntryInput, type KnowledgeLayer } from "./environment-knowledge-service.js";
 import { findEnvironment, type EnvironmentView } from "./project-environment-service.js";
 import { QaProjectKnowledgeStore, type KnowledgeDb } from "./qa-project-knowledge.js";
 import type { ExplorationKnowledgeBuildInfo, ExplorationKnowledgeSync } from "./exploration-knowledge-sync.js";
@@ -608,13 +608,39 @@ async function completeSuccess(
   for (const layer of layers) {
     replaceKnowledgeLayer(deps.db, projectId, env, layer.layer, layer.entries, { round: row.round, sessionId: null });
   }
+
+  // 证据层（第一批→第二批闭环）：先落假设/候选，再渲染知识文档——快照与逆向需求
+  // 文档里的"待验证未知"才能包含本轮新生成的问题。失败语义与知识联动相同：
+  // 不改探索结论，error 如实进 summary。
+  let evidenceSync: EvidenceSyncInfo | null = null;
+  let evidenceBundle: EvidenceBundleFile | null = null;
+  try {
+    evidenceBundle = readEvidenceBundle(outDir);
+    evidenceSync = await syncEvidence(deps, projectId, env, row, evidenceBundle);
+  } catch (error) {
+    evidenceSync = {
+      hypotheses: 0, candidates: 0, skipped: 0,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const openHypotheses = evidenceSync.error
+    ? []
+    : listHypotheses(deps.db, projectId, env, "open")
+        .filter((item) => typeof item.statement === "string" && item.statement.trim())
+        .map((item) => ({ statement: item.statement, expectation: typeof item.expectation === "string" ? item.expectation : null }));
+
   // B1 联动：探索资产同步进项目资料知识库。失败不改探索结论——
-  // 探索的契约（合并 + 四层回写）已完成，联动失败如实记进摘要。
+  // 探索的契约（合并 + 四层回写）已经完成，联动失败如实记进摘要。
   let knowledgeBuild: ExplorationKnowledgeBuildInfo | { error: string } | null = null;
   if (deps.knowledgeSync) {
     try {
       knowledgeBuild = await deps.knowledgeSync({
         projectId, env, round: row.round, targetUrl: row.target_url, layers,
+        evidence: evidenceBundle ? { observations: evidenceBundle.observations, rules: evidenceBundle.rules } : null,
+        openHypotheses,
+        limitations: Array.isArray(receipt.limitations)
+          ? receipt.limitations.filter((item): item is string => typeof item === "string")
+          : [],
       });
     } catch (error) {
       knowledgeBuild = { error: error instanceof Error ? error.message : String(error) };
@@ -639,15 +665,6 @@ async function completeSuccess(
     knowledgeBuild,
   };
   const now = new Date().toISOString();
-  let evidenceSync: EvidenceSyncInfo | null = null;
-  try {
-    evidenceSync = await syncEvidence(deps, projectId, env, row, outDir);
-  } catch (error) {
-    evidenceSync = {
-      hypotheses: 0, candidates: 0, skipped: 0,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
   deps.db
     .prepare(
       `UPDATE qa_environment_explorations SET status='succeeded', summary_json=?, last_error=NULL,
@@ -659,6 +676,32 @@ async function completeSuccess(
   deps.db
     .prepare("UPDATE qa_environment_explorations SET steps_json=? WHERE exploration_id=?")
     .run(JSON.stringify(done), row.exploration_id);
+}
+
+/** observations.json 的最小读取契约：只声明本服务消费的字段，其余原样忽略。 */
+export interface EvidenceBundleFile {
+  version: number;
+  mode?: string;
+  observations: EvidenceObservation[];
+  questions: { statement?: unknown; why_unknown?: unknown; expectation?: unknown; module_key?: unknown }[];
+  rules: { id?: unknown; statement?: unknown; verification?: unknown; evidence_ids?: unknown }[];
+}
+
+export interface EvidenceObservation {
+  id?: unknown;
+  page?: unknown;
+  kind?: unknown;
+  verbatim?: unknown;
+  context?: unknown;
+  verification?: unknown;
+}
+
+function readEvidenceBundle(outDir: string): EvidenceBundleFile | null {
+  const raw = readJsonFile<Record<string, unknown>>(path.join(outDir, "observations.json"));
+  if (!raw || raw.version !== 1 || !Array.isArray(raw.observations) || !Array.isArray(raw.questions) || !Array.isArray(raw.rules)) {
+    return null;
+  }
+  return raw as unknown as EvidenceBundleFile;
 }
 
 /**
@@ -679,12 +722,12 @@ async function syncEvidence(
   projectId: string,
   env: string,
   row: ExplorationRow,
-  outDir: string,
+  bundle: EvidenceBundleFile | null,
 ): Promise<EvidenceSyncInfo> {
-  const raw = readJsonFile<Record<string, unknown>>(path.join(outDir, "observations.json"));
-  if (!raw || raw.version !== 1 || !Array.isArray(raw.questions) || !Array.isArray(raw.rules)) {
+  if (!bundle) {
     return { hypotheses: 0, candidates: 0, skipped: 0 };
   }
+  const raw = bundle;
   const info: EvidenceSyncInfo = { hypotheses: 0, candidates: 0, skipped: 0 };
   const statementExists = (sql: string, ...params: string[]): boolean =>
     Boolean(deps.db.prepare(sql).get(...params));
