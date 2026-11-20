@@ -34,6 +34,10 @@ export default defineConfig({
     "model-catalog": "src/model-catalog/index.ts",
     "initial-password": "src/initial-password.ts",
     "reset-admin-password": "src/reset-admin-password.ts",
+    // "./migrate-db": the release chain's offline schema migration (§6.4 红线 3): runs
+    // before the service resumes so a failed migration stops the release. Side-effect-free
+    // when imported, a CLI when run directly.
+    "migrate-db": "src/migrate-db.ts",
     "auth-token": "src/auth-token.ts",
     "secret-file": "src/secret-file.ts",
     "hmr/manifest": "src/hmr/manifest.ts",

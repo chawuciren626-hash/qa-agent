@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { spawnSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadProductLayout } from "./product-layout.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const webDist = join(root, "platform/packages/web/dist");
@@ -32,7 +33,6 @@ const serverDist = join(root, "platform/packages/desktop/dist/server.js");
 const stampPath = join(root, "output/release/release-stamp.json");
 const deployScript = join(root, "scripts/deploy-project-management-local.mjs");
 const serviceScript = join(root, "scripts/local-service.mjs");
-
 const sha = file => createHash("sha256").update(readFileSync(file)).digest("hex");
 const die = message => { console.error(`release: ${message}`); process.exit(1); };
 const node = (args, options) => {
@@ -124,14 +124,21 @@ function release(installedArg, skipCheck) {
 
   let paused = false;
   try {
-    console.log("[1/3] 暂停本机服务（避免运行中进程持有旧文件句柄）");
+    console.log("[1/4] 暂停本机服务（避免运行中进程持有旧文件句柄）");
     node([serviceScript, "pause", installation], { cwd: installed });
     paused = true;
 
-    console.log("[2/3] 官方部署（备份 → 换件 → 重签清单 → 自校验，失败自动回滚）");
+    console.log("[2/4] 官方部署（备份 → 换件 → 重签清单 → 自校验，失败自动回滚）");
     node([deployScript, installed], { cwd: root });
 
-    console.log("[3/3] 恢复本机服务");
+    // §6.4 红线 3：schema 迁移走部署链。用**新部署的代码**在服务恢复前把库迁到当前版本——
+    // 迁移失败就让发布停在这里（服务保持 paused），而不是让服务带着旧 schema 起来、
+    // 把"表不存在"暴露成"功能点了没反应"。迁移幂等（账本记账），已最新则零写入。
+    console.log("[3/4] 数据库迁移（新代码对 web.db，失败则发布中止）");
+    const dataRoot = loadProductLayout(installation).paths.host_data;
+    node([join(installed, "runtime/penguin/resources/app/dist/migrate-db.js"), dataRoot], { cwd: root });
+
+    console.log("[4/4] 恢复本机服务");
     node([serviceScript, "resume", installation], { cwd: installed });
     paused = false;
 

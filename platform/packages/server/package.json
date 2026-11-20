@@ -38,6 +38,10 @@
       "types": "./dist/reset-admin-password.d.ts",
       "import": "./dist/reset-admin-password.js"
     },
+    "./migrate-db": {
+      "types": "./dist/migrate-db.d.ts",
+      "import": "./dist/migrate-db.js"
+    },
     "./hmr/manifest": {
       "types": "./dist/hmr/manifest.d.ts",
       "import": "./dist/hmr/manifest.js"
