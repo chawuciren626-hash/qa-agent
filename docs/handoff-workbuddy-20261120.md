@@ -1,6 +1,6 @@
 # WorkBuddy → Codex 交接文档：全流程闭环 P0→P7（2026-11-19 ~ 11-20）
 
-> 交接人：WorkBuddy（GLM Agent）。本文档覆盖 **2026-11-19 17:07 起的 21 个提交**——即建设计划（`docs/全流程闭环现状与建设计划-20261119.md`，现已推进到 v19）里 P0 到 P7 第一切片的全部落地工作，外加 3 个同日上午的前置提交。
+> 交接人：WorkBuddy（GLM Agent）。本文档覆盖 **2026-11-19 17:07 起的 29 个提交**——即建设计划（`docs/全流程闭环现状与建设计划-20261119.md`，现已推进到 v22）里 P0 到 P7 及工程链收口的全部落地工作，外加 3 个同日上午的前置提交。
 > 交接对象：codex，用于合并、推送、部署与后续整合。
 > 逐切片的详细记录（问题、口径、验收、边界）见各提交附带的 `docs/p*.md`，本文只做索引。
 
@@ -11,9 +11,9 @@
 | 项 | 值 |
 |---|---|
 | 分支 | `codex/remove-first-run-guide-20261118`（本地，**未推送、未设 upstream**） |
-| 领先 origin/main | 24 个提交 |
-| 提交归属边界 | `660c591`（11-19 上午，环境页派发探索入口）及更早已在 main；领先部分 = **3 个前置提交**（11-19 上午）+ **21 个本轮提交**（11-19 17:07 `44c9318` → 11-20 09:29 `1bc228a`） |
-| 工作区 | 本轮 21 个提交**无未提交残留**；仅 2 个不属于本轮的改动文件（见 §6） |
+| 领先 origin/main | 32 个提交 |
+| 提交归属边界 | `660c591`（11-19 上午，环境页派发探索入口）及更早已在 main；领先部分 = **3 个前置提交**（11-19 上午）+ **29 个本轮提交**（11-19 17:07 `44c9318` → 11-20 12:05 `bfad166`） |
+| 工作区 | 本轮 29 个提交**无未提交残留**；仅 2 个不属于本轮的改动文件（见 §6） |
 
 3 个前置提交（一并随分支走，均为探索/qpm 线）：
 
@@ -25,7 +25,7 @@
 
 ---
 
-## 2. 本轮 21 个提交（P0 → P7 第一切片）
+## 2. 本轮 29 个提交（P0 → P7 + 工程链收口）
 
 | # | 提交 | 时间 | 阶段 | 内容 | 触达面 |
 |---|---|---|---|---|---|
@@ -50,10 +50,18 @@
 | 19 | `e9f00a0` | 11-20 08:40 | P7/M4 | 失败三分归因（规则表 A1-A11 + 置信度矩阵 + 两道护栏） | 引擎+scripts |
 | 20 | `4a2f54c` | 11-20 09:05 | P4-7 | 判据 3 收口：confirm 卡点 owner-only + 资源池租约强制点 | server |
 | 21 | `1bc228a` | 11-20 09:29 | P4-8 | 发起方接线：`dispatch.json` + trace 带出「被发起过」 | server+scripts |
+| 22 | `3d69d88` | 11-20 10:09 | P3a 延伸 | 凭据轮换检测收口（`${cred:...}` 入指纹 + 计划 credentials 自动并入 baseline + 归因点名） | 引擎 |
+| 23 | `444d9bb` | 11-20 11:01 | P4-9 | **运行痕迹卡前端落地**（原型确认后）：五场景如实呈现，卡片只读不放假按钮 | **web** |
+| 24 | `a15fd88` | 11-20 11:05 | P4-9 docs | 第九切片记录 + 主计划 v21 + 订正 v20 行尾残留 | docs |
+| 25 | `42604f8` | 11-20 11:41 | §6.4 | 红线 3：schema 迁移进发布链（`migrate-db` + release.mjs 3 步→4 步） | server+scripts |
+| 26 | `bc83bb9` | 11-20 11:48 | P6 | 缺陷按测试点稳定身份反查（`pointUid` 过滤，零新端点） | server |
+| 27 | `26f900e` | 11-20 11:58 | §6.5 | 一次 run 的健康摘要 `GET …/runs/:runId/health`（工具流水+token+trace 同源） | server |
+| 28 | `e8735a3` | 11-20 12:04 | G6 | 资产治理最小实体：acquire 顺手清过期租约残行 | server |
+| 29 | `bfad166` | 11-20 12:05 | 工程链 docs | 四切片记录 + 主计划 §6.2 订正/排期行/v22 | docs |
 
 各切片详细记录（均随提交入库）：
 
-`docs/p4-run-traceability-20261119.md`（切片 6）· `docs/p7-three-way-attribution-20261120.md`（P7）· `docs/p4-criterion3-closure-20261120.md`（切片 7）· `docs/p4-dispatch-initiation-20261120.md`（切片 8）· P5/P6 记录见对应提交正文与主计划 v14-v16。主计划版本表 v2→v19 与上述一一对应。
+`docs/p4-run-traceability-20261119.md`（切片 6）· `docs/p7-three-way-attribution-20261120.md`（P7）· `docs/p4-criterion3-closure-20261120.md`（切片 7）· `docs/p4-dispatch-initiation-20261120.md`（切片 8）· `docs/p4-run-trace-card-20261120.md`（切片 9，前端）· `docs/engineering-chain-closures-20261120.md`（工程链四切片：迁移发布链/uid 反查/健康摘要/G6）· P5/P6 记录见对应提交正文与主计划 v14-v22。主计划版本表 v2→v22 与上述一一对应。
 
 ---
 
@@ -63,9 +71,9 @@
 
 | 面 | 动作 | 说明 |
 |---|---|---|
-| **服务端**（`platform/packages/server` + `core`） | 构建并重启 | **schema 迁移随打开库自动执行**（`db/database.ts` 打开时 `migrate(db)`），P2/P6 的 4 个新迁移步骤（`2026-11-19-qa-task-run` / `qa-run-execution` / `maps-hash` / `point-uid`）无需手工跑。`release.mjs` 不校验迁移状态是流程缺口，不是本次阻塞 |
-| **引擎运行时**（`aitestharness-tools` Python + `scripts/*.mjs` + `skills/`） | **重新打包运行时** | 打包链路 `56876c8` 已收口（`config/release-resources.json`），照该链路走。P3a/P4 全部执行侧改动、P6/G9 地图版本、P7 归因都在引擎包里 |
-| **Web 前端**（`platform/packages/web`） | **不需要动** | 本轮 21 个提交一行没碰 web；UI 侧只有原型与文档（`prototype/run-trace-stalled-prototype.html` 等），待用户确认后才动真实前端 |
+| **服务端**（`platform/packages/server` + `core`） | 构建并重启 | schema 迁移随打开库自动执行（`db/database.ts`），P2/P6 的 4 个新迁移步骤无需手工跑。**`42604f8` 后迁移正式进发布链**：server 新增 `migrate-db` 导出（tsup entry + package.json exports 已加），`release.mjs` 发布流程改为 4 步——pause → 部署 → **对 host_data/web.db 跑迁移（失败则发布中止、服务保持 paused）** → resume。⚠️ tsup entry 变更意味着**发布前必须重新构建 desktop 并重打 stamp**，旧 stamp 与新产物不一致会导致 `release.mjs --check` 失败 |
+| **引擎运行时**（`aitestharness-tools` Python + `scripts/*.mjs` + `skills/`） | **重新打包运行时** | 打包链路 `56876c8` 已收口（`config/release-resources.json`），照该链路走。P3a 全部执行侧改动（含凭据轮换）、P6/G9 地图版本、P7 归因都在引擎包里 |
+| **Web 前端**（`platform/packages/web`） | **需要构建**（口径已变） | `444d9bb`（P4-9）新增 `run-trace-card.tsx` 并改 `task-detail.tsx/css`，任务详情页选择运行后挂运行痕迹卡。typecheck 干净、QA 子集 32 例过、vite build 通过；此外本轮其余提交仍不碰 web |
 
 ### 3.2 一个需要知晓的行为变化
 
@@ -73,16 +81,21 @@
 
 ### 3.3 部署后验收顺序（建议）
 
-1. 起服务端，看迁移日志无报错；
+1. 走 `release.mjs` 4 步流程：确认迁移步骤日志**报出本次应用的迁移名单**（不只是「迁移跑了」），失败路径会停在 resume 之前；
 2. 换引擎运行时；
 3. 成员账号过确认卡点（§3.2）；
-4. 跑一次执行，看 run 目录出现 `execution/dispatch.json`，且 `GET /api/projects/:projectId/agents/qa/task-records/:sessionId/runs/:runId/trace` 返回 `{registered, run, trace}`，`trace.dispatch` 有值；
-5. 故意对「目录里只有 manifest、无执行痕迹」的 run 发结论为 passed 的报告，应被 400 `report_untraced` 拒。
+4. 跑一次执行，看 run 目录出现 `execution/dispatch.json`，且 `GET …/runs/:runId/trace` 返回 `{registered, run, trace}`，`trace.dispatch` 有值；
+5. 任务详情页选一个运行，看运行痕迹卡出现：正常收尾折叠、stalled/崩溃默认展开红条；
+6. `GET …/runs/:runId/health` 返回工具/token/trace 三面聚合；引擎侧无 tool-usage.jsonl 时 `tools` 为 `null`（如实，不是故障）；
+7. `GET /api/projects/:pid/agents/qa/defects?pointUid=<uid>` 只回关联缺陷（整值匹配）；
+8. 故意对「目录里只有 manifest、无执行痕迹」的 run 发结论为 passed 的报告，应被 400 `report_untraced` 拒。
 
 ### 3.4 预期行为（不是故障）
 
-- 资源池闸已装但**暂无人经过**：`startRun` 目前没有调用方（派发未接线），线上不会立刻看到 409 `pool_full`——闸等接线后才开始拦人。
+- 资源池闸已装但**仍无人经过**：`startRun` HTTP 端点至今没有生产调用方（`run-ui-tests.mjs` 只写 dispatch.json 不调 HTTP），线上不会立刻看到 409 `pool_full`——闸等真实派发接线后才开始拦人。但 acquire 时会顺手清过期租约残行（`e8735a3`），这是 G6 第一件。
 - P7 归因挂在已有 `defect.tools` 上（带 `exec_ir` 才启用），不带时输出与之前完全一致；**unknown 比例会比以前高**，这是有意拆掉「product 当默认值」的结果，unknown 长期过半该补的是 preflight/重放覆盖而不是放宽规则表。
+- 归因的凭据漂移检测只在 warnings 档：检测的是**引用集合**变化（`${cred:...}`/`${env:...}` 指纹比对），原地改值检测不到（引擎无密钥解析器，刻意不引入明文）。
+- 契约里的 `budget_tokens`/`on_exceed` 是**派发单自述字段**：`dispatch()` 零生产调用方，运行时强制面 blocked-on-dispatch，硬接=给不存在的链路造闸。届时消费方读派发包即可强制，契约不用改。
 
 ---
 
@@ -91,7 +104,8 @@
 | 门禁 | 结果 |
 |---|---|
 | server `tsc --noEmit` | 干净 |
-| server 集成测试（需 `AITEST_ENGINE_ROOT=E:/AITestHarness/source`） | 相邻套件全绿：trace 13 + trace-route 1 + traceability 8 + run-execution 13 + registry 24 + pool-lease 2 + migration/u2/qa-integration 13 |
+| server 集成测试（需 `AITEST_ENGINE_ROOT=E:/AITestHarness/source`） | 相邻套件全绿：trace 13 + trace-route 3 + traceability 9 + run-execution 13 + registry 24 + pool-lease 3 + **migrate-db 4** + migration/u2/qa-integration 13 |
+| web `pnpm typecheck` + vitest（QA 子集 8 文件） | 干净 / 32 例全过；`vite build` 通过 |
 | 引擎冒烟（`aitestharness-tools/tests/`） | tools / authorization / baseline / maps / preflight_replay / web_engine / run_trace / **attribution(32 例)** 全 PASS |
 | Node 验收 | `central-mcp.test.mjs` 9 例、`stage-tool-scenarios` 1 例 |
 | `npm run ci:contract` | A1-A4（登记覆盖/路径/无影子/无漂移）+ B1-B4（契约⊆出口等）PASS |
@@ -103,12 +117,14 @@
 
 ## 5. 已知边界（不阻塞合并，后续要收）
 
-1. **判据 1 登记缺口**：执行器启动前就断掉的运行进不了 `qa_runs`（dispatch 解决「可见」不解决「登记」）。要补可信登记入口是产品决策：谁调、何时调、如何防伪造。
-2. **前端三处未做**：`stalled`/trace 展示（原型已出待确认）、`point_uid`/覆盖率新字段展示、跨 run 的健康聚合。按界面迭代铁律，**先原型确认再动真实前端**。
+1. **判据 1 登记缺口**：执行器启动前就断掉的运行进不了 `qa_runs`（dispatch 解决「可见」不解决「登记」）。要补可信登记入口是产品决策：谁调、何时调、如何防伪造。前端痕迹卡已把 `registered:false + present:true` 琥珀条如实呈现。
+2. **前端剩余两处**：P6 的 `point_uid`/覆盖率新字段展示、运行列表徽标、P7 归因结果展示——均未出原型。按界面迭代铁律，**先原型确认再动真实前端**（运行痕迹卡已按此流程落地）。
 3. **结果写入不刷新 `started_at`**：发起时刻要到报告发布才补上，列表页晚一步正确。
 4. **`DEFAULT_POOL_CAPACITY.web = 1`** 与 §6.3「Web 单机可多实例」矛盾，接派发时复核；长跑超 30 分钟 TTL 需心跳续租（续租=同 run 再调 `acquirePoolSlot`，暂无调用方）。
-5. **P5 遗留三件**：agent `tools.mcpServers` 未加出口条目；渠道健康未接「起跑前降级」判定点；skill 正文未重排（只做了声明层）。
-6. **P6/P7 遗留**：缺陷按 uid 反查；漏测/地图增量回流（缺数据源：`qa_exploration_hypotheses` 0 行）；剧本固化（依赖 M2b 视觉兜底，需 VL 渠道支持图片输入）；M3/M5 移动端 driver（需真机与微信开发者工具）；G5 人工成本度量（无人填耗时）。
+5. **P5 遗留三件**：agent `tools.mcpServers` 未加出口条目；渠道健康未接「起跑前降级」判定点（用户暂停中）；skill 正文未重排（只做了声明层）。
+6. **§6.2 token 预算第三半**：运行时超限强制 blocked-on-dispatch（`dispatch()` 零生产调用方）；契约面（P5+CI B1）与可见面（health 路由）已接通。
+7. **G6 剩余面**：tool-usage.jsonl 轮转、runs 产物保留期——涉及删数据，等保留期决策（已写进主计划 G6 定义）。
+8. **P6/P7 遗留**：漏测/地图增量回流（缺数据源：`qa_exploration_hypotheses` 0 行）；剧本固化（依赖 M2b 视觉兜底，需 VL 渠道支持图片输入）；M3/M5 移动端 driver（需真机与微信开发者工具）；G5 人工成本度量（无人填耗时）；P3b 环境恢复半环（需被测系统 dump/回灌权限）。
 
 ---
 
@@ -124,9 +140,12 @@
 
 ## 7. 给 codex 的操作注意事项（踩坑实录）
 
-1. **主计划文档是表格密集型**：`docs/全流程闭环现状与建设计划-20261119.md` 的切片行与版本表（v2→v19）每行都很长，Edit 工具按前缀替换时**容易把相邻两行并成一行**（本轮发生过两次）。改完后按行号逐行查行首，只看插入点附近不够。
+1. **主计划文档是表格密集型**：`docs/全流程闭环现状与建设计划-20261119.md` 的切片行与版本表（v2→v22）每行都很长，Edit 工具按前缀替换时**容易把相邻两行并成一行**（本轮发生过两次）。改完后按行号逐行查行首，只看插入点附近不够。
 2. **heredoc 里往 Python 传 `\\n` 会变成字面反斜杠+n**，插行不换行（本轮表格行被并成一行的根因之一）。往文档插行优先用 Edit 工具，脚本兜底时行尾换行要在 Python 里写成真实的 `"\n"`。
 3. **测试夹具要跟真实产物对齐**：凡读 IR 字段的模块（归因、trace），至少一组用例要用真实引擎产出的 IR——手写夹具这次就漏了 `url_contains` 默认 `level=observe`（不写 `decide` 时 verdict 是 pass）。
 4. **不为通过而放宽断言**：`report_untraced` 落地时暴露了旧夹具「报告说 failed、目录里只有 manifest 和手写截图」，正确做法是补执行痕迹夹具，不是放宽断言；同理删掉了两处「编时间」（`observeRun` 的 in_progress 回退、`settleRun` 的 COALESCE 回填）。
 5. **中文引号别写进 JS/TS 字符串定界位置**（「」与 "" 混用会让 `it("...")` 直接语法错误）；Python 冒烟测试同理。
 6. **集成测试路径**：trace 路由前缀是 `/api/projects/:projectId/agents/qa/task-records/:sessionId/runs/:runId/...`（是 `task-records` 不是 `tasks`）；项目 id 要过 `[A-Za-z0-9_-]+` 校验（用 `trace_route_owner-sandbox` 这类）。
+7. **往「文件最后一行」后面插行会插错位**：v20 行尾曾残留字面 `|\n` 三字符（反斜杠+n）且是文件末行，`find("\n")` 返 -1 导致新行插到文件倒数第一字符之前。教训：插行前先修干净目标行行尾，插完逐行复核行首与行尾。
+8. **web 的 vitest 4 已移除 `--reporter=basic`**；全量 400+ 测试文件在本环境会被 SIGTERM，跑子集用 `npx vitest run test/<具体文件>.test.ts`（CI=1）。
+9. **测试 mock 的形状要跟真接口对齐**：`qa-task-detail.test.ts` 的 apiFetch mock 此前对未知路径一律返回 Detail 形状，掩盖了组件对 404/trace 的真实行为——补齐 `/trace` 分支与 `ApiError` 导出后，trace 卡的阴性路径才有测试覆盖。
