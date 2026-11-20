@@ -44,6 +44,8 @@ def main() -> int:
     parser.add_argument("--route-prefix", default=None, help="路由前缀，默认取 target-route 的前两段")
     parser.add_argument("--extra-route", action="append", default=[],
                         help="登录后真实到过但未采控件的页面路由，可重复")
+    parser.add_argument("--pages", default=None,
+                        help="全站探索的 pages.json（多页）；不给则退回单页 structure.json 口径")
     # Git Bash 会把以 / 开头的参数当 Windows 路径改写（MSYS 自动转换），
     # 这里统一补前导斜杠，调用方传 gateway-admin/user/key-card/index 也能用。
     parser.add_argument("--explore-dir", default=None, help="默认 output/explore/<project>")
@@ -64,6 +66,37 @@ def main() -> int:
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
 
     structured = load(explore_dir, "structure.json", {}) or load(capture_dir, "structured-dom.json", {})
+
+    # 全站模式：pages.json 里每个 ok 页面都登记控件；失败页只记「到过但没采到」，
+    # 不冒充成功——这正是 maps 里「仅路由·未采控件」与「采过但失败」的区别。
+    pages_rows: list[dict] = []
+    pages_failed: list[dict] = []
+    if args.pages:
+        pages_path = Path(args.pages)
+        rows = json.loads(pages_path.read_text(encoding="utf-8")) if pages_path.exists() else []
+        if not isinstance(rows, list):
+            print(f"--pages 文件格式无效（应为数组）：{pages_path}", file=sys.stderr)
+            return 2
+        for row in rows:
+            route = "/" + str(row.get("route") or "").strip("/")
+            if not row.get("ok"):
+                pages_failed.append({"route": route, "reason": row.get("reason")})
+                continue
+            structure = row.get("structure") or {}
+            if not structure.get("interactive"):
+                pages_failed.append({"route": route, "reason": "structure_empty"})
+                continue
+            pages_rows.append(row)
+        if not pages_rows:
+            print("pages.json 里没有任何成功采集的页面", file=sys.stderr)
+            return 2
+        # 目标页结构优先用 pages.json 里的（同一次采集，天然一致）；单页文件只在缺它时兜底。
+        target_row = next((r for r in pages_rows if "/" + str(r.get("route") or "").strip("/") == target), None)
+        if target_row and (target_row.get("structure") or {}).get("interactive"):
+            structured = target_row["structure"]
+        elif not structured:
+            print("pages.json 里没有目标页结构，且没有 structure.json 兜底", file=sys.stderr)
+            return 2
     if not structured:
         print("没有可用的 structure.json / structured-dom.json", file=sys.stderr)
         return 2
@@ -133,12 +166,25 @@ def main() -> int:
             login[key] = value
 
     seen_routes = {"/" + r.strip("/") for r in (args.target_route, *args.extra_route)}
+    seen_routes |= {str(row.get("route")).strip("/") if str(row.get("route")).startswith("/") else "/" + str(row.get("route")).strip("/") for row in pages_rows}
+    seen_routes |= {row["route"] for row in pages_failed}
+
+    # 多页：成功页逐页登记控件；无 --pages 时保持原单页口径。
+    controls_by_page: dict[str, dict] = {}
+    if pages_rows:
+        for row in pages_rows:
+            route = "/" + str(row.get("route") or "").strip("/")
+            page_controls = extract_controls({"interactive": (row.get("structure") or {}).get("interactive") or []})
+            if page_controls.get("controls"):
+                controls_by_page[route] = page_controls
+    else:
+        controls_by_page = {target: controls} if controls["controls"] else {}
 
     maps = build_maps(
         project=args.project,
         env=args.env,
-        routes=page_routes(),
-        controls_by_page={target: controls} if controls["controls"] else None,
+        routes=sorted(set(page_routes()) | set(controls_by_page)),
+        controls_by_page=controls_by_page or None,
         apis=apis(),
         login=login,
         actor="program:explorer+browser",
@@ -146,18 +192,38 @@ def main() -> int:
 
     # 引擎的标准字段之外，把"探索时看到的事实"另存一份：表格列、菜单树、接口入参。
     # 这些不是 maps 的契约，但少了它们，项目视图就只剩一串 URL。
-    maps["_build_meta"]["note"] = (
-        f"{target} 由真浏览器渲染后采集控件；其余页面仅有路由、控件清单为空（未建档）。"
-    )
-    maps["_build_meta"]["exploration"] = {
-        "explored_at": structured.get("url"),
-        "target_route": target,
-        "tables": structured.get("tables") or [],
-        "breadcrumb": structured.get("breadcrumb") or [],
-        "seen_routes": sorted(seen_routes),
-        "menu_groups": [row.get("menu") for row in load(capture_dir, "pages-from-menu.json", [])
-                        if row.get("parent") is None],
-    }
+    if pages_rows:
+        maps["_build_meta"]["note"] = (
+            f"全站探索：{len(pages_rows)} 页登录后真实渲染并采集控件，"
+            f"{len(pages_failed)} 页到过但未采到（如实标记）；其余仅有路由、未建档。"
+        )
+        maps["_build_meta"]["exploration"] = {
+            "explored_at": structured.get("url"),
+            "mode": "site",
+            "target_route": target,
+            "pages": [{"route": "/" + str(r.get("route") or "").strip("/"), "controls": r.get("controls"),
+                       "tables": r.get("tables")} for r in pages_rows],
+            "pages_failed": pages_failed,
+            "tables": structured.get("tables") or [],
+            "breadcrumb": structured.get("breadcrumb") or [],
+            "seen_routes": sorted(seen_routes),
+            "menu_groups": [row.get("menu") for row in load(capture_dir, "pages-from-menu.json", [])
+                            if row.get("parent") is None],
+        }
+    else:
+        maps["_build_meta"]["note"] = (
+            f"{target} 由真浏览器渲染后采集控件；其余页面仅有路由、控件清单为空（未建档）。"
+        )
+        maps["_build_meta"]["exploration"] = {
+            "explored_at": structured.get("url"),
+            "mode": "page",
+            "target_route": target,
+            "tables": structured.get("tables") or [],
+            "breadcrumb": structured.get("breadcrumb") or [],
+            "seen_routes": sorted(seen_routes),
+            "menu_groups": [row.get("menu") for row in load(capture_dir, "pages-from-menu.json", [])
+                            if row.get("parent") is None],
+        }
 
     explore_dir.mkdir(parents=True, exist_ok=True)
     stem = f"maps-{args.env}"

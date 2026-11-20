@@ -42,9 +42,14 @@ export interface ExplorationStep {
 
 export interface ExplorationSummary {
   targetUrl: string;
+  /** 探索模式：site=登录后逐页全站采集；page=仅目标页（公开页/兼容口径）。 */
+  mode: "site" | "page" | null;
   controls: number | null;
   tables: number | null;
   apis: number | null;
+  /** 全站模式：pages_ok / pages_failed（到过但没采到的页面，如实计数）。 */
+  pagesOk: number | null;
+  pagesFailed: number | null;
   structureDigest: string | null;
   sessionReused: boolean | null;
   mapsPath: string | null;
@@ -566,9 +571,12 @@ async function completeSuccess(
   }
   const summary: ExplorationSummary = {
     targetUrl: row.target_url,
+    mode: receipt.mode === "site" ? "site" : receipt.mode === "page" ? "page" : null,
     controls: numberOrNull(receipt.controls),
     tables: numberOrNull(receipt.tables),
     apis: numberOrNull(receipt.apis),
+    pagesOk: numberOrNull(receipt.pages_ok),
+    pagesFailed: numberOrNull(receipt.pages_failed),
     structureDigest: typeof receipt.structure_digest === "string" ? receipt.structure_digest : null,
     sessionReused: typeof receipt.session_reused === "boolean" ? receipt.session_reused : null,
     mapsPath: merged.mapsPath,
@@ -756,6 +764,8 @@ export function spawnExplorationRun(engineRoot: string): ExplorationRun {
       if (input.configFile) argv.push("--config", input.configFile);
       else argv.push("--discover-login");
       if (input.publicMode) argv.push("--public");
+      // 登录态探索默认全站模式：登录后按路由清单逐页采集（项目地图是测试任务的打底资料）。
+      else argv.push("--mode", "site");
       child = spawn(process.execPath, argv, { cwd: engineRoot, windowsHide: true });
       let pending = "";
       child.stdout?.setEncoding("utf8");
@@ -860,6 +870,9 @@ export function pythonMerge(engineRoot: string): ExplorationMerge {
       "--target-route", targetRoute,
       "--explore-dir", exploreDir,
     ];
+    // 全站探索产物存在时按多页登记；没有就是单页口径，行为不变。
+    const pagesFile = path.join(exploreDir, "pages.json");
+    if (existsSync(pagesFile)) argv.push("--pages", pagesFile);
     const child = spawn(python, argv, {
       cwd: engineRoot,
       env: {
