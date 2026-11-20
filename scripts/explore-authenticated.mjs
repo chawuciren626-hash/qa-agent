@@ -35,6 +35,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { confidenceGate, parseArithmetic, validateLoginConfig } from './login-captcha-chain.mjs';
+import { buildEvidenceBundle, buildPageObservations, buildQuestionsAndRules, dedupeObservations } from './explore-observation-model.mjs';
 
 const args = new Map();
 /** 无值开关：不能按 key/value 两两配对，否则会把后面的参数当值吃掉（--discover-login 后跟 --mode site 时 site 落到 key 位报 Unexpected argument）。 */
@@ -76,6 +77,8 @@ if (!['auto', 'manual'].includes(captchaStrategy)) throw new Error('--captcha-st
 const siteMode = args.get('mode') === 'site';
 const maxPages = Math.max(1, Math.min(Number.parseInt(args.get('max-pages') ?? '50', 10) || 50, 200));
 mkdirSync(resolve(shotsDir, 'pages'), { recursive: true });
+/** 已入队/已采集的路由集合：collectPage 的重定向分支与全站 BFS 共用，防重复采集。 */
+const visitedRoutes = new Set();
 
 const log = (msg, data) => console.log(JSON.stringify({ at: new Date().toISOString(), msg, ...(data ? { data } : {}) }));
 /** 进度播报：stderr 的 @@ 行，可丢、可被平台解析；不影响探索结论。 */
@@ -407,16 +410,24 @@ const ROUTE_PATTERNS = [
   /to\s*[:=]\s*["'](\/\w[\w/\-:]*)["']/g,
 ];
 const NOT_ROUTE = /[\s<>{}\\]|:\/\/|\$\{|\.\.\//;
+/** 静态资源与站点元文件不是页面：href 采集会扫到 <link>/<script> 引用，不过滤会把
+ *  favicon.ico、构建产物 CSS 当成页面去访问（与引擎 explorer.is_page_route 同源）。 */
+const STATIC_ASSET = /\.(css|js|mjs|cjs|map|png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|eot|otf|mp4|webm|mp3|wav|pdf|zip|gz|json|xml|txt)$/i;
+const NON_PAGE_PATHS = new Set(['/favicon.ico', '/robots.txt', '/sitemap.xml', '/manifest.json', '/manifest.webmanifest']);
+/** 会话破坏性链接：点了就掉登录态，探索绝不跟随。 */
+const SESSION_DESTROYING = /logout|signout|sign-out|退出登录|注销登录|\/login$/i;
 
 /** 归并一条候选路由；返回 null = 判定不是可访问页面。 */
 function normalizeRoute(raw, prefix) {
   let p = (raw ?? '').trim();
   if (!p || !p.startsWith('/') || p === '/') return null;
+  if (p.startsWith('//')) return null;         // 协议相对/跨域形态，不是本站路径
   if (p.startsWith('http') || p.includes('*') || NOT_ROUTE.test(p)) return null;
   if (p.includes(':')) return null;            // /order/:id 是参数模板，字面访问无意义
   if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
-  if (!p.startsWith(`${prefix}/`) && p !== prefix) return null;  // 只采本应用前缀下的路由
-  if (/\/login$/i.test(p)) return null;        // 登录页已由「访问墙」知识层覆盖，不重复采
+  if (prefix !== '/' && !p.startsWith(`${prefix}/`) && p !== prefix) return null;  // 只采本应用前缀下的路由
+  if (STATIC_ASSET.test(p) || NON_PAGE_PATHS.has(p.toLowerCase())) return null;
+  if (SESSION_DESTROYING.test(p)) return null; // 登录页已由「访问墙」知识层覆盖，登出链接不能跟
   return p;
 }
 
@@ -459,24 +470,129 @@ async function discoverRoutes(targetPath, prefix) {
   return [...found].slice(0, maxPages);
 }
 
-/** 逐页采集：goto → pathname 校验（被重定向=权限墙，如实记不采结构）→ 结构 → 截图。 */
+/** 本页可见的链接清单：全站爬取的队列来源（登出/登录/静态资源由 normalizeRoute 过滤）。 */
+async function collectAnchors() {
+  try {
+    return await page.evaluate(() =>
+      [...document.querySelectorAll('a[href]')].map((a) => a.getAttribute('href')).filter(Boolean));
+  } catch { return []; }
+}
+
+/**
+ * 语义事实采集（零 LLM，第一批证据层）：价格/字段标签/选项列表 + 问题推导用的
+ * 结构线索（表单/下拉/分页）。只读 DOM，不做任何交互——需要"提交了才知道"的
+ * 事实（错误文案/状态转换）属会话侧证据轮，这里绝不模拟。
+ */
+async function collectFacts() {
+  try {
+    return await page.evaluate(() => {
+      const clean = (value) => (value ?? '').toString().trim().replace(/\s+/g, ' ');
+      const CURRENCY = /^[¥$€£]\s?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$|\d+(?:\.\d{1,2})?\s*[元块钱]$/;
+      const cssOf = (el) => {
+        if (el.id && !/^el-id-\d+-\d+$/.test(el.id)) return `#${CSS.escape(el.id)}`;
+        const testid = el.getAttribute('data-testid') ?? el.getAttribute('data-test');
+        if (testid) return `[data-testid="${testid}"]`;
+        return null;
+      };
+      const contextOf = (el) => {
+        let node = el;
+        for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
+          const cls = typeof node.className === 'string' ? node.className : '';
+          if (!/(item|card|row|product|entry|goods)/i.test(cls)) continue;
+          const named = node.querySelector('h1,h2,h3,h4,h5,h6,a,strong,[data-test],[class*="name" i],[class*="title" i]');
+          const text = named ? clean(named.textContent) : '';
+          if (text && text !== clean(el.textContent)) return text.slice(0, 120);
+        }
+        return null;
+      };
+      const visible = (el) => {
+        const box = el.getBoundingClientRect();
+        return box.width > 0 && box.height > 0;
+      };
+      const prices = [];
+      for (const el of document.querySelectorAll('body *')) {
+        if (!visible(el)) continue;
+        const own = [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join(' ');
+        const text = clean(own);
+        if (!text || text.length > 24 || !CURRENCY.test(text)) continue;
+        prices.push({ verbatim: text, context: contextOf(el), css: cssOf(el), testid: el.getAttribute('data-testid') });
+        if (prices.length >= 60) break;
+      }
+      const fieldLabel = (el) => {
+        if (el.id) {
+          const explicit = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+          if (explicit) return clean(explicit.textContent);
+        }
+        const wrap = el.closest('label');
+        if (wrap) return clean(wrap.textContent);
+        return clean(el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
+      };
+      const labels = [];
+      for (const el of document.querySelectorAll('input,textarea,select')) {
+        if (!visible(el)) continue;
+        if ((el.getAttribute('type') ?? 'text') === 'hidden') continue;
+        const text = fieldLabel(el);
+        if (!text) continue;
+        labels.push({ verbatim: text, name: el.getAttribute('name') ?? null, css: cssOf(el) });
+        if (labels.length >= 60) break;
+      }
+      const options = [];
+      for (const el of document.querySelectorAll('select')) {
+        if (!visible(el)) continue;
+        const items = [...el.querySelectorAll('option')].map((o) => clean(o.textContent)).filter(Boolean);
+        if (items.length < 2) continue;
+        const name = el.getAttribute('name') ?? el.getAttribute('aria-label') ?? items[0];
+        options.push({ verbatim: items.join(' | ').slice(0, 300), name, css: cssOf(el) });
+        if (options.length >= 30) break;
+      }
+      const forms = [...document.querySelectorAll('form')]
+        .map((form) => {
+          const fields = [...form.querySelectorAll('input,textarea,select')].filter((el) => visible(el) && (el.getAttribute('type') ?? 'text') !== 'hidden' && (el.getAttribute('type') ?? '') !== 'submit');
+          if (fields.length < 2) return null;
+          const first = fields.map(fieldLabel).find(Boolean);
+          return { label: clean(form.getAttribute('aria-label') || form.getAttribute('name') || first || '未命名表单'), fields: fields.length, page: null };
+        })
+        .filter(Boolean)
+        .slice(0, 5);
+      const selects = [...document.querySelectorAll('select')]
+        .filter(visible)
+        .map((el) => ({ label: clean(el.getAttribute('aria-label') || el.getAttribute('name') || fieldLabel(el) || '未命名下拉'), page: null }))
+        .slice(0, 5);
+      const pagination = [...document.querySelectorAll('a,button,[class*="pager" i],[class*="pagination" i],[aria-label]')]
+        .some((el) => visible(el) && /下一页|加载更多|next page|>\s*$/i.test(clean(el.getAttribute('aria-label') || el.textContent).slice(0, 20)));
+      return { prices, labels, options, forms, selects, pagination };
+    });
+  } catch { return { prices: [], labels: [], options: [], forms: [], selects: [], pagination: false }; }
+}
+
+/** 逐页采集：goto → pathname 校验（重定向=以最终路径登记，登录墙才记失败）→ 结构 → 截图 → 链接。 */
 async function collectPage(route) {
-  const entry = { route, ok: false, url: null, reason: null, controls: 0, tables: 0, structure: null };
+  const entry = { route, ok: false, url: null, reason: null, controls: 0, tables: 0, structure: null, anchors: [], redirected_from: null };
   try {
     await page.goto(new URL(route, targetUrl).toString(), { waitUntil: 'networkidle', timeout: 45_000 });
     await page.waitForTimeout(1500);
     entry.url = page.url();
     const finalPath = new URL(page.url()).pathname.replace(/\/$/, '');
     if (finalPath !== route) {
-      entry.reason = `redirected:${finalPath || '/'}`;
-      return entry;
+      // 被重定向本身不是失败：登录后访问 `/` 跳到业务首页是常态。最终页若还没采过，
+      // 就以最终路径登记结构（redirected_from 保留真实请求路由）；最终页采过=重复，如实记不重复采。
+      if (!finalPath || SESSION_DESTROYING.test(finalPath) || visitedRoutes.has(finalPath)) {
+        entry.reason = `redirected:${finalPath || '/'}`;
+        return entry;
+      }
+      entry.redirected_from = route;
+      entry.route = finalPath;
+      visitedRoutes.add(finalPath);
     }
     const seen = await structure();
     entry.ok = true;
     entry.controls = seen.interactive.length;
     entry.tables = seen.tables.length;
     entry.structure = seen;
-    const slug = route.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'root';
+    entry.anchors = await collectAnchors();
+    entry.facts = await collectFacts();
+    entry.observations = buildPageObservations(entry.route, entry.facts);
+    const slug = entry.route.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'root';
     await page.screenshot({ path: resolve(shotsDir, 'pages', `${slug}.png`), fullPage: true }).catch(() => {});
   } catch (error) {
     entry.reason = String(error?.message ?? error).slice(0, 200);
@@ -498,35 +614,86 @@ async function main() {
       emit('step', { index: 3, name: '登录', status: 'done', detail: '已保存登录态有效，目标页可访问' });
     }
   }
+  /** 登录后落地页：真实业务入口通常在这里（`/` 常停在登录页），全站爬取优先从它开始。 */
+  let landingPath = null;
   if (!reused) {
     if (publicMode) {
       log('public_mode', { note: '公开页模式：不提交登录表单' });
     } else if (!(await login())) throw new Error('登录未成功，已截图 login-failed.png');
+    landingPath = new URL(page.url()).pathname.replace(/\/$/, '');
   }
 
   emit('step', { index: 4, name: '采集页面', status: 'running', detail: siteMode ? '全站模式：目标页先行，随后逐页采集' : '打开目标页并采集控件/表格' });
   await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2000);
   const targetPath = new URL(targetUrl).pathname.replace(/\/$/, '');
-  if (new URL(page.url()).pathname.replace(/\/$/, '') !== targetPath) {
+  const finalTargetPath = new URL(page.url()).pathname.replace(/\/$/, '');
+  if (finalTargetPath !== targetPath && !siteMode) {
     throw new Error('目标页未打开，实际导航到了其他路径；未将该页面登记为目标页探索结果');
   }
   await page.screenshot({ path: resolve(shotsDir, 'target.png'), fullPage: true });
   const seen = await structure();
   writeFileSync(resolve(outDir, 'structure.json'), JSON.stringify(seen, null, 2));
 
+  /** 证据层（第一批）：目标页的事实采集。observations 与 pages.json 分离，避免互相膨胀。 */
+  const collectedObservations = [];
+  const collectedFacts = { forms: [], selects: [], pagination: false };
+  const absorbFacts = (route, facts) => {
+    for (const form of facts?.forms ?? []) collectedFacts.forms.push({ ...form, page: route });
+    for (const select of facts?.selects ?? []) collectedFacts.selects.push({ ...select, page: route });
+    collectedFacts.pagination = collectedFacts.pagination || Boolean(facts?.pagination);
+  };
+  {
+    const targetFacts = await collectFacts();
+    collectedObservations.push(...buildPageObservations(finalTargetPath, targetFacts));
+    absorbFacts(finalTargetPath, targetFacts);
+  }
+
   /** pages.json：全站模式多页产物（目标页也在内）；页面模式退化为单元素数组。 */
-  const pages = [{ route: targetPath, ok: true, url: page.url(), reason: null,
-    controls: seen.interactive.length, tables: seen.tables.length, structure: seen }];
+  visitedRoutes.add(targetPath);
+  visitedRoutes.add(finalTargetPath);
+  const pages = [{ route: finalTargetPath, ok: true, url: page.url(), reason: null,
+    controls: seen.interactive.length, tables: seen.tables.length, structure: seen,
+    anchors: await collectAnchors(), redirected_from: finalTargetPath !== targetPath ? targetPath : null }];
   if (siteMode) {
     const prefix = `/${targetPath.split('/').filter(Boolean)[0] ?? ''}`;
-    const routes = (await discoverRoutes(targetPath, prefix)).filter((route) => route !== targetPath);
-    emit('step', { index: 4, name: '采集页面', status: 'running', detail: `全站模式：路由清单 ${routes.length + 1} 页（预算 ${maxPages}）` });
+    const discovered = (await discoverRoutes(targetPath, prefix))
+      .filter((route) => route !== targetPath && route !== finalTargetPath);
+    const queue = [];
+    if (landingPath && !SESSION_DESTROYING.test(landingPath) && !visitedRoutes.has(landingPath)) {
+      visitedRoutes.add(landingPath);
+      queue.push(landingPath);              // 登录后落地页优先：那里才是真实业务页
+    }
+    for (const route of discovered) {
+      if (!visitedRoutes.has(route)) { visitedRoutes.add(route); queue.push(route); }
+    }
+    emit('step', { index: 4, name: '采集页面', status: 'running',
+      detail: `全站模式：已入队 ${queue.length + 1} 页（预算 ${maxPages}），逐页采集并跟随页面链接` });
     let k = 0;
-    for (const route of routes) {
+    while (queue.length && pages.length < maxPages) {
+      const route = queue.shift();
       k += 1;
-      emit('step', { index: 4, name: '采集页面', status: 'running', detail: `全站 ${k}/${routes.length} · ${route}` });
-      pages.push(await collectPage(route));
+      emit('step', { index: 4, name: '采集页面', status: 'running', detail: `全站 ${k} · ${route}（待采 ${queue.length}）` });
+      const entry = await collectPage(route);
+      pages.push(entry);
+      if (entry.ok) {
+        collectedObservations.push(...(entry.observations ?? []));
+        absorbFacts(entry.route, entry.facts);
+      }
+      delete entry.facts;        // 原始事实只在 observations.json / 内存里，pages.json 保持精简
+      delete entry.observations;
+      // 采集成功页暴露的同源链接继续入队（BFS）：路由表与菜单拿不到的多页站点靠这里覆盖。
+      for (const href of entry.ok ? entry.anchors : []) {
+        try {
+          const u = new URL(href, entry.url ?? targetUrl);
+          if (u.origin !== new URL(targetUrl).origin) continue;
+          const normalized = normalizeRoute(u.pathname, prefix);
+          if (normalized && !visitedRoutes.has(normalized)) {
+            visitedRoutes.add(normalized);
+            queue.push(normalized);
+          }
+        } catch { /* 相对路径解析失败按没有处理 */ }
+      }
     }
     const failed = pages.filter((item) => !item.ok);
     if (pages.length - failed.length === 0) {
@@ -534,14 +701,29 @@ async function main() {
     }
     log('site_collected', {
       total: pages.length, ok: pages.length - failed.length, failed: failed.length,
+      pending: queue.length,
       failed_routes: failed.map((item) => `${item.route} (${item.reason ?? '?'})`).slice(0, 10),
     });
     emit('step', { index: 4, name: '采集页面', status: 'done',
-      detail: `全站 ${pages.length - failed.length}/${pages.length} 页 · 目标页 ${seen.interactive.length} 控件` });
+      detail: `全站 ${pages.length - failed.length}/${pages.length} 页 · 待采 ${queue.length} 页（预算 ${maxPages}）· 目标页 ${seen.interactive.length} 控件` });
   } else {
     emit('step', { index: 4, name: '采集页面', status: 'done', detail: `${seen.interactive.length} 控件 · ${seen.tables.length} 表格` });
   }
   writeFileSync(resolve(outDir, 'pages.json'), JSON.stringify(pages, null, 2));
+
+  // 证据包（第一批）：跨页去重 → 确定性问题与固定事实 → observations.json。
+  // 这是 qa_exploration_hypotheses（G4 回流）与知识候选的数据源；零 LLM，逐字可断言。
+  const observations = dedupeObservations(collectedObservations);
+  const derived = buildQuestionsAndRules(observations, {
+    authenticated: !publicMode,
+    pagesOk: pages.filter((item) => item.ok).length,
+    forms: collectedFacts.forms,
+    selects: collectedFacts.selects,
+    pagination: collectedFacts.pagination,
+  });
+  const evidence = buildEvidenceBundle(siteMode ? 'site' : 'page', new Date().toISOString(),
+    observations, derived.questions, derived.rules);
+  writeFileSync(resolve(outDir, 'observations.json'), JSON.stringify(evidence, null, 2));
 
   await context.storageState({ path: sessionPath });
   const apiList = [...apis.values()]
@@ -580,6 +762,9 @@ async function main() {
     pages_total: pages.length,
     pages_ok: pages.filter((item) => item.ok).length,
     pages_failed: pages.filter((item) => !item.ok).length,
+    observations: evidence.observations.length,
+    questions: evidence.questions.length,
+    evidence_rules: evidence.rules.length,
     session_reused: reused,
   };
   writeFileSync(resolve(outDir, 'explore-receipt.json'), JSON.stringify({ ...facts, limitations: [
@@ -587,6 +772,7 @@ async function main() {
     siteMode
       ? '全站逐页快照：只采页面结构与本页触发过的接口，不含跨页业务流程与状态迁移。'
       : '单页面快照：不含业务流程、跳转链与跨页状态。',
+    '语义证据（observations.json）只含 DOM 可静态提取的价格/字段标签/选项列表；错误文案与状态转换需要真实交互，本入口不采集。',
     '登录成功只证明本次凭据被接受，不证明权限范围或业务可用。',
   ] }, null, 2));
   log('explored', facts);

@@ -18,13 +18,14 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "../hmr/capabilities.js";
 import { HttpError } from "../http/errors.js";
-import { replaceKnowledgeLayer, type KnowledgeEntryInput, type KnowledgeLayer } from "./environment-knowledge-service.js";
+import { createHypothesis, replaceKnowledgeLayer, type KnowledgeEntryInput, type KnowledgeLayer } from "./environment-knowledge-service.js";
 import { findEnvironment, type EnvironmentView } from "./project-environment-service.js";
+import { QaProjectKnowledgeStore, type KnowledgeDb } from "./qa-project-knowledge.js";
 import type { ExplorationKnowledgeBuildInfo, ExplorationKnowledgeSync } from "./exploration-knowledge-sync.js";
 
 /** 探索六步：前五步与脚本事件一一对应，第六步由服务端合并回写后落定。 */
@@ -58,6 +59,18 @@ export interface ExplorationSummary {
   limitations: string[];
   /** B1 联动结果：成功带构建信息；失败如实带 error，不改探索结论。 */
   knowledgeBuild: ExplorationKnowledgeBuildInfo | { error: string } | null;
+  /** 证据层（第一批）：observations.json → 假设/候选的写入计数；失败如实带 error。 */
+  evidenceSync?: EvidenceSyncInfo | null;
+}
+
+export interface EvidenceSyncInfo {
+  /** 新写入 qa_exploration_hypotheses 的条数（去重后）。 */
+  hypotheses: number;
+  /** 新写入 qa_knowledge_candidates 的条数（去重后）。 */
+  candidates: number;
+  /** 因已存在/超限/校验拒绝而跳过的条数。 */
+  skipped: number;
+  error?: string;
 }
 
 export interface ExplorationView {
@@ -141,6 +154,12 @@ export interface ExplorationMergeInput {
   targetRoute: string;
   exploreDir: string;
   engineRoot: string;
+  /** 项目目录绝对路径：建档基线与回写报告都落在 <projectDir>/maps/<env>/。 */
+  projectDir: string;
+  /** 探索轮次；回写报告标注用。测试注入的合并器可忽略。 */
+  round?: number | null;
+  /** 公开页模式：本次探索未经过登录，合并时登录事实如实记否。 */
+  publicMode?: boolean;
 }
 
 export interface ExplorationMergeResult {
@@ -551,7 +570,39 @@ async function completeSuccess(
   const engineRoot = deps.engineRoot;
   if (!engineRoot) throw new HttpError(503, "exploration_unavailable", "服务端未配置 AITEST_ENGINE_ROOT");
   const merge = deps.merge ?? pythonMerge(engineRoot);
-  const merged = await merge({ projectId, env, targetRoute: route, exploreDir: outDir, engineRoot });
+  const merged = await merge({
+    projectId, env, targetRoute: route, exploreDir: outDir, engineRoot,
+    projectDir: deps.projectDir, round: row.round,
+    publicMode: row.login_mode === "public",
+  });
+
+  // 探索回写（P1/P5）：合并地图已并入建档基线，把它提升为环境的当前地图，并刷新
+  // 环境摘要——UI 读到的页面数/登录判定来自"最后一次成功探索 + 建档基线"的合并状态，
+  // 而不是停留在建档时刻的快照。提升失败按合并回写失败处理：宁可这轮报 failed，
+  // 也不留"知识更新了、地图还停在上一版"的分裂状态。
+  const refreshed = promoteMergedMaps(deps, env, merged, outDir);
+  const modules = Array.from(new Set((merged.maps.apis ?? [])
+    .map((api) => api.module ?? "default"))).sort();
+  deps.db
+    .prepare(
+      `UPDATE project_environments SET pages_total=?, pages_registered=?, apis_total=?,
+         api_modules=?, login_captcha=?, maps_path=?, maps_hash=?, report_path=?,
+         probed_at=?, revision=revision+1
+       WHERE project_id=? AND env=?`,
+    )
+    .run(
+      merged.maps.stats?.pages ?? null,
+      merged.maps.stats?.pages_registered ?? null,
+      merged.maps.stats?.apis ?? null,
+      JSON.stringify(modules),
+      merged.maps.login?.captcha_type ?? null,
+      refreshed.mapsPath,
+      refreshed.mapsHash,
+      refreshed.reportPath,
+      new Date().toISOString(),
+      projectId,
+      env,
+    );
 
   const layers = deriveKnowledge(merged.maps);
   for (const layer of layers) {
@@ -588,17 +639,112 @@ async function completeSuccess(
     knowledgeBuild,
   };
   const now = new Date().toISOString();
+  let evidenceSync: EvidenceSyncInfo | null = null;
+  try {
+    evidenceSync = await syncEvidence(deps, projectId, env, row, outDir);
+  } catch (error) {
+    evidenceSync = {
+      hypotheses: 0, candidates: 0, skipped: 0,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
   deps.db
     .prepare(
       `UPDATE qa_environment_explorations SET status='succeeded', summary_json=?, last_error=NULL,
          finished_at=?, updated_at=? WHERE exploration_id=?`,
     )
-    .run(JSON.stringify(summary), now, now, row.exploration_id);
+    .run(JSON.stringify({ ...summary, evidenceSync }), now, now, row.exploration_id);
   const steps = parseSteps(row.steps_json);
   const done = steps.map((step) => ({ ...step, status: "done" as ExplorationStepStatus, detail: step.detail ?? null }));
   deps.db
     .prepare("UPDATE qa_environment_explorations SET steps_json=? WHERE exploration_id=?")
     .run(JSON.stringify(done), row.exploration_id);
+}
+
+/**
+ * 证据层（第一批）：observations.json → 两条既有治理管线。
+ *
+ * 为什么不新建存储：question 实体就是 qa_exploration_hypotheses（建表即按"可判定句子 +
+ * 未知原因枚举 + 造数授权"设计，G4 回流断链缺的只是生产者）；rule 实体对应知识候选
+ * （所有者确认后才成为版本化规则——探索的事实没有资格直接成为"已确认规则"）。
+ *
+ * 去重：同一 statement（假设）/ 同一 statement 的 pending 候选不重复写——多轮探索
+ * 反复覆盖同一页面是常态，重复项只会把确认队列刷屏。
+ * 归属：假设 created_by=system:exploration:round-N（系统动作人不冒充用户，与 B1 同
+ * 口径）；候选挂项目所有者（确认队列本来就是所有者的），rationale 写明系统来源。
+ * 失败语义与 knowledgeBuild 相同：不改探索结论，error 如实进 summary。
+ */
+async function syncEvidence(
+  deps: ExplorationDeps,
+  projectId: string,
+  env: string,
+  row: ExplorationRow,
+  outDir: string,
+): Promise<EvidenceSyncInfo> {
+  const raw = readJsonFile<Record<string, unknown>>(path.join(outDir, "observations.json"));
+  if (!raw || raw.version !== 1 || !Array.isArray(raw.questions) || !Array.isArray(raw.rules)) {
+    return { hypotheses: 0, candidates: 0, skipped: 0 };
+  }
+  const info: EvidenceSyncInfo = { hypotheses: 0, candidates: 0, skipped: 0 };
+  const statementExists = (sql: string, ...params: string[]): boolean =>
+    Boolean(deps.db.prepare(sql).get(...params));
+
+  for (const question of raw.questions as Record<string, unknown>[]) {
+    const statement = typeof question.statement === "string" ? question.statement.trim() : "";
+    if (!statement) continue;
+    if (statementExists(
+      "SELECT 1 AS ok FROM qa_exploration_hypotheses WHERE project_id=? AND env=? AND statement=?",
+      projectId, env, statement,
+    )) { info.skipped += 1; continue; }
+    try {
+      createHypothesis(deps.db, projectId, env, {
+        statement,
+        whyUnknown: question.why_unknown,
+        expectation: question.expectation,
+        moduleKey: typeof question.module_key === "string" ? question.module_key.slice(0, 64) : undefined,
+      }, `system:exploration:round-${row.round}`);
+      info.hypotheses += 1;
+    } catch {
+      info.skipped += 1;    // 单条形状不合法跳过：证据是辅助产出，不因一条脏数据否掉整轮
+    }
+  }
+
+  const rules = raw.rules as Record<string, unknown>[];
+  if (!rules.length) return info;
+  const owner = deps.db
+    .prepare("SELECT owner_user_id AS owner FROM projects WHERE project_id=?")
+    .get(projectId) as { owner?: string } | undefined;
+  if (!owner?.owner) return info;
+  const store = new QaProjectKnowledgeStore(deps.db as unknown as KnowledgeDb);
+  for (const rule of rules) {
+    const statement = typeof rule.statement === "string" ? rule.statement.trim() : "";
+    if (!statement) continue;
+    if (statementExists(
+      "SELECT 1 AS ok FROM qa_knowledge_candidates WHERE project_id=? AND statement=? AND status='pending'",
+      projectId, statement,
+    )) { info.skipped += 1; continue; }
+    try {
+      const evidenceIds = Array.isArray(rule.evidence_ids) ? rule.evidence_ids.filter((x): x is string => typeof x === "string") : [];
+      store.createCandidate({
+        projectId,
+        userId: owner.owner,
+        title: statement.slice(0, 60),
+        statement,
+        rationale: `系统：探索 round-${row.round} 语义证据自动生成（${evidenceIds.join("、") || "无观察引用"}），等待所有者确认；证据明细见探索产物 observations.json`,
+        scope: { level: "project" },
+        sourceRefs: [{
+          type: "external",
+          system: "environment-exploration",
+          externalId: evidenceIds.join(",") || String(rule.id ?? ""),
+        }],
+        createdBy: { type: "user" },
+      });
+      info.candidates += 1;
+    } catch {
+      info.skipped += 1;    // 超限/形状问题按跳过计，不阻塞探索结论
+    }
+  }
+  return info;
 }
 
 /** maps IR → 四层知识。只写本轮真能派生的层；flow 需要多页遍历，单页探索给不出就不写。 */
@@ -872,9 +1018,43 @@ function lastFailureMessage(stdoutTail: string): string | null {
   return null;
 }
 
+/**
+ * 探索回写：把合并后的地图提升为环境当前地图，并生成刷新版环境报告。
+ *
+ * canonical 位置与建档一致（<projectDir>/maps/<env>/）：环境视图只认这一个位置，
+ * 绝不改为"读最新 round 目录"——round 目录是轮次产物，清理后视图会悬空。
+ * 回写报告写 env-report-<env>.md（建档快照 bootstrap-report-*.md 原样保留）。
+ * maps_hash 用内容 sha256（G9 口径）：地图没变就不推 plan stale。
+ */
+function promoteMergedMaps(
+  deps: ExplorationDeps,
+  env: string,
+  merged: ExplorationMergeResult,
+  exploreDir: string,
+): { mapsPath: string; reportPath: string; mapsHash: string | null } {
+  const canonicalDir = path.join(deps.projectDir, "maps", env);
+  mkdirSync(canonicalDir, { recursive: true });
+  for (const ext of [".yaml", ".json"]) {
+    const source = path.join(exploreDir, `maps-${env}${ext}`);
+    if (!existsSync(source)) continue;
+    copyFileSync(source, path.join(canonicalDir, `maps-${env}${ext}`));
+  }
+  const canonicalYaml = path.join(canonicalDir, `maps-${env}.yaml`);
+  const mapsHash = existsSync(canonicalYaml)
+    ? createHash("sha256").update(readFileSync(canonicalYaml)).digest("hex")
+    : null;
+  const relative = (target: string): string =>
+    path.relative(deps.projectDir, target).split(path.sep).join("/");
+  return {
+    mapsPath: relative(path.join(canonicalDir, `maps-${env}.yaml`)),
+    reportPath: relative(path.join(canonicalDir, `env-report-${env}.md`)),
+    mapsHash,
+  };
+}
+
 /** 生产合并器：python merge-explore-maps.py → 读 maps-<env>.json。 */
 export function pythonMerge(engineRoot: string): ExplorationMerge {
-  return async ({ projectId, env, targetRoute, exploreDir }) => {
+  return async ({ projectId, env, targetRoute, exploreDir, projectDir, round, publicMode }) => {
     const python = process.env.AITEST_PYTHON ?? (process.platform === "win32" ? "python" : "python3");
     const script = path.join(engineRoot, "scripts", "merge-explore-maps.py");
     const argv = [
@@ -887,6 +1067,14 @@ export function pythonMerge(engineRoot: string): ExplorationMerge {
     // 全站探索产物存在时按多页登记；没有就是单页口径，行为不变。
     const pagesFile = path.join(exploreDir, "pages.json");
     if (existsSync(pagesFile)) argv.push("--pages", pagesFile);
+    // 建档基线与回写报告都落在环境的 canonical maps 目录：探索成功后那里必须是
+    // "建档 + 探索合并后的当前状态"，而不是停留在建档时刻的快照。
+    const canonicalMapsDir = path.join(projectDir, "maps", env);
+    const bootstrapMaps = path.join(canonicalMapsDir, `maps-${env}.yaml`);
+    if (existsSync(bootstrapMaps)) argv.push("--bootstrap-maps", bootstrapMaps);
+    argv.push("--report-out", path.join(canonicalMapsDir, `env-report-${env}.md`));
+    if (typeof round === "number") argv.push("--round", String(round));
+    if (publicMode) argv.push("--public-mode");
     const child = spawn(python, argv, {
       cwd: engineRoot,
       env: {
