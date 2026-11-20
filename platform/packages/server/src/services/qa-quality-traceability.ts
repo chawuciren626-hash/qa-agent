@@ -14,6 +14,7 @@ import { HttpError } from "../http/errors.js";
 import { pointUid } from "./qa-point-identity.js";
 import { parseEvidenceRefs, type EvidenceRef, type KnowledgeDb } from "./qa-project-knowledge.js";
 import { QaTaskRunRegistry, readRunFacts, type RunObservation } from "./qa-task-run-registry.js";
+import { readRunTrace } from "./qa-run-trace.js";
 
 export const RISK_LEVELS = ["high", "medium", "low"] as const;
 export const RESULT_STATUSES = ["passed", "failed", "skipped", "blocked"] as const;
@@ -24,6 +25,12 @@ export const DEFECT_PRIORITIES = ["P0", "P1", "P2", "P3", "unknown"] as const;
 export const DEFECT_CONFIDENCES = ["low", "medium", "strong"] as const;
 export const REPORT_CONCLUSIONS = ["passed", "failed", "partial", "blocked", "not_run"] as const;
 export const QUALITY_GATES = ["blocked", "review_required", "risk_present", "informational"] as const;
+
+/**
+ * 报告结论里"我跑过并得到了结果"的那几种。只有这几种要求报告能追到执行痕迹：
+ * `blocked` / `not_run` 本身就是"没跑成"，要求它们有痕迹等于逼人补假数据。
+ */
+const TRACED_CONCLUSIONS: ReadonlySet<string> = new Set(["passed", "failed", "partial"]);
 
 export const DESIGN_MAX_POINTS = 2000;
 export const DESIGN_MAX_CASES = 5000;
@@ -617,6 +624,9 @@ export class QaQualityTraceabilityStore {
         facts,
         manifestPath: `output/runs/${runId}/manifest.json`,
         manifestSha256: sha256(raw),
+        // 执行可能已经开始了（设计阶段就在跑真机）。有痕迹就带上，让 started_at 是执行器
+        // 写下的真实时刻，而不是"平台第一次看见这次运行"的时间。
+        startedAt: readRunTrace(workspace, runId, { now: this.now() }).startedAt,
       };
     } catch {
       throw new HttpError(400, "run_not_found", "运行清单不存在或不属于当前任务，不能登记新的设计批次。");
@@ -800,6 +810,7 @@ export class QaQualityTraceabilityStore {
         manifestPath: observation.manifestPath,
         manifestSha256: observation.manifestSha256,
         kind: "design",
+        startedAt: observation.startedAt,
       });
     }
     if (!Array.isArray(input.points) || !input.points.length || input.points.length > DESIGN_MAX_POINTS) {
@@ -1731,6 +1742,7 @@ export class QaQualityTraceabilityStore {
         facts,
         manifestPath: `output/runs/${runId}/manifest.json`,
         manifestSha256: sha256(raw),
+        startedAt: readRunTrace(workspace, runId, { now: this.now() }).startedAt,
       };
     } catch {
       throw new HttpError(400, "report_run_invalid", "运行清单不存在或与当前任务不匹配，不能发布报告索引。");
@@ -1859,11 +1871,20 @@ export class QaQualityTraceabilityStore {
       facts: observation.facts,
       manifestPath: observation.manifestPath,
       manifestSha256: observation.manifestSha256,
+      startedAt: observation.startedAt,
     });
     const coverage = this.readCoverage(input.projectId, input.sessionId, input.runId);
     const conclusion = oneOf(input.conclusion, REPORT_CONCLUSIONS, "invalid_report", "报告结论");
     if (!this.allowedConclusions(coverage).has(conclusion)) {
       throw new HttpError(400, "report_overstates_results", "报告结论与执行事实不一致，不能把未完成或失败写成通过。");
+    }
+    // 判据 1 的收口：**声称跑过的报告，必须追得到执行开始的那一刻**。
+    // 只要求 passed / failed / partial——这三种结论本质上是"我跑过并得到了结果"；
+    // blocked 与 not_run 恰恰是"没跑成"，要求它们有执行痕迹等于逼人补一行假数据。
+    // 凭据必须是执行器写的那份（锁 / 状态 / 密封尝试），不接受 Agent 手写的结果文件：
+    // 后者只能证明"有人写了 JSON"，不能证明"浏览器真的开过"。
+    if (TRACED_CONCLUSIONS.has(conclusion) && !run.startedAt) {
+      throw new HttpError(400, "report_untraced", "报告结论称本次运行产生过结果，但运行目录里没有执行器留下的执行痕迹（execution-state / 执行锁 / 密封尝试），无法追溯到发起时刻。");
     }
     const htmlPath = safeRelative(input.htmlPath, "invalid_report", "报告文件路径");
     const htmlSha256 = normalizeHash(input.htmlSha256, "invalid_report", "报告文件哈希");

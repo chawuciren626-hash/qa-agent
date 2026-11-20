@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { apiClient, createTestApp, loginAdmin, provisionUser } from "./helpers.js";
@@ -115,6 +115,26 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("Q3 quality traceability", () =
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, JSON.stringify({ manifest_version: 3, run_id: declaredRunId, status: "completed" }));
   };
+  /**
+   * 执行器留下的执行痕迹（`execution-runner.mjs` 正常跑完就是这个形状）。
+   * 报告侧现在会核"声称跑过的报告追不追得到执行开始"，所以凡是要发报告的运行都得有这一份——
+   * 这不是为了让测试通过，是这些场景本来就是"跑过了"。
+   */
+  const writeExecutionTrace = async (root: string, sessionId: string, runId: string) => {
+    const invocationId = randomUUID();
+    const startedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const finishedAt = new Date(Date.now() - 9 * 60 * 1000).toISOString();
+    const execution = path.join(root, sessionId, "output", "runs", runId, "execution");
+    await fs.mkdir(path.join(execution, "attempts", invocationId), { recursive: true });
+    await fs.writeFile(path.join(execution, "execution-state.json"), JSON.stringify({
+      version: 2, run_id: runId, invocation_id: invocationId, status: "completed", phase: "finished",
+      started_at: startedAt, updated_at: finishedAt
+    }));
+    await fs.writeFile(path.join(execution, "attempts", invocationId, "attempt.json"), JSON.stringify({
+      version: 1, run_id: runId, invocation_id: invocationId, status: "completed",
+      started_at: startedAt, finished_at: finishedAt, duration_ms: 60 * 1000
+    }));
+  };
 
   beforeEach(async () => {
     app = await createTestApp();
@@ -142,6 +162,7 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("Q3 quality traceability", () =
     );
     for (const runId of ["run-main", "run-member", "run-second", "run-retest-1", "run-retest-2", "run-retest-3", "run-next", "run-pass", "run-other", "run-shared", "run-foreign", "run-badpoint"]) {
       await writeRunManifest(workspace, "session-task", runId);
+      await writeExecutionTrace(workspace, "session-task", runId);
     }
     await writeRunManifest(workspace, "session-next", "run-member");
     await writeRunManifest(otherWorkspace, "session-other", "run-other");

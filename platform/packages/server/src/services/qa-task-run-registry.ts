@@ -113,6 +113,12 @@ export interface RunObservation {
   facts: RunManifestFacts;
   manifestPath: string;
   manifestSha256: string;
+  /**
+   * 执行真正开始的时刻（读自执行器的 `execution-state.json` / 锁文件），不是 create-run 的
+   * 时间。第一次看见 run 时可能还没有（设计阶段），之后的观察会补上——`started_at` 用
+   * COALESCE 写，补一次就固定，不会被后来的观察改掉。
+   */
+  startedAt?: string | null;
 }
 
 function str(value: unknown): string | null {
@@ -168,7 +174,11 @@ function mapTask(r: Record<string, unknown>): QaTask {
 function mapRun(r: Record<string, unknown>, nowMs: number, staleMs: number): QaRun {
   const counts = safeJson(r.counts_json);
   const startedAt = (r.started_at as string | null) ?? null;
-  const startedMs = startedAt ? Date.parse(startedAt) : Number.NaN;
+  // `started_at` 只有执行器真的开始过才有值。缺了就退到 `created_at` 判"疑似中断"：
+  // 宁可早一点提示"卡住了"，也不要因为少一个字段就让一条跑着的 run 永远看起来正常。
+  // 注意这只是判定窗口，`startedAt` 字段本身仍为 null——"不知道什么时候开始的"不能编一个值。
+  const windowFrom = startedAt ?? (r.status === "running" ? ((r.created_at as string | null) ?? null) : null);
+  const windowMs = windowFrom ? Date.parse(windowFrom) : Number.NaN;
   return {
     runId: r.run_id as string,
     taskId: r.task_id as string,
@@ -193,7 +203,7 @@ function mapRun(r: Record<string, unknown>, nowMs: number, staleMs: number): QaR
     finishedAt: (r.finished_at as string | null) ?? null,
     dispatch: safeJson(r.dispatch_json),
     // 只有"还在跑"才谈得上中断；时间戳解析不出来时宁可不标（unknown 不做成 suspect）。
-    stalled: r.status === "running" && Number.isFinite(startedMs) && nowMs - startedMs > staleMs,
+    stalled: r.status === "running" && Number.isFinite(windowMs) && nowMs - windowMs > staleMs,
     createdAt: r.created_at as string,
     createdBy: r.created_by as string,
     updatedAt: r.updated_at as string,
@@ -396,6 +406,8 @@ export class QaTaskRunRegistry {
     env?: string;
     batchId?: string | null;
     deviceId?: string | null;
+    /** 执行器写的开始时刻；没有就不填（不拿"登记时间"顶替，那是另一个事实）。 */
+    startedAt?: string | null;
   }): QaRun {
     if (!input.facts.runId) throw new Error("run manifest carries no run_id");
     return this.tx(() => {
@@ -408,7 +420,7 @@ export class QaTaskRunRegistry {
           .prepare(
             `UPDATE qa_runs SET status = ?, manifest_path = ?, manifest_sha256 = ?, manifest_version = ?,
                resource_pool = COALESCE(?, resource_pool), sut_version = COALESCE(?, sut_version),
-               baseline_hash = COALESCE(?, baseline_hash),
+               baseline_hash = COALESCE(?, baseline_hash), started_at = COALESCE(started_at, ?),
                batch_id = COALESCE(?, batch_id), env = ?, updated_at = ?
              WHERE run_id = ?`,
           )
@@ -420,6 +432,7 @@ export class QaTaskRunRegistry {
             input.facts.resourcePool,
             input.facts.sutVersion,
             input.facts.baselineHash,
+            input.startedAt ?? null,
             input.batchId ?? null,
             env,
             now,
@@ -456,7 +469,10 @@ export class QaTaskRunRegistry {
           input.facts.resourcePool,
           input.deviceId ?? null,
           input.batchId ?? null,
-          input.facts.status === "in_progress" ? now : null,
+          // 只认执行器写下的开始时刻。manifest 自称 in_progress 也不能拿来顶替——
+          // "平台第一次看见这次运行"和"执行真的开始了"是两件事，混成一个值会让
+          // 报告追溯断言永远通过（它问的正是"到底有没有开始过"）。
+          input.startedAt ?? null,
           now,
           input.userId,
           now,
@@ -479,10 +495,11 @@ export class QaTaskRunRegistry {
     const now = this.at();
     this.db
       .prepare(
-        `UPDATE qa_runs SET counts_json = ?, started_at = COALESCE(started_at, ?), finished_at = ?, updated_at = ?
+        // 不拿 created_at 顶替 started_at：结束时间是知道的，开始时间不知道就是不知道。
+        `UPDATE qa_runs SET counts_json = ?, finished_at = ?, updated_at = ?
          WHERE project_id = ? AND run_id = ?`,
       )
-      .run(JSON.stringify(counts), current.createdAt, now, now, projectId, runId);
+      .run(JSON.stringify(counts), now, now, projectId, runId);
     return this.run(projectId, runId);
   }
 

@@ -31,6 +31,7 @@ import {
   type RunManifestFacts,
 } from "../../services/qa-task-run-registry.js";
 import type { AgentsRouteDeps } from "./agents.js";
+import { readRunTrace } from "../../services/qa-run-trace.js";
 
 const RUN_ID = /^run-[A-Za-z0-9-]+$/;
 const SESSION_ID = /^[A-Za-z0-9_-]+$/;
@@ -181,5 +182,30 @@ export function registerQaRunExecutionRoutes(app: Hono<AppEnv>, deps: AgentsRout
       }
       throw error;
     }
+  });
+
+  /**
+   * 一次运行的执行痕迹：**这次发起过没有、跑起来了没有、是不是卡住了**。
+   *
+   * 三个问题的答案来自三处不同的事实，故意不合并成一个"状态"字段：
+   *   - `registered`：平台有没有这次运行的登记行（`qa_runs`）；
+   *   - `trace.execution`：执行器自己写在 run 目录里的痕迹（锁 / 状态 / 密封尝试）；
+   *   - `trace.stalled`：把上面两者放在时间轴上推出来的判断，附原因。
+   *
+   * `registered=false` 而 `trace.present=true` 是**有价值的不一致**：目录里有这次运行，
+   * 平台没登记过——说明它绕过所有服务端写入就开跑了（或登记那一步失败了）。这里不替它补
+   * 一行，因为"补"会把这个事实抹掉；要不要补由人决定（重跑或补登记都行，但得知道补了什么）。
+   */
+  app.get("/qa/task-records/:sessionId/runs/:runId/trace", async (c) => {
+    const { projectId } = scope(c);
+    const sessionId = sessionOf(c, projectId);
+    const runId = runIdOf(c);
+    const workspace = deps.sessionsRepo.findById(sessionId)?.workspace ?? "";
+    const run = registry.run(projectId, runId);
+    // 登记行存在但与本次会话无关时，不返回它的内容（跨会话猜 run_id 也看不到别人在跑什么）。
+    const registered = Boolean(run && run.sessionId === sessionId);
+    const trace = readRunTrace(workspace, runId);
+    if (!registered && !trace.present) throw new HttpError(404, "run_not_found", "运行记录不存在。");
+    return c.json({ registered, run: registered ? run : null, trace });
   });
 }
