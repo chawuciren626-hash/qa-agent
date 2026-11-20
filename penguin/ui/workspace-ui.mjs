@@ -661,6 +661,9 @@ export function createWorkspaceUI(deps) {
         /* 项目环境是项目内的一级页，不并进项目资料、也不挂在「项目视图」那排 tab 下：
            建档/探索/假设都是环境级事实，混进项目视图会让人以为它们跟着某次 run 走。 */
         nav("项目环境", "server", "/qa/project/environments"),
+        /* 平台任务：任务平台对接的任务列表（来源双轨：平台同步/本地新建）。
+           与项目环境同级的一级页；开始测试跳既有全流程阶段页。 */
+        nav("平台任务", "list", "/qa/project/platform-tasks"),
         nav("定时任务", "clock", "/chat?view=schedules"),
         nav("项目资料", "book", "/qa/library", "library"),
       ),

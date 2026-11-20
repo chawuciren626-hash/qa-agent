@@ -1134,4 +1134,52 @@ CREATE TABLE IF NOT EXISTS qa_server_copies (
   updated_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_qa_server_copies_project ON qa_server_copies(project_id, document_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS platform_task_links ( -- 平台任务映射：任务平台交接包入库后由 ingestion 维护（对接方案 §11.3）；任务列表是对它的查询视图，不建第二份副本
+  link_id                TEXT PRIMARY KEY,
+  project_id             TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  source_system          TEXT NOT NULL,                    -- 'sbkj-taskassignment'；'demo' = 演示种子，真数据源接通后可整体清除
+  external_tenant_id     TEXT NOT NULL DEFAULT '',
+  external_task_id       TEXT NOT NULL,
+  external_task_no       TEXT NOT NULL,                    -- 任务号快照，如 FB202611090001
+  title                  TEXT NOT NULL DEFAULT '',         -- 平台任务名快照
+  priority               TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+  product_lines_json     TEXT NOT NULL DEFAULT '[]',       -- [{name,is_primary}]（D2 整包承载，列表按需解析）
+  feedback_type          TEXT NOT NULL DEFAULT '',
+  estimated_hours        INTEGER,
+  package_version        INTEGER NOT NULL DEFAULT 1,
+  pm_round_no            INTEGER,
+  source_url             TEXT NOT NULL DEFAULT '',         -- 平台任务详情深链（TLQ-5）
+  main_session_id        TEXT,                             -- 首轮测试工作会话
+  status                 TEXT NOT NULL DEFAULT 'pending_analysis'
+                         CHECK(status IN ('pending_analysis','ready','in_progress','impact_pending','result_returned','terminated')),
+  ai_summary_json        TEXT,                             -- 第一阶段分析结构化摘要（T2；演示期 source:'demo'）
+  suggested_priority     TEXT,                             -- AI 建议优先级
+  local_title_note       TEXT NOT NULL DEFAULT '',         -- 本地补充字段（T4：不被同步覆盖）
+  local_test_focus_note  TEXT NOT NULL DEFAULT '',
+  local_edited_at        TEXT,
+  last_event_id          TEXT,
+  last_synced_at         TEXT,
+  last_action_json       TEXT NOT NULL DEFAULT '{}',     -- 最近一次状态变更审计 {action,user_id,at,detail}
+  created_at             TEXT NOT NULL,
+  updated_at             TEXT NOT NULL,
+  UNIQUE(source_system, external_tenant_id, external_task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ptask_links_project ON platform_task_links(project_id, status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS qa_local_tasks ( -- 本地新建任务（T5）：不走平台拉取、不建平台映射，AI 分析可选
+  task_id           TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  title             TEXT NOT NULL,
+  description       TEXT NOT NULL DEFAULT '',               -- 需求描述/测试背景，AI 分析主输入
+  priority          TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+  status            TEXT NOT NULL DEFAULT 'ready'
+                    CHECK(status IN ('ready','in_progress','result_returned','terminated')),
+  ai_summary_json   TEXT,
+  suggested_priority TEXT,
+  main_session_id   TEXT,
+  last_action_json  TEXT NOT NULL DEFAULT '{}',
+  created_by        TEXT NOT NULL DEFAULT '',
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_local_tasks_project ON qa_local_tasks(project_id, status, updated_at DESC);
 `;
