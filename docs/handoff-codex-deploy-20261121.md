@@ -14,7 +14,8 @@
 | ZCode 工程修复 | 测试 runner staging、skill 版本断言、apiClient | ✅ 已提交已验证 | `2be280d` |
 | Codex 批次 A | 各阶段提示词与公共规则精简（10 文件） | ⚠️ 已提交；**1 处回归未解决**（§4 门槛 1） | `dbb9a19` |
 | Codex 批次 B | 桌面手动登录态/改密闭环 + main.js 进部署链 + 渠道驱动模型页（14 文件） | ✅ 已提交已验证 | `4daab7e` |
-| 并发会话批次 C | 本地任务环境绑定 + 工具门/派发链（约 30 文件，含 db schema 迁移） | 🔴 **进行中未提交**；7 处测试失败（§4 门槛 2） | 工作区未提交改动 |
+| 并发会话批次 C | 本地任务环境绑定 + 工具门/派发链（qa-platform-tasks/writeback 线，§2 已修正归属） | 🔴 **进行中未提交**；2 处测试失败（§4 门槛 2） | 工作区未提交改动 |
+| ZCode 批次 D | 桌面 computer-use 全栈 + 插件市场 MCP 目录全闭环（含验收门槛同步） | ✅ 已提交已验证；**运行副本已部署验证**（D:\AITestHarness） | `d2c477b`/`fdc6180`/`fcbf88f` |
 
 **部署前必须先过 §4 的两道门槛**；门槛未清不得构建发布。
 
@@ -63,22 +64,44 @@
 - account-client 渠道目录端点放宽（channels 只读直通）
 - 模型设置页改为渠道驱动的供应商选项（admin 渠道目录权威，内置预设兜底）
 
+### 1.7 ZCode 批次 D：桌面 computer-use 全栈（`d2c477b`）
+
+- 结构层（零模型）：Windows UIA 控件树快照、每元素 ≥2 指纹锚点、视觉定位反查（`probe/desktop_probe.py`）
+- 重放层（零模型）：封闭动作集，计划含坐标即拒绝（`exec/desktop_engine.py`）；`exec/pools.py` 桌面池（单屏独占）
+- 视觉层：`@midscene/computer` 截图→VLM 定位→动作，命中当场降级为 UIA 锚点，坐标只留证据（`scripts/desktop-visual.mjs`）
+- `desktop_task` 动作（`scripts/desktop-task.mjs`）：doctor/snapshot/visual/replay + 屏幕独占锁 + request_id 幂等回执 + audit/stage-tools 阶段回执
+- 接线：`plan_run(execution_platform=desktop)` → `desktop_test_agent`；tool-gate 硬依赖 `desktop.snapshot`；execution 阶段桌面场景/轨道规则进派发合同；前端「桌面自动化」档
+
+### 1.8 ZCode 批次 D：插件市场 MCP 目录全闭环（`fdc6180`）
+
+- 迁移三表（swapSafe）：`mcp_server_catalog` + 下发台账 + 审计；`/api/admin/mcp-servers`（CRUD/启停/连通测试/工具发现/下发装配/审计；stdio spawn 即会话运行期语义，落在本地执行）
+- 内置 `aitest-internal-tools` 出口入列并可一键下发——补 admin-tool-console §8 差距「agent 装配 tools.mcpServers 未加出口条目」
+- 前端管理页 `/mcp` 五处注册；`${KEY}` 引用目录层不解析、下发后由 Agent vault 会话期解析
+
+### 1.9 ZCode 批次 D：验收门槛同步（`fcbf88f`）
+
+- `command-runtime.md` 9890 字符（<10000，**门槛 1 解除**）：桌面纪律单一真源收敛到 `desktopScenarioPrompt` 派发合同注入 + `desktop_test_agent/AGENTS.md`
+- `skill-resources` 角色数 11、desktop_test_agent 入单段式执行轨豁免名单；`tool-gate` known 集合补 `desktop.snapshot`
+
 ## 2. 工作区剩余改动（批次 C，进行中，未提交）
 
 > 归属：另一并发会话正在开发「本地任务环境绑定 + 工具门/派发链」。**本清单不替它提交**；部署前它必须自行完成并验证，或由维护者裁决剥离。
 
-按文件面分组（约 30 文件）：
+> 归属修正（批次 D 提交后）：此前本节误把 ZCode 批次 D 的文件（desktop/MCP 相关）并入 C。现按实际归属剥离：批次 D 的 `penguin/agents.json`、`central-tools.ts`、`scripts/{plan-run,tool-gate,stage-tool-runtime,local-browser-executor}.mjs`、`pools.py`、`runtime_cli.py`、`platform.ts`、`test/{central-tools,mcp-catalog}.test.ts`、web 管理端 MCP 页与路由、`task-detail.tsx`（desktop 档）、`package.json`/`package-lock.json`、`requirements-ci.txt` **已随 `d2c477b`/`fdc6180` 提交**。批次 C 剩余仅以下自己的文件。
 
-- **本地任务环境绑定**：`http/routes/qa-platform-tasks.ts`（保存时按 base_url 匹配/登记项目环境；开始测试把 env 带进会话任务档案）、`services/qa-platform-task-service.ts`、`web/src/features/qa/platform-tasks/{api.ts,platform-tasks-page.tsx}`、`task-detail.tsx`、`test/qa-platform-tasks.test.ts`、`test/platform-tasks-page.test.ts`
-- **db schema 迁移**：`db/schema.ts`、`db/migrations/index.ts`、`db/database.ts`——迁移半成品是「源码有表、安装版没表」故障的来源，部署前必须确认迁移脚本齐备且走发布链
-- **工具门/派发链**：`penguin/agents.json`、`http/central-tools.ts`、`scripts/{plan-run,tool-gate,stage-tool-runtime,controller-tool-guard,local-browser-executor}.mjs`、`aitestharness-tools/.../exec/pools.py`、`runtime_cli.py`、`config/release-resources.json`、`http/routes/{agents,sessions}.ts`、`mechanisms/projects.ts`、`services/project-config-service.ts`、`platform.ts`、`test/{central-tools,mcp-catalog}.test.ts`、`web` 管理端页面与路由
-- 其他：`package.json`/`package-lock.json`、`requirements-ci.txt`
-- 已修正待随 C 提交：`test/mcp-catalog.test.ts` 的一个类型错（ZCode 已在工作区修掉，tsc 因此归零）
+按文件面分组：
+
+- **本地任务环境绑定**：`http/routes/qa-platform-tasks.ts`、`services/qa-platform-task-service.ts`、`web/src/features/qa/platform-tasks/{api.ts,platform-tasks-page.tsx}`、`test/{qa-platform-tasks,platform-tasks-page}.test.ts`
+- **db schema 迁移**：`db/database.ts`（ensureColumn 接线）；`db/schema.ts` 与 `db/migrations/index.ts` 中**批次 C 自己的行**仍在工作区（未提交）：`qa_local_tasks` 三列 + `localTaskContext` import/注册——提交时注意 index.ts 已含批次 D 的 `mcpServerCatalog` 两行
+- **新脚本**：`scripts/qa-platform-writeback.mjs` + `tests/acceptance/qa-platform-writeback.test.mjs`、`scripts/controller-tool-guard.mjs`（platform_task_writeback 放行）、`http/routes/{agents,sessions}.ts`、`mechanisms/projects.ts`、`services/project-config-service.ts`
+- **发布清单**：`config/release-resources.json` 中 `explore-observation-model.mjs`/`qa-platform-writeback.mjs` 两行（desktop 两行已随 D 提交）
+- 其他：`db/migrations/steps/2026-11-21-local-task-context.ts`（新增未跟踪）
 
 ## 3. 当前验证矩阵（2026-11-21 10:30 实测）
 
 | 套件 | 结果 | 失败归属 |
 | --- | --- | --- |
+| skill-resources + tool-gate + command-runtime（批次 D 门槛修复后，10:52 实测） | **50 过 / 0 失败** | 门槛 1 与门槛 2 之 1-5 全解除 |
 | server / web / desktop `tsc --noEmit` | **全部 0 错误** | — |
 | 批次 A 相关验收 11 套（command-runtime/structured-actions/stage-tool-scenarios+runtime/tool-gate/controller-tool-interface/skill-resources/delegation-binding/staged-result-gates/confirm-gate/role-boundaries） | 170 过 / **5 失败** | 全部 §4 门槛区 |
 | server vitest（desktop/account-client/central-tools/mcp-catalog/qa-platform-tasks） | 49 过 / **1 失败** | 批次 C 区（published template 404 vs 201） |
@@ -90,15 +113,14 @@
 
 ## 4. 部署前门槛（不过不得发布）
 
-**门槛 1（批次 A 回归，须 Codex 裁剪或经用户同意调上限）**
+**门槛 1（✅ 已解除，`fcbf88f`）**
 `skill-resources.test.mjs:273` — `penguin/command-runtime.md` 精简后 **10178 字符 > 断言上限 10000**。处置：删减约 180 字符冗余（推荐），或与用户确认上调上限并说明理由。
 
-**门槛 2（批次 C 未完成，7 处失败全部在它的文件面）**
+**门槛 2（批次 C 未完成；原 7 处失败中 1-5 已随批次 D 解除，剩 2 处在批次 C 自己的文件面）**
 1. `skill-resources:98` 角色包安装断言（agents.json 变更后不匹配）
 2. `skill-resources:128` installed instructions 分离断言
 3. `skill-resources:294` functional/API scope 断言
 4. `tool-gate:157` `desktop_task` 绑定了未注册工具 `desktop.snapshot`
-5. `skill-resources:273` 与门槛 1 叠加区
 6. server vitest `account-client` published template 404 vs 201（routes mid-refactor）
 7. web vitest user-models add-model openers 断言
 
@@ -138,6 +160,8 @@ node scripts/sync-penguin-agents.mjs --apply --target-root=D:\AITestHarness\data
 node scripts/local-service.mjs resume D:\AITestHarness\installation.json
 ```
 
+> **部署事实（2026-11-21 08:44，ZCode 已执行）**：批次 D 三个 commit 已按本流程同步到 `D:\AITestHarness`（pause → `deploy-engine-files` + 新增文件补拷 → `deploy-project-management-local`（备份 `D:ackups\project-management-2026-11-21T00-44-15-035Z`）→ 引擎根 `npm install @midscene/computer --no-save` → runtime Python（get-pip 引导后）`pywinauto 0.6.9` → doctor（python/UIA/Midscene 全就绪）+ snapshot（104 元素/49 锚点）实测 → resume ready）。**批次 C 并入后须重跑全流程**；换机部署按本节步骤。
+
 要点：
 - `dist/main.js` 已进部署链（批次 B），desktop 主进程改动随 release 生效；
 - 第 4 步是**提示词/Skill 生效的关键**——宿主按 `data/penguin/<account>/agents/*/agent_state` 加载角色，不同步则改了白改；
@@ -159,6 +183,10 @@ node scripts/local-service.mjs resume D:\AITestHarness\installation.json
 7. 首次登出后重启进入密码登录页；改密→登出→密码重登成功（sessionVia=password）
 8. 桌面 `dist/main.js` 清单校验通过（启动不拒签）
 
+**桌面 computer-use / MCP 目录（批次 D）**
+9a. 管理后台「MCP 服务」：内置 `aitest-internal-tools` 启用 → 连通测试列出 10 个阶段工具 → 下发给 QA Agent → 会话首跑连接横幅 → 同名不同配置下发 409、停用下发 409、删除已下发 409
+9b. 桌面轨：渠道管理配视觉模型 + `MIDSCENE_*` 环境变量 → `plan_run(execution_platform=desktop)` 派发 desktop_test_agent → 任务详情「桌面自动化」档看 doctor/snapshot/visual/replay 回执（anchor 降级与 desktop.lock 生效）
+
 **资源池/派发链（批次 C，若并入）**
 9. 按其自带验收（`qa-platform-tasks.test.ts`、`central-tools.test.ts` 等）全绿后再验收 UI：本地任务保存环境自动登记、开始测试把 env 带进任务档案
 
@@ -169,6 +197,8 @@ node scripts/local-service.mjs resume D:\AITestHarness\installation.json
 - 回滚 = 从备份目录恢复对应文件 + 恢复 `aitest-source-runtime.json` 后重启；不要直拷生产目录
 
 ## 8. 已知边界与提醒
+
+- AGENTS.md 旧记录「已部署应用位于 `E:\AItestHarness\installed`」已失效：实际安装位置 `D:\AITestHarness`（部署命令均按此路径）
 
 - cli-link 的 6 个 symlink 用例在无特权 Windows 上 EPERM，属环境噪音（测试未按平台跳过的实现问题，未修）
 - platform vitest 在本机存在预存 boot 失败（`project-exploration.test.ts` 等 12 例），CI 基线为准
