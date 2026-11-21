@@ -1,6 +1,6 @@
 # Codex 部署交接清单（2026-11-21，v4 集成部署验收版）
 
-> 最新状态：批次 C 已于本地提交 7eed7e6，完整部署与安装版验收已完成，详见第 9–10 节。第 0–8 节中的旧失败与未提交描述是历史交接快照。
+> 最新状态：批次 C 已于本地提交 7eed7e6，完整部署与安装版验收已完成，详见第 9–10 节。**批次 E（全流程审计收口，5 个 commit）已提交待部署**，见第 11 节——部署前先读它：engine_files 清单扩充 + 运行登记接线 + 阶段工具降级进报告。第 0–8 节中的旧失败与未提交描述是历史交接快照（两道门槛均已随批次 C/D 解除）。
 
 > 交接人：本地 Agent（ZCode）。部署执行：Codex。本清单覆盖本地 `main` 上**全部 7 个未推送 commit**、工作区剩余的进行中改动（批次 C）、当前验证矩阵、部署前门槛、部署步骤与验收判据。
 > 原则不变：源码 ≠ 运行版；所有部署走官方脚本（备份 → 换件 → 重签清单 → 自校验），禁止直拷；运行数据/凭据/迁移备份不入库。
@@ -18,6 +18,7 @@
 | Codex 批次 B | 桌面手动登录态/改密闭环 + main.js 进部署链 + 渠道驱动模型页（14 文件） | ✅ 已提交已验证 | `4daab7e` |
 | 并发会话批次 C | 本地任务环境绑定 + 工具门/派发链（qa-platform-tasks/writeback 线，§2 已修正归属） | 🔴 **进行中未提交**；2 处测试失败（§4 门槛 2） | 工作区未提交改动 |
 | ZCode 批次 D | 桌面 computer-use 全栈 + 插件市场 MCP 目录全闭环（含验收门槛同步） | ✅ 已提交已验证；**运行副本已部署验证**（D:\AITestHarness） | `d2c477b`/`fdc6180`/`fcbf88f` |
+| ZCode 批次 E | 全流程审计收口：发布策略补 23 个运行时文件 + deploy-engine-files 策略感知 + 运行发起/结束登记接线（判据 1）+ 阶段工具降级进报告 + 证据验证轮契约进派发合同 | ✅ 已提交已验证（225/0 回归）；**待随下次部署生效** | `14ac8c2`/`3181509`/`c708525`/`8672041`/`745066c` |
 
 **部署前必须先过 §4 的两道门槛**；门槛未清不得构建发布。
 
@@ -245,3 +246,37 @@ node scripts/local-service.mjs resume D:\AITestHarness\installation.json
 - 验证仅包含自动化测试、数据库及本机接口检查，未新建真实测试任务、未调用真实模型执行业务探索，也未修改账号密码或代替用户完成登录登出。
 
 用户可重新打开 AITestHarness 验收。本节与第 9 节覆盖前面历史交接时的“未提交/未部署/剩余两处失败”状态。
+
+## 11. 批次 E：全流程审计收口（2026-11-21 下午，ZCode，待部署）
+
+> 背景：以当前代码（含批次 D）做的独立全流程审计发现两处部署层断链、三处端到端缺口、若干治理缺口。本批修复其中五项，全部带测试；剩余项见本节末尾"未修清单"。
+
+### 11.1 修复内容（5 个 commit）
+
+| commit | 修复 | 审计依据 |
+|---|---|---|
+| `14ac8c2` | **P0 部署断链**：`config/release-resources.json` 补 23 个运行时文件（exec/probe 引擎全套 19 个 py、`central-mcp.mjs`、`check-tool-contract.mjs`、`config/tool-runtime-state.json`、`desktop_test_agent/AGENTS.md`）；`deploy-engine-files.mjs` v2 升级为**策略感知**——期望状态取自发布策略（与 stageSourceRuntime 同源公式），新增文件自动入清单同步 | 实测安装副本缺 `central-mcp.mjs`（MCP 目录连通测试会 ENOENT）；清单外 121 个文件不受官方同步管理（82 个靠手工镜像，漂移风险） |
+| `3181509` | **P1 判据 1 收口**：`scripts/run-registration.mjs`（startRun/finishRun 走 api-token 通道——鉴权中间件把本机 token 认作 admin，通道先例 qa-platform-writeback）；`run-ui-tests.mjs` 接线：发起即 running（409 幂等），尝试密封且非中断才交回 manifest 事实，中断不补结论留 stalled 判定 | 此前 `startRun` 零生产调用方、"执行器没起来/起来就退"无 qa_runs 行；`recorded_run` 零生产使用 |
+| `c708525` | **P2-7**：阶段工具降级（run_stage_tool 流水 `output/runtime/tool-usage.jsonl` 按 run_id 过滤）进报告运行时段落，口径对齐 `qa-run-health.ts`；无流水不说"零次" | §8 差距①：降级此前只进流水与健康端点，报告一字未提 |
+| `8672041` | **P2-8**：证据验证轮契约（单目标/Done when/证据格式/步数预算/红线）进执行阶段派发合同 | 会话侧证据验证轮的合同此前未标准化 |
+| `745066c` | **P2-11**：AGENTS.md 路径修正（仓库 E:\AItestHarness、部署 D:\AITestHarness） | 旧记录指向不存在的 `E:\AItestHarness\installed` |
+
+### 11.2 验证
+
+- 新增测试：`run-registration.test.mjs` 6/6（本机 HTTP 捕获：Bearer 头/路径/409 幂等/manifest 事实口径/路径正斜杠）、`report-runtime-sections.test.mjs` +2（降级进报告/无流水不说零次）。
+- 回归：13 套验收 **225 过 / 0 失败**（含 structured-actions/command-runtime/tool-gate/skill-resources/desktop-task/qa-platform-writeback/confirm-gate/staged-result-gates）；三包 typecheck 0 错误。
+
+### 11.3 部署注意（并入 §5 流程）
+
+1. `deploy-engine-files.mjs` 现在按策略自动补新文件——**下次运行会自动把 central-mcp.mjs 等 23 个文件带进安装副本并入清单**，不再手工补拷；结果 JSON 的 `added` 字段即新增数。
+2. 策略扩充后 `stageSourceRuntime` 的 `assertReleaseImportClosure` 会在整装时校验导入闭包，新增文件均来自源码树，预期通过。
+3. 运行登记对既有验收无行为变化（失败降级 stderr，不拦执行）；验收判据 1 补一条：跑一轮生命周期执行后 `qa_runs` 应出现发起行（`dispatch_json.entry='run-ui-tests'`），执行器未启动时也有行可查。
+
+### 11.4 审计未修清单（如实在案，不在本批）
+
+- **P1-4 token 预算强制**：budget_tokens 仍无派发消费方（登记包已可携带，强制点等阶段运行时接入）。
+- **P1-5 漏测回流**：缺陷确认 → 假设的回流无生产者（语义需产品决策：什么算"漏测"）。
+- **P1-6 E2E-1**：产品 UI 从新建任务到报告的全链验收仍未跑过（判据 2/3/4 已各自成立）。
+- **P1-10 任务平台拉取**：ingestion 轮询未接线（outbox 只有结果回传方向）；平台任务仍是 demo 种子。
+- **P2-9 环境恢复**：`restore()` 壳为零（外部依赖）。
+- 已知噪音：desktop `cli-link` 6 例在无特权 Windows 上 EPERM（测试未按平台跳过）。
