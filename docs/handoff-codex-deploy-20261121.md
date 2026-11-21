@@ -247,7 +247,7 @@ node scripts/local-service.mjs resume D:\AITestHarness\installation.json
 
 用户可重新打开 AITestHarness 验收。本节与第 9 节覆盖前面历史交接时的“未提交/未部署/剩余两处失败”状态。
 
-## 11. 批次 E：全流程审计收口（2026-11-21 下午，ZCode，待部署）
+## 11. 批次 E：全流程审计收口（2026-11-21，ZCode；部署结果见第 12 节）
 
 > 背景：以当前代码（含批次 D）做的独立全流程审计发现两处部署层断链、三处端到端缺口、若干治理缺口。本批修复其中五项，全部带测试；剩余项见本节末尾"未修清单"。
 
@@ -260,7 +260,7 @@ node scripts/local-service.mjs resume D:\AITestHarness\installation.json
 | `c708525` | **P2-7**：阶段工具降级（run_stage_tool 流水 `output/runtime/tool-usage.jsonl` 按 run_id 过滤）进报告运行时段落，口径对齐 `qa-run-health.ts`；无流水不说"零次" | §8 差距①：降级此前只进流水与健康端点，报告一字未提 |
 | `8672041` | **P2-8**：证据验证轮契约（单目标/Done when/证据格式/步数预算/红线）进执行阶段派发合同 | 会话侧证据验证轮的合同此前未标准化 |
 | `745066c` | **P2-11**：AGENTS.md 路径修正（仓库 E:\AItestHarness、部署 D:\AITestHarness） |
-| `b5d8957` | **P0 实测回归**：探索合并基线读取 JSON 优先 YAML 兜底——pyyaml 注入后 canonical maps 落盘变 safe_dump 格式，round-3 合并炸在 json.loads（saucedemo 用户实测复现）；smoke 加 YAML 基线用例 | 用户第 3 轮探索「合并/回写失败」实测：round-1 时代是 JSON、注入 pyyaml 后 round-2 起是 YAML，promote 把 YAML 顶上 canonical 后只认 JSON 的读取必炸 | 旧记录指向不存在的 `E:\AItestHarness\installed` |
+| `b5d8957` | **P0 实测回归**：探索合并基线读取 JSON 优先 YAML 兜底——pyyaml 注入后 canonical maps 落盘变 safe_dump 格式，round-3 合并炸在 json.loads（saucedemo 用户实测复现）；smoke 加 YAML 基线用例 | 用户第 3 轮探索「合并/回写失败」实测：round-1 时代是 JSON、注入 pyyaml 后 round-2 起是 YAML，promote 把 YAML 顶上 canonical 后只认 JSON 的读取必炸 |
 
 ### 11.2 验证
 
@@ -282,3 +282,30 @@ node scripts/local-service.mjs resume D:\AITestHarness\installation.json
 - **P1-10 任务平台拉取**：ingestion 轮询未接线（outbox 只有结果回传方向）；平台任务仍是 demo 种子。
 - **P2-9 环境恢复**：`restore()` 壳为零（外部依赖）。
 - 已知噪音：desktop `cli-link` 6 例在无特权 Windows 上 EPERM（测试未按平台跳过）。
+
+
+## 12. 批次 E 已提交并部署（2026-11-21，Codex）
+
+主线已包含批次 E、探索合并 YAML 基线修复（b5d8957）及登记加固（7baeb0c），均为 main 的线性提交，无分支冲突。部署验证补充提交为 2d1842a；本节为部署记录提交。未推送远端，未生成安装包。
+
+部署前发现并补齐：run-registration 发布白名单、生产调用的 dispatch.entry、无 manifest 不登记、请求 5 秒超时、仅 start 的 run_exists 视为幂等。引擎部署增加完整策略/导入闭包校验、新目录创建、新增文件回滚与目标链接检查。隔离工程工作区补齐 tool-runtime-state 和 goal hooks，保证发布策略验证使用完整的源码资源。
+
+验证证据（均为工程合成验证，不代表真实用户任务执行成功）：
+
+- 13 套原有工程验收 208/208 通过；报告 output/engineering-tests/2026-11-21T04-33-15-102Z-8c310671-c68c-4d40-9869-6a59f4043d83。
+- 登记、源码同步与部署维护补充验证 15/15 通过。
+- 最终登记与新增部署回归 10/10 通过；真实 CLI 子进程证明执行受阻前发出 entry=run-ui-tests 的登记请求、未知 run 不发请求；本项服务端为本机 HTTP 捕获器，不冒充真实 qa_runs 端到端验收。报告 output/engineering-tests/2026-11-21T04-42-05-217Z-0d7ee847-7e62-48d3-8be7-fd2e4b63fa5f。
+- 探索合并 smoke 25/25 通过，包含 YAML 基线。
+- 发布白名单与模块导入闭包检查通过，458 个资源。
+
+实际安装环境：D:\AITestHarness。先备份数据库和登录配置，官方 idle pause 成功后同步引擎、备份并核对两个项目的 agents，再官方 resume。两个项目角色均 in_sync，后台恢复 ready，端口保持 55875，未强制终止任务。
+
+本轮部署 29 个引擎文件，其中 24 个新增进入清单（原批次 23 个加 run-registration）。安装清单校验通过：宿主 1133 个文件、引擎 459 个文件；全部 458 个发布资源与源码哈希一致。前端/服务端没有本轮源码变化，保留上次已经部署的登录构建（b703262f3274a16a），main.js/server.js/migrate-db.js 均与既有构建一致。
+
+安装后验证：central-mcp 成功 initialize 并列出 10 个工具；账号中心仍启用并指向 localhost:7378；未登录的本地/桥接 me 均返回 401，旧 claim 路径返回登录页，登录页面返回 HTML。未变更账号密码，未代替用户完成实际登录登出操作。数据库 integrity_check=ok、外键违规 0。未运行真实模型任务或完整产品 UI E2E，第 11.4 节未修事项仍然保留。
+
+恢复与证据：
+
+- 数据库、配置与角色备份：D:\backups\batch-e-2026-11-21T04-42-15-936Z。
+- 引擎及原清单备份：D:\backups\engine-files-2026-11-21T04-43-19-481Z。
+- 本机工程记录（不提交）：output/release/batch-e-engine-deploy.json、batch-e-installed-verification.json、batch-e-backup.json、agent-sync-result.json。
