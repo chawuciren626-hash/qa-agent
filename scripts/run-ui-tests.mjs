@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { directoryContext } from './directory-context.mjs';
 import { runDirectory } from './design-quality.mjs';
 import { executeAttempt } from './execution-runner.mjs';
+import { finishRun, registrationContext, startRun } from './run-registration.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const runId = process.argv.find(arg => arg.startsWith('--run-id='))?.slice(9);
@@ -18,9 +19,10 @@ if (!runId) throw new Error('Use --run-id=<run_id> [--headed]');
  * 一模一样，都是"什么都没有"。
  *
  * 这里补的是中间那一格：命令被真正调用的那一刻。三个约束：
- *   - 不联系平台：执行器是子进程，拿不到会话令牌，为一行"已发起"新开凭据通道不值得；
  *   - 不改 manifest：manifest 是产物清单，混进调度事实会让两份真源对不上；
- *   - 只写第一次：同一 run 被重跑时"发起时刻"仍是第一次，重跑本身有 attempts 记录。
+ *   - 只写第一次：同一 run 被重跑时"发起时刻"仍是第一次，重跑本身有 attempts 记录；
+ *   - manifest 不存在就不写：run 目录里还没有 manifest 时不要造目录——那不是一次运行，
+ *     只是参数拼错了。
  */
 function recordDispatch(dir, runId) {
   const file = resolve(dir, 'execution/dispatch.json');
@@ -45,13 +47,36 @@ const cancel = () => abort.abort();
 process.on('SIGINT', cancel);
 process.on('SIGTERM', cancel);
 try {
+  const context = directoryContext(root);
+  const { projectId, sessionId } = registrationContext(context);
+  const runDir = runDirectory(root, runId);
+  const manifestPath = resolve(runDir, 'manifest.json');
   // 发起记录失败不能拦住执行：dispatch.json 是辅助证据，不是闸门。
   try {
-    recordDispatch(runDirectory(root, runId), runId);
+    recordDispatch(runDir, runId);
   } catch (error) {
     console.error(`dispatch record skipped: ${error.message}`);
   }
+  // 发起登记（判据 1 收口）：api-token 通道写 qa_runs，发起即 running。重复发起（409）
+  // 视为已登记。失败降级为 stderr——登记是事实通道，不是闸门，执行照常。
+  try {
+    const registration = await startRun({ projectId, sessionId, runId, kind: 'execution' });
+    if (!registration.ok) console.error(`run registration skipped: ${registration.error}`);
+    else if (registration.conflict) console.error('run registration: already registered (409), kept as-is');
+  } catch (error) {
+    console.error(`run registration skipped: ${error.message}`);
+  }
   const outcome = await executeAttempt(root, runId, { headed: process.argv.includes('--headed'), signal: abort.signal });
+  // 结束登记：只在尝试已密封且非中断时交回 manifest 事实；中断不补结论——run 留在
+  // running 由 stalled 判定（真机上有写操作，自动收口等于掩盖中断）。
+  if (outcome.status !== 'interrupted' && existsSync(manifestPath)) {
+    try {
+      const finished = await finishRun({ projectId, sessionId, runId, manifestPath });
+      if (!finished.ok && !finished.conflict) console.error(`run finish registration skipped: ${finished.error}`);
+    } catch (error) {
+      console.error(`run finish registration skipped: ${error.message}`);
+    }
+  }
   console.log(JSON.stringify(outcome, null, 2));
   if (outcome.reason) console.error(outcome.reason);
   process.exitCode = outcome.code;
