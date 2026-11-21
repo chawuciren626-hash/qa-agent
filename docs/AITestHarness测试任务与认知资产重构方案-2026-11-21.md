@@ -363,3 +363,9 @@
 | B8 缺陷闭环 | ⏳ 未开工 | — | 桥接设计优先：run 侧缺陷产物（引擎目录）↔ 项目缺陷台账（qa_defects 表）的 id 关联与动作入口（confirm/fixed/retest/close 走 manage-defect-lifecycle 同规则） |
 
 验收提醒：每批提交前已跑触达契约与 typecheck；合并前请 Codex 跑全量 `npm test`；存量失败（web 设计规则 14 + 迁移链 18）与本批无关（stash 基线已甄别），建议单开小批清理。
+
+## 17. 部署与验收记录（2026-11-22）
+
+- a4b6f40（B1 全量+B2-1/B3/B4-1/B5-1）已按部署手册合并部署至 D:\AITestHarness 并**通过用户真实验收**；记录 output/release/task-pipeline-a4b6f40/deployment-record.md；隔离构建树 E:\AItestHarness-deploy 保留。
+- B2-2 引擎收口已提交 9584fb3（approve 门禁拒绝 failed 工具回执 + finalize 扩展三设计阶段，契约 21/21+104/104）。
+- 下一批顺序：B4-2（M2a Web 取原料 + origin:environment 探索派发通道）→ B5 主体 → B6 → B7 → B8。每批提交后继续，不停轮。
