@@ -259,11 +259,13 @@ node scripts/local-service.mjs resume D:\AITestHarness\installation.json
 | `3181509` | **P1 判据 1 收口**：`scripts/run-registration.mjs`（startRun/finishRun 走 api-token 通道——鉴权中间件把本机 token 认作 admin，通道先例 qa-platform-writeback）；`run-ui-tests.mjs` 接线：发起即 running（409 幂等），尝试密封且非中断才交回 manifest 事实，中断不补结论留 stalled 判定 | 此前 `startRun` 零生产调用方、"执行器没起来/起来就退"无 qa_runs 行；`recorded_run` 零生产使用 |
 | `c708525` | **P2-7**：阶段工具降级（run_stage_tool 流水 `output/runtime/tool-usage.jsonl` 按 run_id 过滤）进报告运行时段落，口径对齐 `qa-run-health.ts`；无流水不说"零次" | §8 差距①：降级此前只进流水与健康端点，报告一字未提 |
 | `8672041` | **P2-8**：证据验证轮契约（单目标/Done when/证据格式/步数预算/红线）进执行阶段派发合同 | 会话侧证据验证轮的合同此前未标准化 |
-| `745066c` | **P2-11**：AGENTS.md 路径修正（仓库 E:\AItestHarness、部署 D:\AITestHarness） | 旧记录指向不存在的 `E:\AItestHarness\installed` |
+| `745066c` | **P2-11**：AGENTS.md 路径修正（仓库 E:\AItestHarness、部署 D:\AITestHarness） |
+| `df42865` | **P0 实测回归**：探索合并基线读取 JSON 优先 YAML 兜底——pyyaml 注入后 canonical maps 落盘变 safe_dump 格式，round-3 合并炸在 json.loads（saucedemo 用户实测复现）；smoke 加 YAML 基线用例 | 用户第 3 轮探索「合并/回写失败」实测：round-1 时代是 JSON、注入 pyyaml 后 round-2 起是 YAML，promote 把 YAML 顶上 canonical 后只认 JSON 的读取必炸 | 旧记录指向不存在的 `E:\AItestHarness\installed` |
 
 ### 11.2 验证
 
-- 新增测试：`run-registration.test.mjs` 6/6（本机 HTTP 捕获：Bearer 头/路径/409 幂等/manifest 事实口径/路径正斜杠）、`report-runtime-sections.test.mjs` +2（降级进报告/无流水不说零次）。
+- 新增测试：`run-registration.test.mjs` 6/6（本机 HTTP 捕获：Bearer 头/路径/409 幂等/manifest 事实口径/路径正斜杠）、`report-runtime-sections.test.mjs` +2（降级进报告/无流水不说零次）、smoke_merge_explore_pages +1（YAML 基线读取，25/25）。
+- **现场验证**：用安装副本的 canonical YAML 文件实测——json.loads 精确复现用户报错，YAML 解析成功（3 页/登录事实齐）。
 - 回归：13 套验收 **225 过 / 0 失败**（含 structured-actions/command-runtime/tool-gate/skill-resources/desktop-task/qa-platform-writeback/confirm-gate/staged-result-gates）；三包 typecheck 0 错误。
 
 ### 11.3 部署注意（并入 §5 流程）
