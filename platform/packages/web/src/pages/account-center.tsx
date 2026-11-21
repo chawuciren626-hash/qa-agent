@@ -71,7 +71,7 @@ export function AccountCenter({ registrationEnabled, apiBase = "", onSignedIn, i
   const dialog = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
-    document.title = "AITestHarness · 账号中心";
+    document.title = integrated ? "AITestHarness · 登录" : "AITestHarness · 用户管理";
     void request("/api/me").then(v => setUser(v.user)).catch(() => setUser(null));
   }, []);
   useEffect(() => {
@@ -138,7 +138,7 @@ export function AccountCenter({ registrationEnabled, apiBase = "", onSignedIn, i
         <div className="feature-list">{[["box","测试工作 · 本地开展","项目、测试产物与个人配置由你掌握"],["user","账号统一 · 管理有序","管理员集中管理账号与登录权限"],["lock","本地优先 · 数据留在本机","业务数据与模型凭据不上传到账号中心"]].map(([icon,title,desc]) => <div className="feature" key={title}><div className="feature-icon"><Icon name={icon ?? "info"}/></div><div><div className="feature-title">{title}</div><div className="feature-desc">{desc}</div></div></div>)}</div>
       </div><div className="brand-foot">AITestHarness · 统一账号管理</div>
     </aside>
-    <main className="form-panel"><div className="form-box"><div className="mobile-brand"><Logo/><b>AITestHarness</b></div><h2 className="form-title">{registering ? "注册普通账号" : "登录"}</h2><p className="form-desc">{registering ? "创建你的账号，管理员权限不开放注册。" : "欢迎回来，登录后管理你的账号。"}</p>{alerts}
+    <main className="form-panel"><div className="form-box"><div className="mobile-brand"><Logo/><b>AITestHarness</b></div><h2 className="form-title">{registering ? "注册普通账号" : "登录"}</h2><p className="form-desc">{registering ? "创建你的账号，管理员权限不开放注册。" : "欢迎回来，请使用管理员分配的账号登录客户端。"}</p>{alerts}
     {user === undefined ? <p className="notice" role="status">正在检查登录状态…</p> : <><form onSubmit={e => void signIn(e)}>
       <div className="field"><label>用户名<span className="input-wrap"><span className="input-icon"><Icon name="user"/></span><input autoComplete="username" required maxLength={32} placeholder="请输入用户名" pattern={registering ? "[a-z][a-z0-9_]{1,31}" : undefined} value={username} onChange={e => setUsername(e.target.value)}/></span></label></div>
       {registering && <p className="pwd-rule">2–32 位，以小写字母开头，可含数字和下划线。</p>}

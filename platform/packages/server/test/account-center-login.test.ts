@@ -8,6 +8,39 @@ describe("central login and public configuration routes", () => {
     else process.env.AITEST_ACCOUNT_CENTER = previous;
   });
 
+  it("refuses local account fallback for a managed client without a server connection", async () => {
+    const previousManaged = process.env.AITEST_MANAGED_RUNTIME;
+    process.env.AITEST_MANAGED_RUNTIME = "1";
+    delete process.env.AITEST_ACCOUNT_CENTER;
+    let test: Awaited<ReturnType<typeof createTestApp>> | undefined;
+    try {
+      test = await createTestApp();
+      expect(await (await test.app.request("/api/account-client/config")).json()).toMatchObject({enabled:false,required:true});
+      expect((await test.app.request("/api/auth/claim?token=local")).headers.get("location")).toBe("/login");
+      expect((await test.app.request("/api/auth/login", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({userId:"admin",password:test.adminPassword})})).status).toBe(503);
+      expect((await test.app.request("/api/me")).status).toBe(503);
+    } finally {
+      await test?.cleanup();
+      if (previousManaged === undefined) delete process.env.AITEST_MANAGED_RUNTIME;
+      else process.env.AITEST_MANAGED_RUNTIME = previousManaged;
+    }
+  });
+
+  it("allows ordinary client login but refuses the same account at the admin login endpoint", async () => {
+    process.env.AITEST_ACCOUNT_CENTER = "1";
+    const test = await createTestApp();
+    try {
+      await provisionUser(test.app, "client_user");
+      const request = {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({userId:"client_user",password:"password-123"})};
+      const client = await test.app.request("/api/auth/login", request);
+      expect(client.status).toBe(200);
+      expect(await client.json()).toMatchObject({user:{userId:"client_user",isAdmin:false}});
+      const admin = await test.app.request("/api/auth/admin-login", request);
+      expect(admin.status).toBe(403);
+      expect(admin.headers.get("set-cookie")).toBeNull();
+    } finally { await test.cleanup(); }
+  });
+
   it("keeps the central assistant on an administrator-owned project", async () => {
     process.env.AITEST_ACCOUNT_CENTER = "1";
     const test = await createTestApp();
@@ -34,7 +67,11 @@ describe("central login and public configuration routes", () => {
       expect(agents.status).toBe(200);
       expect(((await agents.json()) as { agents: { agentId: string }[] }).agents.map(agent => agent.agentId)).toContain("default_agent");
       const modelPath = "/api/projects/admin_agent_catalog/models";
-      expect((await test.app.request(modelPath, { method: "PUT", headers: projectHeaders, body: JSON.stringify({ defaultModel: { provider: "custom", modelId: "central-test" }, models: [{ provider: "custom", modelId: "central-test", clientType: "openai", apiKey: "sk-central-test" }] }) })).status).toBe(200);
+      const modelUpdate = { method: "PUT", headers: projectHeaders, body: JSON.stringify({ defaultModel: { provider: "custom", modelId: "central-test" }, models: [{ provider: "custom", modelId: "central-test", clientType: "openai", apiKey: "sk-central-test" }] }) };
+      const redirect = await test.app.request(modelPath, modelUpdate);
+      expect(redirect.status).toBe(307);
+      expect(redirect.headers.get("location")).toBe("/api/control/admin/model-config/central-model-catalog");
+      expect((await test.app.request(redirect.headers.get("location")!, modelUpdate)).status).toBe(200);
       const createdSession = await test.app.request("/api/projects/admin_agent_catalog/agents/default_agent/sessions", { method: "POST", headers: projectHeaders, body: "{}" });
       expect(createdSession.status).toBe(201);
       const sessionId = ((await createdSession.json()) as { session: { sessionId: string } }).session.sessionId;

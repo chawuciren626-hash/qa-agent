@@ -57,7 +57,7 @@ import { SessionsRepo } from "./db/repos/sessions.js";
 import { UiPrefsRepo } from "./db/repos/ui-prefs.js";
 import { UsersRepo } from "./db/repos/users.js";
 import type { UserRow } from "./db/repos/users.js";
-import { authMiddleware, jsonOnlyWrites, sameOriginWrites } from "./auth/middleware.js";
+import { authMiddleware, bearerToken, jsonOnlyWrites, sameOriginWrites } from "./auth/middleware.js";
 import { AMSP_PREFIX, amspAllowOrigin } from "./amsp/cors.js";
 import { mintApiToken, storeApiToken } from "./auth/api-token.js";
 import type { Identity } from "./terminal/identity.js";
@@ -533,7 +533,17 @@ export function createApp(boot: ServerBoot): Hono<AppEnv> {
     });
     boot.tree.api<AuthState>("RuntimeModule", "AuthState").accountClient = bridge;
     app.use("*", bridge.middleware(token => deps.desktop?.redeemLoginToken(token) === true));
-  } else app.get("/api/account-client/config", c => c.json({enabled:false,central:accountCenter}));
+  } else {
+    const required = process.env.AITEST_MANAGED_RUNTIME === "1" && !accountCenter;
+    app.get("/api/account-client/config", c => c.json({enabled:false,central:accountCenter,required}));
+    if (required) app.use("*", async (c, next) => {
+      if (c.req.path === "/api/auth/claim") return c.redirect("/login", 302);
+      if (c.req.path.startsWith("/api/") && c.req.path !== "/api/install" && bearerToken(c.req.header("authorization")) === null) {
+        throw new HttpError(503, "account_server_unconfigured", "尚未配置服务端连接，请联系管理员。");
+      }
+      return next();
+    });
+  }
 
   if (accountCenter) {
     const store = new ControlStore(boot.db, deps.config.root);

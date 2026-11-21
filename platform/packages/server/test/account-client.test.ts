@@ -42,6 +42,7 @@ beforeEach(async()=>{
     if(req.url==="/api/auth/registration"){res.end('{"enabled":true,"accountCenter":true}');return;}
     const id=tokens.get((req.headers.cookie??'').replace('penguin_session=',''));
     if(!id){res.writeHead(401);res.end('{}');return;}
+    if(req.url==="/api/auth/logout"){tokens.delete((req.headers.cookie??'').replace('penguin_session=',''));res.writeHead(204);res.end();return;}
     if(req.url==="/api/control/access"){res.end(JSON.stringify({modules,resourceIds}));return;}
     if(req.url==="/api/control/channels"){res.end(JSON.stringify({channels:[{id:"new-channel",displayName:"New channel",baseUrl:"https://example.com/v1",clientType:"openai-chat",models:0}]}));return;}
     if(req.url?.startsWith('/api/control/private/agents/')&&req.url.includes('/memory')){res.end(JSON.stringify({entries:memoryValue?[{name:'notes',value:memoryValue}]:[]}));return;}
@@ -239,6 +240,21 @@ describe('central identity with full local application',()=>{
     expect((await app!.app.request('/api/auth/logout',{method:'POST',headers:{cookie:first.cookie}})).status).toBe(204);
     expect((await a.get('/api/projects')).status).toBe(401);
     expect((await b.get('/api/projects')).status).toBe(200);
+  });
+  it('requires fresh server credentials after logout and restart while preserving account data',async()=>{
+    const first=await loginUser(app!.app,'ordinary','central-test-password');
+    const user=apiClient(app!.app,first.cookie);
+    const me=await (await user.get('/api/me')).json() as {user:{userId:string}};
+    expect((await user.post('/api/auth/logout',{})).status).toBe(204);
+    expect(tokens.size).toBe(0);
+    app=await restartTestApp(app!);
+    expect((await apiClient(app!.app,first.cookie).get('/api/me')).status).toBe(401);
+    expect((await app!.app.request('/api/me')).status).toBe(401);
+    expect((await app!.app.request('/api/auth/claim?token=local-admin')).headers.get('location')).toBe('/login');
+    const wrong=await app!.app.request('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({userId:'ordinary',password:app!.adminPassword})});
+    expect(wrong.status).toBe(401);
+    const next=await loginUser(app!.app,'ordinary','central-test-password');
+    expect(await (await apiClient(app!.app,next.cookie).get('/api/me')).json()).toMatchObject({user:me.user});
   });
   it('enforces native feature routes over HTTP and socket dispatch after grants change',async()=>{
     const login=await loginUser(app!.app,'ordinary','central-test-password');

@@ -25,7 +25,7 @@ import { desktopLoginUrl, isAppUrl } from "./util.js";
 /** After the first explicit logout, keep the profile in manual sign-in mode. */
 export function desktopLoginMode(profile: string, enabled = true) {
   const marker = join(profile, "manual-sign-in");
-  let manual = false;
+  let manual = !enabled;
   if (enabled) {
     try {
       statSync(marker);

@@ -32,11 +32,24 @@ it("keeps an explicitly signed-out local profile in password mode across launche
     expect(first.requiresPassword()).toBe(true);
     expect(first.landing(ORIGIN, "reconnect-token")).toBe(ORIGIN + "/");
     expect(desktopLoginMode(profile).landing(ORIGIN, "restart-token")).toBe(ORIGIN + "/");
-    expect(desktopLoginMode(profile, false).landing(ORIGIN, "central-token")).toBe(ORIGIN + "/api/auth/claim?token=central-token");
+    expect(desktopLoginMode(profile, false).requiresPassword()).toBe(true);
+    expect(desktopLoginMode(profile, false).landing(ORIGIN, "central-token")).toBe(ORIGIN + "/");
   } finally {
     fs.unlinkSync(path.join(profile, "manual-sign-in"));
     fs.rmdirSync(profile);
   }
+});
+
+it("never claims a local admin session for a fresh server-account profile", () => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "aith-server-login-"));
+  try {
+    const mode = desktopLoginMode(profile, false);
+    expect(mode.requiresPassword()).toBe(true);
+    expect(mode.landing(ORIGIN, "unused-local-token")).toBe(ORIGIN + "/");
+    mode.signedOut();
+    expect(desktopLoginMode(profile, false).requiresPassword()).toBe(true);
+    expect(fs.readdirSync(profile)).toEqual([]);
+  } finally { fs.rmdirSync(profile); }
 });
 
 const EXPIRES_AT = "2026-10-20T08:00:00.000Z";

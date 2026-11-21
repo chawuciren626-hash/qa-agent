@@ -483,7 +483,7 @@ let attachedServer: ServerLock | null = null;
  * stay. An explicit local sign-out also switches the profile to manual sign-in across launches.
  */
 const signInGuard = createSignInGuard();
-const usesCentralAccounts = Boolean(process.env.AITEST_ACCOUNT_CENTER_ORIGIN);
+const usesCentralAccounts = Boolean(process.env.AITEST_ACCOUNT_CENTER_ORIGIN) || process.env.AITEST_MANAGED_RUNTIME === "1";
 const loginMode = desktopLoginMode(app.getPath("userData"), !usesCentralAccounts);
 
 /**
