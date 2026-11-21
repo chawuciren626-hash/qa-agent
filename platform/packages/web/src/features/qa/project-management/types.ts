@@ -266,7 +266,8 @@ export interface ProjectListResult {
 
 /** 手动新建项目的提交内容（来源固定为手动创建，无需用户选择平台）。 */
 export interface CreateProjectInput {
-  projectId: string;
+  /** 项目编号不再由前端收集：缺省后台自动生成；字段保留供旧调用方显式传入。 */
+  projectId?: string;
   name: string;
   description?: string;
   /**

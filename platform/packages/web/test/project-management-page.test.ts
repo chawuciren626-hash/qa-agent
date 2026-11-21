@@ -114,23 +114,24 @@ async function waitForList() {
 }
 
 describe("项目管理页", () => {
-  it("新建项目要求填写 Project id，并以填写的编号创建", async () => {
+  it("新建项目不再收集 Project id：只填名称即可创建，编号由后台生成", async () => {
     await mountPage();
     await waitForList();
     await click(document.querySelector<HTMLButtonElement>(".qpm-head-actions .qpm-btn-main")!);
-    const idField = field("Project id");
     const create = button("创建并进入");
-    expect(create.disabled).toBe(true);
-    await type(field("项目名称"), "支付回归");
-    await type(idField, "payment_regression");
     expect(create.disabled).toBe(false);
+    await type(field("项目名称"), "支付回归");
+    expect(document.querySelector(".qpm-modal")?.textContent).not.toContain("Project id");
     await click(create);
     await act(async () => { await sleep(500); });
     await waitFor(() => state.setCurrentProjectId.mock.calls.length > 0, 100);
-    expect(state.setCurrentProjectId).toHaveBeenCalledWith("payment_regression");
+    // 编号由后台生成（mock 同口径：名称 ASCII 片段 + 随机尾巴；中文名落 proj_）
+    const entered = state.setCurrentProjectId.mock.calls[0]?.[0] as string;
+    expect(entered).toMatch(/^proj_[0-9a-f]{8}$/);
+    expect(apiMocks.createProject).toHaveBeenCalledWith(expect.not.objectContaining({ projectId: expect.anything() }));
   });
 
-  it("普通用户只填写项目编号后缀，不暴露内部账号命名空间", async () => {
+  it("普通用户创建不暴露内部账号命名空间，也不回传 projectId（命名空间由服务端处理）", async () => {
     authState.user = {
       userId: "acct_b1f5cd9daa868943851fd35a",
       displayName: "测试用户",
@@ -139,18 +140,13 @@ describe("项目管理页", () => {
     await mountPage();
     await waitForList();
     await click(document.querySelector<HTMLButtonElement>(".qpm-head-actions .qpm-btn-main")!);
-    const idField = field("Project id");
-    expect(idField.value).toBe("");
     expect(document.querySelector(".qpm-modal")?.textContent).not.toContain("acct_b1f5cd9daa868943851fd35a");
     await type(field("项目名称"), "支付回归");
-    await type(idField, "payment_regression");
     await click(button("创建并进入"));
     await waitFor(() => apiMocks.createProject.mock.calls.length === 1, 100);
-    expect(apiMocks.createProject).toHaveBeenCalledWith({
-      projectId: "acct_b1f5cd9daa868943851fd35a-payment_regression",
-      name: "支付回归",
-      description: "",
-    });
+    const payload = apiMocks.createProject.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(payload.projectId).toBeUndefined();
+    expect(payload).toMatchObject({ name: "支付回归", description: "" });
   });
 
   it("创建时的服务端错误显示在对话框级，不伪装成项目名称错误", async () => {
@@ -159,7 +155,6 @@ describe("项目管理页", () => {
     await waitForList();
     await click(document.querySelector<HTMLButtonElement>(".qpm-head-actions .qpm-btn-main")!);
     await type(field("项目名称"), "支付回归");
-    await type(field("Project id"), "payment_regression");
     await click(button("创建并进入"));
     await waitFor(() => bodyText().includes("共享智能体角色未发布完整"), 100);
     expect(document.querySelector("#qpm-create-name-error")).toBeNull();

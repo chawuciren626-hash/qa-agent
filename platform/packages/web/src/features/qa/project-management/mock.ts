@@ -311,12 +311,15 @@ export async function mockCreateProject(input: CreateProjectInput): Promise<Mana
   const name = input.name.trim();
   if (!name) throw new Error("请填写项目名称");
   if (name.length > 80) throw new Error("项目名称不能超过 80 字");
-  if (!input.projectId.trim()) throw new Error("请填写 Project id");
-  if (store.some(record => record.projectId === input.projectId)) throw new Error("Project id 已存在，请更换");
+  // Project id 后台自动生成（与真实服务端同口径：名称 ASCII 片段 + 随机尾巴）。
+  const slug = (name.toLocaleLowerCase().match(/[a-z0-9]+/g) ?? []).join("_").slice(0, 24) || "proj";
+  const projectId = input.projectId?.trim()
+    ?? `${slug}_${Math.random().toString(16).slice(2, 10)}`.replace(/-/g, "");
+  if (store.some(record => record.projectId === projectId)) throw new Error("Project id 已存在，请更换");
   const now = new Date().toISOString();
   const spec: RowSpec = { name, source: "manual", status: "active", role: "创建者", daysAgoCreated: 0, daysAgoActivity: 0, running: 0, queued: 0 };
   const record: MockRecord = {
-    projectId: input.projectId,
+    projectId,
     name,
     description: input.description?.trim() || null,
     sourceType: "manual",

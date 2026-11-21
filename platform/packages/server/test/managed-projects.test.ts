@@ -46,7 +46,10 @@ describe("managed projects", () => {
     expect(row.projectId).toBe("payment_test");
     expect((await admin.post("/api/projects/managed", { projectId: "payment_test", name: "重复" })).status).toBe(409);
     expect((await admin.post("/api/projects/managed", { projectId: "Bad-Id", name: "无效" })).status).toBe(400);
-    expect((await admin.post("/api/projects/managed", { name: "缺少编号" })).status).toBe(400);
+    // 缺少编号：后台自动生成（名称无 ASCII 片段 → proj_ + 随机尾巴），201 且编号合规。
+    const generated = await admin.post("/api/projects/managed", { name: "缺少编号" });
+    expect(generated.status).toBe(201);
+    expect((await generated.json() as { project: { projectId: string } }).project.projectId).toMatch(/^proj_[0-9a-f]+$/);
     expect((await admin.get("/api/projects/managed?status=active")).status).toBe(200);
     expect((await member.get(`/api/projects/managed/${row.projectId}`)).status).toBe(404);
     expect((await admin.put(`/api/projects/managed/${row.projectId}/pin`, { pinned: true })).status).toBe(200);

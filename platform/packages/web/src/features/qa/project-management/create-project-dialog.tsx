@@ -1,19 +1,14 @@
 /**
- * 新建项目弹窗：Project id 使用既有语义编号规则与 AI 生成能力，名称必填 1–80 字，
- * 简介选填 ≤500 字带计数、来源固定手动创建；提交中禁用重复提交；
- * 创建成功后自动进入新项目；创建成功但进入失败时提示「项目已创建，暂时无法进入」
- * 并提供重试进入（不重复创建）；关闭有修改的表单时先确认放弃。
+ * 新建项目弹窗：名称必填 1–80 字，简介选填 ≤500 字带计数；Project id 不再收集——
+ * 由后台自动生成（名称 ASCII 片段 + 随机尾巴，非管理员自动带账号命名空间）。
+ * 提交中禁用重复提交；创建成功后自动进入新项目；创建成功但进入失败时提示
+ * 「项目已创建，暂时无法进入」并提供重试进入（不重复创建）；关闭有修改的表单时先确认放弃。
  * 不提供 Agent / Skill / 插件包的选择或上传入口（§2.3 / §5）。
  */
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ConfirmModal } from "@prismshadow/penguin-ui";
-import { ApiError } from "../../../api/client";
 import { S } from "../../../lib/strings";
-import { PROJECT_ID_MAX_LENGTH, PROJECT_SUFFIX_PATTERN, SEMANTIC_ID_PATTERN } from "../../../lib/semantic-id";
-import { useAuth } from "../../../state/auth";
-import { useProject } from "../../../state/project";
-import { SemanticIdField } from "../../semantic-id/semantic-id-field";
 import type { CreateProjectInput, ManagedProject } from "./types";
 
 const NAME_MAX = 80;
@@ -33,33 +28,20 @@ export function CreateProjectDialog({
   /** 「重试进入」：仅重试进入已创建的项目，不再次创建。 */
   retryEnter: () => Promise<boolean>;
 }) {
-  const { user } = useAuth();
-  const { currentProject, projects } = useProject();
-  const prefix = user && !user.isAdmin ? `${user.userId}-` : "";
-  /** The account namespace is an internal isolation rule; keep it out of the form text. */
-  const normalizeSuffix = (value: string) =>
-    prefix !== "" && value.startsWith(prefix) ? value.slice(prefix.length) : value;
   const [name, setName] = useState("");
-  const [idInput, setIdInput] = useState("");
   const [description, setDescription] = useState("");
   /** 项目环境（选填）：填了地址就创建后立刻建档，留空则先建项目、之后在环境页补。 */
   const [envUrl, setEnvUrl] = useState("");
   const [envName, setEnvName] = useState("test");
   const [envError, setEnvError] = useState<string | null>(null);
   const [nameError, setNameError] = useState<string | null>(null);
-  const [idError, setIdError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   /** idle：填写中 | creating：创建中 | enterFailed：项目已创建但进入失败。 */
   const [phase, setPhase] = useState<"idle" | "creating" | "enterFailed">("idle");
   const nameRef = useRef<HTMLInputElement>(null);
   const confirmDiscardRef = useRef(false);
 
-  const suffix = idInput.trim();
-  const projectId = prefix + suffix;
-  const idValid = prefix
-    ? PROJECT_SUFFIX_PATTERN.test(suffix) && projectId.length <= PROJECT_ID_MAX_LENGTH
-    : SEMANTIC_ID_PATTERN.test(projectId);
-  const dirty = name.trim() !== "" || suffix !== "" || description.trim() !== "" || envUrl.trim() !== "";
+  const dirty = name.trim() !== "" || description.trim() !== "" || envUrl.trim() !== "";
   const busy = phase === "creating";
 
   /** 关闭：有修改先确认放弃；无修改直接关（§5）。 */
@@ -92,10 +74,6 @@ export function CreateProjectDialog({
       setNameError(`项目名称不能超过 ${NAME_MAX} 字`);
       return;
     }
-    if (!idValid) {
-      setIdError(suffix ? (prefix ? S.project.idSuffixHint : S.project.idHint) : "请填写 Project id");
-      return;
-    }
     // 环境地址选填；填了就先在本地做形状校验，别等创建完才在服务端报错——那样会留下
     // 「项目建好了但环境没建」的中间态。协议与内嵌凭据由服务端兜底再判一次。
     const url = envUrl.trim();
@@ -109,13 +87,12 @@ export function CreateProjectDialog({
       return;
     }
     setNameError(null);
-    setIdError(null);
     setEnvError(null);
     setSubmitError(null);
     setPhase("creating");
     try {
+      // Project id 由后台自动生成；创建返回里带回生成的编号。
       const created = await onCreate({
-        projectId,
         name: trimmed,
         description: description.trim(),
         ...(url === "" ? {} : { environment: { env: envLabel || "test", baseUrl: url } }),
@@ -128,9 +105,7 @@ export function CreateProjectDialog({
       onClose();
     } catch (e) {
       setPhase("idle");
-      const message = e instanceof Error ? e.message : "项目创建失败，请稍后重试";
-      if (e instanceof ApiError && ["project_exists", "invalid_project_id", "project_id_prefix_required"].includes(e.code)) setIdError(message);
-      else setSubmitError(message);
+      setSubmitError(e instanceof Error ? e.message : "项目创建失败，请稍后重试");
     }
   };
 
@@ -183,20 +158,6 @@ export function CreateProjectDialog({
             <span className="qpm-count">{name.length}/{NAME_MAX}</span>
             {nameError && <p className="qpm-field-error" id="qpm-create-name-error" role="alert">{nameError}</p>}
           </label>
-          <div className="qpm-form-row">
-            <SemanticIdField
-              projectId={currentProject?.projectId ?? projects[0]?.projectId ?? null}
-              kind="project"
-              label={S.project.id}
-              hint={prefix ? S.project.idSuffixHint : S.project.idHint}
-              value={idInput}
-              source={name}
-              taken={projects.map(project => project.projectId)}
-              error={idError ?? (suffix && !idValid ? (prefix ? S.project.idSuffixHint : S.project.idHint) : undefined)}
-              disabled={busy || phase === "enterFailed"}
-              onChange={(value) => { setIdInput(normalizeSuffix(value)); setIdError(null); setSubmitError(null); }}
-            />
-          </div>
           <label className="qpm-form-row">
             <span>项目简介</span>
             <textarea
@@ -210,10 +171,6 @@ export function CreateProjectDialog({
             />
             <span className="qpm-count">{description.length}/{DESCRIPTION_MAX}</span>
           </label>
-          <div className="qpm-form-row">
-            <span>来源</span>
-            <span className="qpm-tag qpm-tag-manual">手动创建</span>
-          </div>
 
           <div className="qpm-form-sep" role="separator" />
           <div className="qpm-form-subhead">
@@ -264,7 +221,7 @@ export function CreateProjectDialog({
         </div>
         <footer className="qpm-modal-foot">
           <button type="button" className="qpm-btn-ghost" onClick={requestClose} disabled={busy}>取消</button>
-          <button type="button" className="qpm-btn-main" onClick={() => void submit()} disabled={busy || phase === "enterFailed" || !idValid}>
+          <button type="button" className="qpm-btn-main" onClick={() => void submit()} disabled={busy || phase === "enterFailed"}>
             {busy ? "正在创建…" : "创建并进入"}
           </button>
         </footer>

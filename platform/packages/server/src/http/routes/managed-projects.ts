@@ -1,7 +1,9 @@
+import { randomBytes } from "node:crypto";
 import { Hono } from "hono";
 import type { AppEnv } from "../../auth/middleware.js";
 import type { Db } from "../../hmr/capabilities.js";
 import type { ProjectLifecycle } from "../../mechanisms/projects.js";
+import { PROJECT_ID_MAX_LENGTH } from "../../services/ids.js";
 import type { ProjectRuns } from "../../services/project-service.js";
 import { readTaskRuns } from "../../services/qa-project-overview.js";
 import { defaultEnvironment, normalizeBaseUrl, normalizeEnvName, upsertEnvironment } from "../../services/project-environment-service.js";
@@ -75,6 +77,23 @@ function stringField(value: unknown, label: string, max: number, required: boole
   return result;
 }
 
+type CreatorUser = { userId: string; isAdmin: boolean };
+
+/**
+ * 项目编号后台自动生成（新建弹窗不再收集）：名称里的 ASCII 片段做可读前缀（中文名落
+ * proj），随机十六进制尾巴保证唯一；非管理员自动带上账号命名空间前缀
+ * （createProject 的强制规则），总长按 PROJECT_ID_MAX_LENGTH 收口。
+ */
+function generateProjectId(user: CreatorUser, name: string, attempt: number): string {
+  const slug = (name.toLocaleLowerCase().match(/[a-z0-9]+/g) ?? []).join("_").replace(/^_+|_+$/g, "").slice(0, 24);
+  const tail = randomBytes(4 + Math.min(attempt, 4)).toString("hex");
+  const prefix = user.isAdmin ? "" : `${user.userId}-`;
+  const budget = PROJECT_ID_MAX_LENGTH - prefix.length;
+  if (budget < 10) return `${prefix}${tail.slice(0, Math.max(2, budget))}`; // 极端长用户名：退化为纯随机段
+  const suffix = `${slug || "proj"}_${tail}`;
+  return prefix + (suffix.length <= budget ? suffix : `${slug.slice(0, Math.max(1, budget - tail.length - 1))}_${tail}`);
+}
+
 export function managedProjectsRoutes(deps: ManagedDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const withRunCount = async (project: ReturnType<typeof projectView>) => {
@@ -125,7 +144,10 @@ export function managedProjectsRoutes(deps: ManagedDeps): Hono<AppEnv> {
 
   app.post("/", async c => {
     const body = await readJson(c);
-    const id = stringField(body.projectId, "Project id", 64, true);
+    // 项目编号不再由前端收集：缺省后台自动生成；显式携带仍接受（兼容旧调用方/测试）。
+    const explicitId = typeof body.projectId === "string" && body.projectId.trim()
+      ? stringField(body.projectId, "Project id", 64, true)
+      : null;
     const name = stringField(body.name, "项目名称", 80, true);
     const description = body.description === undefined ? "" : stringField(body.description, "项目简介", 500, false);
     // 环境先校验再建项目：校验失败直接 400，不会留下"项目建好、环境写不进去"的半创建。
@@ -138,11 +160,15 @@ export function managedProjectsRoutes(deps: ManagedDeps): Hono<AppEnv> {
       })();
     const user = c.var.user;
     let created: Summary;
-    try { created = await deps.projectService.createProject(user, id, name); }
-    catch (error) {
-      if (error instanceof HttpError && error.code === "project_exists") throw new HttpError(409, "project_exists", "Project id 已存在，请更换");
-      if (error instanceof HttpError && ["invalid_project_id", "project_id_prefix_required"].includes(error.code)) throw new HttpError(400, error.code, "Project id 格式不正确");
-      throw error;
+    for (let attempt = 0; ; attempt++) {
+      const id = explicitId ?? generateProjectId(user, name, attempt);
+      try { created = await deps.projectService.createProject(user, id, name); break; }
+      catch (error) {
+        if (error instanceof HttpError && error.code === "project_exists" && explicitId === null && attempt < 5) continue; // 生成冲突：换尾巴重试
+        if (error instanceof HttpError && error.code === "project_exists") throw new HttpError(409, "project_exists", "Project id 已存在，请更换");
+        if (error instanceof HttpError && ["invalid_project_id", "project_id_prefix_required"].includes(error.code)) throw new HttpError(400, error.code, "Project id 格式不正确");
+        throw error;
+      }
     }
     try {
       deps.db.prepare("INSERT INTO project_management (project_id,description,purpose) VALUES (?,?,?)").run(created.projectId, description || null, "business");
