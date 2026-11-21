@@ -1,89 +1,176 @@
-# Codex 部署交接清单（2026-11-21）
+# Codex 部署交接清单（2026-11-21，v2 全量版）
 
-> 交接人：本地 Agent（ZCode）。部署执行：Codex。本清单覆盖本地 main 上未部署的批次，以及 D:\AITestHarness 当前的已部署状态与回滚点。
-> 原则不变：源码 ≠ 运行版；所有部署走官方脚本（备份 → 换件 → 重签清单 → 自校验），禁止直拷。
+> 交接人：本地 Agent（ZCode）。部署执行：Codex。本清单覆盖本地 `main` 上**全部 7 个未推送 commit**、工作区剩余的进行中改动（批次 C）、当前验证矩阵、部署前门槛、部署步骤与验收判据。
+> 原则不变：源码 ≠ 运行版；所有部署走官方脚本（备份 → 换件 → 重签清单 → 自校验），禁止直拷；运行数据/凭据/迁移备份不入库。
 
-## 1. 本地提交（main，未推送）
+## 0. 一页总览
 
-| commit | 内容 | 文件 |
+| 来源 | 内容 | 状态 | 提交 |
+| --- | --- | --- | --- |
+| ZCode 批次 ① | 探索质量修复 P1-P5 + `deploy-engine-files.mjs` | ✅ 已提交已验证 | `b3bfd6f` |
+| ZCode 批次 ② | 证据层第一批（零 LLM 语义证据 → observations.json → 假设/候选两管线） | ✅ 已提交已验证 | `214980b` |
+| ZCode 批次 ③ | 证据层第二批（假设可见性 + 逆向需求文档渲染） | ✅ 已提交已验证 | `f125834` |
+| 文档 | 交接清单（本文档） | ✅ 已提交 | `198aa02`/`e3acc6d` + 本次重写 |
+| ZCode 工程修复 | 测试 runner staging、skill 版本断言、apiClient | ✅ 已提交已验证 | `2be280d` |
+| Codex 批次 A | 各阶段提示词与公共规则精简（10 文件） | ⚠️ 已提交；**1 处回归未解决**（§4 门槛 1） | `dbb9a19` |
+| Codex 批次 B | 桌面手动登录态/改密闭环 + main.js 进部署链 + 渠道驱动模型页（14 文件） | ✅ 已提交已验证 | `4daab7e` |
+| 并发会话批次 C | 本地任务环境绑定 + 工具门/派发链（约 30 文件，含 db schema 迁移） | 🔴 **进行中未提交**；7 处测试失败（§4 门槛 2） | 工作区未提交改动 |
+
+**部署前必须先过 §4 的两道门槛**；门槛未清不得构建发布。
+
+## 1. 已提交明细（main，7 个 commit 未推送）
+
+### 1.1 探索质量修复（`b3bfd6f`，对应客户端实测五处失真）
+
+- P1 建档报告与探索事实矛盾 → 探索成功后自动回写环境报告（`merge-explore-maps.py --report-out`，原建档快照保留为 `bootstrap-report-*.md`）
+- P2 静态资源路由过滤（`explorer.py is_page_route` 与 `explore-authenticated.mjs normalizeRoute` 同源：CSS/favicon/manifest 等不入地图）
+- P3 根前缀路由全拒 bug（`prefix='/'` 时 `startsWith('//')` 拒掉一切）+ 全站模式 BFS 链接发现 + 登录后落地页优先 + 重定向以最终路径登记
+- P4 去硬编码幽灵路由（`//login`、`/profile/password`）+ apis `/v2/` 过滤清零修正 + 建档基线并集
+- P5 服务端探索回写：合并地图提升为环境当前地图 + `maps_hash` + 环境摘要刷新（`promoteMergedMaps`）
+- 新增 `scripts/deploy-engine-files.mjs`（引擎文件同步：变更探测 → 备份 → 换件 → 重签清单 → 自校验 → 失败回滚）
+
+### 1.2 证据层第一批（`214980b`）
+
+- `scripts/explore-observation-model.mjs`：零 LLM 语义证据（价格/字段标签/选项列表；逐字 verbatim + normalized + 多策略定位器 + 内容哈希）；确定性 question/rule 生成（上限 10/20 条每轮）；跨轮去重
+- `explore-authenticated.mjs` 挂接：每页采集后产出 `observations.json`（与 pages.json 分离）；receipt 增 `observations/questions/evidence_rules` 计数
+- 服务端 `syncEvidence`：question → `qa_exploration_hypotheses`（`created_by=system:exploration:round-N`，statement 去重）；rule → `qa_knowledge_candidates`（owner 确认队列，rationale 标注系统来源，409 超限按跳过计）
+- 失败不改探索结论：`summary.evidenceSync` 如实计数/记错
+
+### 1.3 证据层第二批（`f125834`）
+
+- 时序修正：先落假设/候选再渲染知识文档
+- 快照文档（`doc-explore-<env>`）末尾追加「待验证假设」节（`[tbd]` 标注；只读展示，**不进知识构建**）
+- 新增**逆向需求文档** `doc-reverse-prd-<env>`：页面功能/接口/访问墙/业务规则/数据字段与选项/待确认未知/来源局限七节，逐条 verified/tbd 标注，空态如实占位，内容不变不制造修订
+- 测试：`exploration-knowledge-sync-render.test.ts` 3/3
+
+### 1.4 工程修复（`2be280d`）
+
+- 测试 runner staging 补 `aitestharness-tools`、`platform/packages/server/src`（此前 2 个测试必失败的根因）
+- skill 版本断言改格式级（`2026.11.02.N`，N≥1）——精确钉死在历次评审晋升后必漂移
+- `apiClient` cookie 参数可选（批次 B 新测试需要）
+
+### 1.5 Codex 批次 A：提示词精简（`dbb9a19`）
+
+- 需求分析/总控角色精简：复用已读原文、一次 diagnose、方法类 Skill 按需读取
+- 总控新增：完整流程首次规划即 `workflow_mode=lifecycle、review_mode=staged`；plan_test_tracks 被拒时按回执修正沿用原 run_id
+- 公共规则按 `qa-roles` 角色裁剪；`irval.check` 从无条件必调改为「有适用 IR 才调，缺 IR 标 not_applicable」
+- ⚠️ 遗留回归见 §4 门槛 1（command-runtime 精简后 10178 字符 > 测试上限 10000）
+
+### 1.6 Codex 批次 B：桌面/账户（`4daab7e`）
+
+- 桌面手动登录态（首次登出后进入密码登录模式）+ 改密后吊销会话并可重登（`attach-session.ts`/`main.ts` + 测试）
+- **`dist/main.js` 进部署链**（`deploy-project-management-local.mjs` 备份/换件/重签三件套扩为四件）——桌面主进程改动从此随发布走
+- account-client 渠道目录端点放宽（channels 只读直通）
+- 模型设置页改为渠道驱动的供应商选项（admin 渠道目录权威，内置预设兜底）
+
+## 2. 工作区剩余改动（批次 C，进行中，未提交）
+
+> 归属：另一并发会话正在开发「本地任务环境绑定 + 工具门/派发链」。**本清单不替它提交**；部署前它必须自行完成并验证，或由维护者裁决剥离。
+
+按文件面分组（约 30 文件）：
+
+- **本地任务环境绑定**：`http/routes/qa-platform-tasks.ts`（保存时按 base_url 匹配/登记项目环境；开始测试把 env 带进会话任务档案）、`services/qa-platform-task-service.ts`、`web/src/features/qa/platform-tasks/{api.ts,platform-tasks-page.tsx}`、`task-detail.tsx`、`test/qa-platform-tasks.test.ts`、`test/platform-tasks-page.test.ts`
+- **db schema 迁移**：`db/schema.ts`、`db/migrations/index.ts`、`db/database.ts`——迁移半成品是「源码有表、安装版没表」故障的来源，部署前必须确认迁移脚本齐备且走发布链
+- **工具门/派发链**：`penguin/agents.json`、`http/central-tools.ts`、`scripts/{plan-run,tool-gate,stage-tool-runtime,controller-tool-guard,local-browser-executor}.mjs`、`aitestharness-tools/.../exec/pools.py`、`runtime_cli.py`、`config/release-resources.json`、`http/routes/{agents,sessions}.ts`、`mechanisms/projects.ts`、`services/project-config-service.ts`、`platform.ts`、`test/{central-tools,mcp-catalog}.test.ts`、`web` 管理端页面与路由
+- 其他：`package.json`/`package-lock.json`、`requirements-ci.txt`
+- 已修正待随 C 提交：`test/mcp-catalog.test.ts` 的一个类型错（ZCode 已在工作区修掉，tsc 因此归零）
+
+## 3. 当前验证矩阵（2026-11-21 10:30 实测）
+
+| 套件 | 结果 | 失败归属 |
 | --- | --- | --- |
-| ① `fix(探索)` | 建档/全站探索五处失真修复（P1-P5）：静态资源路由过滤、`prefix='/'` 路由全拒 bug、BFS 链接发现 + 落地页/重定向捕获、去硬编码幽灵路由（`//login`、`/profile/password`）、apis `/v2/` 过滤清零、探索回写报告；新增 `deploy-engine-files.mjs` | `aitestharness-tools/.../explore/explorer.py`、`scripts/merge-explore-maps.py`、`scripts/deploy-engine-files.mjs`、`aitestharness-tools/tests/smoke_merge_explore_pages.py` |
-| ② `feat(探索)` | 证据层第一批（零 LLM）：语义证据提取（价格/字段标签/选项列表，逐字+多策略定位器+内容哈希）→ `observations.json`；确定性 question/rule 生成；服务端 `syncEvidence` 写入 `qa_exploration_hypotheses`（G4 接水）与 `qa_knowledge_candidates`（去重、系统来源、owner 确认队列）。commit ② 的 `explore-authenticated.mjs` 同时携带批次 ① 的同文件修复 | `scripts/explore-observation-model.mjs`、`scripts/explore-authenticated.mjs`、`tests/acceptance/explore-observation-model.test.mjs`、`platform/packages/server/src/services/project-exploration-service.ts` |
-| ③ `docs` | 本清单 | `docs/handoff-codex-deploy-20261121.md`、`.gitignore`（白名单例外） |
-| ④ `feat(探索)` | 证据层第二批（闭环）：探索成功先落假设/候选再渲染知识文档；快照文档追加「待验证假设」节（只读展示不进知识构建——question 不是事实）；新增**逆向需求文档** `doc-reverse-prd-<env>`（页面/接口/访问墙/业务规则/字段选项/待确认未知/来源局限七节，逐条标注 verified/tbd，空态如实占位，内容不变不制造修订） | `platform/packages/server/src/services/exploration-knowledge-sync.ts`、`platform/packages/server/src/services/project-exploration-service.ts`、`platform/packages/server/test/exploration-knowledge-sync-render.test.ts` |
+| server / web / desktop `tsc --noEmit` | **全部 0 错误** | — |
+| 批次 A 相关验收 11 套（command-runtime/structured-actions/stage-tool-scenarios+runtime/tool-gate/controller-tool-interface/skill-resources/delegation-binding/staged-result-gates/confirm-gate/role-boundaries） | 170 过 / **5 失败** | 全部 §4 门槛区 |
+| server vitest（desktop/account-client/central-tools/mcp-catalog/qa-platform-tasks） | 49 过 / **1 失败** | 批次 C 区（published template 404 vs 201） |
+| web vitest（platform-tasks-page/admin-menu-normalization/vendor-group-models） | 18 过 / **1 失败** | 批次 C 区（user-models add-model openers 数量变化） |
+| desktop vitest | 421 过 / 6 失败 | `cli-link` macOS/Linux symlink 用例在 Windows EPERM——**环境噪音**，非代码 |
+| `explore-observation-model.test.mjs` | 5/5 过 | — |
+| `smoke_merge_explore_pages.py` | 25/25 过 | — |
+| `exploration-knowledge-sync-render.test.ts` | 3/3 过 | — |
 
-## 2. 验证基线（交接时实测）
+## 4. 部署前门槛（不过不得发布）
 
-- `node --test tests/acceptance/explore-observation-model.test.mjs`：5/5 过。
-- `python -I aitestharness-tools/tests/smoke_merge_explore_pages.py`：25/25 过（含幽灵路由/基线并集/回写报告/公开模式/根前缀 apis 断言）。
-- `vitest run test/exploration-knowledge-sync-render.test.ts`：3/3 过（快照行号对齐 + 假设只追加不进知识项 + PRD 七节/验证等级/空态不编造）。
-- server `tsc --noEmit`：本批次文件 0 错误。**已知未过项（非本批次）**：`test/desktop.test.ts(194)` 与 `test/vendor-group-models.test.ts` 的 implicit-any——属工作区里并行进行的 account-client / user-models-settings 改动，部署时与提交人确认。
-- 环境预存（已解决/如实记录）：`smoke_tools.test_bootstrap_1010` 需要 bs4（两台 Python 均已注入 bs4 4.15.0 + requests 2.34.2）；platform vitest 在本机有预存 boot 失败（`project-exploration.test.ts` 等 12 例，与本批次无关，CI 基线为准）。
+**门槛 1（批次 A 回归，须 Codex 裁剪或经用户同意调上限）**
+`skill-resources.test.mjs:273` — `penguin/command-runtime.md` 精简后 **10178 字符 > 断言上限 10000**。处置：删减约 180 字符冗余（推荐），或与用户确认上调上限并说明理由。
 
-## 3. D:\AITestHarness 当前状态（上次部署结果）
+**门槛 2（批次 C 未完成，7 处失败全部在它的文件面）**
+1. `skill-resources:98` 角色包安装断言（agents.json 变更后不匹配）
+2. `skill-resources:128` installed instructions 分离断言
+3. `skill-resources:294` functional/API scope 断言
+4. `tool-gate:157` `desktop_task` 绑定了未注册工具 `desktop.snapshot`
+5. `skill-resources:273` 与门槛 1 叠加区
+6. server vitest `account-client` published template 404 vs 201（routes mid-refactor）
+7. web vitest user-models add-model openers 断言
 
-- buildId `d37bbc643f7f576a`（server 87e63e69… / web 460 文件），清单自校验 1133+432 全过，迁移 37/37 无变更，服务恢复运行（port 55875）。
-- 已包含：批次 ① 引擎文件 + 服务端、**提交时工作区里并行进行的** account-client.ts / user-models-settings.tsx 改动（当时未提交，部署产物与 commit 无一一对应）。
-- **未包含**：批次 ②（证据层）——本次 Codex 要部署的主体。
-- 回滚点：`D:\backups\engine-files-2026-11-20T16-42-34-409Z`、`D:\backups\project-management-2026-11-20T16-42-50-538Z`。
+处置：批次 C 会话完成并自验后并入；或维护者裁决剥离其改动后部署。**db schema 迁移（`2026-11-xx` 新步骤）必须确认完整并进发布链第 3 步。**
 
-## 4. 部署步骤（Codex 执行）
+**通用前置**：桌面客户端从托盘退出；`npm ci` + platform `pnpm install` 已就绪；双 Python 已注入全套依赖（bs4/requests/pytest/python-docx/reportlab/lxml/pillow）且 `configure-python.mjs` 已注册内置解释器。
+
+## 5. 部署步骤（Codex 执行）
 
 ```powershell
-# 0) 前置：桌面客户端从托盘退出；仓库根 node_modules 与 platform 依赖就位
+# 0) 客户端退出；依赖就位（本机已装好，换机需重做）
 npm ci
 cd platform; pnpm install --frozen-lockfile
-pnpm --filter @prismshadow/amsp build; pnpm --filter @prismshadow/penguin-core build
-pnpm --filter @prismshadow/penguin-cli build; pnpm --filter @prismshadow/penguin-hmr build
-pnpm --filter @prismshadow/penguin-server build
-pnpm --filter @prismshadow/penguin-desktop build   # 产出 dist/server.js + migrate-db.js
-pnpm --filter @prismshadow/penguin-web build       # 产出 web dist
 
-# 1) 打戳 + 发布（web/server/迁移，自动 pause→deploy→resume）
+# 1) 构建顺序：amsp → core → cli → hmr → server → desktop → web
+pnpm --filter @prismshadow/amsp build
+pnpm --filter @prismshadow/penguin-core build
+pnpm --filter @prismshadow/penguin-cli build
+pnpm --filter @prismshadow/penguin-hmr build
+pnpm --filter @prismshadow/penguin-server build    # 必须走包内脚本（4GB 堆），直接 tsup 会 OOM
+pnpm --filter @prismshadow/penguin-desktop build   # 产出 dist/server.js + dist/main.js + migrate-db.js
+pnpm --filter @prismshadow/penguin-web build
+
+# 2) 打戳 + 发布（pause → 部署 web/server/main/migrate → 迁移 → resume）
 cd ..
 node scripts/release.mjs --stamp
 node scripts/release.mjs D:\AITestHarness
 
-# 2) 引擎文件（scripts/、aitestharness-tools/ 变更探测→换件→重签→自校验，失败回滚）
+# 3) 引擎文件同步（scripts/、aitestharness-tools/、penguin/、skills/ 变更探测→换件→重签→自校验）
 node scripts/local-service.mjs pause D:\AITestHarness\installation.json
 node scripts/deploy-engine-files.mjs D:\AITestHarness
+
+# 4) 角色状态同步（提示词/Skill 改动必须进客户端角色状态才生效）
+node scripts/sync-penguin-agents.mjs --apply --target-root=D:\AITestHarness\data\penguin
+
+# 5) 恢复服务
 node scripts/local-service.mjs resume D:\AITestHarness\installation.json
 ```
 
 要点：
-- `deploy-engine-files.mjs` 自动比对清单 `engine_files` 与源码树哈希，改了什么同步什么，没改不动；前置要求服务已暂停。
-- 部署顺序可以反过来（先引擎后 release），只要两次换件都发生在 pause 窗口内。
-- 若 `desktop.test.ts` 等 typecheck 问题未解决，先与提交人对齐再构建，不要带红构建。
+- `dist/main.js` 已进部署链（批次 B），desktop 主进程改动随 release 生效；
+- 第 4 步是**提示词/Skill 生效的关键**——宿主按 `data/penguin/<account>/agents/*/agent_state` 加载角色，不同步则改了白改；
+- 顺序可调（引擎同步与 release 可互换），但都要在 pause 窗口内完成。
 
-## 5. 部署后验收（可测判据）
+## 6. 部署后验收判据（按批次）
 
-1. 探索一轮（saucedemo，全站模式）后，轮目录出现 `observations.json`：`observations[]` 含价格/字段标签/选项列表条目（逐字 verbatim + locators 多策略 + content_hash），`questions[]`/`rules[]` 按 facts 生成；`explore-receipt.json` 出现 `observations/questions/evidence_rules` 三个计数。
-2. `web.db`：`qa_exploration_hypotheses` 出现 `created_by='system:exploration:round-<n>'` 的行（statement 为可判定句子）；重复探索不产生重复行（statement 去重）。
-3. `qa_knowledge_candidates` 出现 rationale 标注"系统：探索 round-N"的 pending 候选（价格类带业务对象上下文才生成）；确认后进 `qa_project_rules` 版本链。
-4. 探索轮次详情 summary 出现 `evidenceSync: {hypotheses, candidates, skipped}`；失败时 `error` 如实记录且不改探索 succeeded 结论。
-5. **项目资料**出现两份文档：`环境探索快照（test）`（末尾「待验证假设」节，`[tbd]` 标注）与 `逆向需求文档（test）`（七节结构、逐条 verified/tbd 标注、局限原样收录）；内容未变时不制造新修订。
-6. 闭环路径：假设在快照/PRD 可见 → 会话里让总控派发执行 Agent 用 browser_task 验证（断言逐字记录 + 截图）→ 用户在环境页 `POST /:env/hypotheses/:id/verdicts` 判录（verified/refuted/unreachable + evidence + session_id）→ 规则候选经所有者确认进版本链。
-7. 回归红线：探索失败轮不写任何证据（与知识层同口径）；`report_untraced` 等既有闸不受影响；快照知识项行号不被假设节破坏（假设只追加在全部事实之后）。
+**探索/证据层（批次 ①②③）**
+1. 重新建档+探索 saucedemo：建档报告不再报“未发现登录表单”；地图无 CSS/favicon/manifest 路由；无 `//login`、`/profile/password` 幽灵路由；apis 不被清零；全站模式采集登录后落地页并跟随链接扩展
+2. 轮目录出现 `observations.json`（价格/字段标签/选项逐字+定位器+哈希）+ receipt 三个计数
+3. `qa_exploration_hypotheses` 出现 `system:exploration:round-N` 行（statement 去重）；`qa_knowledge_candidates` 出现系统来源 pending 候选
+4. 项目资料出现 `环境探索快照`（末尾待验证假设节）与 `逆向需求文档`（七节+验证等级）；内容不变不制造修订
+5. `summary.evidenceSync` 计数如实；失败不改探索 succeeded 结论
 
-## 6. 边界与后续（未做，勿误报完成）
+**提示词/Skill（批次 A）**
+6. 任务会话中派发子 Agent：阶段工具按适用条件调用（缺 IR 标 not_applicable 而非盲目调用）；需求分析同一派发内复用已读原文；完整流程首次规划即 lifecycle+staged（逐阶段人工确认）
 
-- 交互类证据（错误文案/状态转换）的**采集**由会话侧完成：总控派发执行 Agent，用既有 browser_task（request_id 回执、断言逐字、截图归档）按附录 A 契约执行；零 LLM 探索入口不采集，receipt limitations 已写明。判录走既有 UI 路由，人保留裁决权。
-- 逆向需求文档（PRD）已落地为自动渲染文档；按需求文档口径的"人工修订/审阅流"未做（当前每次探索自动重写）。
-- 候选归属当前挂项目所有者（rationale 标注系统来源）；后续若证据轮在真实会话中跑，改用真实 session 归属。
+**桌面/账户（批次 B）**
+7. 首次登出后重启进入密码登录页；改密→登出→密码重登成功（sessionVia=password）
+8. 桌面 `dist/main.js` 清单校验通过（启动不拒签）
 
-## 附录 A：会话侧证据轮任务契约（待并入派发模板）
+**资源池/派发链（批次 C，若并入）**
+9. 按其自带验收（`qa-platform-tasks.test.ts`、`central-tools.test.ts` 等）全绿后再验收 UI：本地任务保存环境自动登记、开始测试把 env 带进任务档案
 
-> 以下契约文本供并入 `structured-actions.mjs` dispatch_templates 或执行 Agent 的 skill——这些文件当前有并行未提交改动，本批不直接编辑，合并后由维护者落稿。契约会随派发原文进入任务书，不需要 Agent 另读文档。
+## 7. 回滚点
 
-```text
-任务类型：证据验证轮（evidence round）
-单目标：一轮只验证一个假设/一类场景（如"登录页全部异常态"），不混合多页面域
-输入：假设 statement（可判定句）+ expectation（验证线索）+ 环境地址与凭据引用（qa_secret://）
-Done when（可观察完成条件，逐条核对后才算完成）：
-  - expectation 指向的观察已取得（逐字文案/状态转换/金额计算）
-  - 每条结论带 PASS/FAIL 与逐字证据（error_message 必须逐字，不转述）
-  - 关键状态截图已归档并随证据返回路径
-证据格式：结论 + 逐字证据 + 截图路径 + 使用的 request_id；实测与推断分开，未验证项标 [tbd]
-步数预算：单轮 20-28 步，逼近上限时收尾输出已有证据（部分证据强于无产出）
-红线：只读白名单优先；写操作需既有授权闸放行；未知写操作结果不重放；定位失败判 blocked 不判产品缺陷
-```
+- 本次部署产生的备份目录：`D:\backups\project-management-<时间戳>`（web/server/main/migrate/manifest）与 `D:\backups\engine-files-<时间戳>`（引擎换件）
+- 上一次部署回滚点（已存在）：`D:\backups\project-management-2026-11-20T16-42-50-538Z`、`D:\backups\engine-files-2026-11-20T16-42-34-409Z`
+- 回滚 = 从备份目录恢复对应文件 + 恢复 `aitest-source-runtime.json` 后重启；不要直拷生产目录
+
+## 8. 已知边界与提醒
+
+- cli-link 的 6 个 symlink 用例在无特权 Windows 上 EPERM，属环境噪音（测试未按平台跳过的实现问题，未修）
+- platform vitest 在本机存在预存 boot 失败（`project-exploration.test.ts` 等 12 例），CI 基线为准
+- 证据层候选归属当前挂项目所有者（rationale 标注系统来源）；会话侧证据轮（附录 A 契约）落地后改用真实 session 归属
+- 批次 C 的 db schema 迁移若并入发布，必须走 `release.mjs` 第 3 步（迁移失败发布中止），禁止只在源码目录跑 migration
