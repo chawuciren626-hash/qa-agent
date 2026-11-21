@@ -2,6 +2,7 @@ import { AdminLayout, AdminHostGate, AdminLogin, AdminAccountsPage, AdminPermiss
 import { AdminRolesPage, AdminMenusPage } from "./features/admin/admin-system-pages";
 import { AdminSkillsPage } from "./features/admin/admin-skills-page";
 import { AdminToolsPage } from "./features/admin/admin-tools-page";
+import { AdminMcpPage } from "./features/admin/admin-mcp-page";
 import { AdminOverviewPage } from "./features/admin/admin-overview-page";
 import { AdminAssistantPage } from "./features/admin/admin-assistant-page";
 import { PublicationsPage } from "./features/admin/publications-page";
@@ -234,6 +235,7 @@ function appRoutes(admin = false) {
           <Route path="/audit" element={<AdminAuditPage />} />
           <Route path="/skills" element={<AdminSkillsPage />} />
           <Route path="/tools" element={<AdminToolsPage />} />
+          <Route path="/mcp" element={<AdminMcpPage />} />
           <Route path="/publications/agents" element={<Navigate to="/agents" replace />} />
           <Route path="/publications/:kind" element={<PublicationsPage />} />
         </>}

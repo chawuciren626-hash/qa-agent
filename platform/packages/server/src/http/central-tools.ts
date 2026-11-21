@@ -28,7 +28,7 @@ import type { ControlStore } from "./control-plane.js";
 const STAGES: ReadonlyArray<readonly [string, string]> = [
   ["common", "通用"], ["req", "需求分析"], ["design", "测试设计"], ["case", "用例生成"],
   ["web", "Web 自动化"], ["api", "接口自动化"], ["app", "App 自动化"], ["mini", "小程序自动化"],
-  ["report", "测试报告"], ["defect", "缺陷管理"],
+  ["desktop", "桌面自动化"], ["report", "测试报告"], ["defect", "缺陷管理"],
 ];
 
 /**
@@ -78,6 +78,9 @@ const IMPL_PATHS: Record<string, string[]> = {
   "confirm.gate": ["scripts/confirm-gate.mjs"],
   "expectation.audit": ["scripts/expectation-audit.mjs"],
   "login.captcha_chain": ["aitestharness-tools/aitestharness_tools/exec/login.py", "scripts/browser-task.mjs"],
+  "desktop.snapshot": ["scripts/desktop-task.mjs", "aitestharness-tools/aitestharness_tools/probe/desktop_probe.py"],
+  "desktop.visual_probe": ["scripts/desktop-visual.mjs", "aitestharness-tools/aitestharness_tools/probe/desktop_probe.py"],
+  "desktop.replay": ["scripts/desktop-task.mjs", "aitestharness-tools/aitestharness_tools/exec/desktop_engine.py"],
 };
 
 /**
@@ -353,6 +356,30 @@ const SEED: Seed[] = [
     parameters: { type: "object", required: ["project", "dom_summary"], properties: { project: { type: "string" }, dom_summary: { type: "object" }, executors: { type: "object" } } },
     returns: { type: "object", properties: { captcha_type: { type: "string" }, status: { type: "string" }, attempts: { type: "array" } } },
     agents: ["automation_execution_agent"],
+  },
+  {
+    name: "desktop.snapshot", displayName: "桌面控件树快照", categoryId: "desktop", permissions: "read", implemented: true,
+    summary: "UIA 控件树 + 每元素 ≥2 稳定指纹（automation_id / control_type+name+class_name），零模型",
+    description: "scripts/desktop-task.mjs（doctor/snapshot/visual/replay 入口）+ aitestharness-tools/aitestharness_tools/probe/desktop_probe.py（UIA 探针）。桌面 computer-use 的结构层：快照可存档可 diff，是视觉定位反查与重放定位的共同底座。前置：pywinauto；副作用：无（只读）；幂等：同请求复用回执。",
+    parameters: { type: "object", required: [], properties: { window_hint: { type: "object", properties: { title: { type: "string" }, title_re: { type: "string" }, class_name: { type: "string" }, pid: { type: "integer" } } }, max_nodes: { type: "integer" }, max_depth: { type: "integer" } } },
+    returns: { type: "object", properties: { element_count: { type: "integer" }, truncated: { type: "boolean" }, windows: { type: "array" }, elements: { type: "array" } } },
+    agents: ["desktop_test_agent", "automation_execution_agent"],
+  },
+  {
+    name: "desktop.visual_probe", displayName: "桌面视觉兜底", categoryId: "desktop", permissions: "write", implemented: true,
+    summary: "Midscene 视觉定位与动作（截图→VLM→动作），命中后当场降级为 UIA 锚点",
+    description: "scripts/desktop-visual.mjs（Midscene @midscene/computer 集成 + 降级出口）+ aitestharness-tools/aitestharness_tools/probe/desktop_probe.py（element_from_point 反查）。视觉产出的 anchor 是唯一允许进剧本的部分；坐标只留在回执与截图证据里。前置：@midscene/computer + 视觉模型渠道；副作用：真实鼠标/键盘动作（tap/input/act）；屏幕独占（desktop.lock），锁占用返回 desktop_locked。",
+    parameters: { type: "object", required: ["request_id", "action"], properties: { request_id: { type: "string" }, action: { type: "string", enum: ["locate", "tap", "input", "act", "assert", "screenshot"] }, target: { type: "string" }, text: { type: "string" }, instruction: { type: "string" }, expectation: { type: "string" } } },
+    returns: { type: "object", properties: { ok: { type: "boolean" }, anchor: { type: "object" }, anchor_ok: { type: "boolean" }, screenshot: { type: "string" } } },
+    agents: ["desktop_test_agent"],
+  },
+  {
+    name: "desktop.replay", displayName: "桌面锚点重放", categoryId: "desktop", permissions: "write", implemented: true,
+    summary: "UIA 锚点驱动的确定性重放（零模型）：封闭动作集，坐标进计划即拒绝",
+    description: "scripts/desktop-task.mjs（入口与锁）+ aitestharness-tools/aitestharness_tools/exec/desktop_engine.py（重放引擎）。封闭动作 tap/type/key/wait/assert_anchor/assert_window；定位失败如实失败交三分归因，绝不猜点。前置：desktop.snapshot 已留指纹；副作用：真实鼠标/键盘动作；幂等：request_id 复用读回原回执。",
+    parameters: { type: "object", required: ["request_id", "plan"], properties: { request_id: { type: "string" }, plan: { type: "object", properties: { window_hint: { type: "object" }, steps: { type: "array", items: { type: "object" } } } } } },
+    returns: { type: "object", properties: { ok: { type: "boolean" }, steps: { type: "array" }, step_count: { type: "integer" } } },
+    agents: ["desktop_test_agent", "automation_execution_agent"],
   },
 ];
 

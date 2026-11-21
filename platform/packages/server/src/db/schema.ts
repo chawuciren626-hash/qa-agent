@@ -1182,4 +1182,25 @@ CREATE TABLE IF NOT EXISTS qa_local_tasks ( -- 本地新建任务（T5）：不�
   updated_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_local_tasks_project ON qa_local_tasks(project_id, status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS mcp_server_catalog ( -- 管理后台 MCP 服务目录：部署级台账，下发到 Agent tools.mcpServers 才生效（routes/mcp-catalog.ts）
+  name            TEXT PRIMARY KEY,
+  transport       TEXT NOT NULL DEFAULT 'stdio' CHECK(transport IN ('stdio','http')),
+  command         TEXT NOT NULL DEFAULT '',
+  args_json       TEXT NOT NULL DEFAULT '[]',
+  env_json        TEXT NOT NULL DEFAULT '{}',
+  url             TEXT NOT NULL DEFAULT '',
+  headers_json    TEXT NOT NULL DEFAULT '{}',
+  description     TEXT NOT NULL DEFAULT '',
+  stage_tags_json TEXT NOT NULL DEFAULT '[]',
+  enabled         INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+  source          TEXT NOT NULL DEFAULT 'custom' CHECK(source IN ('builtin','custom')),
+  tool_cache_json TEXT,
+  last_test_at    TEXT,
+  last_test_ok    INTEGER CHECK(last_test_ok IN (0,1)),
+  last_latency_ms INTEGER,
+  created_at      TEXT NOT NULL,
+  created_by      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_catalog_enabled ON mcp_server_catalog(enabled, name);
 `;

@@ -4,13 +4,13 @@ import { Button, Modal, PageFrame, PageHeader } from "@prismshadow/penguin-ui";
 import { controlRequest } from "../../api/control";
 import "./admin-system-pages.css";
 
-export const ADMIN_MENU_KEYS = ["overview", "chat", "agents", "models", "plugins", "skills", "tools", "users", "roles", "menus", "audit"] as const;
+export const ADMIN_MENU_KEYS = ["overview", "chat", "agents", "models", "plugins", "skills", "tools", "mcp", "users", "roles", "menus", "audit"] as const;
 export type AdminMenuKey = typeof ADMIN_MENU_KEYS[number];
 export type AdminMenuItem = { key: string; name: string; path: string; group: "main" | "sys"; icon: string; color: string; visible: boolean; builtin: boolean };
 export const SYSTEM_MENU_KEYS = new Set<AdminMenuKey>(["users", "roles", "menus", "audit"]);
 export const ADMIN_MENU_LABELS: Record<AdminMenuKey, string> = {
   overview: "概览", chat: "管理员助手", agents: "Agent管理", models: "渠道管理", plugins: "插件管理",
-  skills: "技能管理", tools: "工具管理", users: "用户管理", roles: "角色管理", menus: "菜单管理", audit: "操作日志",
+  skills: "技能管理", tools: "工具管理", mcp: "MCP 服务", users: "用户管理", roles: "角色管理", menus: "菜单管理", audit: "操作日志",
 };
 const palette = ["#5a8dea", "#8a7ff0", "#2866a4", "#36ae83", "#dea52e", "#d85ca5", "#98a3b3"];
 export const defaultAdminMenus = (): AdminMenuItem[] => ADMIN_MENU_KEYS.map((key, index) => ({

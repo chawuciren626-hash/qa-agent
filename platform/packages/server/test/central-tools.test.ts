@@ -27,9 +27,9 @@ const draft = { displayName: "自定义校验", summary: "一句话", descriptio
 
 it("seeds the builtin tools and keeps the stage order of the skills page", async () => {
   const data = await list();
-  expect(data.categories.map(item => item.id)).toEqual(["common", "req", "design", "case", "web", "api", "app", "mini", "report", "defect"]);
+  expect(data.categories.map(item => item.id)).toEqual(["common", "req", "design", "case", "web", "api", "app", "mini", "desktop", "report", "defect"]);
   // 种子数与 SEED 数组一致：早期 9 个，v1.1 后补登各阶段已落地工具（B1~B12 + Python 侧）。
-  expect(data.tools.length).toBe(33);
+  expect(data.tools.length).toBe(36);
   // 内置工具必须挂到真实 Agent 上，否则「引用关系」只是装饰。
   expect(data.tools.every(tool => tool.agents.length > 0)).toBe(true);
   expect(data.tools.find(tool => tool.name === "assets.library")?.permissions).toBe("write");
@@ -133,6 +133,6 @@ it("reports runtime enforcement state honestly instead of pretending the switch 
 it("catalog exposes enforced flag so装配方 knows whether disabling is real", async () => {
   const data = await (await send("/catalog")).json() as { enforced: boolean; tools: { name: string }[] };
   expect(data.enforced).toBe(false);
-  // catalog 只暴露已启用的工具；种子 33 个全部落地启用。
-  expect(data.tools.length).toBe(33);
+  // catalog 只暴露已启用的工具；种子 36 个全部落地启用（含 desktop 三件）。
+  expect(data.tools.length).toBe(36);
 });

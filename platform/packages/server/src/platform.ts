@@ -108,6 +108,7 @@ import { Scheduler, ScheduleSessionCreator, ScheduleTaskRunner } from "./runtime
 import { AgentConfigService } from "./services/agent-config-service.js";
 import { SnapshotService } from "./services/snapshot-service.js";
 import { AgentRoutes } from "./services/agent-routes.js";
+import { McpCatalogRoutes } from "./http/routes/mcp-catalog.js";
 import { AgentService } from "./services/agent-service.js";
 import { MemoryService } from "./services/memory-service.js";
 import { BenchmarkService } from "./services/benchmark-service.js";
@@ -469,6 +470,7 @@ export class TracesModule {}
     MemoryService,
     BenchmarkService,
     AgentRoutes,
+    McpCatalogRoutes,
   ],
   exports: [AgentConfig, Snapshots, AgentLifecycle, Memory, Benchmarks],
 })
