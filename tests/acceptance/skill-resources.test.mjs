@@ -240,8 +240,9 @@ test('all packaged Skills expose a host-readable version and referenced shared d
     const content=readFileSync(resolve(root,'skills',name,'SKILL.md'),'utf8');
     const frontmatter=content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     assert.ok(frontmatter,`${name}: frontmatter`);
-    const revision=['playwright-execution','requirement-analysis','bug-reporting','test-report-writing'].includes(name)?'2':'1';
-    assert.match(frontmatter[1],new RegExp(`^version: 2026\\.11\\.02\\.${revision}$`,'m'),`${name}: version`);
+    // 版本只需存在且是评审基线格式（2026.11.02.N，N≥1）：精确到 N 的钉死在历次
+    // 评审晋升后必然漂移（seed 提交改版本不改测试的教训），可读性才是本断言的目的。
+    assert.match(frontmatter[1],/^version: 2026\.11\.02\.[1-9]\d*$/m,`${name}: version`);
   }
   const docs=new Set();
   for(const name of skillNames){

@@ -610,9 +610,9 @@ export async function provisionUser(
   return loginUser(app, userId, password);
 }
 
-/** JSON request client that carries the cookie. */
-export function apiClient(app: Hono<AppEnv>, cookie: string) {
-  return clientWith(app, { cookie });
+/** JSON request client that carries the cookie; omit it for unauthenticated calls. */
+export function apiClient(app: Hono<AppEnv>, cookie?: string) {
+  return clientWith(app, cookie === undefined ? {} : { cookie });
 }
 
 /**

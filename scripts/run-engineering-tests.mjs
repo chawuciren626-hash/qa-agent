@@ -14,7 +14,7 @@ export function prepareTestWorkspace(engine) {
   const base=realpathSync(mkdtempSync(resolve(parent,'qa-engineering-')));
   const root=resolve(base,'engine');mkdirSync(root);
   // Copy source, never copy business output, credentials, or the installed application's data.
-  const directories=['scripts','schemas','skills','penguin','acceptance','benchmarks','tests/acceptance','tests/golden','.github','docs'];
+  const directories=['scripts','schemas','skills','penguin','acceptance','benchmarks','tests/acceptance','tests/golden','.github','docs','aitestharness-tools','platform/packages/server/src'];
   for(const name of directories) cpSync(resolve(engine,name),resolve(root,name),{recursive:true,filter:path=>{
     if(lstatSync(path).isSymbolicLink()) throw new Error('Test source may not contain links');
     return !path.split(/[\\/]/).includes('__pycache__');
