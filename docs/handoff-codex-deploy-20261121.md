@@ -1,4 +1,6 @@
-# Codex 部署交接清单（2026-11-21，v2 全量版）
+# Codex 部署交接清单（2026-11-21，v4 集成部署验收版）
+
+> 最新状态：批次 C 已于本地提交 7eed7e6，完整部署与安装版验收已完成，详见第 9–10 节。第 0–8 节中的旧失败与未提交描述是历史交接快照。
 
 > 交接人：本地 Agent（ZCode）。部署执行：Codex。本清单覆盖本地 `main` 上**全部 7 个未推送 commit**、工作区剩余的进行中改动（批次 C）、当前验证矩阵、部署前门槛、部署步骤与验收判据。
 > 原则不变：源码 ≠ 运行版；所有部署走官方脚本（备份 → 换件 → 重签清单 → 自校验），禁止直拷；运行数据/凭据/迁移备份不入库。
@@ -226,3 +228,20 @@ node scripts/local-service.mjs resume D:\AITestHarness\installation.json
 边界：扩大运行 `db-migrations.test.ts` 时有 4 个 schema/回退形状断言失败。使用未修改的 de048be schema 和排除本次 local-task-context 的迁移集合，已复现旧 schema 与旧迁移的对象差异及回退形状不一致；该套件不能标为全绿。本次专门升级测试及真实库演练通过，部署不做历史 schema 清理或降级。
 
 部署状态：源码集成验证完成，随后通过官方脚本进行备份、维护暂停、引擎同步、应用发布、数据库迁移、角色同步及恢复；执行结果追加于下节。角色同步应指向实际项目的 agents 目录，不能把 data/penguin 根目录当作 Agent 根目录。现有项目缺少新增 desktop_test_agent 时，通过核心 Agent 初始化入口补齐，再同步受管理指令与工具契约。
+
+## 10. 本次部署执行结果（2026-11-21）
+
+- 源码集成提交：`7eed7e6`；仅本地提交，未推送、未生成安装包。
+- 构建号：`37a696a63068d5ee`；安装目录仍为 `D:\AITestHarness`。
+- 已通过服务的空闲维护检查后正常暂停（stopped:true），未强杀任何任务或桌面进程。
+- 引擎同步备份：`D:\backups\engine-files-2026-11-21T03-33-30-991Z`；本轮实际换件 `penguin/command-runtime.md` 和 `scripts/controller-tool-guard.mjs`。其他发布白名单文件（含新增回写脚本）已一致，未重复覆盖。
+- 应用备份：`D:\backups\project-management-2026-11-21T03-34-51-564Z`。官方 release 链已完成应用换件、重签、数据库迁移和恢复服务。
+- 数据/角色备份：`D:\backups\integration-2026-11-21T03-28-56Z`。保留最初一致性备份、暂停后 web-before-release.db 和两个实际项目的 agents 目录原件。
+- 两个已有项目均缺新增 desktop_test_agent，已通过核心 loadAgentState 初始化，仅为新角色接入对应工具契约；随后由已安装引擎同步脚本更新角色指令。两个项目各更新 19 个受管理文件，复核均 in_sync；自定义角色和既有模型凭据未更改。
+- 正式数据库迁移账本 39/39，程序报告 schema 已最新；升级列已由此前部署建立，无重复迁移。恢复后 integrity_check=ok，foreign_key_check 无违规。
+- 恢复结果：ready=true，端口 55875，serverPid=22612，维护标记已解除。
+- 清单校验：1133 个应用文件、435 个引擎文件通过；main.js/server.js/migrate-db.js 与本次构建哈希逐一相同；发布白名单 434 个源码文件与安装引擎无漂移。
+- 已安装接口检查：/login、/api/me、/api/projects、/api/projects/default_project/agents、/api/admin/mcp-servers 均为 HTTP 200；default_project 已发现并登记 desktop_test_agent。
+- 验证仅包含自动化测试、数据库及本机接口检查，未新建真实测试任务、未调用真实模型执行业务探索，也未修改账号密码或代替用户完成登录登出。
+
+用户可重新打开 AITestHarness 验收。本节与第 9 节覆盖前面历史交接时的“未提交/未部署/剩余两处失败”状态。
