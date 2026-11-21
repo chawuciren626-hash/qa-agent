@@ -17,7 +17,7 @@ sections:
 
 ## 阶段工具执行协议（强制）
 
-缺陷阶段先调用 `defect.evidence` 和 `defect.tools`，并用 `irval.check` 校验缺陷 IR；无失败时不得虚构缺陷，有失败时不得跳过取证工具。每条缺陷必须引用真实执行回执、证据包和工具回执路径。回执缺失、证据不足或工具失败时标记 needs_review/partial，不得凭 Agent 推断补齐。
+按派发协议用真实失败证据取证，并按适用条件校验 IR。证据不足时标记 needs_review 或 partial。无失败时保留空缺陷结果。
 
 task和lifecycle遇到多种可能原因时，均可按需读取已安装的qa-investigation及其失败分类参考。只利用本次材料分析，不因此补建执行批次、启动复测或把反复失败直接定为产品缺陷。
 

@@ -9,6 +9,8 @@ export const TOOL_SCENARIOS = Object.freeze([
   {stage:'test_points', scene:'测试点导出前', tools:['testpoint.coverage','irval.check'], input:'当前需求台账与测试点 JSON；v3 IR 另需完整契约', outcome:'Node 规则覆盖缺口阻止交接；v3 IR 校验待适配', state:'node_active_ir_pending'},
   {stage:'test_cases', scene:'测试用例编制与导出', tools:['expected.provenance','plan.gates','irval.check'], input:'已确认规则、测试点、计划 IR、用例 IR', outcome:'来源链和五闸；不通过阻止交接', state:'node_active_ir_pending'},
   {stage:'execution', scene:'仅地址探索或 Web 执行', tools:['dom.snapshot','login.captcha_chain'], input:'真实浏览器页面、登录授权、DOM/截图', outcome:'真实 snapshot 与 login.captcha_chain 均必须留下执行回执；图形验证码自动识别、填写、提交、成功校验并复用会话，短信/扫码/滑块/点选才转人工', state:'dom_snapshot_and_login_chain_active'},
+  {stage:'execution', scene:'桌面 GUI 执行（Windows）', tools:['desktop.snapshot','desktop.visual_probe','desktop.replay'], input:'窗口提示（title/class/pid）、UIA 控件树、视觉模型配置、锚点重放计划', outcome:'desktop.snapshot 必须留下控件树与 ≥2 指纹回执；视觉兜底（Midscene）的每次命中在回执内降级为 UIA 锚点（anchor_ok），坐标只留证据；重放按锚点零模型执行，定位失败如实失败交归因', state:'desktop_snapshot_visual_replay_active'},
+  {stage:'execution', scene:'桌面首次固化或回归计划', tools:['desktop.snapshot','desktop.replay'], input:'视觉兜底回执中的锚点、计划 IR、桌面池（desktop_pool 容量 1）', outcome:'视觉产物只有降级为结构化锚点才可固化为剧本；重放零模型，坐标不进剧本', state:'desktop_anchor_consolidation_active'},
   {stage:'execution', scene:'首次执行或回归计划', tools:['regression.select','regression.impact','plan.gates','exec.pools','execution.stub'], input:'已批准用例、计划 IR、版本差异、预算、桩策略', outcome:'冻结执行选集与资源调度；五闸失败不执行', state:'node_active_ir_pending'},
   {stage:'execution', scene:'执行结果封存', tools:['irval.check'], input:'真实浏览器 exec IR', outcome:'结构和来源检查；失败不标通过', state:'ir_adapter_pending'},
   {stage:'api_execution', scene:'接口执行或回归', tools:['exec.api_engine','exec.pools','execution.stub','regression.select','regression.impact','plan.gates'], input:'已批准场景、接口环境、凭据引用、计划 IR 和预算', outcome:'真实接口执行核验结果与请求回执；其余 IR/调度工具待接线', state:'api_engine_active_other_pending'},
@@ -25,17 +27,17 @@ export const STAGE_TOOL_PROTOCOLS = Object.freeze({
   analysis: {
     required: ['requirement.testability', 'requirement.acceptance', 'irval.check'],
     actions: ['diagnose_analysis', 'generate_analysis', 'validate_analysis'],
-    rule: '先用确定性工具解析可测性、验收条件和 IR 结构；工具回执齐全且通过后才生成分析正文。',
+    rule: '先用确定性工具检查可测性和验收条件；适用检查通过后生成分析正文。',
   },
   test_points: {
     required: ['testpoint.coverage', 'irval.check'],
     actions: ['diagnose_test_points', 'export_test_points', 'validate_artifacts'],
-    rule: '先检查需求覆盖和 IR，再导出测试点；覆盖缺口或校验失败不得交接。',
+    rule: '先检查需求覆盖，再导出测试点；覆盖缺口或适用校验失败按阶段契约处理。',
   },
   test_cases: {
     required: ['plan.gates', 'irval.check'],
     actions: ['diagnose_test_cases', 'export_test_cases', 'validate_artifacts'],
-    rule: '先检查计划闸门、预期来源和 IR，再导出用例；未取得回执不得声称用例完成。',
+    rule: '先检查计划闸门和预期来源，再导出用例；必需回执缺失时不得声称用例完成。',
   },
   execution: {
     required: ['dom.snapshot', 'login.captcha_chain'],
@@ -62,14 +64,34 @@ export const STAGE_TOOL_PROTOCOLS = Object.freeze({
 export function stageToolProtocol(stage) {
   const protocol = STAGE_TOOL_PROTOCOLS[stage];
   if (!protocol) return `本阶段没有已登记的确定性工具协议；仍须使用可用结构化动作并保留真实回执。`;
+  const required = protocol.required.filter(tool => tool !== 'irval.check');
   return [
-    `阶段工具硬协议：必须调用 ${protocol.required.join('、')}；阶段动作使用 ${protocol.actions.join('、')}。`,
+    `阶段工具硬协议：按适用场景调用 ${required.join('、')}；阶段动作使用 ${protocol.actions.join('、')}。`,
     protocol.rule,
-    '每次调用后读取返回的 receipt/tool_checks，回复中写明工具、输入摘要、结果摘要和回执路径。工具未调用、回执缺失、状态 failed 或 disabled 时，不得生成“已完成”结论，只能返回 blocked/partial 及原因。',
+    '有适用的完整 IR 时调用 irval.check。缺少适用 IR 时标记 not_applicable，继续其他检查；需要 IR 但缺失时记录 partial 和原因。阶段交付汇总实际回执，适用的必需检查失败、停用或缺少回执时按契约交付 blocked/partial。',
   ].join('\n');
 }
 
 export function stageScenarioPrompt(stage) {
   return `${stageToolProtocol(stage)}\n${TOOL_SCENARIOS.filter(row => row.stage === stage).map(row =>
+    `${row.scene}：${row.tools.join('、')}；输入=${row.input}；结果=${row.outcome}；接线状态=${row.state}`).join('\n')}`;
+}
+
+/**
+ * 执行阶段的轨道规则：dispatch 按 platform 选择轨道后追加对应段落。
+ * 桌面轨道的硬纪律与 Web 同构——快照回执先行、视觉产出降级锚点、重放零模型。
+ */
+export const STAGE_TRACK_RULES = Object.freeze({
+  desktop: [
+    '桌面轨道硬协议：先 desktop.snapshot 留控件树与 ≥2 指纹回执；结构层够定位就不要走视觉。',
+    '视觉兜底（desktop_task visual）仅在控件树无法表达目标时使用；回执里的 anchor/anchor_ok 是唯一可进剧本的部分，坐标只作证据。',
+    '回归固化用 desktop.replay 按锚点零模型重放；计划里出现坐标即质量缺陷。',
+    '屏幕是独占资源：desktop.lock 或 desktop_locked 返回时不得重试抢占，如实上报等待。',
+  ].join('\n'),
+});
+
+export function desktopScenarioPrompt() {
+  const rows = TOOL_SCENARIOS.filter(row => row.stage === 'execution' && row.tools.some(tool => tool.startsWith('desktop.')));
+  return `${STAGE_TRACK_RULES.desktop}\n${rows.map(row =>
     `${row.scene}：${row.tools.join('、')}；输入=${row.input}；结果=${row.outcome}；接线状态=${row.state}`).join('\n')}`;
 }

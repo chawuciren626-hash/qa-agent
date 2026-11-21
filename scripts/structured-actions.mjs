@@ -24,7 +24,7 @@ import { gateAction, readRuntimeState, recordToolUsage, recordToolCheck } from '
 import { runStageTool, stageToolCatalog, stageToolReceipts } from './stage-tool-runtime.mjs';
 import { inspectApiEngineCheck } from './api-engine-check.mjs';
 import { parseRequirementSource } from './requirement-source-parser.mjs';
-import { stageScenarioPrompt } from './stage-tool-scenarios.mjs';
+import { stageScenarioPrompt, desktopScenarioPrompt } from './stage-tool-scenarios.mjs';
 import { recordTrace } from './trace.mjs';
 import { setReviewMode } from './review-mode.mjs';
 import { isIndependent, usesTaskArtifacts, inspectIndependentArtifacts, independentPrompt, taskArtifacts, taskRequiredArtifacts } from './independent-task.mjs';
@@ -39,10 +39,12 @@ import { draftRecords, validateDraftOperation, reuseDesignArtifact } from './dra
 import { protectedInputs } from './protected-inputs.mjs';
 import { validateAndroidOperation, runAndroidOperation } from './android-task.mjs';
 import { validateMiniprogramOperation, runMiniprogramOperation } from './miniprogram-task.mjs';
+import { validateDesktopOperation, runDesktopOperation } from './desktop-task.mjs';
 import { mobileAuthorization, assertMobileDispatch, assertMobileTarget, acquireMobileResource, releaseMobileResource, sealMobileResult } from './mobile-stage.mjs';
 import { archiveVerifiedWebScripts, reuseWebScripts } from './web-script-library.mjs';
 
 import { apiTask, validateApiOperation } from './api-task.mjs';
+import { writebackPlatformTaskAnalysis, validatePlatformTaskRef, validatePlatformSummary } from './qa-platform-writeback.mjs';
 import { createApiSnapshotReport, verifySnapshotReport } from './api-snapshot.mjs';
 import { planTestTracks, testTrackStatus, validateTrackRequest, trackInstructions, assertTrackStage, assertSiblingResources, publishTrackDelivery, configureDelivery } from './test-tracks.mjs';
 
@@ -57,6 +59,7 @@ const definitions = {
   browser_task: ['run_id','operation'],
   android_task: ['run_id','operation'],
   miniprogram_task: ['run_id','operation'],
+  desktop_task: ['run_id','operation'],
   diagnose_task: ['run_id','stage'],
   explore_url: ['run_id','url','source_path'],
   handoff: ['run_id','stage','artifacts','recovery'],
@@ -80,7 +83,8 @@ const definitions = {
   complete: ['run_id','stage','dispatch_id','child_session','artifacts'],
   block: ['run_id','stage','dispatch_id','reason'], fail: ['run_id','stage','dispatch_id','reason'],
   request_confirmation: ['run_id','stage'], resolve_confirmation: ['run_id','stage','decision','reason','source_text','source_message_key'],
-  generate_analysis: ['run_id'], validate_analysis: ['run_id'], validate_artifacts: ['run_id','stage'], revise_stage:['run_id','stage','reason']
+  generate_analysis: ['run_id'], validate_analysis: ['run_id'], validate_artifacts: ['run_id','stage'], revise_stage:['run_id','stage','reason'],
+  platform_task_writeback: ['run_id','task_ref','summary']
 };
 const hash = data => createHash('sha256').update(data).digest('hex');
 const requireInput = (ok, message) => { if (!ok) throw new CommandUsageError(message); };
@@ -133,6 +137,7 @@ export function actionCatalog(root) {
       browser_login:{note:'图形验证码自动登录（已接入执行阶段，必须实际调用并记录回执）。login_probe 只读分类当前页登录表单与验证码类型（none/image/slider/click_select/sms/unknown），不操作产品。login 在同一受控会话内完成分类→识别→填码→提交→成功信号：config_path 指向已归档 inputs/ 登录配置 JSON（project、username_target/password_target/submit_target、success_check{target,condition,value?,case_id,title,expected}、可选 failure_check/captcha_image_target/captcha_input_target/captcha_text_target/test_code/reuse_session{run_id}），quote 为该文件逐字摘录。username/password 用当前任务输入或 qa-secret:// 引用；凭据、测试码与验证码答案只进掩码集合，不写入普通回执。图形码优先项目配置的 test_code，否则本地算术码解析；低置信度不猜测提交；通用 OCR/打码服务未配置时继续走 agent_vision 自动识别，不得直接转人工。本地策略耗尽且配置声明了 captcha_image_target+captcha_input_target 时走截图识别回传协议：login 把验证码元素截图存受保护临时文件（0600、不进证据清单）并返回 recognition_required+指纹+login_request_id，识别执行器=代理视觉（不是本地 OCR）；代理读图后用一次性 login_recognize(login_request_id,answer,confidence,recognizer=agent_vision) 回传，工具重截当前码比对指纹（不一致 captcha_changed 不提交）、置信度须≥0.9，消费待识别状态后继续填码/提交/判定/会话保存，明确失败再截新码回到 recognition_required（仍受首次+1 次重试约束）。answer 与凭据一样只进掩码集合。配置声明图形码且该图像元素存在时覆盖 DOM 关键词误分类（如未激活短信标签），元素不存在则不覆盖。rerun login 须用新 request_id。提交最多首次+1 次重试（防风控锁号），明确失败才重试，未知提交结果转 needs_inspection 绝不重放。slider/click_select/sms/unknown 无自动策略时返回 manual_required，用 pause(kind=captcha|mfa) 走人工。成功后会话存储受保护保存（不进证据清单），reuse_session 指向先前 run 时先注入并重新验证登录信号，过期自动重走策略链。成功信号记录为真实断言用例；分类回执不等于登录成功。项目策略成功率统计当前为 worker 内累积。'},
       browser_task:{required:['run_id','operation'],note:'Independent tasks or lifecycle mode=browser execution. operation has type and stable request_id. Types: start(url,source_path,scope,headless=false), snapshot, goto(url,source_path), fill(target,value,secret), click(target,assertion?), press(target,key,assertion?), select(target,value), check(target,checked), assert(target,condition,value?,case_id,title,expected), pause(kind,question), login_probe(), login(config_path,quote,username,password), login_recognize(login_request_id,answer,confidence,recognizer=agent_vision)；组合qa-secret凭据由login自动拆分, finish(summary,limitations,untested?,case_reviews?). Lifecycle finish.case_reviews contains {case_id,completed_step_indices:[1-based step numbers],untested?:[reasons]} for each reviewed design case; missing reviews stay incomplete. Target: {by:role|label|placeholder|text|css,value,name?}. Assertions: visible|hidden|text|value|count. Optional click/press assertion: {target,condition,value?,case_id,title,expected}; no nested type/request_id. It waits and records immediately after the action, before snapshots. If expected result is already present BEFORE the action, no action is performed. Use observed dynamic feedback targets, not guessed wording or static labels. Use actual user test scope, no extra approval document. Stable request_id prevents replay; transport uncertainty must reuse it. Failed assertions never repeat the action. pause keeps browser open; return to parent, do NOT fail/block/handoff. For human_protocol=1 the host human-action card resumes the SAME child session and dispatch after real user confirmation; do not redispatch. First snapshot the retained browser, verify login and continue only unexecuted work. Legacy protocol only may use resume_browser. case_ref may cite design/test_cases.json for lifecycle design linkage. Only real assertions produce case results; finish closes browser. Follow same-origin scope and never perform out-of-scope destructive actions.'},
       android_task:{required:['run_id','operation'],note:'For the current dispatched Android execution child only. The parent dispatch must bind an exact native user request naming the package. Use doctor, start(device serial, package), snapshot/tap/input/key/swipe/wait/assert/screenshot/stop, finish. Stable request_id; uncertain writes are never replayed. Start owns the selected device until finish. finish verifies and seals real ADB evidence for defects/report.'},
+      desktop_task:{required:['run_id','operation'],note:'For the current dispatched desktop (Windows GUI) execution child only. Use doctor, snapshot(window_hint?), visual(action=locate/tap/input/act/assert/screenshot + target/text/instruction/expectation), replay(plan with anchor steps). Every visual hit is degraded to a UIA anchor inside the receipt (anchor_ok); anchors are the only thing that may enter scripts — coordinates stay in evidence. Screen is exclusive: desktop.lock serializes concurrent requests (blocked returns desktop_locked). doctor reports python/UIA/Midscene/visual-model readiness. Stable request_id; uncertain outcomes are never replayed with a new id.'},
       miniprogram_task:{required:['run_id','operation'],note:'For the current dispatched mini program execution child only. The parent dispatch must bind an exact native user request naming the AppID. Use doctor, start(project_dir, port), snapshot/tap/input/wait/assert/screenshot/stop, finish. Only real DevTools results enter reports; touristappid and synthetic evidence are rejected. Stable request_id and exclusive port ownership.'},
       plan_run:{required:['run_id','stages'],optional:['review_mode','workflow_mode','source_mode','execution_platform'],note:'execution_platform=web (default), android or miniprogram selects the saved execution role and Skill. Mobile platforms require execution in the plan; platform selection does not authorize device or product operations. Independent tasks default task/auto; explicit full lifecycle uses staged review and pauses for each configured human confirmation. Existing runs keep their saved mode.'},
       diagnose_task:{required:['run_id','stage'],note:'Read-only independent draft check. Uses actual supplied materials, not lifecycle predecessor artifacts. Resolve technical draft issues yourself.'},
@@ -162,7 +167,8 @@ export function actionCatalog(root) {
       complete:{required:['run_id','stage','dispatch_id','artifacts'],optional:['child_session'],note:'Omit child_session to resolve the unique returned professional child from parent trace. Never search files or guess session IDs.'},
       dispatch: {required:['run_id','stage','agent','skills'],optional:['mode'],mode:'Omit mode normally. Lifecycle URL testing uses mode="browser" with optional source_text containing the exact native user request authorizing the target and test scope (required for browser dispatch). No environment JSON or scripts. Script preparation remains mode="prepare". After a legacy browser pause only, use mode="resume_browser". human_protocol=1 uses the host human-action card and the original child session, never a new dispatch. Never use "default".'},
       lifecycle_browser:{note:'browser_task supports independent execution AND lifecycle execution dispatched with mode=browser. Lifecycle execution/defects/report use browser task artifacts, retain saved dependencies, and must preserve untested design coverage. Never synthesize script invocation records.'},
-      archive_input: {required:['run_id','name'],exactly_one_of:['source','text'],note:'Chinese/Unicode basenames and internal spaces are supported; no path separators, control characters, Windows reserved names or trailing dots/spaces. For uploads use source with the exact current parent session scratchpad file path, or project inputs/acceptance. Copies original bytes with SHA256; never retype attachments into text. Native user text and current-message attachments are captured automatically at create/dispatch. Read input_context before manually archiving duplicates. text is only for literal user text. Omit the unused field.'}
+      archive_input: {required:['run_id','name'],exactly_one_of:['source','text'],note:'Chinese/Unicode basenames and internal spaces are supported; no path separators, control characters, Windows reserved names or trailing dots/spaces. For uploads use source with the exact current parent session scratchpad file path, or project inputs/acceptance. Copies original bytes with SHA256; never retype attachments into text. Native user text and current-message attachments are captured automatically at create/dispatch. Read input_context before manually archiving duplicates. text is only for literal user text. Omit the unused field.'},
+      platform_task_writeback:{required:['run_id','task_ref','summary'],note:'平台任务预分析回写（仅总控）：把 requirement_analysis_agent 预分析的结构化结论 POST 回平台任务列表。task_ref 原样照抄任务简报（[平台任务简报] 消息）里的 {kind,task_id,project_id}，不猜不拼。summary 含 requirement_points / suggested_test_scope（至少一处非空，1-20 条）、suggested_priority（high|medium|low）、priority_reason、risks、open_questions。只在收到简报的预分析 run 内使用；服务端拒绝（如 analysis_not_running/invalid_summary）说明具体原因并如实报告用户，不重放、不改写绕过；回写成功只是建议回填，不代表测试通过。'}
     },
     examples: {
       browser_start:{action:'browser_task',run_id:'run-example',operation:{type:'start',request_id:'browser-start',url:'https://example.test/login',source_path:'inputs/request.txt',scope:'User-authorized form validation'}},
@@ -172,7 +178,8 @@ export function actionCatalog(root) {
       extend_to_cases:{action:'extend_plan',run_id:'run-example',stages:['test_cases'],reason:'User requested continuing this run through test case design'},
       dispatch_analysis:dispatchTemplate('analysis'),
       prepare_execution:{...dispatchTemplate('execution'),mode:'prepare'},
-      archive_text:{action:'archive_input',run_id:'run-example',name:'requirement.md',text:'User requirement text'}
+      archive_text:{action:'archive_input',run_id:'run-example',name:'requirement.md',text:'User requirement text'},
+      platform_task_writeback:{action:'platform_task_writeback',run_id:'run-example',task_ref:{kind:'platform',task_id:'ptl-example',project_id:'default_project'},summary:{requirement_points:['要点1','要点2'],suggested_test_scope:['范围1'],suggested_priority:'high',priority_reason:'核心链路变更',risks:[],open_questions:['待确认问题']}}
     },
     notes: ['actions lists allowed fields, NOT required fields. Optional fields must be omitted when unused.', 'stages/skills/artifacts are arrays; archive_input requires exactly one of source/text', 'Default: draft stages continue after verified handoff; ask the user for unresolved business decisions and before real execution. review_mode=staged preserves the former per-stage confirmation flow.'] };
 }
@@ -184,8 +191,10 @@ function validate(request) {
   for (const key of definitions[request.action]) {
     if(key==='snapshot_path' && request[key]===undefined)continue;
     if(key==='tracks'){validateTrackRequest(request);continue;}
-    if(key==='operation') {try {if(request.action==='api_task') validateApiOperation(request.operation); else if(request.action==='draft_records') validateDraftOperation(request.operation); else if(request.action==='android_task') validateAndroidOperation(request.operation); else if(request.action==='miniprogram_task') validateMiniprogramOperation(request.operation); else validateBrowserOperation(request.operation);} catch(error){throw new CommandUsageError(error.message);} continue;}
+    if(key==='operation') {try {if(request.action==='api_task') validateApiOperation(request.operation); else if(request.action==='draft_records') validateDraftOperation(request.operation); else if(request.action==='android_task') validateAndroidOperation(request.operation); else if(request.action==='miniprogram_task') validateMiniprogramOperation(request.operation); else if(request.action==='desktop_task') validateDesktopOperation(request.operation); else validateBrowserOperation(request.operation);} catch(error){throw new CommandUsageError(error.message);} continue;}
     if (key === 'payload') { requireInput(request[key] === undefined || request[key] && typeof request[key] === 'object' && !Array.isArray(request[key]), 'Tool payload must be a JSON object'); continue; }
+    if (key === 'task_ref') { requireInput(validatePlatformTaskRef(request[key]) === null, validatePlatformTaskRef(request[key])); continue; }
+    if (key === 'summary') { requireInput(validatePlatformSummary(request[key]) === null, validatePlatformSummary(request[key])); continue; }
     if (key === 'source_path') { requireInput(request[key] === undefined || typeof request[key] === 'string' && request[key].trim(), 'source_path must be a run-local JSON path'); continue; }
     if (key === 'resource_keys') {requireInput(request[key]===undefined || Array.isArray(request[key]) && request[key].length<=40 && request[key].every(k=>typeof k==='string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(k)),'Invalid resource_keys');continue;}
     if (key === 'child_session' && request[key] === undefined) continue;
@@ -203,7 +212,7 @@ function validate(request) {
   if (['plan_run','plan_test_tracks'].includes(request.action) && request.workflow_mode === 'lifecycle') requireInput(request.review_mode === undefined || request.review_mode === 'staged', 'Full lifecycle requires staged human review');
   if(request.workflow_mode!==undefined) requireInput(['task','lifecycle'].includes(request.workflow_mode),'workflow_mode must be task or lifecycle');
   if(request.source_mode!==undefined) requireInput(['provided_materials','live_product'].includes(request.source_mode) && (request.workflow_mode ?? 'task')==='task','source_mode must be provided_materials or live_product for task mode');
-  if(request.execution_platform!==undefined) requireInput(request.action==='plan_run' && ['web','android','miniprogram'].includes(request.execution_platform),'execution_platform must be web, android or miniprogram');
+  if(request.execution_platform!==undefined) requireInput(request.action==='plan_run' && ['web','android','miniprogram','desktop'].includes(request.execution_platform),'execution_platform must be web, android, miniprogram or desktop');
   if(request.source_text!==undefined) requireInput(((request.action==='resolve_confirmation' && request.decision==='approved') || request.action==='dispatch' && (request.mode==='browser' || !request.mode)) && request.stage==='execution' && typeof request.source_text==='string' && request.source_text.trim(),'source_text is only for an exact execution approval message');
   if(request.source_message_key!==undefined) requireInput(request.source_text===undefined && /^[a-f0-9]{64}$/.test(request.source_message_key) && request.stage==='execution' && (request.action==='dispatch' || request.action==='resolve_confirmation' && request.decision==='approved'),'source_message_key replaces source_text for execution authorization only');
   if(request.action==='plan_run' && (request.workflow_mode ?? 'task')==='task') requireInput(request.stages.every(s=>Object.hasOwn(taskArtifacts,s)),'Unknown independent task');
@@ -231,6 +240,15 @@ function readSource(root,r) {
     : {status:structure.status,reason:structure.reason};
   return {status:'completed',exit_code:0,execution_mode:'in_process',launches_child:false,result:{path:r.path,sha256:file.sha256,total_lines:lines.length,start_line:r.start_line,end_line:end,requested_end_line:r.end_line,truncated:end!==r.end_line,quote,quote_json:JSON.stringify(quote),source_structure}};
 }
+/** 平台任务回写：进程内调用回写模块，HTTP 业务失败返回 failed 结果（不抛 usage 错）。 */
+async function platformWriteback(r) {
+  const outcome=await writebackPlatformTaskAnalysis({taskRef:r.task_ref,summary:r.summary,runId:r.run_id});
+  const envelope={status:outcome.ok?'completed':'failed',exit_code:outcome.ok?0:2,execution_mode:'in_process',launches_child:false,
+    result:{action:'platform_task_writeback',ok:outcome.ok,http_status:outcome.status,code:outcome.code??null,message:outcome.message??null}};
+  if(!outcome.ok) envelope.result.next_action='report_writeback_failure_to_user_without_retry_loop';
+  return envelope;
+}
+
 export function actionCommand(request, session) {
   validate(request);
   const r=request; const id=r.run_id;
@@ -608,6 +626,39 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
         return { status: 'completed', exit_code: 0, execution_mode: 'in_process', launches_child: false,
           result: { ...result, ...(sealed ? { sealed_result_path: 'execution/test_results.json', source_sha256: sealed.verified.source_sha256 } : {}) } };
       }
+      if (parsed.action === 'desktop_task') {
+        // 桌面 computer-use 与 browser 同属 execution 阶段：同样的归属契约
+        // （当前 owned execution dispatch + 任务态产物），换的是驱动层（UIA/Midscene）。
+        requireInput(usesTaskArtifacts(root,parsed.run_id,'execution'),'desktop_task requires task mode or the lifecycle desktop strategy');
+        const dir=runDirectory(root,parsed.run_id),manifest=JSON.parse(readRunFile(dir,'manifest.json').data);
+        const dispatch=manifest.orchestration.events.filter(e=>e.type==='dispatched' && e.stage==='execution').at(-1);
+        requireInput(manifest.stages.execution?.status==='in_progress' && dispatch?.['parent-session-id']===session,'Current owned execution dispatch required');
+        const outcome = await runDesktopOperation({ root, dir, operation: parsed.operation, env: process.env });
+        // 阶段回执：desktop.* 的三个工具身份与实现路径一一对应（镜像 dom.snapshot 的写法）。
+        const toolByType={snapshot:{id:'desktop.snapshot',impl:'scripts/desktop-task.mjs'},visual:{id:'desktop.visual_probe',impl:'scripts/desktop-visual.mjs'},replay:{id:'desktop.replay',impl:'scripts/desktop-task.mjs'}};
+        const tool=toolByType[parsed.operation.type];
+        if(tool) {
+          const receiptPath=`audit/stage-tools/${randomUUID()}.json`;
+          mkdirSync(resolve(dir,'audit/stage-tools'),{recursive:true});
+          const implementationPath=resolve(root,tool.impl);
+          writeFileSync(resolve(dir,receiptPath),JSON.stringify({
+            version:1,id:receiptPath.split('/').at(-1)?.replace('.json',''),run_id:parsed.run_id,
+            stage:'execution',tool_id:tool.id,implementation:tool.impl,
+            implementation_sha256:hash(readFileSync(implementationPath)),input_sha256:hash(JSON.stringify(parsed.operation)),
+            started_at:new Date().toISOString(),duration_ms:null,
+            status:outcome.status==='ok'?'completed':'failed',
+            error_code:outcome.status==='ok'?null:(outcome.result?.category ?? 'DESKTOP_OPERATION_FAILED'),
+            result:outcome.result,
+          },null,2),{flag:'wx',mode:0o600});
+          tracedTools=[tool.id];
+          receipt.tool_checks=[{tool_id:tool.id,implementation:tool.impl,
+            implementation_sha256:hash(readFileSync(implementationPath)),status:outcome.status==='ok'?'completed':'failed',
+            input:{request_id:parsed.operation.request_id,receipt_path:receiptPath}}];
+          recordToolUsage(root,parsed.action,{tools:tracedTools,degraded:tracedDegraded,receipt:receiptPath,runId:parsed.run_id,stage:'execution',implementationSha256:hash(readFileSync(implementationPath))});
+        }
+        return {status:'completed',exit_code:0,execution_mode:'in_process',launches_child:false,result:outcome.result,
+          ...(outcome.status==='blocked'?{note:'Desktop is locked by another request; retry is not automatic.'}:{})};
+      }
       if(parsed.action==='explore_url') {
         requireInput(isIndependent(root,parsed.run_id),'explore_url is for independent tasks only');
         const dir=runDirectory(root,parsed.run_id), manifest=JSON.parse(readRunFile(dir,'manifest.json').data);
@@ -817,6 +868,7 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
       const command=actionCommand(parsed,session);
       if (parsed.action === 'read_source') return readSource(root,parsed);
       if (parsed.action === 'archive_input') return archive(root,parsed,session,agentRoot);
+      if (parsed.action === 'platform_task_writeback') return platformWriteback(parsed);
       const inputContext=parsed.action==='dispatch'?captureUserInputs(root,parsed.run_id,session,agentRoot,assertParentSession(root,parsed.run_id,session,agentRoot)):null;
       const env={...process.env,...(agentRoot?{PENGUIN_AGENT_ROOT:agentRoot}:{})};
       delete env.QA_CONTROLLER_SESSION;
@@ -911,7 +963,7 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
               `Write a JSON request FILE with the file tool, then run: node scripts/project-action.mjs execute --controller-session=${session} --request=output/action-requests/${event.dispatch_id}.json`,
               `--request is a file path, NEVER inline JSON. Source read requests using actual input paths: ${JSON.stringify(output.source_read_templates)}. Read further ranges only when total_lines exceeds returned end_line.`,
               `For explore_url or browser_task start/goto, source_path is a run-relative archived input: ${JSON.stringify(inputFiles)}. Never prefix it with the workspace, output/runs, or run_id.`,
-              ...(parsed.stage==='analysis'?[`Before generation, save the ledger then call ${JSON.stringify({action:'diagnose_analysis',run_id:parsed.run_id})}. This read-only check needs no Markdown and reports issues across all rules. A completed diagnostic is NOT a valid draft: require result.status=passed, correct all reported issues first, then ${JSON.stringify({action:'generate_analysis',run_id:parsed.run_id})} and ${JSON.stringify({action:'validate_analysis',run_id:parsed.run_id})}. Use file tools for the ledger; do not run ad hoc shell scripts.`]:[]),
+              ...(parsed.stage==='analysis'?[`Save the ledger, run ${JSON.stringify({action:'diagnose_analysis',run_id:parsed.run_id})}, and fix reported problems together before rerunning. Require result.status=passed, then run ${JSON.stringify({action:'generate_analysis',run_id:parsed.run_id})} and ${JSON.stringify({action:'validate_analysis',run_id:parsed.run_id})}. The last action already validates analysis artifacts. Read source excerpts once per unchanged range and reuse them. Use file tools for the ledger.`]:[]),
               ...(parsed.stage==='test_points'?[`Before export or formal validation call ${JSON.stringify({action:'diagnose_test_points',run_id:parsed.run_id})}. Fix all returned draft issues together. Require result.status=passed, not outer completed. Only explicit context/environment categories are supporting information; in-scope behavioral requirements and confirmed assumptions need test points. Performance/security testing is outside current capability scope and must not produce points; retain its cited scope exclusions upstream. Observations, excluded rules and supporting information cannot define expected behavior. Never change upstream classifications or approvals to silence missing coverage. Diagnosis does not export, approve or grant retries; export_test_points and validate_artifacts remain required.`]:[]),
               ...(parsed.stage==='test_cases'?[`Before export or formal validation call ${JSON.stringify({action:'diagnose_test_cases',run_id:parsed.run_id})}. This read-only diagnostic aggregates schema, basis, data_checks and test-point coverage errors without consuming export/validation correction budget. Fix all reported issues together and require result.status=passed; then export_test_cases and validate_artifacts. Any JSON edit after export requires re-export and revalidation.`]:[]),
               ...(parsed.stage==='execution' && parsed.mode==='prepare'?[`This dispatch is PREPARATION ONLY. In this isolated run, write environment/test-env.json based on target URLs and test accounts explicitly present in archived inputs; never copy the engine's unrelated config/test-env.json. If target/credentials are not known, return the precise missing environment question, not a guessed value. Then call ${JSON.stringify({action:'prepare_execution_plan',run_id:parsed.run_id,profile:'full'})}; it excludes pending/conflicted cases, binds the plan to this run's execution/scripts, and may copy verified scripts from this project's library. Inspect script_reuse.reused and script_reuse.remaining. Preserve copied scripts; write specs only for remaining cases, checking current design and environment first. Do not run temporary generators, node -e, node --check, npm, direct project scripts, or shell-composed commands. Do not launch browser/product tests. Call validate_execution_prepare with all run-relative spec paths, including reused specs, and return the paths to parent for handoff. If validation reports a target mismatch, correct the run environment config from cited sources and rerun the controlled preparation action. Execution requires separate user authorization.`]:[]),
@@ -1024,9 +1076,12 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
             '最终只回复完成内容、可点击的交付文件、工具调用摘要（工具/结果/回执）及确需人工处理的问题；保留失败与未测限制，不展示思考过程或冗长操作流水账。',
             'exec_command支持qa_request时，动作对象直接放在该字段，不另写请求文件；请求文件名不同内容不得复用。'
           ].join('\n');
+          const desktopTrack=deliveryManifest.orchestration?.plan?.execution_platform==='desktop';
           writeFileSync(internalContractPath,
             renderDelegationTaskBrief(taskBrief)+'\n\n【执行细则】\n'+readFileSync(internalContractPath,'utf8')+'\n'
-            +`阶段场景与工具：\n${stageScenarioPrompt(parsed.stage)}\n阶段工具必须由 Agent 在本阶段实际调用；控制器只负责在验证与交接时复核回执，不能替代 Agent 调用。每次调用后在阶段对话中简要复述工具、输入、结果和 receipt 路径。run_stage_tool 必须严格二选一传入 payload 或 source_path，不能省略、同时传入或把字段放到 payload 内；source_path 只能复制派发契约中已有的运行内相对 JSON 路径。irval.check 的 payload 只能是 {document:<完整IR>}，不支持 source_path，也不接受把旧阶段 JSON 当 IR；没有完整合法 IR 时不要调用它，明确记录 not_applicable/partial。工具运行环境由控制器负责，Agent 禁止探测、读取或编辑 python.exe/python311/python3、*.dll、*.pyd、*.pyc 等二进制或运行时文件，不要对这些路径使用 read_file。可调用实现及输入契约：${JSON.stringify(stageToolCatalog(parsed.stage))}。若确有适用的完整 IR，使用 run_stage_tool.payload 并引用真实回执；pending 不算已执行，停用工具不可绕过。\n`
+            +`阶段场景与工具：\n${stageScenarioPrompt(parsed.stage)}\n`
+            +(desktopTrack?`桌面轨道规则：\n${desktopScenarioPrompt()}\n`:'')
+            +'阶段 Agent 执行适用检查，父级交接时复核回执。run_stage_tool 只传 payload 或契约中的 source_path。irval.check 只接受 payload={document:<完整IR>}。工具运行环境由宿主提供，专业角色不探测或修改运行时二进制。可调用工具及输入：'+JSON.stringify(stageToolCatalog(parsed.stage))+'。\n'
             +deliveryInstructions+'\n','utf8');
           output.delegation.prompt=[
             'Caller agent: test_agent',

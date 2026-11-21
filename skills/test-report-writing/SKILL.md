@@ -17,7 +17,7 @@ sections:
 
 ## 阶段工具执行协议（强制）
 
-报告阶段必须先调用 `report.reviewer` 和 `irval.check`，并通过 `export_report`、`validate_artifacts` 形成报告。覆盖率、通过率、缺陷数量和结论只能来自真实工具回执与执行证据；不得自行计算、补造或把未测写成通过。阶段回复必须列出工具调用、回执路径、事实范围和 partial/未测限制。
+按派发协议完成报告审查和适用的 IR 检查，然后导出和校验。统计和结论引用真实回执，保留未测范围与 partial。
 
 组织摘要、覆盖说明或上线建议时，按需读[报告结论与统计口径](references/conclusion-and-coverage.md)。该参考适用于两种模式，沿用现有统计事实源与HTML导出，不增加交付门槛。
 
