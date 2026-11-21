@@ -112,6 +112,38 @@ export function buildRuntimeSections({ dir, root = null } = {}) {
   }
   data.disabled_tools = disabled;
 
+  // —— 1b. 阶段工具降级（admin-tool-console §8 差距①）——
+  // run_stage_tool 的降级/停用此前只进流水（tool-usage.jsonl）与健康端点，报告一字未提：
+  // 「irval 没跑成」这类事实对看报告的人等于没发生。口径与 qa-run-health.ts 一致：
+  // execution 行计调用与降级，本 run 无任何行时如实说明（不编 0、不编降级）。
+  const runId = readJson(resolve(dir, 'manifest.json'))?.run_id ?? null;
+  const usagePath = root ? resolve(root, 'output/runtime/tool-usage.jsonl') : null;
+  if (runId && usagePath && existsSync(usagePath)) {
+    const rows = [];
+    for (const line of readFileSync(usagePath, 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      try { const row = JSON.parse(line); if (row?.run_id === runId) rows.push(row); } catch { continue; }
+    }
+    if (rows.length) {
+      const degraded = new Set();
+      let invoked = 0;
+      for (const row of rows) {
+        if (row.kind === 'execution') {
+          invoked += 1;
+          for (const item of Array.isArray(row.degraded) ? row.degraded : []) if (typeof item === 'string') degraded.add(item);
+        }
+      }
+      data.stage_tools = { rows: rows.length, invoked, degraded: [...degraded].sort() };
+      if (degraded.size) {
+        lines.push(`**阶段工具降级：${[...degraded].sort().join('、')}**。降级意味着该阶段的确定性检查未按完整契约生效——相关结论缺少这层校验，按 partial 口径理解。`);
+      } else {
+        lines.push(`本次共 ${invoked} 次阶段工具执行，无降级。`);
+      }
+    } else {
+      lines.push('本轮没有阶段工具调用流水（tool-usage.jsonl 无本 run 条目）——阶段级确定性检查是否执行，以阶段回执为准。');
+    }
+  }
+
   // —— 2. 外部依赖桩 ——
   const stubReport = readJson(resolve(dir, 'execution/execution-summary.json'));
   const stubs = stubReport?.stubs ?? null;

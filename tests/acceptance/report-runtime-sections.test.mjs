@@ -129,3 +129,31 @@ test('坏行不影响整段生成：报告不能因为一行损坏就整体失�
   const { markdown } = buildRuntimeSections({ root, dir });
   assert.match(markdown, /1 次结构化动作调用/);
 }));
+
+test('阶段工具降级（run_stage_tool 流水）进报告——§8 差距①', () => withRun(({ root, dir }) => {
+  writeJson(resolve(dir, 'manifest.json'), { run_id: 'run-22222222-3333-4444-5555-666666666666', status: 'in_progress' });
+  const usage = [
+    { run_id: 'run-22222222-3333-4444-5555-666666666666', kind: 'execution', tool_id: 'irval.check', degraded: ['irval.check'] },
+    { run_id: 'run-22222222-3333-4444-5555-666666666666', kind: 'execution', tool_id: 'requirement.testability', degraded: [] },
+    { run_id: 'other-run', kind: 'execution', tool_id: 'noise', degraded: ['noise'] },
+    { run_id: 'run-22222222-3333-4444-5555-666666666666', kind: 'check', status: 'completed' },
+  ].map(row => JSON.stringify(row));
+  mkdirSync(resolve(root, 'output/runtime'), { recursive: true });
+  writeFileSync(resolve(root, 'output/runtime/tool-usage.jsonl'), `${usage.join('\n')}\n`);
+  const { markdown, data } = buildRuntimeSections({ root, dir });
+  assert.match(markdown, /阶段工具降级：irval\.check/);
+  assert.match(markdown, /按 partial 口径理解/);
+  assert.deepEqual(data.stage_tools, { rows: 3, invoked: 2, degraded: ['irval.check'] });
+}));
+
+test('阶段工具无降级时如实说「无降级」；无本 run 流水时不说「零次」', () => withRun(({ root, dir }) => {
+  writeJson(resolve(dir, 'manifest.json'), { run_id: 'run-22222222-3333-4444-5555-666666666666' });
+  mkdirSync(resolve(root, 'output/runtime'), { recursive: true });
+  writeFileSync(resolve(root, 'output/runtime/tool-usage.jsonl'), `${JSON.stringify({ run_id: 'run-22222222-3333-4444-5555-666666666666', kind: 'execution', tool_id: 'irval.check', degraded: [] })}\n`);
+  const noDegraded = buildRuntimeSections({ root, dir });
+  assert.match(noDegraded.markdown, /1 次阶段工具执行，无降级/);
+  writeFileSync(resolve(root, 'output/runtime/tool-usage.jsonl'), `${JSON.stringify({ run_id: 'someone-else', kind: 'execution', degraded: ['x'] })}\n`);
+  const noRows = buildRuntimeSections({ root, dir });
+  assert.match(noRows.markdown, /没有阶段工具调用流水/);
+  assert.doesNotMatch(noRows.markdown, /无降级/);
+}));
