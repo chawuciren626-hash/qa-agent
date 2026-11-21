@@ -79,6 +79,8 @@ export interface TaskListItem {
   productLines: Array<{ name: string; isPrimary: boolean }>;
   /** 任务声明的涉及端（B1-7，标准枚举子集）；空数组 = 未声明。 */
   ends: string[];
+  /** 变更分析证据指针（分支/MR 标识）；null = 未关联。 */
+  changeSource: string | null;
   suggestedPriority: string | null;
   analysisSource: string | null;
   status: string;
@@ -121,6 +123,8 @@ export interface TaskDetail {
     account: string | null;
     /** 任务声明的涉及端（B1-7，标准枚举子集）；空数组 = 未声明。 */
     ends: string[];
+    /** 变更分析证据指针（分支/MR 标识）；null = 未关联。 */
+    changeSource: string | null;
   };
   summary: AiSummary | null;
   progress: { mainSessionId: string | null; runs: TaskProgressRun[] };
@@ -174,14 +178,14 @@ function asSummary(value: unknown): AiSummary | null {
 const PLATFORM_SELECT = `
   SELECT link_id AS id, 'platform' AS source, external_task_no AS task_no, title, priority,
          package_version, pm_round_no, product_lines_json, suggested_priority, ai_summary_json,
-         status, local_edited_at, main_session_id, source_url, NULL AS env_name, ends_json, updated_at
+         status, local_edited_at, main_session_id, source_url, NULL AS env_name, ends_json, change_source, updated_at
     FROM platform_task_links
     WHERE project_id = ?`;
 const LOCAL_SELECT = `
   SELECT task_id AS id, 'local' AS source, task_id AS task_no, title, priority,
          NULL AS package_version, NULL AS pm_round_no, '[]' AS product_lines_json,
          suggested_priority, ai_summary_json, status, NULL AS local_edited_at,
-         main_session_id, '' AS source_url, env_name, ends_json, updated_at
+         main_session_id, '' AS source_url, env_name, ends_json, change_source, updated_at
     FROM qa_local_tasks
     WHERE project_id = ?`;
 
@@ -202,6 +206,7 @@ interface RawRow {
   source_url: string;
   env_name: string | null;
   ends_json: string | null;
+  change_source: string | null;
   updated_at: string;
 }
 
@@ -269,6 +274,7 @@ export class QaPlatformTaskService {
             .map((x) => ({ name: x.name, isPrimary: x.isPrimary === true }))
         : [],
       ends: [...new Set(ends)],
+      changeSource: r.change_source ?? null,
       suggestedPriority: r.suggested_priority,
       analysisSource: asSummary(parseJson(r.ai_summary_json))?.source ?? null,
       status: r.status,
@@ -395,6 +401,7 @@ export class QaPlatformTaskService {
         envName: extra.envName ?? null,
         envBaseUrl: extra.envBaseUrl ?? null,
         account: extra.account ?? null,
+        changeSource: extra.changeSource ?? null,
       },
       summary: asSummary(parseJson(row.ai_summary_json)),
       progress: { mainSessionId: row.main_session_id, runs },
@@ -430,13 +437,14 @@ export class QaPlatformTaskService {
     envBaseUrl?: string | null;
     account?: string;
     ends?: string[];
+    changeSource?: string | null;
   }): TaskListItem {
     const id = `qlt-${randomUUID()}`;
     const now = nowIso();
     this.db
       .prepare(
-        `INSERT INTO qa_local_tasks (task_id, project_id, title, description, status, env_name, env_base_url, account, ends_json, created_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO qa_local_tasks (task_id, project_id, title, description, status, env_name, env_base_url, account, ends_json, change_source, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -447,6 +455,7 @@ export class QaPlatformTaskService {
         input.envBaseUrl || null,
         input.account || null,
         input.ends?.length ? JSON.stringify(input.ends) : null,
+        input.changeSource?.trim() || null,
         input.userId,
         now,
         now
@@ -472,6 +481,8 @@ export class QaPlatformTaskService {
     account?: string;
     /** 涉及端集合（B1-7；undefined=不改，空数组=清除）。 */
     ends?: string[];
+    /** 变更关联（B7；undefined=不改，null/空串=清除）。 */
+    changeSource?: string | null;
   }): { updated: TaskListItem | null; analysisStale: boolean } {
     const found = this.findAny(input.projectId, input.id);
     if (!found) return { updated: null, analysisStale: false };
@@ -500,15 +511,15 @@ export class QaPlatformTaskService {
       // 环境与账号只在调用方显式携带时改写（undefined=保持现状），避免老客户端
       // 漏传把已关联的环境清掉；空串是明确的"清除"。ends 同口径（B1-7）。
       const full = this.db
-        .prepare(`SELECT env_name, env_base_url, account, ends_json FROM qa_local_tasks WHERE task_id = ? AND project_id = ?`)
+        .prepare(`SELECT env_name, env_base_url, account, ends_json, change_source FROM qa_local_tasks WHERE task_id = ? AND project_id = ?`)
         .get(input.id, input.projectId) as
-        | { env_name: string | null; env_base_url: string | null; account: string | null; ends_json: string | null }
+        | { env_name: string | null; env_base_url: string | null; account: string | null; ends_json: string | null; change_source: string | null }
         | undefined;
       const endsPatch = normalizeEnds(input.ends);
       this.db
         .prepare(
           `UPDATE qa_local_tasks SET title = ?, description = ?, priority = ?,
-             env_name = ?, env_base_url = ?, account = ?, ends_json = ?, updated_at = ?
+             env_name = ?, env_base_url = ?, account = ?, ends_json = ?, change_source = ?, updated_at = ?
            WHERE task_id = ? AND project_id = ?`
         )
         .run(
@@ -520,6 +531,7 @@ export class QaPlatformTaskService {
           input.envBaseUrl !== undefined ? input.envBaseUrl || null : full?.env_base_url ?? null,
           input.account !== undefined ? input.account || null : full?.account ?? null,
           endsPatch !== undefined ? (endsPatch.length ? JSON.stringify(endsPatch) : null) : full?.ends_json ?? null,
+          input.changeSource !== undefined ? input.changeSource?.trim() || null : full?.change_source ?? null,
           nowIso(),
           input.id,
           input.projectId
@@ -700,20 +712,22 @@ export class QaPlatformTaskService {
         description: "",
         notes: [full?.local_title_note, full?.local_test_focus_note, ...attachments].filter(Boolean).join("\n"),
         ends,
+        changeSource: row.change_source ?? null,
         envUrl: "",
         account: "",
       };
     }
     const full = this.db
-      .prepare(`SELECT title, description, env_base_url, account FROM qa_local_tasks WHERE task_id = ? AND project_id = ?`)
+      .prepare(`SELECT title, description, env_base_url, account, change_source FROM qa_local_tasks WHERE task_id = ? AND project_id = ?`)
       .get(id, projectId) as
-      | { title: string; description: string; env_base_url: string | null; account: string | null }
+      | { title: string; description: string; env_base_url: string | null; account: string | null; change_source: string | null }
       | undefined;
     return {
       title: full?.title ?? row.title,
       description: full?.description ?? "",
       notes: attachments.join("\n"),
       ends,
+      changeSource: row.change_source ?? null,
       envUrl: full?.env_base_url ?? "",
       account: full?.account ?? "",
     };
@@ -734,7 +748,7 @@ export class QaPlatformTaskService {
    */
   private async produceSummary(
     projectId: string,
-    info: { title: string; description: string; notes: string; ends: string[]; envUrl: string; account: string },
+    info: { title: string; description: string; notes: string; ends: string[]; changeSource: string | null; envUrl: string; account: string },
     priority: string,
   ): Promise<{ summary: AiSummary; degraded?: { reason: string } }> {
     const complete = this.model.completeOnce;
@@ -858,6 +872,7 @@ interface TaskInfo {
   description: string;
   notes: string;
   ends: string[];
+  changeSource: string | null;
   envUrl: string;
   account: string;
 }
@@ -898,6 +913,7 @@ function taskMaterialLines(source: "platform" | "local", row: RawRow, info: Task
     `- 任务号：${row.task_no}`,
     `- 任务名称：${info.title}`,
     info.ends.length ? `- 涉及端：${info.ends.map((end) => END_LABELS[end] ?? end).join("、")}` : "",
+    info.changeSource ? `- 变更关联：${info.changeSource}` : "",
     info.description ? `- 需求描述 / 测试背景：${info.description}` : "",
     info.notes ? `- 本地备注：${info.notes}` : "",
     `- 优先级：${row.priority}`,
@@ -946,7 +962,7 @@ const ANALYSIS_TIMEOUT_MS = 90_000;
  * 对象——整理需求内容、提取测试环境与测试账号密码（只从用户填写内容里取，没有就留
  * 空字符串，不得编造），入库走 asSummary 归一。
  */
-function analysisPrompt(info: { title: string; description: string; notes: string; ends: string[]; envUrl: string; account: string }): string {
+function analysisPrompt(info: { title: string; description: string; notes: string; ends: string[]; changeSource: string | null; envUrl: string; account: string }): string {
   return [
     "你是测试平台的需求分析助手。根据下面的任务信息整理出结构化测试分析数据。",
     "只输出一个 JSON 对象，不要输出解释、Markdown 或代码围栏，字段与格式：",
@@ -955,6 +971,7 @@ function analysisPrompt(info: { title: string; description: string; notes: strin
     "",
     `任务名称：${info.title}`,
     info.ends.length ? `涉及端：${info.ends.join("、")}` : "",
+    info.changeSource ? `变更关联（分支/MR）：${info.changeSource}` : "",
     info.description ? `需求描述 / 测试背景：${info.description}` : "",
     info.notes ? `补充备注：${info.notes}` : "",
     info.envUrl ? `测试环境 URL（用户已在表单填写）：${info.envUrl}` : "",

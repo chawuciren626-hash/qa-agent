@@ -44,6 +44,7 @@ export function PlatformTaskCreatePage() {
   const [focusNote, setFocusNote] = useState("");
   const [envBaseUrl, setEnvBaseUrl] = useState("");
   const [account, setAccount] = useState("");
+  const [changeSource, setChangeSource] = useState("");
   const [ends, setEnds] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -127,6 +128,7 @@ export function PlatformTaskCreatePage() {
         description: composedDescription,
         envBaseUrl: envBaseUrl.trim(),
         account: account.trim(),
+        changeSource: changeSource.trim(),
         ends,
       });
       // 附件先落库再分析：分析上下文由服务端从附件表装配（taskInfo），失败逐件提示不阻断。
@@ -213,6 +215,18 @@ export function PlatformTaskCreatePage() {
               value={account}
               onChange={(e) => setAccount(e.target.value)}
               placeholder="例如 qa_tester"
+              disabled={busy}
+            />
+          </label>
+          <label className="qpt-field">
+            <span>
+              变更关联 <small>选填；实现分支或 MR 标识，作为变更分析的证据指针</small>
+            </span>
+            <input
+              type="text"
+              value={changeSource}
+              onChange={(e) => setChangeSource(e.target.value)}
+              placeholder="例如 feature/import-template 或 MR !482"
               disabled={busy}
             />
           </label>

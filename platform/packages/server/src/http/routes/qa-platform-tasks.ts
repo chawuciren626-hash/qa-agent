@@ -157,7 +157,7 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
     // 测试环境选填：填了就解析/登记进项目环境，任务存关联结果；不填两列为 null。
     const env = resolveTaskEnv(deps.db, projectId, body.envBaseUrl);
     return c.json(
-      { task: svc.createLocal({ projectId, userId, title, description, envName: env.envName, envBaseUrl: env.envBaseUrl, account, ends: Array.isArray(body.ends) ? body.ends : undefined }) },
+      { task: svc.createLocal({ projectId, userId, title, description, envName: env.envName, envBaseUrl: env.envBaseUrl, account, ends: Array.isArray(body.ends) ? body.ends : undefined, changeSource: typeof body.changeSource === "string" ? body.changeSource : undefined }) },
       201
     );
   });
@@ -189,6 +189,9 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
           : {}),
         ...(target.source === "local" && Array.isArray(body.ends)
           ? { ends: body.ends as string[] }
+          : {}),
+        ...(target.source === "local" && body.changeSource !== undefined
+          ? { changeSource: strField(body.changeSource, "invalid_change_source", "变更关联", { max: 200 }) }
           : {}),
       });
       if (!result.updated) notFound();

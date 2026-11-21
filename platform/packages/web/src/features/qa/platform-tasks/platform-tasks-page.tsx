@@ -553,6 +553,7 @@ function TaskDrawer({ detail, projectId, onClose, onAnalyze, analyzing }: {
               <div className="qpt-local-note"><b>需求描述 / 测试背景</b><p>{t.description || "（未填写）"}</p></div>
               <dl className="qpt-fgrid">
                 <div><dt>涉及端</dt><dd>{t.ends.length ? t.ends.map((e) => ENV_END_LABELS[e] ?? e).join(" · ") : "—"}</dd></div>
+                <div><dt>变更关联</dt><dd className="qpt-mono">{t.changeSource || "（未关联）"}</dd></div>
                 <div><dt>测试环境</dt><dd className="qpt-mono">{t.envBaseUrl || "（未填写）"}</dd></div>
                 <div><dt>登录账号</dt><dd>{t.account || "（未填写）"}</dd></div>
               </dl>

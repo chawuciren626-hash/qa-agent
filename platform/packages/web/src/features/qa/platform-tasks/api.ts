@@ -24,6 +24,7 @@ export interface TaskListItem {
   productLines: Array<{ name: string; isPrimary: boolean }>;
   /** 任务声明的涉及端（B1-7，标准枚举子集）；空数组 = 未声明。 */
   ends: string[];
+  changeSource: string | null;
   suggestedPriority: string | null;
   analysisSource: string | null;
   status: string;
@@ -80,6 +81,7 @@ export interface TaskDetail {
     account: string | null;
     /** 任务声明的涉及端（B1-7）；空数组 = 未声明。 */
     ends: string[];
+    changeSource: string | null;
   };
   summary: AiSummary | null;
   progress: { mainSessionId: string | null; runs: TaskProgressRun[] };
@@ -106,7 +108,7 @@ export function getTaskDetail(projectId: string, taskId: string): Promise<TaskDe
  */
 export function createLocalTask(
   projectId: string,
-  input: { title: string; description: string; envBaseUrl?: string; account?: string; ends?: string[] }
+  input: { title: string; description: string; envBaseUrl?: string; account?: string; ends?: string[]; changeSource?: string }
 ): Promise<{ task: TaskListItem }> {
   return apiFetch<{ task: TaskListItem }>(`${base(projectId)}/local`, {
     method: "POST",
@@ -125,6 +127,7 @@ export function editTask(
     envBaseUrl?: string;
     account?: string;
     ends?: string[];
+    changeSource?: string;
   }
 ): Promise<{ updated: TaskListItem | null; analysisStale: boolean }> {
   return apiFetch<{ updated: TaskListItem | null; analysisStale: boolean }>(

@@ -21,6 +21,7 @@ const fixture = vi.hoisted(() => {
     priority: "high", packageVersion: 3, roundNo: 3,
     productLines: [{ name: "gov 用户端", isPrimary: true }],
     ends: [],
+    changeSource: null,
     suggestedPriority: "high", analysisSource: "demo", status: "ready", edited: false,
     mainSessionId: null, sourceUrl: "https://platform.example.com/tasks/active?taskId=FB202611090001",
     updatedAt: "2026-11-20T07:00:00.000Z",
