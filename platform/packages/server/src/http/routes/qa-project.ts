@@ -167,6 +167,55 @@ export function registerQaProjectRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps
       throw new HttpError(409, "review_conflict", "审核条件已变化或产物校验未通过，请刷新任务详情后重试。");
     }
   });
+  // 缺陷生命周期动作（B8-1）：owner 在任务详情对单条缺陷执行 confirm/fixed/retest，
+  // 服务端按 approve 同一先例调引擎 CLI（manage-defect-lifecycle，自带 run 锁与证据校验）。
+  // retest 需携带复测 attempt（invocation，可带 retest-run 指向独立 run）；失败原因透传。
+  app.post("/qa/tasks/:sessionId/runs/:runId/defects/:defectId/lifecycle", async (c) => {
+    const id = requireValidId(c, "projectId");
+    deps.access.requireProjectOwner(c.var.user.userId, id);
+    const sessionId = c.req.param("sessionId"), runId = c.req.param("runId"), defectId = c.req.param("defectId");
+    if (!/^session-[A-Za-z0-9-]+$/.test(sessionId) || !/^run-[A-Za-z0-9-]+$/.test(runId) || !/^[A-Za-z0-9_-]+$/.test(defectId))
+      throw new HttpError(400, "invalid_review", "任务、运行或缺陷标识无效。");
+    const body = (await c.req.json().catch(() => null)) as
+      | { action?: unknown; invocation?: unknown; revision?: unknown; reason?: unknown; category?: unknown; retestRun?: unknown }
+      | null;
+    const action = typeof body?.action === "string" ? body.action : "";
+    if (!["confirm", "reject", "fixed", "retest"].includes(action))
+      throw new HttpError(400, "invalid_review", "缺陷生命周期动作仅支持 confirm/reject/fixed/retest。");
+    if (action === "retest" && (typeof body?.invocation !== "string" || !/^attempt-[A-Za-z0-9_-]+$/.test(body.invocation)))
+      throw new HttpError(400, "invalid_review", "复测必须携带复测 attempt 标识（invocation）。");
+    let workspace: string | undefined;
+    for (const agent of await deps.agentService.listAgents(id)) {
+      const listed = await deps.sessionService.listSessions(id, agent.agentId, { excludeOrg: true });
+      const session = listed.sessions.find(item => item.sessionId === sessionId && item.source !== "subagent" && item.source !== "company");
+      if (session) { workspace = session.workspace; break; }
+    }
+    if (!workspace || !await readTaskRunDetail(workspace, sessionId, runId))
+      throw new HttpError(404, "run_not_found", "本项目任务没有这次运行记录。");
+    const marker = JSON.parse(await fs.readFile(path.join(workspace, ".qa-session.json"), "utf8"));
+    if (marker.session_id !== sessionId || marker.engine_root !== path.resolve(process.env.AITEST_ENGINE_ROOT ?? ""))
+      throw new HttpError(409, "review_context_changed", "任务工作区绑定不一致，未执行缺陷操作。");
+    const argv = [path.join(marker.engine_root, "scripts", "manage-defect-lifecycle.mjs"), action, runId,
+      "--defect=" + defectId, "--actor=" + c.var.user.userId];
+    if (typeof body?.invocation === "string") argv.push("--invocation=" + body.invocation);
+    if (typeof body?.revision === "number" && Number.isSafeInteger(body.revision)) argv.push("--revision=" + body.revision);
+    if (typeof body?.reason === "string" && body.reason.trim()) argv.push("--reason=" + body.reason.trim().slice(0, 300));
+    if (typeof body?.category === "string" && body.category.trim()) argv.push("--category=" + body.category.trim());
+    if (action === "retest" && typeof body?.retestRun === "string" && /^run-[A-Za-z0-9-]+$/.test(body.retestRun))
+      argv.push("--retest-run=" + body.retestRun);
+    try {
+      const { stdout } = await execFileAsync(process.execPath, argv, {
+        cwd: marker.engine_root, env: { ...process.env, QA_DIRECTORY_CONTEXT: JSON.stringify(marker) },
+        windowsHide: true, timeout: 15_000, maxBuffer: 64 * 1024,
+      });
+      c.header("Cache-Control", "no-store");
+      return c.json(JSON.parse(stdout));
+    } catch (error) {
+      const stderr = error instanceof Error && "stderr" in error ? String((error as { stderr?: unknown }).stderr ?? "") : "";
+      const reason = stderr.trim().split("\n").filter(Boolean).at(-1)?.slice(0, 200) || "缺陷操作未生效";
+      throw new HttpError(409, "defect_action_rejected", reason);
+    }
+  });
   app.post("/qa/tasks/:sessionId/runs/:runId/stages/:stageId/revise", async (c) => {
     const id = requireValidId(c, "projectId");
     deps.access.requireProjectOwner(c.var.user.userId, id);
