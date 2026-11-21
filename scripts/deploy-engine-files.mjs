@@ -1,15 +1,18 @@
 /**
- * 引擎文件同步（红线同款纪律）：把源码树里与清单不一致的 engine_files 换进安装目录。
+ * 引擎文件同步（红线同款纪律，策略感知）：让安装副本的引擎文件与源码发布策略对齐。
  *
  * 为什么需要这个脚本：deploy-project-management-local.mjs 只管 web-dist / server.js /
- * migrate-db（构建产物），而探索/编排引擎文件（scripts/、aitestharness-tools/ 等）在
- * 清单的 engine_files 段——直拷会触发 `Source runtime checksum mismatch` 拒启，绕过
- * 清单又会留下两套真源。本脚本复用同一条纪律：
+ * migrate-db / main.js（构建产物），而探索/编排引擎文件在清单的 engine_files 段——直拷
+ * 会触发 `Source runtime checksum mismatch` 拒启，绕过清单又会留下两套真源。
  *
- *   前置断言（服务已暂停 + 现状清单自洽） → 备份 → 换件 → 重签 → 自校验 → 失败回滚
+ * v2（策略感知）：期望状态不再来自旧清单本身，而来自源码的发布策略
+ * `config/release-resources.json`（与 stageSourceRuntime 的 engine_files 公式同一真源：
+ * policy.files + 暂存期三个引导脚本 + 策略文件自身）。由此：
+ *   - 清单里已有但内容变化 → 换件重签；
+ *   - 策略里有、清单里没有（新增运行时文件，如 central-mcp.mjs、desktop 引擎）→ 自动入清单并同步；
+ *   - 清单里有、策略里没有 → 保留不动并在结果里报告（下次整装 staging 才裁剪，运行中不删文件）。
  *
- * 变更文件自动探测：逐条比对 engine_files 哈希与源码树实际哈希，不一致才换件——
- * 脚本不硬编码文件名，改了什么就同步什么，没改就不动。
+ * 纪律不变：前置断言（服务已暂停 + 现状清单自洽） → 备份 → 换件 → 重签 → 自校验 → 失败回滚。
  *
  * 用法：node scripts/deploy-engine-files.mjs <installedDir>
  * 前置：local-service 已暂停（与 deploy-project-management-local.mjs 同一前置）。
@@ -43,17 +46,42 @@ const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const engineFiles = manifest.engine_files ?? {};
 if (!Object.keys(engineFiles).length) die("清单没有 engine_files 段（安装不完整或版本过旧）");
 
-// 变更探测：清单哈希 ≠ 源码树哈希 → 需要换件。源里缺失的键不动（那是删除流程的事，
-// 不能被一次同步悄悄扩大成"顺手删文件"）。
+// 期望状态：发布策略 + 暂存期引导脚本（与 stageSourceRuntime 的 engine_files 公式同源）。
+// 这样新增的运行时文件（如 central-mcp.mjs、desktop 引擎）随策略自动进部署，不再依赖
+// 手工补拷——手工补拷的文件不受清单完整性校验，是漂移的来源。
+const policyPath = resolve(source, "config/release-resources.json");
+if (!existsSync(policyPath)) die("源码缺少 config/release-resources.json");
+const policy = JSON.parse(readFileSync(policyPath, "utf8"));
+const desired = new Set([
+  ...policy.files,
+  "scripts/qa-project-bootstrap.mjs",
+  "scripts/trace-outcome.mjs",
+  "scripts/source-runtime.mjs",
+  "config/release-resources.json",
+]);
+
+// 变更/新增探测：
+//   - 期望集合内：源码哈希 ≠ 清单哈希 → 换件（含清单里没有的新文件）；
+//   - 源码缺失的期望文件：跳过并报告（那是策略与源码的漂移，staging 的
+//     assertReleaseImportClosure 会拦，这里不静默扩大成删除）。
 const changed = [];
-for (const [key, expected] of Object.entries(engineFiles)) {
+const missingInSource = [];
+const knownBefore = new Set(Object.keys(engineFiles));
+for (const key of desired) {
   const sourceFile = resolve(source, key);
-  if (!existsSync(sourceFile)) continue;
+  if (!existsSync(sourceFile)) { missingInSource.push(key); continue; }
   const actual = sha(sourceFile);
-  if (actual !== expected) changed.push({ key, sha256: actual });
+  if (actual !== engineFiles[key]) changed.push({ key, sha256: actual });
 }
+const legacyOnly = Object.keys(engineFiles).filter(key => !desired.has(key));
 if (!changed.length) {
-  console.log(JSON.stringify({ status: "in-sync", engineFiles: Object.keys(engineFiles).length }));
+  console.log(JSON.stringify({
+    status: "in-sync",
+    managed: Object.keys(engineFiles).length,
+    desired: desired.size,
+    legacyUnmanaged: legacyOnly.length,
+    ...(missingInSource.length ? { missingInSource } : {}),
+  }));
   process.exit(0);
 }
 
@@ -88,6 +116,8 @@ try {
 console.log(JSON.stringify({
   status: "deployed",
   changed: changed.length,
+  added: changed.filter(item => !knownBefore.has(item.key)).length,
   files: changed.map(item => item.key),
+  legacyUnmanaged: legacyOnly.length,
   backup: relative(installed, backup),
 }, null, 2));
