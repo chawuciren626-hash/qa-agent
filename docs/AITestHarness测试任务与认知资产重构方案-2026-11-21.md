@@ -349,3 +349,17 @@
 1. "测试助手"按钮会话落 default_agent；其指派专业 Agent 依赖该会话具备工程动作工具，未具备时助手按提示词如实降级说明。
 2. 运行时写守卫（助手写权限强制）未实现——当前助手会话天然无运行目录写路径，风险低；B1-6 一并补。
 3. 预登记 run 的展示为原始 `planned` 状态字样（运行列表未本地化该状态）。
+
+## 16. B2-B8 实施进度（2026-11-21 续）
+
+| 批次 | 状态 | 已落地 | 后续指引 |
+| --- | --- | --- | --- |
+| B2 出厂校验 | ◐ B2-1 已提交 `72e1bd4` | `stage_finalize` 合并动作（structured-actions：一次 exec 跑 analysis 全部确定性工具 + 台账诊断，合并 verdict/failed_tools；owning dispatch 同闸）；requirement-analysis skill 生命周期改走合并收口（回合 6→4） | B2-2 引擎收口（confirm-gate 服务端批量校验、违规清单定向重派）：接入点 = qa-confirm-gate 路由 + complete 契约已有 tool_checks 机制；test_points/test_cases 的 finalize 扩展照 analysis 模式 |
+| B3 资产中心 | ◐ 已提交 `9e4c6dd` | `/qa/assets` 只读投影端点（引擎 test-asset-catalog，校验错误透出）+ 资料页「测试资产」页签（按类分组/状态机着色/治理元数据；嵌入态隐藏） | 写路径仍归引擎 CLI；晋升/登记 UI 动作、被引用记录聚合待后续 |
+| B4 探索管线 | ◐ B4-1 已提交 `dcef73e` | env_explorer_agent 注册（agents.json + AGENTS.md 安全纪律）+ system-map-exploration skill（三层取法/双清单/覆盖率）+ release allowlist | B4-2 = M2a Web 取原料（Playwright 接入引擎工具层）与探索派发通道（origin: environment 作业），是最大的独立工程项 |
+| B5 执行架构 | ◐ B5-1 已提交 `e91aa19` | runs 查询带 env/kind；抽屉运行行状态本地化（planned=预登记）+ 类别/环境徽章，轮次语义可见 | 脚本资产化 lifecycle、分片并行与池配额、节点④按端动态通道 UI 为 B5 主体，独立批次 |
+| B6 MCP 工具面 | ⏳ 未开工 | — | stage_finalize 属会话内动作（owning dispatch 归属校验），MCP 出口需无会话形态的收口封装，先设计再接 |
+| B7 变更分析 | ⏳ 未开工 | — | 需先定 diff 接入形态（MR API 拉取 vs 本地导出），字段与简报注入挂 taskInfo 模式 |
+| B8 缺陷闭环 | ⏳ 未开工 | — | 桥接设计优先：run 侧缺陷产物（引擎目录）↔ 项目缺陷台账（qa_defects 表）的 id 关联与动作入口（confirm/fixed/retest/close 走 manage-defect-lifecycle 同规则） |
+
+验收提醒：每批提交前已跑触达契约与 typecheck；合并前请 Codex 跑全量 `npm test`；存量失败（web 设计规则 14 + 迁移链 18）与本批无关（stash 基线已甄别），建议单开小批清理。
