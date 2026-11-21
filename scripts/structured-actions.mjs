@@ -532,7 +532,7 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
         // B2 出厂校验（合并调用）：一次 exec 跑完本阶段全部确定性工具 + 阶段诊断，合并结论
         // 一次返回——工具逐个落独立 receipt（单个失败不中断其余），verdict 如实汇总。
         // 派发归属与 run_stage_tool 同闸：只有当前 owning dispatch 可以收口。
-        requireInput(parsed.stage === 'analysis', 'stage_finalize covers the analysis toolchain in this slice');
+        requireInput(['analysis', 'test_points', 'test_cases'].includes(parsed.stage), 'stage_finalize covers analysis/test_points/test_cases toolchains');
         requireInput(Array.isArray(parsed.tools) && parsed.tools.length >= 1 && parsed.tools.length <= 6, 'stage_finalize accepts 1-6 tool entries');
         requireInput(parsed.tools.every(t => t && typeof t === 'object' && typeof t.tool_id === 'string'
           && (t.payload === undefined) !== (t.source_path === undefined)), 'each finalize entry needs tool_id and exactly one of payload/source_path');
@@ -548,7 +548,12 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
             results.push({ tool_id: entry.tool_id, status: 'failed', error: error instanceof Error ? error.message : String(error) });
           }
         }
-        const diagnosis = diagnoseRequirementLedger(parsed.run_id, p => readRunFile(runDirectory(root, parsed.run_id), p).data);
+        const reader = p => readRunFile(runDirectory(root, parsed.run_id), p).data;
+        const diagnosis = parsed.stage === 'test_points'
+          ? (() => { const { rows, ledger, ...rest } = diagnoseTestPoints(parsed.run_id, reader); return rest; })()
+          : parsed.stage === 'test_cases'
+            ? diagnoseTestCases(root, parsed.run_id)
+            : diagnoseRequirementLedger(parsed.run_id, reader);
         const failedTools = results.filter(r => r.status !== 'completed').map(r => r.tool_id);
         const verdict = failedTools.length === 0 && diagnosis.status === 'passed' ? 'passed' : 'failed';
         tracedTools = results.map(r => r.tool_id);
