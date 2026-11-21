@@ -97,6 +97,13 @@
         "api-test-execution",
         "api-testing"
       ]
+    },
+    {
+      "id": "env_explorer_agent",
+      "prompt": "penguin/agents/env_explorer_agent/AGENTS.md",
+      "skills": [
+        "system-map-exploration"
+      ]
     }
   ]
 }
