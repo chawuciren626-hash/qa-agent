@@ -18,7 +18,7 @@ import "./platform-tasks.css";
 /** 与服务端上限对齐：单件 60KB、单任务 10 件（api/qa-platform-tasks 附件端点同口径）。 */
 const ATTACHMENT_MAX_BYTES = 60 * 1024;
 const ATTACHMENT_MAX_COUNT = 10;
-const TEXT_ACCEPT = ".md,.txt,.json,.csv,.tsv,.html,.htm,.xml,.yaml,.yml,.log,.ini,.conf,.text";
+const TEXT_ACCEPT = ".md,.txt,.json,.csv,.tsv,.html,.htm,.xml,.yaml,.yml,.log,.ini,.conf,.diff,.patch,.text";
 
 type PendingAttachment = { filename: string; mime: string; contentText: string; sizeBytes: number };
 

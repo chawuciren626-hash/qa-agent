@@ -491,7 +491,7 @@ function TaskAttachments({ projectId, taskId }: { projectId: string; taskId: str
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".md,.txt,.json,.csv,.tsv,.html,.htm,.xml,.yaml,.yml,.log,.ini,.conf,.text"
+        accept=".md,.txt,.json,.csv,.tsv,.html,.htm,.xml,.yaml,.yml,.log,.ini,.conf,.diff,.patch,.text"
         disabled={busy || items.length >= 10}
         onChange={(e) => void upload(e.target.files)}
         aria-label="上传附件"
