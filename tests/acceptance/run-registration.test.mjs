@@ -1,3 +1,4 @@
+import {spawn} from 'node:child_process';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -136,4 +137,26 @@ test('非法 run_id / manifest 身份不一致直接拒绝，不发请求', asyn
     assert.equal(result.ok,false);
     assert.match(result.error,/simulated unavailable/);
   } finally { globalThis.fetch = original; }
+});
+
+test('real CLI registers its entry before a blocked executor and ignores unknown runs', async () => {
+ const base=mkdtempSync(resolve(tmpdir(),'qa-cli-registration-'));
+ const engine=resolve(import.meta.dirname,'../..');
+ const context={version:1,engine_root:engine,workspace_root:base,session_root:resolve(base,'session'),session_id:'session-2026-11-21-12-00-00-abcdef',project_id:'p1'};
+ const run='run-cli-registration';
+ const dir=resolve(context.session_root,'output/runs',run);mkdirSync(dir,{recursive:true});
+ writeFileSync(resolve(dir,'manifest.json'),JSON.stringify({run_id:run,directory_context:context,stages:{},confirmations:[]}));
+ const execute=(runId,baseUrl)=>new Promise((done,reject)=>{
+   const child=spawn(process.execPath,[resolve(engine,'scripts/run-ui-tests.mjs'),'--run-id='+runId],{env:{...process.env,QA_DIRECTORY_CONTEXT:JSON.stringify(context),PENGUIN_API_URL:baseUrl,PENGUIN_API_TOKEN:'a'.repeat(40)},windowsHide:true,stdio:'ignore'});
+   child.on('error',reject);child.on('exit',code=>done(code));
+ });
+ try { await withCapture(201,{run:{runId:run,status:'running'}},async ({seen,baseUrl})=>{
+   assert.notEqual(await execute(run,baseUrl),0);
+   const starts=seen.filter(item=>!item.path.endsWith('/finish'));
+   assert.equal(starts.length,1);
+   assert.equal(starts[0].body.dispatch.entry,'run-ui-tests');
+   const before=seen.length;
+   assert.notEqual(await execute('run-unknown',baseUrl),0);
+   assert.equal(seen.length,before);
+ }); } finally { rmSync(base,{recursive:true,force:true,maxRetries:5}); }
 });

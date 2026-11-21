@@ -22,6 +22,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, unlin
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { releaseResources, assertReleaseImportClosure } from "./check-release-resources.mjs";
+import { assertPlainPath } from "./application-data.mjs";
 import { checkSourceRuntime } from "./source-runtime.mjs";
 
 const source = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -71,6 +72,7 @@ const changed = [];
 const knownBefore = new Set(Object.keys(engineFiles));
 for (const key of desired) {
   const sourceFile = resolve(source, key);
+  assertPlainPath(resolve(engine, key));
   if (!existsSync(sourceFile)) die(`Missing release source: ${key}`);
   const actual = sha(sourceFile);
   if (actual !== engineFiles[key]) changed.push({ key, sha256: actual });
