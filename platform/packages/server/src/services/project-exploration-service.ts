@@ -614,6 +614,24 @@ async function completeSuccess(
     replaceKnowledgeLayer(deps.db, projectId, env, layer.layer, layer.entries, { round: row.round, sessionId: null });
   }
 
+  // 资产候选派生（B4-2）：探索成功后把合并地图里控件指纹 ≥2 的页面自动登记为
+  // ui_locator_bundle 候选进引擎资产目录（幂等：id=env+route 哈希，已存在跳过）。
+  // 候选待人在资产中心晋升 verified——派生是增强不是闸，失败不阻断探索收口。
+  try {
+    const endType = (deps.db
+      .prepare("SELECT end_type FROM project_environments WHERE project_id=? AND env=?")
+      .get(projectId, env) as { end_type?: string } | undefined)?.end_type ?? "";
+    const catalog = (await import("./qa-engine.js")).qaEngineModule("test-asset-catalog");
+    catalog.registerExplorationCandidates(engineRoot, {
+      env,
+      endType,
+      maps: merged.maps,
+      capturedAt: new Date().toISOString(),
+    });
+  } catch {
+    // 候选派生失败不动探索结论；资产中心可手动登记补齐。
+  }
+
   // 证据层（第一批→第二批闭环）：先落假设/候选，再渲染知识文档——快照与逆向需求
   // 文档里的"待验证未知"才能包含本轮新生成的问题。失败语义与知识联动相同：
   // 不改探索结论，error 如实进 summary。
