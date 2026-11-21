@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { toastError, toastSuccess } from "@prismshadow/penguin-ui";
 import { projectDisplayName, useProject } from "../../../state/project";
+import { ENV_END_LABELS, ENV_END_TYPES } from "../project-management/types";
 import { listEnvironments } from "../project-management/api";
 import { analyzeTask, createLocalTask, uploadTaskAttachment } from "./api";
 import "./platform-tasks.css";
@@ -43,6 +44,7 @@ export function PlatformTaskCreatePage() {
   const [focusNote, setFocusNote] = useState("");
   const [envBaseUrl, setEnvBaseUrl] = useState("");
   const [account, setAccount] = useState("");
+  const [ends, setEnds] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -125,6 +127,7 @@ export function PlatformTaskCreatePage() {
         description: composedDescription,
         envBaseUrl: envBaseUrl.trim(),
         account: account.trim(),
+        ends,
       });
       // 附件先落库再分析：分析上下文由服务端从附件表装配（taskInfo），失败逐件提示不阻断。
       let attachFailures = 0;
@@ -213,7 +216,26 @@ export function PlatformTaskCreatePage() {
               disabled={busy}
             />
           </label>
-          <label className="qpt-field">
+          <div className="qpt-field">
+            <span>
+              涉及端 <small>选填；本次变更涉及哪些端（多选），AI 分析与测试点将按端组织</small>
+            </span>
+            <div className="qpt-end-chips">
+              {ENV_END_TYPES.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={`qpt-end-chip${ends.includes(option) ? " is-on" : ""}`}
+                  aria-pressed={ends.includes(option)}
+                  onClick={() => setEnds(ends.includes(option) ? ends.filter((e) => e !== option) : [...ends, option])}
+                  disabled={busy}
+                >
+                  {ENV_END_LABELS[option]}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="qpt-field">
             <span>
               需求描述 / 测试背景 * <small>AI 分析主输入——写清要测什么、背景与预期，篇幅不限</small>
             </span>
@@ -224,7 +246,7 @@ export function PlatformTaskCreatePage() {
               placeholder={"描述要测什么、业务背景、预期结果。\n示例：管理后台新增了批量导入模板功能，需要验证：\n1. 正常模板导入的成功路径；\n2. 字段缺失/格式错误的失败提示；\n3. 超大文件的边界行为。"}
               disabled={busy}
             />
-          </label>
+          </div>
           <label className="qpt-field">
             <span>
               测试重点 <small>选填；会作为「测试重点」小节并入需求描述，供 AI 分析优先关注</small>

@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS project_management (
 CREATE TABLE IF NOT EXISTS project_environments (
   project_id       TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
   env              TEXT NOT NULL,
+  end_type         TEXT NOT NULL DEFAULT '',   -- 所属端（B1-7）：web/web_admin/app/miniprogram/desktop/api；''=未指定
   base_url         TEXT NOT NULL,
   is_default       INTEGER NOT NULL DEFAULT 0,
   status           TEXT NOT NULL DEFAULT 'unregistered'

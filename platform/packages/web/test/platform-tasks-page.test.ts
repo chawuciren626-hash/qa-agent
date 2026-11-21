@@ -20,6 +20,7 @@ const fixture = vi.hoisted(() => {
     id: "ptl-1", source: "platform", taskNo: "FB202611090001", title: "gov 用户端登录优化",
     priority: "high", packageVersion: 3, roundNo: 3,
     productLines: [{ name: "gov 用户端", isPrimary: true }],
+    ends: [],
     suggestedPriority: "high", analysisSource: "demo", status: "ready", edited: false,
     mainSessionId: null, sourceUrl: "https://platform.example.com/tasks/active?taskId=FB202611090001",
     updatedAt: "2026-11-20T07:00:00.000Z",
@@ -85,6 +86,12 @@ vi.mock("../src/features/qa/platform-tasks/api", () => ({
   },
   startTask: async () => ({ task: fixture.platformReady, sessionId: "session-new-1", previousStatus: "ready" }),
   terminateTask: async () => ({ updated: fixture.platformReady }),
+  listTaskAttachments: async () => ({ attachments: [] }),
+  uploadTaskAttachment: async (_p: string, _t: string, input: Record<string, unknown>) => ({
+    attachment: { attachmentId: "att-new", filename: String(input.filename), mime: "text/plain", sizeBytes: 0, createdAt: "" },
+    attachments: [],
+  }),
+  deleteTaskAttachment: async () => ({ removed: true }),
 }));
 
 vi.mock("../src/features/qa/project-management/api", () => ({

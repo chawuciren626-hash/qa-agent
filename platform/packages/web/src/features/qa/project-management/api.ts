@@ -101,7 +101,7 @@ export async function listEnvironments(
 /** 新增或修改一个环境（地址变更会清空旧建档摘要，不会出现旧站点的页面数描述新地址）。 */
 export async function saveEnvironment(
   projectId: string,
-  input: { env?: string; baseUrl: string; isDefault?: boolean },
+  input: { env?: string; baseUrl: string; isDefault?: boolean; endType?: string },
 ): Promise<EnvironmentView> {
   const response = await apiFetch<{ environment: EnvironmentView }>(envBase(projectId), { method: "POST", body: input });
   return response.environment;

@@ -167,8 +167,21 @@ export interface BootstrapStep {
  * pages / apis 为 null 表示"没跑过"，与 0（"跑过且确实没有页面"）是两种结论，
  * 界面必须分别显示「—」和「0」——把失败或未跑写成 0 页会误导下游。
  */
+/** 端的标准枚举（B1-7，与服务端 ENV_END_TYPES 同口径）；空串 = 未指定。 */
+export const ENV_END_TYPES = ["web", "web_admin", "app", "miniprogram", "desktop", "api"] as const;
+export type EnvEndType = (typeof ENV_END_TYPES)[number] | "";
+export const ENV_END_LABELS: Record<string, string> = {
+  web: "用户端 Web",
+  web_admin: "管理后台",
+  app: "App",
+  miniprogram: "小程序",
+  desktop: "桌面客户端",
+  api: "接口后端",
+};
+
 export interface EnvironmentView {
   env: string;
+  endType: string;
   baseUrl: string;
   isDefault: boolean;
   status: EnvironmentStatus;

@@ -102,3 +102,6 @@
 .qpt-att-item button{border:1px solid light-dark(#e6e9ef,#4b5563);background:transparent;border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer;color:light-dark(#646a73,#d1d5db)}
 .qpt-att-item button:hover{border-color:light-dark(#c2410c,#f97316);color:light-dark(#c2410c,#f97316)}
 .qpt-att-hint{font-weight:400;font-size:11px;color:light-dark(#8f959e,#9ca3af);margin-left:6px}
+.qpt-end-chips{display:flex;flex-wrap:wrap;gap:8px}
+.qpt-end-chip{border:1px solid light-dark(#e6e9ef,#4b5563);background:light-dark(#fff,#111827);border-radius:999px;padding:5px 14px;font-size:12px;cursor:pointer;color:light-dark(#1f2329,#f3f4f6)}
+.qpt-end-chip.is-on{background:light-dark(#eaf2fb,#0f2740);border-color:light-dark(#185fa5,#3b82f6);color:light-dark(#12457d,#a8c8ea);font-weight:600}

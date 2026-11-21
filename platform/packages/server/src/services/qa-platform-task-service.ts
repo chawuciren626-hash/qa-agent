@@ -77,6 +77,8 @@ export interface TaskListItem {
   packageVersion: number | null;
   roundNo: number | null;
   productLines: Array<{ name: string; isPrimary: boolean }>;
+  /** 任务声明的涉及端（B1-7，标准枚举子集）；空数组 = 未声明。 */
+  ends: string[];
   suggestedPriority: string | null;
   analysisSource: string | null;
   status: string;
@@ -112,6 +114,8 @@ export interface TaskDetail {
     envBaseUrl: string | null;
     /** 本地任务：登录账号（选填；密码不落任务表）。 */
     account: string | null;
+    /** 任务声明的涉及端（B1-7，标准枚举子集）；空数组 = 未声明。 */
+    ends: string[];
   };
   summary: AiSummary | null;
   progress: { mainSessionId: string | null; runs: TaskProgressRun[] };
@@ -165,14 +169,14 @@ function asSummary(value: unknown): AiSummary | null {
 const PLATFORM_SELECT = `
   SELECT link_id AS id, 'platform' AS source, external_task_no AS task_no, title, priority,
          package_version, pm_round_no, product_lines_json, suggested_priority, ai_summary_json,
-         status, local_edited_at, main_session_id, source_url, NULL AS env_name, updated_at
+         status, local_edited_at, main_session_id, source_url, NULL AS env_name, ends_json, updated_at
     FROM platform_task_links
     WHERE project_id = ?`;
 const LOCAL_SELECT = `
   SELECT task_id AS id, 'local' AS source, task_id AS task_no, title, priority,
          NULL AS package_version, NULL AS pm_round_no, '[]' AS product_lines_json,
          suggested_priority, ai_summary_json, status, NULL AS local_edited_at,
-         main_session_id, '' AS source_url, env_name, updated_at
+         main_session_id, '' AS source_url, env_name, ends_json, updated_at
     FROM qa_local_tasks
     WHERE project_id = ?`;
 
@@ -192,6 +196,7 @@ interface RawRow {
   main_session_id: string | null;
   source_url: string;
   env_name: string | null;
+  ends_json: string | null;
   updated_at: string;
 }
 
@@ -242,6 +247,9 @@ export class QaPlatformTaskService {
 
   private toListItem(r: RawRow): TaskListItem {
     const lines = parseJson(r.product_lines_json);
+    const ends = Array.isArray(parseJson(r.ends_json))
+      ? (parseJson(r.ends_json) as unknown[]).filter((x): x is string => typeof x === "string")
+      : [];
     return {
       id: r.id,
       source: r.source === "local" ? "local" : "platform",
@@ -255,6 +263,7 @@ export class QaPlatformTaskService {
             .filter((x): x is { name: string; isPrimary: boolean } => !!x && typeof x === "object" && typeof (x as { name?: unknown }).name === "string")
             .map((x) => ({ name: x.name, isPrimary: x.isPrimary === true }))
         : [],
+      ends: [...new Set(ends)],
       suggestedPriority: r.suggested_priority,
       analysisSource: asSummary(parseJson(r.ai_summary_json))?.source ?? null,
       status: r.status,
@@ -411,13 +420,14 @@ export class QaPlatformTaskService {
     envName?: string | null;
     envBaseUrl?: string | null;
     account?: string;
+    ends?: string[];
   }): TaskListItem {
     const id = `qlt-${randomUUID()}`;
     const now = nowIso();
     this.db
       .prepare(
-        `INSERT INTO qa_local_tasks (task_id, project_id, title, description, status, env_name, env_base_url, account, created_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO qa_local_tasks (task_id, project_id, title, description, status, env_name, env_base_url, account, ends_json, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -427,6 +437,7 @@ export class QaPlatformTaskService {
         input.envName || null,
         input.envBaseUrl || null,
         input.account || null,
+        input.ends?.length ? JSON.stringify(input.ends) : null,
         input.userId,
         now,
         now
@@ -450,6 +461,8 @@ export class QaPlatformTaskService {
     envName?: string | null;
     envBaseUrl?: string | null;
     account?: string;
+    /** 涉及端集合（B1-7；undefined=不改，空数组=清除）。 */
+    ends?: string[];
   }): { updated: TaskListItem | null; analysisStale: boolean } {
     const found = this.findAny(input.projectId, input.id);
     if (!found) return { updated: null, analysisStale: false };
@@ -476,16 +489,17 @@ export class QaPlatformTaskService {
         );
     } else {
       // 环境与账号只在调用方显式携带时改写（undefined=保持现状），避免老客户端
-      // 漏传把已关联的环境清掉；空串是明确的"清除"。
+      // 漏传把已关联的环境清掉；空串是明确的"清除"。ends 同口径（B1-7）。
       const full = this.db
-        .prepare(`SELECT env_name, env_base_url, account FROM qa_local_tasks WHERE task_id = ? AND project_id = ?`)
+        .prepare(`SELECT env_name, env_base_url, account, ends_json FROM qa_local_tasks WHERE task_id = ? AND project_id = ?`)
         .get(input.id, input.projectId) as
-        | { env_name: string | null; env_base_url: string | null; account: string | null }
+        | { env_name: string | null; env_base_url: string | null; account: string | null; ends_json: string | null }
         | undefined;
+      const endsPatch = normalizeEnds(input.ends);
       this.db
         .prepare(
           `UPDATE qa_local_tasks SET title = ?, description = ?, priority = ?,
-             env_name = ?, env_base_url = ?, account = ?, updated_at = ?
+             env_name = ?, env_base_url = ?, account = ?, ends_json = ?, updated_at = ?
            WHERE task_id = ? AND project_id = ?`
         )
         .run(
@@ -496,6 +510,7 @@ export class QaPlatformTaskService {
           input.envName !== undefined ? input.envName || null : full?.env_name ?? null,
           input.envBaseUrl !== undefined ? input.envBaseUrl || null : full?.env_base_url ?? null,
           input.account !== undefined ? input.account || null : full?.account ?? null,
+          endsPatch !== undefined ? (endsPatch.length ? JSON.stringify(endsPatch) : null) : full?.ends_json ?? null,
           nowIso(),
           input.id,
           input.projectId
@@ -664,6 +679,7 @@ export class QaPlatformTaskService {
   private taskInfo(projectId: string, id: string, source: "platform" | "local", row: RawRow): TaskInfo {
     // 附件是任务材料的一部分：analyze 提示词、开工简报共用同一份注入（预算内截断）。
     const attachments = this.attachmentPromptBlocks(projectId, id, source);
+    const ends = parseEnds(row.ends_json);
     if (source === "platform") {
       const full = this.db
         .prepare(`SELECT title, local_title_note, local_test_focus_note FROM platform_task_links WHERE link_id = ? AND project_id = ?`)
@@ -674,6 +690,7 @@ export class QaPlatformTaskService {
         title: full?.title ?? row.title,
         description: "",
         notes: [full?.local_title_note, full?.local_test_focus_note, ...attachments].filter(Boolean).join("\n"),
+        ends,
         envUrl: "",
         account: "",
       };
@@ -687,6 +704,7 @@ export class QaPlatformTaskService {
       title: full?.title ?? row.title,
       description: full?.description ?? "",
       notes: attachments.join("\n"),
+      ends,
       envUrl: full?.env_base_url ?? "",
       account: full?.account ?? "",
     };
@@ -707,7 +725,7 @@ export class QaPlatformTaskService {
    */
   private async produceSummary(
     projectId: string,
-    info: { title: string; description: string; notes: string; envUrl: string; account: string },
+    info: { title: string; description: string; notes: string; ends: string[]; envUrl: string; account: string },
     priority: string,
   ): Promise<{ summary: AiSummary; degraded?: { reason: string } }> {
     const complete = this.model.completeOnce;
@@ -830,8 +848,39 @@ interface TaskInfo {
   title: string;
   description: string;
   notes: string;
+  ends: string[];
   envUrl: string;
   account: string;
+}
+
+/** 任务端的展示名（与 web 端 ENV_END_LABELS 同口径）。 */
+const END_LABELS: Record<string, string> = {
+  web: "用户端 Web",
+  web_admin: "管理后台",
+  app: "App",
+  miniprogram: "小程序",
+  desktop: "桌面客户端",
+  api: "接口后端",
+};
+
+/** 端集合归一：写路径校验（undefined = 不修改，数组逐项校验枚举、去重）。 */
+function normalizeEnds(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw Object.assign(new Error("invalid_ends"), { status: 400, code: "invalid_ends" });
+  const ends = [...new Set(value.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim()))];
+  for (const end of ends) {
+    if (!Object.keys(END_LABELS).includes(end)) {
+      throw Object.assign(new Error(`invalid_end_type: ${end}`), { status: 400, code: "invalid_end_type" });
+    }
+  }
+  return ends;
+}
+
+/** 端集合读路径：ends_json（JSON 字符串或 null）→ string[]；坏数据静默为空，不冒充有效声明。 */
+function parseEnds(raw: string | null | undefined): string[] {
+  const parsed = parseJson(raw ?? null);
+  if (!Array.isArray(parsed)) return [];
+  return [...new Set(parsed.filter((x): x is string => typeof x === "string" && x.trim() !== ""))];
 }
 
 /** 开工指令共用的任务材料段。 */
@@ -839,6 +888,7 @@ function taskMaterialLines(source: "platform" | "local", row: RawRow, info: Task
   return [
     `- 任务号：${row.task_no}`,
     `- 任务名称：${info.title}`,
+    info.ends.length ? `- 涉及端：${info.ends.map((end) => END_LABELS[end] ?? end).join("、")}` : "",
     info.description ? `- 需求描述 / 测试背景：${info.description}` : "",
     info.notes ? `- 本地备注：${info.notes}` : "",
     `- 优先级：${row.priority}`,
@@ -887,7 +937,7 @@ const ANALYSIS_TIMEOUT_MS = 90_000;
  * 对象——整理需求内容、提取测试环境与测试账号密码（只从用户填写内容里取，没有就留
  * 空字符串，不得编造），入库走 asSummary 归一。
  */
-function analysisPrompt(info: { title: string; description: string; notes: string; envUrl: string; account: string }): string {
+function analysisPrompt(info: { title: string; description: string; notes: string; ends: string[]; envUrl: string; account: string }): string {
   return [
     "你是测试平台的需求分析助手。根据下面的任务信息整理出结构化测试分析数据。",
     "只输出一个 JSON 对象，不要输出解释、Markdown 或代码围栏，字段与格式：",
@@ -895,6 +945,7 @@ function analysisPrompt(info: { title: string; description: string; notes: strin
     "要求：测试环境/账号/密码只整理用户已填写的内容，不得编造或补全；需求整理与要点基于描述归纳，不确定的列入 open_questions。",
     "",
     `任务名称：${info.title}`,
+    info.ends.length ? `涉及端：${info.ends.join("、")}` : "",
     info.description ? `需求描述 / 测试背景：${info.description}` : "",
     info.notes ? `补充备注：${info.notes}` : "",
     info.envUrl ? `测试环境 URL（用户已在表单填写）：${info.envUrl}` : "",

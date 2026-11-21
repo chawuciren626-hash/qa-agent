@@ -24,9 +24,35 @@ const ENV_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/;
 /** 建档默认超时：Python 侧对 bundle 有硬限流（12 个 × 10s），留足余量。 */
 const BOOTSTRAP_TIMEOUT_MS = 120_000;
 
+/**
+ * 端的标准枚举（B1-7）：项目 = 产品，端是项目内维度。环境按 端 × 环境名 区分；
+ * ''（空串）= 未指定，存量环境保持可达。清单演进改这里，表层不做 CHECK。
+ */
+export const ENV_END_TYPES = ["web", "web_admin", "app", "miniprogram", "desktop", "api"] as const;
+export type EnvEndType = (typeof ENV_END_TYPES)[number] | "";
+export const ENV_END_LABELS: Record<string, string> = {
+  web: "用户端 Web",
+  web_admin: "管理后台",
+  app: "App",
+  miniprogram: "小程序",
+  desktop: "桌面客户端",
+  api: "接口后端",
+};
+
+export function normalizeEnvEndType(value: unknown): EnvEndType {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (!(ENV_END_TYPES as readonly string[]).includes(trimmed)) {
+    throw new HttpError(400, "invalid_end_type", `端必须是 ${ENV_END_TYPES.join("/")} 之一。`);
+  }
+  return trimmed as EnvEndType;
+}
+
 export interface EnvironmentRow {
   project_id: string;
   env: string;
+  end_type: string;
   base_url: string;
   is_default: number;
   status: "unregistered" | "probing" | "registered" | "failed";
@@ -77,6 +103,7 @@ export interface BootstrapStep {
 
 export interface EnvironmentView {
   env: string;
+  endType: string;
   baseUrl: string;
   isDefault: boolean;
   status: EnvironmentRow["status"];
@@ -98,6 +125,7 @@ export interface EnvironmentView {
 function rowToView(row: EnvironmentRow): EnvironmentView {
   return {
     env: row.env,
+    endType: row.end_type ?? "",
     baseUrl: row.base_url,
     isDefault: row.is_default === 1,
     status: row.status,
@@ -240,10 +268,15 @@ export function normalizeEnvName(value: unknown): string {
 export function upsertEnvironment(
   db: Db,
   projectId: string,
-  input: { env?: unknown; baseUrl: unknown; isDefault?: boolean },
+  input: { env?: unknown; baseUrl: unknown; isDefault?: boolean; endType?: unknown },
 ): EnvironmentView {
   const env = normalizeEnvName(input.env);
   const baseUrl = normalizeBaseUrl(input.baseUrl);
+  // 端可选：未传保持原值（编辑不带 end_type = 不改端）；传了就按枚举校验（'' = 清空）。
+  const endType =
+    input.endType === undefined
+      ? (findEnvironment(db, projectId, env)?.endType ?? "")
+      : normalizeEnvEndType(input.endType);
   const existing = findEnvironment(db, projectId, env);
   const hasDefault = (db.prepare(`${SELECT} AND is_default=1`).get(projectId) as unknown) !== undefined;
   const isDefault = input.isDefault === true || (!existing && !hasDefault);
@@ -254,8 +287,8 @@ export function upsertEnvironment(
   }
   if (existing) {
     db.prepare(
-      "UPDATE project_environments SET base_url=?, is_default=?, revision=revision+1 WHERE project_id=? AND env=?",
-    ).run(baseUrl, isDefault ? 1 : 0, projectId, env);
+      "UPDATE project_environments SET base_url=?, end_type=?, is_default=?, revision=revision+1 WHERE project_id=? AND env=?",
+    ).run(baseUrl, endType, isDefault ? 1 : 0, projectId, env);
     // 地址变了，旧摘要就不再描述这个地址：清空，等下一次建档重新填。
     if (existing.baseUrl !== baseUrl) {
       db.prepare(
@@ -266,9 +299,9 @@ export function upsertEnvironment(
     }
   } else {
     db.prepare(
-      `INSERT INTO project_environments (project_id,env,base_url,is_default,status,created_at)
-       VALUES (?,?,?,?,'unregistered',?)`,
-    ).run(projectId, env, baseUrl, isDefault ? 1 : 0, now);
+      `INSERT INTO project_environments (project_id,env,end_type,base_url,is_default,status,created_at)
+       VALUES (?,?,?,?,?,'unregistered',?)`,
+    ).run(projectId, env, endType, baseUrl, isDefault ? 1 : 0, now);
   }
   return findEnvironment(db, projectId, env) as EnvironmentView;
 }

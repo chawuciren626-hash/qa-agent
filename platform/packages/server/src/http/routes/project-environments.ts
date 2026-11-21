@@ -115,6 +115,7 @@ export function projectEnvironmentsRoutes(deps: ProjectEnvironmentDeps): Hono<Ap
       env: body.env,
       baseUrl: body.baseUrl,
       isDefault: body.isDefault === true,
+      endType: body.endType,
     });
     c.header("Cache-Control", "no-store");
     return c.json({ environment }, 201);

@@ -22,6 +22,8 @@ export interface TaskListItem {
   packageVersion: number | null;
   roundNo: number | null;
   productLines: Array<{ name: string; isPrimary: boolean }>;
+  /** 任务声明的涉及端（B1-7，标准枚举子集）；空数组 = 未声明。 */
+  ends: string[];
   suggestedPriority: string | null;
   analysisSource: string | null;
   status: string;
@@ -73,6 +75,8 @@ export interface TaskDetail {
     envBaseUrl: string | null;
     /** 本地任务：登录账号（选填；密码不落任务表）。 */
     account: string | null;
+    /** 任务声明的涉及端（B1-7）；空数组 = 未声明。 */
+    ends: string[];
   };
   summary: AiSummary | null;
   progress: { mainSessionId: string | null; runs: TaskProgressRun[] };
@@ -99,7 +103,7 @@ export function getTaskDetail(projectId: string, taskId: string): Promise<TaskDe
  */
 export function createLocalTask(
   projectId: string,
-  input: { title: string; description: string; envBaseUrl?: string; account?: string }
+  input: { title: string; description: string; envBaseUrl?: string; account?: string; ends?: string[] }
 ): Promise<{ task: TaskListItem }> {
   return apiFetch<{ task: TaskListItem }>(`${base(projectId)}/local`, {
     method: "POST",
@@ -117,6 +121,7 @@ export function editTask(
     description?: string;
     envBaseUrl?: string;
     account?: string;
+    ends?: string[];
   }
 ): Promise<{ updated: TaskListItem | null; analysisStale: boolean }> {
   return apiFetch<{ updated: TaskListItem | null; analysisStale: boolean }>(

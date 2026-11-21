@@ -12,6 +12,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { useProject, projectDisplayName } from "../../../state/project";
+import {
+  ENV_END_LABELS,
+  ENV_END_TYPES,
+} from "./types";
 import type {
   EnvironmentKnowledge,
   EnvironmentView,
@@ -323,6 +327,7 @@ export function ProjectEnvironmentsPage() {
                     <span className="qpm-env-item-top">
                       <i className={`qpm-env-dot ${envDotClass(env)}`} aria-hidden="true" />
                       <b>{env.env}</b>
+                      {env.endType && <span className="qpm-tag">{ENV_END_LABELS[env.endType] ?? env.endType}</span>}
                       {env.isDefault && <span className="qpm-tag qpm-tag-manual">默认</span>}
                       <span className="qpm-env-item-status">{envStatusText(env)}</span>
                     </span>
@@ -346,7 +351,7 @@ export function ProjectEnvironmentsPage() {
                         <i className={`qpm-env-dot ${envDotClass(current)}`} aria-hidden="true" />
                         {current.env} · {envStatusText(current)}
                       </h2>
-                      <span className="qpm-env-url qpm-mono">{current.baseUrl}</span>
+                      <span className="qpm-env-url qpm-mono">{current.endType ? `${ENV_END_LABELS[current.endType] ?? current.endType} · ` : ""}{current.baseUrl}</span>
                       {current.probedAt && (
                         <span className="qpm-count">最近建档 {fullTimeText(current.probedAt)}</span>
                       )}
@@ -706,6 +711,7 @@ function EnvironmentDialog({
   onSaved: (environment: EnvironmentView) => void;
 }) {
   const [env, setEnv] = useState("test");
+  const [endType, setEndType] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -718,7 +724,7 @@ function EnvironmentDialog({
     setSaving(true);
     setError(null);
     try {
-      const saved = await saveEnvironment(projectId, { env: env.trim() || "test", baseUrl: baseUrl.trim() });
+      const saved = await saveEnvironment(projectId, { env: env.trim() || "test", baseUrl: baseUrl.trim(), endType });
       onSaved(saved);
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败，请重试");
@@ -750,6 +756,15 @@ function EnvironmentDialog({
               spellCheck={false}
             />
             <span className="qpm-field-hint">只支持 http / https；地址里不要带账号口令。改地址会清空旧建档摘要。</span>
+          </label>
+          <label className="qpm-form-row">
+            <span>所属端 <small className="qpm-field-hint">选填；同一产品的多端环境按端区分</small></span>
+            <select value={endType} onChange={(e) => setEndType(e.target.value)}>
+              <option value="">未指定</option>
+              {ENV_END_TYPES.map((option) => (
+                <option key={option} value={option}>{ENV_END_LABELS[option]}</option>
+              ))}
+            </select>
           </label>
           {error && <p className="qpm-field-error" role="alert">{error}</p>}
         </div>

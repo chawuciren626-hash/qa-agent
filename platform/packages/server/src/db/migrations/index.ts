@@ -87,6 +87,7 @@ import { taskPlatformIntegration } from "./steps/2026-11-20-task-platform-integr
 import { localTaskContext } from "./steps/2026-11-21-local-task-context.js";
 import { mcpServerCatalog } from "./steps/2026-11-21-mcp-server-catalog.js";
 import { taskAttachments } from "./steps/2026-11-21-task-attachments.js";
+import { endDimensions } from "./steps/2026-11-21-end-dimensions.js";
 
 export type { Migration } from "./migration.js";
 export { IrreversibleMigrationError, UnknownMigrationError, appliedMigrations } from "./runner.js";
@@ -139,6 +140,7 @@ export const MIGRATIONS: readonly Migration[] = [
   localTaskContext,
   mcpServerCatalog,
   taskAttachments,
+  endDimensions,
 ];
 
 /**
