@@ -8,6 +8,10 @@ import type { Hono } from "hono";
 import type { AppEnv } from "../../auth/middleware.js";
 import type { AgentsRouteDeps } from "./agents.js";
 import { qaEnabled, qaEngineModule } from "../../services/qa-engine.js";
+import { userText } from "@prismshadow/penguin-core";
+import { QaTaskRunRegistry } from "../../services/qa-task-run-registry.js";
+import { loadPoolCapacity } from "../../services/pool-capacity.js";
+import type { KnowledgeDb } from "../../services/qa-project-knowledge.js";
 import { requireValidId } from "../validate.js";
 import { HttpError } from "../errors.js";
 import { readTaskRuns, readTaskRunDetail } from "../../services/qa-project-overview.js";
@@ -215,6 +219,49 @@ export function registerQaProjectRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps
       const reason = stderr.trim().split("\n").filter(Boolean).at(-1)?.slice(0, 200) || "缺陷操作未生效";
       throw new HttpError(409, "defect_action_rejected", reason);
     }
+  });
+  // 发起复测轮次（B8-3）：原任务下新一轮 run（kind=retest，planned 预登记），run_id 随
+  // 复测指令下发由队长 create_run 采纳；复测范围（缺陷关联用例 + regression.impact 影响选集）
+  // 由执行计划装配并经执行授权门禁。回归 run 不开新任务、不重跑设计阶段。
+  app.post("/qa/tasks/:sessionId/runs/:runId/retest", async (c) => {
+    const id = requireValidId(c, "projectId");
+    deps.access.requireProjectOwner(c.var.user.userId, id);
+    const sessionId = c.req.param("sessionId"), runId = c.req.param("runId");
+    if (!/^session-[A-Za-z0-9-]+$/.test(sessionId) || !/^run-[A-Za-z0-9-]+$/.test(runId))
+      throw new HttpError(400, "invalid_review", "任务或运行标识无效。");
+    let workspace: string | undefined;
+    for (const agent of await deps.agentService.listAgents(id)) {
+      const listed = await deps.sessionService.listSessions(id, agent.agentId, { excludeOrg: true });
+      const session = listed.sessions.find(item => item.sessionId === sessionId && item.source !== "subagent" && item.source !== "company");
+      if (session) { workspace = session.workspace; break; }
+    }
+    if (!workspace) throw new HttpError(404, "run_not_found", "本项目任务没有这个会话。");
+    const marker = JSON.parse(await fs.readFile(path.join(workspace, ".qa-session.json"), "utf8"));
+    if (marker.session_id !== sessionId || marker.engine_root !== path.resolve(process.env.AITEST_ENGINE_ROOT ?? ""))
+      throw new HttpError(409, "review_context_changed", "任务工作区绑定不一致，未发起复测。");
+    let plannedRunId: string;
+    try {
+      const planned = new QaTaskRunRegistry(deps.db as unknown as KnowledgeDb, undefined, undefined, undefined, loadPoolCapacity(deps.config?.root))
+        .createPlannedRun({
+          projectId: id, sessionId, userId: c.var.user.userId, kind: "retest",
+          briefing: { originalRunId: runId, retest: true },
+        });
+      plannedRunId = planned.runId;
+    } catch (error) {
+      throw new HttpError(409, "retest_register_failed", `复测轮次预登记失败：${error instanceof Error ? error.message : "未知错误"}`);
+    }
+    const briefing = [
+      "[复测轮次]（测试平台系统注入，非人工输入）",
+      `原轮次 run_id=${runId} 的缺陷已进入修复待复测；本轮为同一任务下的复测轮次，run_id 已预登记为 ${plannedRunId}。`,
+      "要求：create_run 必须复用该 run_id（请求体携带该 run_id，不得自行生成）；执行阶段按复测范围装配（缺陷关联用例 + regression.impact 影响选集），范围与数据影响经执行授权门禁后运行；复测结果以 retest 事件挂回缺陷台账（manage-defect-lifecycle retest，--retest-run 指向本轮）。",
+    ].join("\n");
+    try {
+      await deps.manager.startTask(sessionId, [userText(briefing, "server")], { queueIfBusy: true });
+    } catch (error) {
+      throw new HttpError(409, "retest_dispatch_failed", `复测指令发送失败：${error instanceof Error ? error.message : "未知错误"}（预登记保留，可重试）`);
+    }
+    c.header("Cache-Control", "no-store");
+    return c.json({ runId: plannedRunId, kind: "retest" }, 201);
   });
   app.post("/qa/tasks/:sessionId/runs/:runId/stages/:stageId/revise", async (c) => {
     const id = requireValidId(c, "projectId");
