@@ -38,6 +38,42 @@ import type { KnowledgeEntryInput, KnowledgeLayer } from "./environment-knowledg
 /** 系统动作人：探索联动不冒充任何用户。 */
 const SYNC_ACTOR = "system:exploration";
 
+/** 确定性资料 id 查询所需的最小 DB 形状。 */
+interface DocLookupDb {
+  prepare(sql: string): { get(...args: unknown[]): unknown };
+}
+
+interface ExistingDocRow {
+  current_revision: number;
+  content_hash: string;
+  status: string;
+  project_id: string;
+}
+
+/**
+ * 确定性资料 id 的项目隔离：qa_documents.document_id 是全局主键，`doc-*-<env>` 这类
+ * 确定性 id 在两个项目用同名环境时会撞主键。解析顺序：
+ *   1. 本项目的 scoped id（`<base>-<项目指纹8>`）已存在 → 沿用；
+ *   2. 旧全局 id 存在且归属本项目 → 沿用旧 id（老项目无缝过渡，引用不断链）；
+ *   3. 都没有 → 创建用 scoped id（跨项目重名不再互相顶掉）。
+ */
+export function resolveDeterministicDocumentId(
+  db: DocLookupDb,
+  base: string,
+  projectId: string,
+): { id: string; row: ExistingDocRow | undefined } {
+  const select = (documentId: string): ExistingDocRow | undefined =>
+    db
+      .prepare("SELECT current_revision, content_hash, status, project_id FROM qa_documents WHERE document_id=?")
+      .get(documentId) as ExistingDocRow | undefined;
+  const scoped = `${base}-${createHash("sha256").update(projectId).digest("hex").slice(0, 8)}`;
+  const scopedRow = select(scoped);
+  if (scopedRow) return { id: scoped, row: scopedRow };
+  const legacyRow = select(base);
+  if (legacyRow && legacyRow.project_id === projectId) return { id: base, row: legacyRow };
+  return { id: scoped, row: undefined };
+}
+
 /** 语义证据的最小消费契约（来自探索产物 observations.json，只声明用到的字段）。 */
 export interface EvidenceObservationDigest {
   id?: unknown;
@@ -105,15 +141,19 @@ export function explorationKnowledgeSync(deps: {
   return async (input) => {
     const store = new QaProjectKnowledgeStore(deps.db as unknown as KnowledgeDb);
     const builds = new QaKnowledgeBuildStore(deps.db as unknown as KnowledgeDb, store, deps.engineRoot);
-    const documentId = `doc-explore-${input.env}`;
+    const { id: documentId, row: existing } = resolveDeterministicDocumentId(
+      deps.db,
+      `doc-explore-${input.env}`,
+      input.projectId,
+    );
     const title = `环境探索快照（${input.env}）`;
     const { content, items } = renderSnapshot(input, documentId);
     if (items.length === 0) {
       // 快照为空时快照文档不动，但证据/假设仍可独立成 PRD（事实为零的站点也有未知）。
       const prd = await writeReversePrd(deps.db as unknown as KnowledgeDb, store, input);
       return {
-        documentId, revision: prd?.revision ?? 0, buildVersion: null,
-        unchanged: true, itemCount: 0,
+        documentId, revision: existing?.current_revision ?? prd?.revision ?? 0, buildVersion: null,
+        unchanged: true, itemCount: 0, snapshotArchived: existing?.status === "archived" ? true : undefined,
         prdDocumentId: prd?.documentId ?? null, prdRevision: prd?.revision ?? null,
         prdArchived: prd?.archived === true,
       };
@@ -122,10 +162,7 @@ export function explorationKnowledgeSync(deps: {
     // store 的 content_hash 带 sha256: 前缀，比对必须同口径，否则每轮都会误判
     // 「内容变了」制造修订噪音。
     const contentHash = `sha256:${createHash("sha256").update(content).digest("hex")}`;
-    const row = deps.db
-      .prepare("SELECT current_revision, content_hash, status FROM qa_documents WHERE project_id=? AND document_id=?")
-      .get(input.projectId, documentId) as
-      { current_revision: number; content_hash: string; status: string } | undefined;
+    const row = existing;
 
     let revision: number;
     if (!row) {
@@ -393,13 +430,9 @@ async function writeReversePrd(
   const hasEvidence = (input.evidence?.observations?.length ?? 0) > 0 || (input.evidence?.rules?.length ?? 0) > 0;
   const hasHypotheses = (input.openHypotheses?.length ?? 0) > 0;
   if (!hasEvidence && !hasHypotheses) return null;
-  const documentId = `doc-reverse-prd-${input.env}`;
+  const { id: documentId, row } = resolveDeterministicDocumentId(db, `doc-reverse-prd-${input.env}`, input.projectId);
   const content = renderReversePrd(input, documentId);
   const contentHash = `sha256:${createHash("sha256").update(content).digest("hex")}`;
-  const row = db
-    .prepare("SELECT current_revision, content_hash, status FROM qa_documents WHERE project_id=? AND document_id=?")
-    .get(input.projectId, documentId) as
-    { current_revision: number; content_hash: string; status: string } | undefined;
   if (!row) {
     const created = store.createDocument({
       projectId: input.projectId,

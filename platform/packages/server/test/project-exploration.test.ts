@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { projectDir } from "@prismshadow/penguin-core";
 import { apiClient, createTestApp, loginAdmin, type TestApp } from "./helpers.js";
 import {
@@ -412,6 +413,10 @@ describe("exploration → 项目资料联动（B1）", () => {
     };
   };
 
+  /** 确定性快照资料 id 已按项目隔离：测试用与实现同口径的方式计算。 */
+  const scopedExploreId = (projectId: string) =>
+    `doc-explore-test-${createHash("sha256").update(projectId).digest("hex").slice(0, 8)}`;
+
   function syncDepsOf(projectId: string, sync?: ExplorationDeps["knowledgeSync"]): ExplorationDeps {
     return depsOf(projectId, {
       run: runWritingReceipt({ ok: true }),
@@ -428,7 +433,7 @@ describe("exploration → 项目资料联动（B1）", () => {
 
     const kb = finished.summary?.knowledgeBuild as { documentId: string; revision: number; buildVersion: number; unchanged: boolean; itemCount: number } | undefined;
     expect(kb).toBeDefined();
-    expect(kb!.documentId).toBe("doc-explore-test");
+    expect(kb!.documentId).toBe(scopedExploreId(projectId));
     expect(kb!.buildVersion).toBe(1);
     expect(kb!.unchanged).toBe(false);
     // 2 模块 + 2 接口 + 2 访问墙，全部进知识。
@@ -436,7 +441,7 @@ describe("exploration → 项目资料联动（B1）", () => {
 
     const doc = test!.deps.db
       .prepare("SELECT title, status, current_revision FROM qa_documents WHERE project_id=? AND document_id=?")
-      .get(projectId, "doc-explore-test") as { title: string; status: string; current_revision: number };
+      .get(projectId, scopedExploreId(projectId)) as { title: string; status: string; current_revision: number };
     expect(doc.status).toBe("active");
     expect(doc.title).toBe("环境探索快照（test）");
     expect(doc.current_revision).toBe(1);
@@ -444,7 +449,7 @@ describe("exploration → 项目资料联动（B1）", () => {
 
     const content = (test!.deps.db
       .prepare("SELECT content FROM qa_document_revisions WHERE document_id=? AND revision=1")
-      .get("doc-explore-test") as { content: string }).content;
+      .get(scopedExploreId(projectId)) as { content: string }).content;
     const docLines = content.split("\n");
     const buildRow = test!.deps.db
       .prepare("SELECT items_json FROM qa_knowledge_builds WHERE project_id=? AND version=1")
@@ -453,7 +458,7 @@ describe("exploration → 项目资料联动（B1）", () => {
     expect(items).toHaveLength(6);
     for (const item of items) {
       // 原文位置必须是真证据：file 指向快照资料，行号那行真的写着这条事实。
-      expect(item.source.file).toBe("doc-explore-test");
+      expect(item.source.file).toBe(scopedExploreId(projectId));
       expect(docLines[item.source.line - 1]).toContain(item.name);
     }
     const types = new Set(items.map((item) => item.type));
@@ -477,7 +482,7 @@ describe("exploration → 项目资料联动（B1）", () => {
 
     const revisions = test!.deps.db
       .prepare("SELECT count(*) AS n FROM qa_document_revisions WHERE document_id=?")
-      .get("doc-explore-test") as { n: number };
+      .get(scopedExploreId(projectId)) as { n: number };
     expect(revisions.n).toBe(1);
     const builds = test!.deps.db
       .prepare("SELECT count(*) AS n FROM qa_knowledge_builds WHERE project_id=?")
@@ -500,6 +505,52 @@ describe("exploration → 项目资料联动（B1）", () => {
     expect(knowledge?.summary?.knowledgeLayers).toEqual(["module", "interface", "wall"]);
   });
 
+  it("两个项目用同名环境：资料 id 按项目隔离，互不撞主键", async () => {
+    // 项目 A（explore_project）第 1 轮：scoped id 创建（全新库没有旧全局文档）。
+    const projectIdA = await projectWithRegisteredEnv();
+    const depsA = syncDepsOf(projectIdA);
+    startExploration(depsA, projectIdA, "test", {});
+    await waitForStatus(depsA, projectIdA, (view) => view?.status === "succeeded");
+    const kbA = (test!.deps.db
+      .prepare("SELECT summary_json FROM qa_environment_explorations WHERE project_id=? ORDER BY round DESC")
+      .get(projectIdA) as { summary_json: string });
+    expect(JSON.parse(kbA.summary_json).knowledgeBuild.documentId).toBe(scopedExploreId(projectIdA));
+
+    // 项目 B 同名环境 test：各自的 scoped id 创建成功，A 的资料不受影响。
+    const projectIdB = "explore_project_b";
+    const admin = apiClient(test!.app, (await loginAdmin(test!.app)).cookie);
+    expect((await admin.post("/api/projects/managed", {
+      projectId: projectIdB,
+      name: "探索项目 B",
+      environment: { env: "test", baseUrl: "http://gateway-b.example.com" },
+    })).status).toBe(201);
+    test!.deps.db
+      .prepare(
+        `UPDATE project_environments SET status='registered', pages_total=10, pages_registered=10,
+           apis_total=20, api_modules='["卡池"]', login_captcha='image', probed_at=?
+         WHERE project_id=? AND env='test'`,
+      )
+      .run(new Date().toISOString(), projectIdB);
+    const depsB = syncDepsOf(projectIdB);
+    startExploration(depsB, projectIdB, "test", {});
+    const finishedB = await waitForStatus(depsB, projectIdB, (view) => view?.status === "succeeded");
+    const kbB = finishedB.summary?.knowledgeBuild as { documentId: string; buildVersion: number } | undefined;
+    expect(kbB!.documentId).toBe(scopedExploreId(projectIdB));
+    expect(kbB!.documentId).not.toBe(scopedExploreId(projectIdA));
+    expect(kbB!.buildVersion).toBe(1);
+    // A 的快照文档未被 B 顶掉，仍归属 A 且 active。
+    const docA = test!.deps.db
+      .prepare("SELECT project_id, status FROM qa_documents WHERE document_id=?")
+      .get(scopedExploreId(projectIdA)) as { project_id: string; status: string };
+    expect(docA).toMatchObject({ project_id: projectIdA, status: "active" });
+
+    // B 第 2 轮：同 scoped id 更新，不再撞主键。
+    const depsB2 = syncDepsOf(projectIdB);
+    startExploration(depsB2, projectIdB, "test", {});
+    const secondB = await waitForStatus(depsB2, projectIdB, (view) => view?.round === 2 && view.status === "succeeded");
+    expect((secondB.summary?.knowledgeBuild as { documentId: string }).documentId).toBe(kbB!.documentId);
+  });
+
   it("快照被归档：联动跳过并如实标注（不再报错），取消归档后恢复", async () => {
     const projectId = await projectWithRegisteredEnv();
     const firstDeps = syncDepsOf(projectId);
@@ -509,7 +560,7 @@ describe("exploration → 项目资料联动（B1）", () => {
     // 所有者归档探索快照（项目资料页的归档操作）——归档是决定，联动尊重它。
     test!.deps.db
       .prepare("UPDATE qa_documents SET status='archived' WHERE project_id=? AND document_id=?")
-      .run(projectId, "doc-explore-test");
+      .run(projectId, scopedExploreId(projectId));
 
     const secondDeps = syncDepsOf(projectId);
     startExploration(secondDeps, projectId, "test", {});
@@ -524,7 +575,7 @@ describe("exploration → 项目资料联动（B1）", () => {
     // 快照冻结：不新增修订、不新增构建（本轮事实不硬拼进归档文档造假证据）。
     const revisions = test!.deps.db
       .prepare("SELECT count(*) AS n FROM qa_document_revisions WHERE document_id=?")
-      .get("doc-explore-test") as { n: number };
+      .get(scopedExploreId(projectId)) as { n: number };
     expect(revisions.n).toBe(1);
     const builds = test!.deps.db
       .prepare("SELECT count(*) AS n FROM qa_knowledge_builds WHERE project_id=?")
@@ -534,7 +585,7 @@ describe("exploration → 项目资料联动（B1）", () => {
     // 取消归档：联动恢复，内容与归档前一致 → 沿用既有构建版本（unchanged）。
     test!.deps.db
       .prepare("UPDATE qa_documents SET status='active' WHERE project_id=? AND document_id=?")
-      .run(projectId, "doc-explore-test");
+      .run(projectId, scopedExploreId(projectId));
     const thirdDeps = syncDepsOf(projectId);
     startExploration(thirdDeps, projectId, "test", {});
     const third = await waitForStatus(thirdDeps, projectId, (view) => view?.round === 3 && view.status === "succeeded");
@@ -544,5 +595,25 @@ describe("exploration → 项目资料联动（B1）", () => {
     expect(kb3!.snapshotArchived).toBeUndefined();
     expect(kb3!.buildVersion).toBe(1);
     expect(kb3!.unchanged).toBe(true);
+  });
+
+  it("resolveDeterministicDocumentId：旧全局 id 归属本项目时沿用（升级前项目引用不断链），归属别项目时落 scoped", async () => {
+    const { resolveDeterministicDocumentId } = await import("../src/services/exploration-knowledge-sync.js");
+    const projectId = await projectWithRegisteredEnv();
+    // 造一条旧全局 id 文档（模拟升级前已存在的快照资料）。
+    test!.deps.db
+      .prepare(
+        `INSERT INTO qa_documents (document_id,project_id,title,format,status,source_json,revision,current_revision,current_revision_id,content_hash,byte_size,created_at,created_by,updated_at,updated_by)
+         VALUES ('doc-explore-test',?,'旧快照','markdown','active','{}',1,1,'rev-legacy','sha256:x',10,'2026-01-01T00:00:00Z','t','2026-01-01T00:00:00Z','t')`,
+      )
+      .run(projectId);
+    // 归属本项目 → 沿用旧 id（老项目继续更新原资料，引用不断链）。
+    const own = resolveDeterministicDocumentId(test!.deps.db, "doc-explore-test", projectId);
+    expect(own.id).toBe("doc-explore-test");
+    expect(own.row?.status).toBe("active");
+    // 旧 id 被别的项目占用 → 本项目落 scoped id，不再撞主键。
+    const foreign = resolveDeterministicDocumentId(test!.deps.db, "doc-explore-test", "another_project");
+    expect(foreign.id).toBe(`doc-explore-test-${createHash("sha256").update("another_project").digest("hex").slice(0, 8)}`);
+    expect(foreign.row).toBeUndefined();
   });
 });

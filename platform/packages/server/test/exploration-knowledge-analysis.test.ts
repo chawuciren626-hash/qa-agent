@@ -66,7 +66,8 @@ describe("explorationKnowledgeAnalysis", () => {
     expect(result.revision).toBe(1);
     expect(store.createDocument).toHaveBeenCalled();
     const arg = (store.createDocument.mock.calls[0] as unknown[])[0] as { internalDocumentId: string; content: string; changeNote: string };
-    expect(arg.internalDocumentId).toBe("doc-project-knowledge-test");
+    // 确定性 id 按项目隔离：base + 项目指纹 8 位（同环境名的两个项目不再撞全局主键）。
+    expect(arg.internalDocumentId).toBe(`doc-project-knowledge-test-${createHash("sha256").update("p1").digest("hex").slice(0, 8)}`);
     expect(arg.content).toContain("[verified]=探索直接证实");
     expect(arg.content).toContain("## 一、系统概览");
     expect(arg.changeNote).toContain("探索第 5 轮");

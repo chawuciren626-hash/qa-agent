@@ -18,6 +18,7 @@ import {
   QaProjectKnowledgeStore,
   type KnowledgeDb,
 } from "./qa-project-knowledge.js";
+import { resolveDeterministicDocumentId } from "./exploration-knowledge-sync.js";
 import type { KnowledgeEntryInput, KnowledgeLayer } from "./environment-knowledge-service.js";
 
 const SYNC_ACTOR = "system:exploration";
@@ -151,7 +152,13 @@ export function explorationKnowledgeAnalysis(deps: {
   store?: QaProjectKnowledgeStore;
 }): ExplorationKnowledgeAnalysis {
   return async (input) => {
-    const result: KnowledgeAnalysisResult = { model: "project-default", documentId: `doc-project-knowledge-${input.env}`, revision: null };
+    // 确定性 id 按项目隔离（qa_documents 主键全局唯一，同环境名的两个项目不再撞主键）。
+    const { id: documentId, row: existing } = resolveDeterministicDocumentId(
+      deps.db as unknown as Parameters<typeof resolveDeterministicDocumentId>[0],
+      `doc-project-knowledge-${input.env}`,
+      input.projectId,
+    );
+    const result: KnowledgeAnalysisResult = { model: "project-default", documentId, revision: null };
     const store = deps.store ?? new QaProjectKnowledgeStore(deps.db as unknown as KnowledgeDb);
 
     let completion: UtilityCompletion;
@@ -165,7 +172,6 @@ export function explorationKnowledgeAnalysis(deps: {
       return { ...result, skipped: completion.cause, error: completion.error };
     }
 
-    const documentId = result.documentId;
     const header = [
       `> 本文档由探索证据 + 项目默认模型分析自动生成（探索 round-${input.round}）。`,
       "> 标注口径：[verified]=探索直接证实；[推断]=模型分析，未经交互验证，不得当事实引用。",
