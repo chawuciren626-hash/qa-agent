@@ -120,3 +120,20 @@ test('非法 run_id / manifest 身份不一致直接拒绝，不发请求', asyn
     assert.equal(requests, 0, '校验失败一个请求都不发');
   });
 });
+
+ test('finish conflicts remain failures and registration requests have a bounded wait', async () => {
+  await withManifest(({manifestPath}) => withCapture(409, {error:{code:'run_not_running'}}, async ({baseUrl}) => {
+    const result = await finishRun({projectId:'p1',sessionId:'s1',runId:RUN_ID,manifestPath},{baseUrl,token:'a'.repeat(40)});
+    assert.equal(result.ok,false);
+  }));
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    assert.ok(options.signal instanceof AbortSignal);
+    throw new Error('simulated unavailable registration service');
+  };
+  try {
+    const result = await startRun({projectId:'p1',sessionId:'s1',runId:RUN_ID},{baseUrl:'http://localhost:1',token:'a'.repeat(40)});
+    assert.equal(result.ok,false);
+    assert.match(result.error,/simulated unavailable/);
+  } finally { globalThis.fetch = original; }
+});

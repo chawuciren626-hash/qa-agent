@@ -18,9 +18,10 @@
  * 前置：local-service 已暂停（与 deploy-project-management-local.mjs 同一前置）。
  */
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { releaseResources, assertReleaseImportClosure } from "./check-release-resources.mjs";
 import { checkSourceRuntime } from "./source-runtime.mjs";
 
 const source = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -52,6 +53,7 @@ if (!Object.keys(engineFiles).length) die("清单没有 engine_files 段（安�
 const policyPath = resolve(source, "config/release-resources.json");
 if (!existsSync(policyPath)) die("源码缺少 config/release-resources.json");
 const policy = JSON.parse(readFileSync(policyPath, "utf8"));
+releaseResources(source, policy);
 const desired = new Set([
   ...policy.files,
   "scripts/qa-project-bootstrap.mjs",
@@ -60,16 +62,16 @@ const desired = new Set([
   "config/release-resources.json",
 ]);
 
+assertReleaseImportClosure(source, [...desired]);
+
 // 变更/新增探测：
 //   - 期望集合内：源码哈希 ≠ 清单哈希 → 换件（含清单里没有的新文件）；
-//   - 源码缺失的期望文件：跳过并报告（那是策略与源码的漂移，staging 的
-//     assertReleaseImportClosure 会拦，这里不静默扩大成删除）。
+//   - 源码缺失或依赖不完整：部署前拒绝，不修改安装副本。
 const changed = [];
-const missingInSource = [];
 const knownBefore = new Set(Object.keys(engineFiles));
 for (const key of desired) {
   const sourceFile = resolve(source, key);
-  if (!existsSync(sourceFile)) { missingInSource.push(key); continue; }
+  if (!existsSync(sourceFile)) die(`Missing release source: ${key}`);
   const actual = sha(sourceFile);
   if (actual !== engineFiles[key]) changed.push({ key, sha256: actual });
 }
@@ -80,7 +82,6 @@ if (!changed.length) {
     managed: Object.keys(engineFiles).length,
     desired: desired.size,
     legacyUnmanaged: legacyOnly.length,
-    ...(missingInSource.length ? { missingInSource } : {}),
   }));
   process.exit(0);
 }
@@ -97,6 +98,7 @@ try {
     } else {
       rollback.push({ engineFile, backupFile: null });
     }
+    mkdirSync(dirname(engineFile), { recursive: true });
     copyFileSync(resolve(source, key), engineFile);
     engineFiles[key] = sha(engineFile);
   }
@@ -108,6 +110,7 @@ try {
   for (const item of rollback.reverse()) {
     try {
       if (item.backupFile) copyFileSync(item.backupFile, item.engineFile);
+      else if (existsSync(item.engineFile)) unlinkSync(item.engineFile);
     } catch { /* 回滚失败时保留现场供人工排查，不掩盖原始错误 */ }
   }
   try { checkSourceRuntime(app, engine); } catch { /* 已尽力恢复 */ }

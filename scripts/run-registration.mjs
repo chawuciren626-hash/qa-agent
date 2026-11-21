@@ -52,8 +52,12 @@ async function post(endpoint, path, payload) {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(5000),
   });
-  if (response.status === 409) return { ok: true, conflict: true, status: 409, body: await response.json().catch(() => null) };
+  if (response.status === 409 && !path.endsWith('/finish')) {
+    const body = await response.clone().json().catch(() => null);
+    if (body?.error?.code === 'run_exists') return { ok: true, conflict: true, status: 409, body };
+  }
   if (!response.ok) {
     const detail = (await response.text()).slice(0, 300);
     return { ok: false, status: response.status, error: `HTTP ${response.status}: ${detail}` };
@@ -62,15 +66,15 @@ async function post(endpoint, path, payload) {
 }
 
 /**
- * 发起登记。projectId/sessionId 缺省取 QA_DIRECTORY_CONTEXT（会话工作区绑定注入）。
+ * 发起登记。projectId/sessionId 由调用方从 QA_DIRECTORY_CONTEXT 显式传入。
  * 重复发起（409 run_exists）视为已登记——重试执行不是新的一次发起。
  */
 export async function startRun({ projectId, sessionId, runId, env, kind, resourcePool, dispatch } = {}, endpoint = {}) {
   try {
     const resolved = resolvePlatformEndpoint(endpoint);
-    const targetProject = projectId ?? resolved.projectId;
-    const targetSession = sessionId ?? resolved.sessionId;
-    if (!targetProject || !targetSession) return { ok: false, error: 'run registration needs projectId/sessionId (QA_DIRECTORY_CONTEXT or explicit)' };
+    const targetProject = projectId;
+    const targetSession = sessionId;
+    if (!targetProject || !targetSession) return { ok: false, error: 'run registration needs projectId/sessionId' };
     if (!RUN_ID.test(String(runId ?? ''))) return { ok: false, error: `invalid run_id: ${runId}` };
     const result = await post({ ...resolved, projectId: targetProject },
       `/qa/task-records/${encodeURIComponent(targetSession)}/runs`,
@@ -89,7 +93,7 @@ export async function finishRun({ projectId, sessionId, runId, manifestPath, cou
   try {
     const resolved = resolvePlatformEndpoint(endpoint);
     const targetProject = projectId ?? resolved.projectId;
-    if (!targetProject || !sessionId) return { ok: false, error: 'run registration needs projectId/sessionId (QA_DIRECTORY_CONTEXT or explicit)' };
+    if (!targetProject || !sessionId) return { ok: false, error: 'run registration needs projectId/sessionId' };
     if (!RUN_ID.test(String(runId ?? ''))) return { ok: false, error: `invalid run_id: ${runId}` };
     const facts = manifestFacts(manifestPath);
     if (facts.runId !== runId) return { ok: false, error: `manifest reports ${facts.runId}, not ${runId}` };

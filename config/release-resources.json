@@ -376,6 +376,7 @@
     "scripts/run-status-summary.mjs",
     "scripts/run-timing.mjs",
     "scripts/run-ui-tests.mjs",
+    "scripts/run-registration.mjs",
     "scripts/runtime-dependencies.mjs",
     "scripts/select-test-cases.mjs",
     "scripts/sensitive-file-guard.mjs",

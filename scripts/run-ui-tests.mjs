@@ -60,7 +60,9 @@ try {
   // 发起登记（判据 1 收口）：api-token 通道写 qa_runs，发起即 running。重复发起（409）
   // 视为已登记。失败降级为 stderr——登记是事实通道，不是闸门，执行照常。
   try {
-    const registration = await startRun({ projectId, sessionId, runId, kind: 'execution' });
+    const registration = existsSync(manifestPath)
+      ? await startRun({ projectId, sessionId, runId, kind: 'execution', dispatch: { entry: 'run-ui-tests', headed: process.argv.includes('--headed') } })
+      : { ok: true };
     if (!registration.ok) console.error(`run registration skipped: ${registration.error}`);
     else if (registration.conflict) console.error('run registration: already registered (409), kept as-is');
   } catch (error) {
