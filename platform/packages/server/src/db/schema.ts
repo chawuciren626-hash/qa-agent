@@ -1137,7 +1137,7 @@ CREATE INDEX IF NOT EXISTS idx_qa_server_copies_project ON qa_server_copies(proj
 CREATE TABLE IF NOT EXISTS platform_task_links ( -- 平台任务映射：任务平台交接包入库后由 ingestion 维护（对接方案 §11.3）；任务列表是对它的查询视图，不建第二份副本
   link_id                TEXT PRIMARY KEY,
   project_id             TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
-  source_system          TEXT NOT NULL,                    -- 'sbkj-taskassignment'；'demo' = 演示种子，真数据源接通后可整体清除
+  source_system          TEXT NOT NULL,                    -- 平台来源标识，如 'sbkj-taskassignment'
   external_tenant_id     TEXT NOT NULL DEFAULT '',
   external_task_id       TEXT NOT NULL,
   external_task_no       TEXT NOT NULL,                    -- 任务号快照，如 FB202611090001

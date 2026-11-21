@@ -2,7 +2,7 @@
  * 平台任务列表前端 API（TL-4 切片）。
  *
  * 口径：见《AITestHarness平台任务列表建设方案-2026-11-20》T1~T5。
- * 数据源当前为服务端演示种子（demoSeeded 标注）；开始测试返回 sessionId 后由页面
+ * 数据来源为平台同步任务与用户创建的本地任务；开始测试返回 sessionId 后由页面
  * 打开既有全流程阶段页（/chat/:sessionId）——本模块不做流程页。
  * 接口失败统一抛 ApiError，由页面展示服务端错误消息（同 project-management/api.ts 约定）。
  */
@@ -83,7 +83,6 @@ export interface TaskDetail {
 export interface TaskListResponse {
   items: TaskListItem[];
   counts: Record<string, number>;
-  demoSeeded: boolean;
 }
 
 export function listTasks(projectId: string, includeTerminated = false): Promise<TaskListResponse> {

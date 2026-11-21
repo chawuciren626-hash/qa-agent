@@ -1,9 +1,9 @@
 /**
- * 平台任务列表（TL-1/TL-3 切片）：演示种子、来源双轨、T4 编辑边界、TLQ-1 开始测试闸、
+ * 平台任务列表（TL-1/TL-3 切片）：空列表、来源双轨、T4 编辑边界、TLQ-1 开始测试闸、
  * T2 分析触发语义、T5 本地任务可选分析、终止封存。
  *
  * 口径钉住六条，少一条这个模块就是摆设：
- *   ① 首次列表触发演示种子（source_system='demo'），重复请求不重复种；
+ *   ① 列表查询无写入，不自动初始化任务；
  *   ② 本地任务与平台任务在同一列表视图共存，来源徽章由 source 字段承载；
  *   ③ 平台任务编辑只动补充字段（local_title_note / local_test_focus_note），包快照不可变；
  *   ④ TLQ-1：pending_analysis 的平台任务开始测试被拒（409 analysis_required），分析完成后放行；
@@ -39,27 +39,41 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
     await app?.cleanup();
   });
 
-  it("首次列表触发演示种子，重复请求不重复种；counts 与条目状态齐全", async () => {
-    const first = await list();
-    expect(first.status).toBe(200);
-    const body = (await first.json()) as Json;
-    expect(body.demoSeeded).toBe(true);
-    expect(body.items).toHaveLength(5);
-    expect(body.counts).toMatchObject({
-      pending_analysis: 1,
-      ready: 1,
-      in_progress: 1,
-      impact_pending: 1,
-      result_returned: 1,
-    });
-    // 排序：状态分组优先（pending_analysis 最前），同级内 updated_at 降序
-    expect(body.items[0].status).toBe("pending_analysis");
+  // 测试专用同步快照，生产列表从不生成任务。
+  function syncedTasks(targetProject = project) {
+    for (const [id,status] of [['ready','ready'],['pending','pending_analysis']] as const) {
+      app.deps.db.prepare(`INSERT INTO platform_task_links
+        (link_id,project_id,source_system,external_tenant_id,external_task_id,external_task_no,title,status,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`).run('sync-'+targetProject+'-'+id,targetProject,'test-sync',targetProject,id,id,'同步测试任务 '+id,status,'2026-11-21T00:00:00Z','2026-11-21T00:00:00Z');
+    }
+  }
 
-    const second = await list();
-    expect(((await second.json()) as Json).demoSeeded).toBe(false);
+  it("多个空项目反复读取均为空且不写入任务；同步和本地任务保留", async () => {
+    const other = user + '-empty';
+    expect((await owner.post('/api/projects',{projectId:other})).status).toBe(201);
+    for (const target of [project,other,project,other]) {
+      const response = await owner.get('/api/projects/'+target+'/agents/qa/platform-tasks');
+      expect(response.status).toBe(200);
+      const body = await response.json() as Json;
+      expect(body.items).toEqual([]);
+      expect(body.demoSeeded).toBeUndefined();
+      expect(Object.values(body.counts).every(value=>value===0)).toBe(true);
+    }
+    expect((app.deps.db.prepare('SELECT count(*) as n FROM platform_task_links').get() as {n:number}).n).toBe(0);
+    expect((app.deps.db.prepare('SELECT count(*) as n FROM qa_local_tasks').get() as {n:number}).n).toBe(0);
+    syncedTasks();
+    const created = await owner.post(base+'/platform-tasks/local',{title:'用户创建任务'});
+    expect(created.status).toBe(201);
+    for (let i=0;i<2;i++) {
+      const body = await (await list()).json() as Json;
+      expect(body.items).toHaveLength(3);
+      expect(body.items.filter((item:Json)=>item.source==='platform')).toHaveLength(2);
+      expect(body.items.filter((item:Json)=>item.source==='local')).toHaveLength(1);
+    }
   });
 
   it("本地任务与平台任务共存于同一列表视图，来源由 source 承载（T5）", async () => {
+    syncedTasks();
     const created = await owner.post(`${base}/platform-tasks/local`, {
       title: "导入模板边界值回归",
       description: "批量导入模板的表头校验与边界值需要回归确认。",
@@ -81,6 +95,7 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
   });
 
   it("平台任务编辑只动补充字段，本地任务编辑是全量字段（T4）", async () => {
+    syncedTasks();
     const body = (await (await list()).json()) as Json;
     const platform = body.items.find((i: Json) => i.source === "platform") as Json;
 
@@ -111,6 +126,7 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
   });
 
   it("TLQ-1 闸：pending_analysis 禁止开始测试；预分析回写完成后放行并原地升级会话", async () => {
+    syncedTasks();
     const body = (await (await list()).json()) as Json;
     const pending = body.items.find((i: Json) => i.status === "pending_analysis") as Json;
 
@@ -178,6 +194,7 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
   });
 
   it("预分析进行中重复触发被拒；会话空闲未回写时自动调和为 failed 并可重试", async () => {
+    syncedTasks();
     const body = (await (await list()).json()) as Json;
     const pending = body.items.find((i: Json) => i.status === "pending_analysis") as Json;
     vi.spyOn(app.deps.agentService, "listAgents").mockResolvedValue([{ agentId: "test_agent" }] as never);
@@ -205,6 +222,7 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
   });
 
   it("简报发送失败：analysis_state 落 failed 并返回 409，可重试", async () => {
+    syncedTasks();
     const body = (await (await list()).json()) as Json;
     const pending = body.items.find((i: Json) => i.status === "pending_analysis") as Json;
     vi.spyOn(app.deps.agentService, "listAgents").mockResolvedValue([{ agentId: "test_agent" }] as never);
@@ -218,6 +236,57 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
     expect(d.task.analysisState).toBe("failed");
     expect(d.task.analysisError).toContain("runtime gone");
     expect(d.task.analysisSessionId).toBe("session-pt-10");
+  });
+
+  it("无项目默认模型时回退账号级模型设置（同聊天页选择器）；两处都没有给出可操作错误", async () => {
+    const created = await owner.post(`${base}/platform-tasks/local`, {
+      title: "账号级模型回退",
+      description: "项目无默认模型，账号设置里有模型",
+    });
+    const id = ((await created.json()) as Json).task.id as string;
+
+    vi.spyOn(app.deps.agentService, "listAgents").mockResolvedValue([{ agentId: "test_agent" }] as never);
+    vi.spyOn(app.deps.manager, "startTask").mockResolvedValue({ sessionId: "session-pt-7", queued: false } as never);
+    // 第一次（无模型对）按 createSession 的 no_default_model 语义拒绝；带账号级模型对的第二次成功
+    const noDefault = Object.assign(new Error("This Project has no default model yet."), {
+      status: 400,
+      code: "no_default_model",
+    });
+    const spySession = vi
+      .spyOn(app.deps.sessionService, "createSession")
+      .mockRejectedValueOnce(noDefault)
+      .mockResolvedValueOnce({ sessionId: "session-pt-7" } as never)
+      .mockRejectedValue(noDefault);
+
+    // 账号级模型记录：default_model 未设，回退第一条（与聊天页选择器同源）
+    const { createHash } = await import("node:crypto");
+    const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const recordDir = `${app.deps.config!.root}/.account-models`;
+    const recordFile = `${recordDir}/${createHash("sha256").update(user).digest("hex")}.json`;
+    mkdirSync(recordDir, { recursive: true });
+    writeFileSync(
+      recordFile,
+      JSON.stringify({
+        version: 1,
+        userId: user,
+        updatedAt: new Date().toISOString(),
+        models: { providers: {}, models: [{ provider: "custom", model_id: "gpt-smoke", display_name: "gpt-smoke" }] },
+      })
+    );
+
+    const analyzed = await owner.post(`${base}/platform-tasks/${id}/analyze`, {});
+    expect(analyzed.status).toBe(200);
+    expect(((await analyzed.json()) as Json).analysisState).toBe("running");
+    expect(spySession).toHaveBeenCalledTimes(2);
+    expect(spySession.mock.calls[1]?.[0]).toMatchObject({ modelId: "gpt-smoke", provider: "custom" });
+
+    // 账号也没有任何模型：409 no_model_configured（消息可操作）
+    const another = await owner.post(`${base}/platform-tasks/local`, { title: "无模型任务", description: "" });
+    const anotherId = ((await another.json()) as Json).task.id as string;
+    rmSync(recordFile);
+    const failed = await owner.post(`${base}/platform-tasks/${anotherId}/analyze`, {});
+    expect(failed.status).toBe(409);
+    expect(await errorCode(failed)).toBe("no_model_configured");
   });
 
   it("本地任务不分析即可开始（T5）；开始测试创建新会话并注入开工指令", async () => {
@@ -411,6 +480,7 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
   });
 
   it("终止封存：terminated 默认隐藏，includeTerminated 才可见；审计落 last_action_json", async () => {
+    syncedTasks();
     const body = (await (await list()).json()) as Json;
     const ready = body.items.find((i: Json) => i.status === "ready") as Json;
 

@@ -1,7 +1,5 @@
 /* 平台任务列表（qpt-*）。复用 qpm 页面壳（qpm-page/qpm-scroll/qpm-head/qpm-btn 系列/qpm-empty-card/qpm-error）。 */
 .qpt-page{background:light-dark(#f5f7fa,#111827)}
-.qpt-demo-note{margin:14px 0 0;padding:10px 14px;border:1px solid light-dark(#cfe0f3,#1e3a5f);border-radius:10px;background:light-dark(#eaf2fb,#0f2740);color:light-dark(#12457d,#a8c8ea);font-size:12.5px;line-height:1.7}
-.qpt-demo-note b{font-weight:700}
 .qpt-segbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:16px}
 .qpt-seg{display:inline-flex;align-items:center;gap:6px;padding:5px 13px;border:1px solid light-dark(#e6e9ef,#374151);border-radius:20px;background:light-dark(#fff,#1f2937);color:light-dark(#646a73,#9ca3af);font-size:12.5px;cursor:pointer}
 .qpt-seg:hover{border-color:light-dark(#cfe0f3,#3b82f6)}

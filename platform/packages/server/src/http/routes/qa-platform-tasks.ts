@@ -1,8 +1,7 @@
 /**
  * 平台任务列表路由（TL-3 切片）：列表 / 详情 / 新建本地任务 / 编辑 / AI 分析 / 开始测试 / 终止。
  *
- * 口径：见《AITestHarness平台任务列表建设方案-2026-11-20》T1~T5。数据源当前为演示种子
- * （service.seedDemoIfEmpty，source_system='demo'），平台侧交接包接口就绪后由 ingestion 替换。
+ * 口径：见《AITestHarness平台任务列表建设方案-2026-11-20》T1~T5。数据来源为平台同步任务与用户创建的本地任务；列表查询不创建数据。
  * AI 分析 = 总控预分析：建/复用 test_agent 分析会话自动发「平台任务简报」（sender=server），
  * 结论由总控经 POST /analysis-result 异步回写；engine 侧动作为 platform_task_writeback。
  * 开始测试：优先把分析会话原地升级为测试工作会话（否则新建总控会话），注入「平台任务
@@ -21,6 +20,7 @@ import type { AnalysisRuntime, PlatformTaskDb } from "../../services/qa-platform
 import { normalizeBaseUrl, upsertEnvironment } from "../../services/project-environment-service.js";
 import { QaTaskRunRegistry } from "../../services/qa-task-run-registry.js";
 import type { KnowledgeDb } from "../../services/qa-project-knowledge.js";
+import { readUserModelRef } from "./user-models.js";
 import type { AgentsRouteDeps } from "./agents.js";
 
 function strField(value: unknown, code: string, label: string, opts: { required?: boolean; max?: number } = {}): string {
@@ -87,6 +87,34 @@ function deriveEnvName(db: AgentsRouteDeps["db"], projectId: string, baseUrl: st
   }
 }
 
+/**
+ * 建分析/工作会话：默认走项目默认模型；项目未设默认时回退**当前账号**的模型设置
+ * （设置 → 模型 的 default_model，未设默认再取第一条——与聊天页模型选择器同源），
+ * 成员在自己配置过模型时也能发起分析。两处都没有模型时给出可操作的错误。
+ */
+async function createWorkSession(
+  deps: AgentsRouteDeps,
+  args: { projectId: string; agentId: string; userId?: string },
+): Promise<{ sessionId: string }> {
+  const base = { projectId: args.projectId, agentId: args.agentId, userId: args.userId, client: "web" as const };
+  try {
+    return await deps.sessionService.createSession(base);
+  } catch (e) {
+    if ((e as { code?: string }).code !== "no_default_model") throw e;
+    // 账号级回退需要知道是哪个用户；无用户上下文（理论不可达）保持原错误。
+    if (!args.userId) throw e;
+    const ref = await readUserModelRef(deps.config!.root, args.userId);
+    if (!ref) {
+      throw new HttpError(
+        409,
+        "no_model_configured",
+        "没有可用模型：项目未设置默认模型，当前账号的「设置 → 模型」里也没有已配置的模型。请任配其一后重试。"
+      );
+    }
+    return await deps.sessionService.createSession({ ...base, modelId: ref.modelId, provider: ref.provider });
+  }
+}
+
 export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps): void {
   if (!qaEnabled || !deps.config) return;
   const svc = new QaPlatformTaskService(deps.db as unknown as PlatformTaskDb, { completeOnce: deps.completeOnce });
@@ -106,10 +134,11 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
     throw e as Error;
   };
 
-  // 总控预分析运行时：会话通道与定时任务 scheduler 同源（startTask + userText("server")）。
+  // 总控预分析运行时：会话通道与定时任务 scheduler 同源（startTask + userText("server")）；
+  // 建会话走 createWorkSession（项目默认模型 → 当前账号模型设置回退）。
   const analysisRuntime: AnalysisRuntime = {
     listAgents: (projectId) => deps.agentService.listAgents(projectId),
-    createSession: (args) => deps.sessionService.createSession(args),
+    createSession: (args) => createWorkSession(deps, args),
     findSession: (sessionId) => deps.sessionsRepo.findById(sessionId) ?? null,
     startTask: (sessionId, text, opts) =>
       deps.manager.startTask(sessionId, [userText(text, "server")], opts),
@@ -119,9 +148,8 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
 
   app.get("/qa/platform-tasks", async (c) => {
     const { projectId } = scope(c);
-    const seed = svc.seedDemoIfEmpty(projectId);
     const includeTerminated = c.req.query("includeTerminated") === "true";
-    return c.json({ ...svc.list(projectId, includeTerminated), demoSeeded: seed.seeded });
+    return c.json(svc.list(projectId, includeTerminated));
   });
 
   app.get("/qa/platform-tasks/:taskId", async (c) => {
@@ -251,14 +279,10 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
         throw new HttpError(409, "no_agent_available", "项目内没有可用智能体，请先在项目视图中创建。");
       }
       try {
-        const session = await deps.sessionService.createSession({
-          projectId,
-          agentId,
-          userId,
-          client: "web",
-        });
+        const session = await createWorkSession(deps, { projectId, agentId, userId });
         sessionId = session.sessionId;
       } catch (e) {
+        if (e instanceof HttpError) throw e;
         throw new HttpError(
           409,
           "session_create_failed",

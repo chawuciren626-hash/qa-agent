@@ -569,6 +569,8 @@ export class QaPlatformTaskService {
         try {
           sessionId = (await runtime.createSession({ projectId: input.projectId, agentId, userId: input.userId, client: "web" })).sessionId;
         } catch (e) {
+          // 带 HTTP 语义的错误（如路由层的 no_model_configured）原样穿透，保留可操作的提示。
+          if (e && typeof e === "object" && "status" in e && "code" in e) throw e;
           throw httpError(409, "session_create_failed", `分析会话创建失败：${e instanceof Error ? e.message : "未知错误"}`);
         }
       }
@@ -843,73 +845,7 @@ export class QaPlatformTaskService {
     return { updated: updated ? this.toListItem(updated) : null };
   }
 
-  // ------------------------------------------------------------- demo seed
 
-  /**
-   * 演示种子（T1 mock 先行口径）：项目下没有任何条目时，插入一组样例平台任务
-   * （source_system='demo'，真数据源接通后 DELETE FROM platform_task_links WHERE source_system='demo' 即清）。
-   * 本地任务不种子——留给用户自己建。
-   */
-  seedDemoIfEmpty(projectId: string): { seeded: boolean; count: number } {
-    const existing = this.db
-      .prepare(`SELECT COUNT(*) AS n FROM platform_task_links WHERE project_id = ?`)
-      .get(projectId) as { n: number };
-    if (existing.n > 0) return { seeded: false, count: existing.n };
-    const now = nowIso();
-    const demo: Array<{
-      no: string;
-      title: string;
-      priority: string;
-      status: PlatformTaskStatus;
-      version: number;
-      round: number;
-      lines: Array<{ name: string; isPrimary: boolean }>;
-      feedback: string;
-      hours: number;
-      analyzed: boolean;
-    }> = [
-      { no: "FB202611090001", title: "gov 用户端登录优化", priority: "high", status: "ready", version: 3, round: 3,
-        lines: [{ name: "gov 用户端", isPrimary: true }, { name: "数据平台", isPrimary: false }],
-        feedback: "requirement", hours: 24, analyzed: true },
-      { no: "FB202611020002", title: "淘宝渠道 API Key 管理页", priority: "medium", status: "pending_analysis", version: 1, round: 1,
-        lines: [{ name: "gov 用户端", isPrimary: true }], feedback: "requirement", hours: 12, analyzed: false },
-      { no: "FB202611150005", title: "卡密卡池分页查询优化", priority: "high", status: "impact_pending", version: 2, round: 3,
-        lines: [{ name: "gov 用户端", isPrimary: true }, { name: "计费网关", isPrimary: false }],
-        feedback: "requirement", hours: 16, analyzed: true },
-      { no: "FB202611010004", title: "报表中心权限隔离修复", priority: "medium", status: "in_progress", version: 2, round: 2,
-        lines: [{ name: "gov 用户端", isPrimary: true }], feedback: "bug", hours: 10, analyzed: true },
-      { no: "FB202610280006", title: "网关限流配置页面", priority: "medium", status: "result_returned", version: 1, round: 1,
-        lines: [{ name: "计费网关", isPrimary: true }], feedback: "requirement", hours: 8, analyzed: true },
-    ];
-    for (const d of demo) {
-      const summary = d.analyzed ? JSON.stringify(demoSummary(d.title, "", "", d.priority)) : null;
-      this.db
-        .prepare(
-          `INSERT INTO platform_task_links (
-             link_id, project_id, source_system, external_tenant_id, external_task_id, external_task_no,
-             title, priority, product_lines_json, feedback_type, estimated_hours,
-             package_version, pm_round_no, source_url, status, ai_summary_json, suggested_priority,
-             last_action_json, created_at, updated_at
-           ) VALUES (?, ?, 'demo', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(
-          `ptl-${randomUUID()}`, projectId, d.no, d.no, d.title, d.priority,
-          JSON.stringify(d.lines), d.feedback, d.hours, d.version, d.round,
-          `https://platform.example.com/tasks/active?taskId=${d.no}`, d.status,
-          summary, d.analyzed ? summaryPriorityOf(d.priority) : null,
-          JSON.stringify({ action: "demo_seed", at: now }), now, now
-        );
-    }
-    return { seeded: true, count: demo.length };
-  }
-
-  /** 清除演示数据（真数据源接通时调用，或前端提供手动清理）。 */
-  clearDemo(projectId: string): number {
-    const run = this.db
-      .prepare(`DELETE FROM platform_task_links WHERE project_id = ? AND source_system = 'demo'`)
-      .run(projectId) as { changes?: number | bigint };
-    return Number(run?.changes ?? 0);
-  }
 }
 
 function summaryPriorityOf(priority: string): string {

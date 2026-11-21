@@ -38,7 +38,6 @@ const fixture = vi.hoisted(() => {
   const state = {
     items: [platformPending, platformReady, localTask] as TaskListItem[],
     counts: { pending_analysis: 1, ready: 2 } as Record<string, number>,
-    demoSeeded: true,
     created: [] as Array<Record<string, unknown>>,
     detailCalls: [] as string[],
   };
@@ -63,7 +62,6 @@ vi.mock("../src/features/qa/platform-tasks/api", () => ({
   listTasks: async () => ({
     items: fixture.state.items,
     counts: fixture.state.counts,
-    demoSeeded: fixture.state.demoSeeded,
   }),
   getTaskDetail: async (_projectId: string, taskId: string) => {
     fixture.state.detailCalls.push(taskId);
@@ -121,10 +119,20 @@ async function renderPage() {
 }
 
 describe("platform tasks page", () => {
-  it("来源双轨渲染：平台/本地徽章、TLQ-1 禁用未分析的开始测试、演示数据标注", async () => {
+  it("空任务列表保持空态，不生成或展示初始化任务", async () => {
+    fixture.state.items = [];
+    fixture.state.counts = {};
+    const mounted = await mount(h(MemoryRouter, {initialEntries:["/qa/project/platform-tasks"]},
+      h(Routes,null,h(Route,{path:"/qa/project/platform-tasks",element:h(PlatformTasksPage)}))));
+    await waitFor(()=>mounted.container.textContent?.includes("当前筛选下没有任务")===true);
+    expect(mounted.container.querySelectorAll("tbody tr")).toHaveLength(0);
+    expect(mounted.container.textContent).not.toContain("演示数据");
+    expect(fixture.state.created).toEqual([]);
+  });
+  it("来源双轨渲染：平台/本地徽章、TLQ-1 禁用未分析的开始测试", async () => {
     const root = await renderPage();
     const text = root.textContent ?? "";
-    expect(text).toContain("演示数据");
+    expect(text).not.toContain("演示数据");
     expect(text).toContain("gov 用户端登录优化");
     expect(text).toContain("FB202611090001");
     // 状态分段计数条

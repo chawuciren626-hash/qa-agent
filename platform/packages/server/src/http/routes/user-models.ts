@@ -43,31 +43,60 @@ export interface UserModelRoutesDeps {
   access: Access;
 }
 
+const recordPath = (root: string, userId: string): string =>
+  path.join(root, ".account-models", `${createHash("sha256").update(userId).digest("hex")}.json`);
+
+/** 读取用户级模型记录（含 legacy ownerUserId 共享记录兼容）；无记录返回 null。 */
+export async function readUserModelRecord(root: string, userId: string): Promise<UserModelRecord | null> {
+  let text: string;
+  try {
+    text = await fs.readFile(recordPath(root, userId), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  const parsed = JSON.parse(text) as UserModelRecord & { sourceProjectId?: string };
+  if (parsed.version !== 1 || parsed.userId !== userId || parsed.models === undefined) {
+    // 兼容旧共享记录（字段是 ownerUserId）：同一份文件，格式不同只影响本用户自己的模型页。
+    const legacy = JSON.parse(text) as { ownerUserId?: string; models?: RawTable };
+    if (legacy.ownerUserId === userId && legacy.models !== undefined) {
+      return { version: 1, userId, updatedAt: new Date().toISOString(), models: legacy.models };
+    }
+    throw new Error("Invalid user model configuration");
+  }
+  return parsed;
+}
+
+const optRefLocal = (v: unknown): { provider: string; modelId: string } | undefined => {
+  if (!v || typeof v !== "object") return undefined;
+  const t = v as Record<string, unknown>;
+  const provider = typeof t.provider === "string" && t.provider.trim() ? t.provider.trim() : undefined;
+  const modelId = typeof t.model_id === "string" && t.model_id.trim() ? t.model_id.trim() : undefined;
+  return provider && modelId ? { provider, modelId } : undefined;
+};
+
+/**
+ * 账号级模型解析（后台建会话用，与聊天页模型选择器同源）：default_model 优先，
+ * 未设默认时回退第一个条目；用户没有模型记录或记录为空返回 undefined。
+ */
+export async function readUserModelRef(
+  root: string,
+  userId: string,
+): Promise<{ provider: string; modelId: string } | undefined> {
+  const record = await readUserModelRecord(root, userId);
+  const block = record?.models as Record<string, unknown> | undefined;
+  if (!block) return undefined;
+  const fromDefault = optRefLocal(block.default_model);
+  if (fromDefault) return fromDefault;
+  const first = Array.isArray(block.models) ? (block.models as unknown[])[0] : undefined;
+  return optRefLocal(first);
+}
+
 export function userModelRoutes(deps: UserModelRoutesDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
-  const recordPath = (userId: string): string =>
-    path.join(deps.root, ".account-models", `${createHash("sha256").update(userId).digest("hex")}.json`);
-
-  const readRecord = async (userId: string): Promise<UserModelRecord | null> => {
-    let text: string;
-    try {
-      text = await fs.readFile(recordPath(userId), "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    }
-    const parsed = JSON.parse(text) as UserModelRecord & { sourceProjectId?: string };
-    if (parsed.version !== 1 || parsed.userId !== userId || parsed.models === undefined) {
-      // 兼容旧共享记录（字段是 ownerUserId）：同一份文件，格式不同只影响本用户自己的模型页。
-      const legacy = JSON.parse(text) as { ownerUserId?: string; models?: RawTable };
-      if (legacy.ownerUserId === userId && legacy.models !== undefined) {
-        return { version: 1, userId, updatedAt: new Date().toISOString(), models: legacy.models };
-      }
-      throw new Error("Invalid user model configuration");
-    }
-    return parsed;
-  };
+  const readRecord = async (userId: string): Promise<UserModelRecord | null> =>
+    readUserModelRecord(deps.root, userId);
 
   /** The project whose model block this user's record was first seeded from (any accessible one). */
   const seedFromProject = async (userId: string): Promise<RawTable | null> => {

@@ -8,8 +8,8 @@
  *   开始测试 创建真实测试工作会话并打开既有全流程阶段页；平台任务未分析禁用（TLQ-1），
  *           本地任务不强制（T5）
  *
- * 来源双轨：platform（任务平台映射）/ local（本地新建），徽章区分；数据当前为服务端
- * 演示种子（demoSeeded），真数据源接通后本页不改。
+ * 来源双轨：platform（任务平台映射）/ local（本地新建），徽章区分。
+ * 列表仅展示平台同步任务与用户创建的本地任务。
  */
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
@@ -61,7 +61,6 @@ export function PlatformTasksPage() {
   const projectId = currentProject?.projectId ?? null;
   const [items, setItems] = useState<TaskListItem[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
-  const [demoSeeded, setDemoSeeded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [seg, setSeg] = useState("all");
@@ -79,7 +78,6 @@ export function PlatformTasksPage() {
       const data = await listTasks(projectId, includeTerm);
       setItems(data.items);
       setCounts(data.counts);
-      setDemoSeeded(data.demoSeeded);
       setLoadError("");
     } catch (e) {
       if (!opts?.silent) setLoadError(e instanceof Error ? e.message : "加载平台任务失败，请重试");
@@ -280,11 +278,6 @@ export function PlatformTasksPage() {
           </div>
         </header>
 
-        {demoSeeded && (
-          <div className="qpt-demo-note" role="note">
-            当前列表为<b>演示数据</b>（样例交接包）：任务平台接口就绪后自动切换为真实拉取，演示条目可整体清除。
-          </div>
-        )}
         {loadError && (
           <div className="qpm-error" role="alert">
             <p>{loadError}</p>
