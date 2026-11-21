@@ -90,10 +90,15 @@ export interface TaskListItem {
 
 export interface TaskProgressRun {
   runId: string;
+  /** planned = 发起前预登记（预约已建、事实未发生）；running/其余状态以 manifest 为准。 */
   status: string;
   counts: Record<string, unknown>;
   startedAt: string | null;
   finishedAt: string | null;
+  /** 运行环境名；预登记行继承任务档案环境，空串 = 未绑定。 */
+  env: string;
+  /** 运行类别（run/execution/api_execution/regression/retest/...），轮次语义的载体。 */
+  kind: string;
 }
 
 export interface TaskDetail {
@@ -350,9 +355,9 @@ export class QaPlatformTaskService {
       ? (
           this.db
             .prepare(
-              `SELECT run_id, status, counts_json, started_at, finished_at
+              `SELECT run_id, status, counts_json, started_at, finished_at, env, kind
                  FROM qa_runs WHERE project_id = ? AND session_id = ?
-                 ORDER BY started_at DESC LIMIT 5`
+                 ORDER BY run_index DESC, started_at DESC LIMIT 5`
             )
             .all(projectId, row.main_session_id) as Array<{
             run_id: string;
@@ -360,6 +365,8 @@ export class QaPlatformTaskService {
             counts_json: string;
             started_at: string | null;
             finished_at: string | null;
+            env: string | null;
+            kind: string | null;
           }>
         ).map((r) => ({
           runId: r.run_id,
@@ -367,6 +374,8 @@ export class QaPlatformTaskService {
           counts: (parseJson(r.counts_json) as Record<string, unknown>) ?? {},
           startedAt: r.started_at,
           finishedAt: r.finished_at,
+          env: r.env ?? "",
+          kind: r.kind ?? "run",
         }))
       : [];
     return {

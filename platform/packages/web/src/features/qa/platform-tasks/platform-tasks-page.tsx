@@ -50,6 +50,18 @@ const SEGMENTS: Array<[string, string]> = [
   ["terminated", "已终止"],
 ];
 const PRIORITY_LABEL: Record<string, string> = { high: "高", medium: "中", low: "低" };
+const RUN_STATUS_LABEL: Record<string, string> = {
+  planned: "预登记",
+  running: "运行中",
+  in_progress: "进行中",
+  completed: "已完成",
+  failed: "失败",
+  unknown: "未知",
+};
+const RUN_KIND_LABEL: Record<string, string> = {
+  run: "常规", execution: "功能执行", api_execution: "接口执行",
+  regression: "回归", retest: "复测", design: "设计", legacy: "历史",
+};
 
 type EditTarget =
   | { kind: "platform"; id: string; title: string; notes: { localTitleNote: string; localTestFocusNote: string } }
@@ -605,8 +617,13 @@ function TaskDrawer({ detail, projectId, onClose, onAnalyze, analyzing }: {
           {detail.progress.runs.length > 0 ? (
             detail.progress.runs.map((r) => (
               <div className="qpt-run" key={r.runId}>
-                <div className="qpt-run-l1"><span className="qpt-mono">{r.runId}</span><span className="qpt-pill qpt-st-in_progress">{r.status}</span></div>
-                <div className="qpt-run-l2 qpt-mono">{JSON.stringify(r.counts)}</div>
+                <div className="qpt-run-l1">
+                  <span className="qpt-mono">{r.runId}</span>
+                  <span className={`qpt-pill qpt-st-${r.status}`}>{RUN_STATUS_LABEL[r.status] ?? r.status}</span>
+                  <span className="qpt-pill qpt-run-kind">{RUN_KIND_LABEL[r.kind] ?? r.kind}</span>
+                  {r.env && <span className="qpt-pill qpt-run-env">{r.env}</span>}
+                </div>
+                <div className="qpt-run-l2 qpt-mono">{Object.keys(r.counts ?? {}).length ? JSON.stringify(r.counts) : (r.status === "planned" ? "预登记：等待执行发起" : "—")}</div>
               </div>
             ))
           ) : (

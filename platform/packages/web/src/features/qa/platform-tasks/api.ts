@@ -55,10 +55,13 @@ export interface AiSummary {
 
 export interface TaskProgressRun {
   runId: string;
+  /** planned = 发起前预登记（预约已建、事实未发生）。 */
   status: string;
   counts: Record<string, unknown>;
   startedAt: string | null;
   finishedAt: string | null;
+  env: string;
+  kind: string;
 }
 
 export interface TaskDetail {
