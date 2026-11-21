@@ -274,6 +274,14 @@ node scripts/local-service.mjs resume D:\AITestHarness\installation.json
 2. 策略扩充后 `stageSourceRuntime` 的 `assertReleaseImportClosure` 会在整装时校验导入闭包，新增文件均来自源码树，预期通过。
 3. 运行登记对既有验收无行为变化（失败降级 stderr，不拦执行）；验收判据 1 补一条：跑一轮生命周期执行后 `qa_runs` 应出现发起行（`dispatch_json.entry='run-ui-tests'`），执行器未启动时也有行可查。
 
+### 11.5 探索后 LLM 项目知识文档（`5cefd69`，对照 Trae PRD 的能力补齐）
+
+- **新增 `services/exploration-knowledge-analysis.ts`**：探索成功后把结构事实（页面/控件摘要/逐字观察/接口/访问墙/局限）喂给**项目默认模型**（`completeOnce` 通道——QA 平台任务 AI 分析同一条缝），产出并落库 `doc-project-knowledge-<env>`（项目资料页可见）。
+- **两级标注纪律**：文档头声明 [verified]=探索直接证实 / [推断]=模型分析未经交互验证；提示词钉死"只引用给定事实、不得编造、推断单列、未见证据如实写"。
+- **接线**：`project-environments` 路由新增 `completeOnce` 依赖（projects.ts 从 ProjectConfigStore 透传）；探索 completeSuccess 在知识联动之后调用；失败/未配置模型/归档一律 `summary.llmAnalysis` 如实记录，不改探索结论。
+- **测试**：`exploration-knowledge-analysis.test.ts` 5/5（提示词纪律/落库/未变不修订/归档跳过/no_model/异常不外溢）。
+- **对照**：Trae PRD 的业务语义（流程/逐字文案/状态迁移）需要真实交互取证（会话侧证据轮，附录 A 契约已进派发合同）；本能力补的是"结构事实 → LLM 整理 → 知识文档"这一层，两层的边界在文档标注里如实区分。
+
 ### 11.4 审计未修清单（如实在案，不在本批）
 
 - **P1-4 token 预算强制**：budget_tokens 仍无派发消费方（登记包已可携带，强制点等阶段运行时接入）。
