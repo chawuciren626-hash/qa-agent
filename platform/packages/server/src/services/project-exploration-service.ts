@@ -26,6 +26,7 @@ import { HttpError } from "../http/errors.js";
 import { createHypothesis, listHypotheses, replaceKnowledgeLayer, type KnowledgeEntryInput, type KnowledgeLayer } from "./environment-knowledge-service.js";
 import { findEnvironment, type EnvironmentView } from "./project-environment-service.js";
 import { QaProjectKnowledgeStore, type KnowledgeDb } from "./qa-project-knowledge.js";
+import type { ExplorationKnowledgeAnalysis, KnowledgeAnalysisResult } from "./exploration-knowledge-analysis.js";
 import type { ExplorationKnowledgeBuildInfo, ExplorationKnowledgeSync } from "./exploration-knowledge-sync.js";
 
 /** 探索六步：前五步与脚本事件一一对应，第六步由服务端合并回写后落定。 */
@@ -61,6 +62,8 @@ export interface ExplorationSummary {
   knowledgeBuild: ExplorationKnowledgeBuildInfo | { error: string } | null;
   /** 证据层（第一批）：observations.json → 假设/候选的写入计数；失败如实带 error。 */
   evidenceSync?: EvidenceSyncInfo | null;
+  /** LLM 项目知识分析：项目默认模型生成 doc-project-knowledge-<env>；跳过/失败如实说明。 */
+  llmAnalysis?: KnowledgeAnalysisResult | null;
 }
 
 export interface EvidenceSyncInfo {
@@ -146,6 +149,8 @@ export interface ExplorationDeps {
   merge?: ExplorationMerge;
   /** 探索成功后把资产联动进项目资料知识库（B1）；缺省时摘要里如实留空。 */
   knowledgeSync?: ExplorationKnowledgeSync | null;
+  /** 探索成功后的 LLM 项目知识分析（项目默认模型）；缺省/未配置模型时摘要里如实说明。 */
+  llmAnalysis?: ExplorationKnowledgeAnalysis | null;
 }
 
 export interface ExplorationMergeInput {
@@ -646,6 +651,25 @@ async function completeSuccess(
       knowledgeBuild = { error: error instanceof Error ? error.message : String(error) };
     }
   }
+  // LLM 知识分析（项目默认模型）：探索事实 → 项目知识文档。失败/未配置模型照实记录，
+  // 不改探索结论——它是增强产出，不是主结果。
+  let llmAnalysis: KnowledgeAnalysisResult | null = null;
+  if (deps.llmAnalysis) {
+    try {
+      llmAnalysis = await deps.llmAnalysis({
+        projectId, env, round: row.round, targetUrl: row.target_url,
+        layers, evidence: evidenceBundle ? { observations: evidenceBundle.observations, rules: evidenceBundle.rules } : null,
+        openHypotheses,
+        limitations: Array.isArray(receipt.limitations)
+          ? receipt.limitations.filter((item): item is string => typeof item === "string")
+          : [],
+      });
+    } catch (error) {
+      llmAnalysis = { model: "project-default", documentId: `doc-project-knowledge-${env}`, revision: null,
+        error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   const summary: ExplorationSummary = {
     targetUrl: row.target_url,
     mode: receipt.mode === "site" ? "site" : receipt.mode === "page" ? "page" : null,
@@ -670,7 +694,7 @@ async function completeSuccess(
       `UPDATE qa_environment_explorations SET status='succeeded', summary_json=?, last_error=NULL,
          finished_at=?, updated_at=? WHERE exploration_id=?`,
     )
-    .run(JSON.stringify({ ...summary, evidenceSync }), now, now, row.exploration_id);
+    .run(JSON.stringify({ ...summary, evidenceSync, llmAnalysis }), now, now, row.exploration_id);
   const steps = parseSteps(row.steps_json);
   const done = steps.map((step) => ({ ...step, status: "done" as ExplorationStepStatus, detail: step.detail ?? null }));
   deps.db

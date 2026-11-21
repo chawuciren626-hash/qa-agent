@@ -29,6 +29,7 @@ import type {
 } from "../api/types.js";
 import type { UserRow } from "../db/repos/users.js";
 import type { RawTable, UtilityCompletion } from "../services/project-config-service.js";
+export type { UtilityCompletion };
 import type {
   ListEndpointModelsOptions,
   ModelRequestContext,

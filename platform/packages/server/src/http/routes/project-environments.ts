@@ -47,6 +47,8 @@ import {
 import { HttpError } from "../errors.js";
 import { readJson, requireValidId } from "../validate.js";
 import { explorationKnowledgeSync } from "../../services/exploration-knowledge-sync.js";
+import { explorationKnowledgeAnalysis } from "../../services/exploration-knowledge-analysis.js";
+import type { UtilityCompletion } from "../../mechanisms/projects.js";
 
 export interface ProjectEnvironmentDeps {
   db: Db;
@@ -60,6 +62,8 @@ export interface ProjectEnvironmentDeps {
   /** 测试注入：替换探索脚本执行器与 maps 合并器。 */
   explorationRun?: ExplorationRun;
   explorationMerge?: ExplorationMerge;
+  /** 项目默认模型的一次性补全（探索后 LLM 知识分析走它）；unset 时摘要如实说明未配置。 */
+  completeOnce?: (projectId: string, prompt: string, opts?: { maxTokens?: number; requestTimeoutMs?: number }) => Promise<UtilityCompletion>;
 }
 
 export function projectEnvironmentsRoutes(deps: ProjectEnvironmentDeps): Hono<AppEnv> {
@@ -89,6 +93,9 @@ export function projectEnvironmentsRoutes(deps: ProjectEnvironmentDeps): Hono<Ap
     // B1 联动：探索成功后把资产落成项目资料并触发知识构建（engine 未配置时联动
     // 失败会如实记进轮次摘要，不影响探索结论）。
     knowledgeSync: explorationKnowledgeSync({ db: deps.db, engineRoot: deps.engineRoot }),
+    llmAnalysis: deps.completeOnce
+      ? explorationKnowledgeAnalysis({ db: deps.db, completeOnce: deps.completeOnce })
+      : null,
   });
 
   app.get("/", async (c) => {

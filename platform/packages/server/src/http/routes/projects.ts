@@ -1,6 +1,7 @@
 /**
  * Project routes: GET|POST /api/projects, PATCH|DELETE /api/projects/:p.
  */
+import type { UtilityCompletion, ProjectConfigStore } from "../../mechanisms/projects.js";
 import { Hono } from "hono";
 import type {
   ProjectCreateResponse,
@@ -36,6 +37,8 @@ export interface ProjectsRouteDeps {
   root?: string;
   /** The machines this Project uses carry its name too (machines/service.ts). */
   machines: Pick<Machines, "syncConfigEverywhere">;
+  /** 项目默认模型的一次性补全（探索后 LLM 知识分析走它）；unset 时摘要如实说明未配置。 */
+  completeOnce?: (projectId: string, prompt: string, opts?: { maxTokens?: number; requestTimeoutMs?: number }) => Promise<UtilityCompletion>;
 }
 
 export function projectsRoutes(deps: ProjectsRouteDeps): Hono<AppEnv> {
@@ -47,6 +50,7 @@ export function projectsRoutes(deps: ProjectsRouteDeps): Hono<AppEnv> {
       projectService: deps.projectService,
       root: deps.root,
       engineRoot: process.env.AITEST_ENGINE_ROOT,
+      completeOnce: deps.completeOnce,
     }));
   }
 
@@ -108,6 +112,7 @@ export function projectsRoutes(deps: ProjectsRouteDeps): Hono<AppEnv> {
 export class ProjectAdminRoutes {
   @Use() private readonly projectService!: ProjectLifecycle;
   @Use() private readonly db!: Db;
+  @Use() private readonly projectConfig!: ProjectConfigStore;
   @Use() private readonly runs!: ProjectRuns;
   @Use() private readonly desktop!: Desktop;
   @Use() private readonly machines!: Machines;
@@ -121,6 +126,7 @@ export class ProjectAdminRoutes {
       runs: this.runs,
       root: this.paths.root,
       machines: this.machines,
+      completeOnce: (projectId, prompt, opts) => this.projectConfig.completeOnce(projectId, prompt, opts),
     });
     this.membersRoutes = membersRoutes({
       projectService: this.projectService,
