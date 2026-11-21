@@ -24,6 +24,10 @@ const result = withRunLock(root, project, runId, () => {
   const latest = (manifest.confirmations ?? []).filter(item => item.stage === stage).at(-1);
   if (latest?.id !== confirmationId || latest.status !== 'pending' || latest.kind === 'authorization') throw new Error('Review request changed; reload before deciding');
   const receipt = assertCompletedArtifacts(root, runId, manifest, stage);
+  // B2-2 引擎收口：失败的确定性校验不能被批准越过——工具回执里有 failed 一律拒绝，
+  // 修复后重新交付产生新的确认快照再批。
+  const failedChecks = (receipt.tool_checks ?? []).filter(check => check.status === 'failed');
+  if (failedChecks.length) throw new Error(`Stage tool checks failed: ${failedChecks.map(check => check.tool_id).join(', ')}`);
   if (!isDeepStrictEqual(receipt, latest.artifact_contract)) throw new Error('Deliverable changed since review request');
   const at = new Date().toISOString();
   latest.status = 'approved'; latest.resolved_at = at; latest.actor_user_id = actorId;
