@@ -82,6 +82,8 @@ export interface ExplorationKnowledgeBuildInfo {
   /** 逆向需求文档（第二批）：null = 无证据与假设，未建。 */
   prdDocumentId?: string | null;
   prdRevision?: number | null;
+  /** true = PRD 已被所有者归档，本轮跳过自动重写（不报错；恢复自动重写请取消归档）。 */
+  prdArchived?: boolean;
 }
 
 export type ExplorationKnowledgeSync = (
@@ -107,6 +109,7 @@ export function explorationKnowledgeSync(deps: {
         documentId, revision: prd?.revision ?? 0, buildVersion: null,
         unchanged: true, itemCount: 0,
         prdDocumentId: prd?.documentId ?? null, prdRevision: prd?.revision ?? null,
+        prdArchived: prd?.archived === true,
       };
     }
 
@@ -165,6 +168,7 @@ export function explorationKnowledgeSync(deps: {
       itemCount: result.build.items.length,
       prdDocumentId: prd?.documentId ?? null,
       prdRevision: prd?.revision ?? null,
+      prdArchived: prd?.archived === true,
     };
   };
 }
@@ -366,7 +370,7 @@ async function writeReversePrd(
   db: KnowledgeDb,
   store: QaProjectKnowledgeStore,
   input: ExplorationKnowledgeSyncInput,
-): Promise<{ documentId: string; revision: number } | null> {
+): Promise<{ documentId: string; revision: number; archived?: boolean } | null> {
   const hasEvidence = (input.evidence?.observations?.length ?? 0) > 0 || (input.evidence?.rules?.length ?? 0) > 0;
   const hasHypotheses = (input.openHypotheses?.length ?? 0) > 0;
   if (!hasEvidence && !hasHypotheses) return null;
@@ -389,6 +393,12 @@ async function writeReversePrd(
       changeNote: `探索第 ${input.round} 轮逆向需求文档`,
     });
     return { documentId, revision: created.document.currentRevision };
+  }
+  // 归档是所有者的决定：PRD 不再自动重建，也不把每轮探索变成一条报错——跳过并在
+  // 摘要里如实说明（想恢复自动重写就取消归档）。快照文档的归档仍视为错误：它是
+  // 知识构建的原文来源，缺了会把整条联动静默掏空。
+  if (row.status !== "active") {
+    return { documentId, revision: Number(row.current_revision), archived: true };
   }
   if (row.status !== "active") throw new Error(`逆向需求文档已被归档（${documentId}），无法继续修订`);
   if (row.content_hash !== contentHash) {
