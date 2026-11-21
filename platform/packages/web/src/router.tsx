@@ -50,6 +50,7 @@ import { QaProjectView } from "./features/qa/project-view";
 import { ProjectManagementPage } from "./features/qa/project-management/project-management-page";
 import { ProjectEnvironmentsPage } from "./features/qa/project-management/project-environments-page";
 import { PlatformTasksPage } from "./features/qa/platform-tasks/platform-tasks-page";
+import { PlatformTaskCreatePage } from "./features/qa/platform-tasks/platform-task-create-page";
 import { ConfirmGatePage } from "./features/qa/confirm-gate-page";
 import { QaTaskDetail } from "./features/qa/task-detail";
 import { QualityTraceabilityPage } from "./features/qa/quality-traceability-page";
@@ -258,9 +259,9 @@ function appRoutes(admin = false) {
         {/* 项目环境：项目内的一级页（左侧导航「项目环境」）。路径挂在 /qa/project 前缀下，
             以便模块权限沿用 projects（module-permissions 的 /qa/project 前缀规则）。 */}
         <Route path="/qa/project/environments" element={<ProjectEnvironmentsPage />} />
-        {/* 平台任务：项目内的一级页（左侧导航「平台任务」）。任务平台对接的任务列表：
-            来源双轨（平台同步/本地新建，T5），开始测试跳既有全流程阶段页。模块权限沿用
-            projects 的 /qa/project 前缀规则。 */}
+        {/* 测试任务：任务平台对接 + 本地新建合并列表（原「平台任务」，B1 双入口）。
+            新建走整页表单（platform-task-create-page），替代原创建弹窗。 */}
+        <Route path="/qa/project/platform-tasks/new" element={<PlatformTaskCreatePage />} />
         <Route path="/qa/project/platform-tasks" element={<PlatformTasksPage />} />
         {/* 确认卡点（A3 三层卡点 + A4 报告审批）：项目内的一级页，模块权限同样沿用
             projects 的 /qa/project 前缀规则。 */}

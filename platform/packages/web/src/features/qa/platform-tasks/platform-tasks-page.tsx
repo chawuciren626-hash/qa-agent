@@ -15,10 +15,8 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { toastError, toastSuccess } from "@prismshadow/penguin-ui";
 import { useProject, projectDisplayName } from "../../../state/project";
-import { listEnvironments } from "../project-management/api";
 import {
   analyzeTask,
-  createLocalTask,
   editTask,
   getTaskDetail,
   listTasks,
@@ -49,7 +47,6 @@ const SEGMENTS: Array<[string, string]> = [
 const PRIORITY_LABEL: Record<string, string> = { high: "高", medium: "中", low: "低" };
 
 type EditTarget =
-  | { kind: "create" }
   | { kind: "platform"; id: string; title: string; notes: { localTitleNote: string; localTestFocusNote: string } }
   | { kind: "local"; id: string; title: string; description: string; envBaseUrl: string; account: string };
 
@@ -179,25 +176,11 @@ export function PlatformTasksPage() {
     }
   };
 
-  // 「AI 分析保存」：创建后立即同步分析（模型直接回填结构化结论），完成后关弹窗。
+  // 编辑保存：平台任务=补充性字段；本地任务=全量字段。新建走独立整页（platform-task-create-page）。
   const saveEdit = async (payload: { platform?: { localTitleNote: string; localTestFocusNote: string }; local?: LocalTaskPayload }) => {
     if (!projectId || !editTarget) return;
-    let createdTask: { id: string; title: string } | null = null;
     try {
-      if (editTarget.kind === "create" && payload.local) {
-        // 先落库（防丢），再 AI 分析（同步完成，无会话无流程）；分析收尾才关弹窗。
-        const created = await createLocalTask(projectId, payload.local);
-        createdTask = { id: created.task.id, title: payload.local.title };
-        await reload();
-        const analysis = await analyzeTask(projectId, created.task.id);
-        setEditTarget(null);
-        await reload();
-        if (analysis.degraded) {
-          toastError(`「${payload.local.title}」已保存为可开始，但 AI 分析未走模型（${analysis.degraded.reason}），已回填演示结论；可稍后点「AI 分析」重试`);
-        } else {
-          toastSuccess(`「${payload.local.title}」已保存，AI 分析完成；任务可直接开始测试`);
-        }
-      } else if (editTarget.kind === "platform" && payload.platform) {
+      if (editTarget.kind === "platform" && payload.platform) {
         const result = await editTask(projectId, editTarget.id, payload.platform);
         toastSuccess(
           result.analysisStale
@@ -213,13 +196,7 @@ export function PlatformTasksPage() {
         await reload();
       }
     } catch (e) {
-      const savedNote = createdTask ? `任务「${createdTask.title}」已保存为可开始；` : "";
-      toastError(savedNote + (e instanceof Error ? e.message : "保存失败，请重试"));
-      if (createdTask) {
-        // 创建成功、分析提交失败：任务已在列表，收起弹窗让用户继续
-        setEditTarget(null);
-        await reload();
-      }
+      toastError(e instanceof Error ? e.message : "保存失败，请重试");
     }
   };
 
@@ -229,7 +206,7 @@ export function PlatformTasksPage() {
         <div className="qpm-scroll">
           <div className="qpm-empty-card">
             <p className="qpm-empty-title">还没有进入项目</p>
-            <p className="qpm-empty-sub">平台任务按项目隔离，先进一个项目再看这里。</p>
+            <p className="qpm-empty-sub">任务按项目隔离，先在顶部项目切换器中选择项目，或去项目管理新建。</p>
             <button type="button" className="qpm-btn-main" onClick={() => navigate("/qa/projects")}>去项目管理</button>
           </div>
         </div>
@@ -238,18 +215,18 @@ export function PlatformTasksPage() {
   }
 
   return (
-    <main className="qpm-page qpt-page" aria-label="平台任务">
+    <main className="qpm-page qpt-page" aria-label="测试任务">
       <div className="qpm-scroll">
         <header className="qpm-head">
           <div>
-            <h1>平台任务</h1>
+            <h1>测试任务</h1>
             <p>
               {currentProject ? projectDisplayName(currentProject) : "—"} · 来源「平台同步」+ 本地新建 ·
               平台数据由 AITestHarness 定时拉取（1 分钟/次），任务平台不主动推送
             </p>
           </div>
           <div className="qpm-head-actions">
-            <button type="button" className="qpm-btn-main" onClick={() => setEditTarget({ kind: "create" })}>＋ 新建任务</button>
+            <button type="button" className="qpm-btn-main" onClick={() => navigate("/qa/project/platform-tasks/new")}>＋ 新建任务</button>
           </div>
         </header>
 
@@ -283,8 +260,8 @@ export function PlatformTasksPage() {
         ) : visible.length === 0 ? (
           <div className="qpm-empty-card">
             <p className="qpm-empty-title">当前筛选下没有任务</p>
-            <p className="qpm-empty-sub">平台任务会随交接包到达自动出现；也可以点「新建任务」自己建一个。</p>
-            <button type="button" className="qpm-btn-main" onClick={() => setEditTarget({ kind: "create" })}>＋ 新建任务</button>
+            <p className="qpm-empty-sub">平台同步任务会随交接包到达自动出现；也可以点「新建任务」自己建一个。</p>
+            <button type="button" className="qpm-btn-main" onClick={() => navigate("/qa/project/platform-tasks/new")}>＋ 新建任务</button>
           </div>
         ) : (
           <table className="qpt-table">
@@ -557,26 +534,7 @@ function EditModal({ target, projectId, onClose, onSave }: {
   const [description, setDescription] = useState(target.kind === "local" ? target.description : "");
   const [envBaseUrl, setEnvBaseUrl] = useState(target.kind === "local" ? target.envBaseUrl : "");
   const [account, setAccount] = useState(target.kind === "local" ? target.account : "");
-  const isCreate = target.kind === "create";
-  const isLocalForm = isCreate || target.kind === "local";
-
-  // 新建时预填项目默认环境的地址（选填，可改可清空）；编辑值以回填的详情为准
-  useEffect(() => {
-    if (!isCreate) return;
-    let cancelled = false;
-    void listEnvironments(projectId)
-      .then((r) => {
-        if (cancelled) return;
-        const def =
-          r.environments.find((e) => e.isDefault) ??
-          (r.defaultEnv ? r.environments.find((e) => e.env === r.defaultEnv) : undefined);
-        if (def?.baseUrl) setEnvBaseUrl((prev) => prev || def.baseUrl);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [isCreate, projectId]);
+  const isLocalForm = target.kind === "local";
 
   const submit = async () => {
     if (isLocalForm) {
@@ -601,7 +559,7 @@ function EditModal({ target, projectId, onClose, onSave }: {
     }
   };
 
-  const heading = isCreate ? "新建本地任务" : target.kind === "platform" ? "编辑补充性字段" : "编辑本地任务";
+  const heading = target.kind === "platform" ? "编辑补充性字段" : "编辑本地任务";
   return (
     <div className="qpt-modal" role="dialog" aria-modal="true" aria-label={heading}>
       <div className="qpt-mbox">
@@ -611,11 +569,9 @@ function EditModal({ target, projectId, onClose, onSave }: {
         </header>
         <div className="qpt-m-body">
           <p className="qpt-m-hint">
-            {isCreate
-              ? "点「AI 分析保存」：先创建任务（立即进入「可开始」），再由总控 AI 基于需求描述自动产出结构化测试建议，分析完成后任务出现在列表并可直接开始测试。"
-              : target.kind === "platform"
-                ? "平台交接包为不可变版本快照，这里只能编辑本地补充性字段；保存后作为 AI 分析的附加输入，且不会被平台后续同步覆盖（T4）。"
-                : "本地任务字段全部本地可编辑，不影响任何平台数据；内容修改后建议重新 AI 分析。"}
+            {target.kind === "platform"
+              ? "平台交接包为不可变版本快照，这里只能编辑本地补充性字段；保存后作为 AI 分析的附加输入，且不会被平台后续同步覆盖（T4）。"
+              : "本地任务字段全部本地可编辑，不影响任何平台数据；内容修改后建议重新 AI 分析。"}
           </p>
           {isLocalForm ? (
             <>
@@ -650,7 +606,7 @@ function EditModal({ target, projectId, onClose, onSave }: {
         <footer className="qpt-m-foot">
           <button type="button" className="qpt-op" onClick={onClose} disabled={busy}>取消</button>
           <button type="button" className="qpt-op qpt-op-main" disabled={busy} onClick={() => void submit()}>
-            {busy ? (isCreate ? "AI 分析中…" : "保存中…") : isCreate ? "AI 分析保存" : "保存"}
+            {busy ? "保存中…" : "保存"}
           </button>
         </footer>
       </div>

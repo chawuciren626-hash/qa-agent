@@ -4,7 +4,7 @@
  *
  * 三件必须成立的事：
  * - 来源双轨渲染：平台/本地徽章区分（T5），TLQ-1 下 pending_analysis 的开始测试禁用；
- * - 新建本地任务：弹窗三字段，保存后列表出现新条目；
+ * - 新建本地任务：整页表单（/qa/project/platform-tasks/new），测试重点并入描述，保存即创建+发起分析；
  * - 详情抽屉三段式：平台资料/AI 分析结论（标 AI 建议）/测试进展。
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,7 @@ import { createElement as h } from "react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { click, mount, settle, type, unmountAll, waitFor } from "./helpers/dom";
 import { PlatformTasksPage } from "../src/features/qa/platform-tasks/platform-tasks-page";
+import { PlatformTaskCreatePage } from "../src/features/qa/platform-tasks/platform-task-create-page";
 import type { TaskDetail, TaskListItem } from "../src/features/qa/platform-tasks/api";
 
 const fixture = vi.hoisted(() => {
@@ -118,6 +119,7 @@ async function renderPage() {
     h(MemoryRouter, { initialEntries: ["/qa/project/platform-tasks"] },
       h(Routes, null,
         h(Route, { path: "/qa/project/platform-tasks", element: h(PlatformTasksPage) }),
+        h(Route, { path: "/qa/project/platform-tasks/new", element: h(PlatformTaskCreatePage) }),
       ),
     ),
   );
@@ -162,25 +164,25 @@ describe("platform tasks page", () => {
     expect(localRow?.querySelector(".qpt-src-local")?.textContent).toBe("本地");
   });
 
-  it("新建本地任务：AI 分析保存流——预填默认环境URL，保存即创建+发起分析，新条目进列表", async () => {
+  it("新建本地任务：整页表单——预填默认环境URL，测试重点并入描述，保存即创建+发起分析", async () => {
     const root = await renderPage();
     const create = Array.from(root.querySelectorAll("button")).find((b) => b.textContent?.includes("新建任务"));
     expect(create).toBeTruthy();
     await click(create!);
-    await waitFor(() => root.querySelector(".qpt-modal") !== null);
-    const modal = root.querySelector(".qpt-modal")!;
-    expect(modal.textContent).toContain("新建本地任务");
-    expect(modal.textContent).toContain("AI 分析保存");
-    // 无优先级下拉
-    expect(modal.querySelector("select")).toBeNull();
-    const textInputs = Array.from(modal.querySelectorAll("input[type=text]"));
+    await waitFor(() => root.querySelector('[aria-label="新建测试任务"]') !== null);
+    const form = root.querySelector(".qpt-create-form")!;
+    // 无优先级下拉（以 AI 建议为准）
+    expect(form.querySelector("select")).toBeNull();
+    const textInputs = Array.from(form.querySelectorAll("input[type=text]"));
     const title = textInputs[0]!;
     const envInput = textInputs[1]!;
     // 默认环境地址自动预填（选填可改）
     await waitFor(() => (envInput as HTMLInputElement).value === "http://demo.example.com");
     await type(title, "导入模板边界值回归");
-    await type(modal.querySelector("textarea")!, "批量导入模板的表头校验与边界值回归");
-    const save = Array.from(modal.querySelectorAll("button")).find((b) => b.textContent === "AI 分析保存")!;
+    const areas = Array.from(form.querySelectorAll("textarea"));
+    await type(areas[0]!, "批量导入模板的表头校验与边界值回归");
+    await type(areas[1]!, "优先验证导入失败的回滚完整性");
+    const save = Array.from(form.querySelectorAll("button")).find((b) => b.textContent === "保存并发起 AI 分析")!;
     await click(save);
     await waitFor(() => fixture.state.created.length === 1);
     expect(fixture.state.created[0]).toMatchObject({
@@ -188,19 +190,21 @@ describe("platform tasks page", () => {
       envBaseUrl: "http://demo.example.com",
       account: "",
     });
+    expect(String(fixture.state.created[0]?.description ?? "")).toContain("【测试重点】");
+    expect(String(fixture.state.created[0]?.description ?? "")).toContain("优先验证导入失败的回滚完整性");
   });
 
   it("新建校验：需求描述必填（AI 分析主输入）", async () => {
     const root = await renderPage();
     await click(Array.from(root.querySelectorAll("button")).find((b) => b.textContent?.includes("新建任务"))!);
-    await waitFor(() => root.querySelector(".qpt-modal") !== null);
-    const modal = root.querySelector(".qpt-modal")!;
-    await type(modal.querySelectorAll("input[type=text]")[0]!, "只有标题");
-    await click(Array.from(modal.querySelectorAll("button")).find((b) => b.textContent === "AI 分析保存")!);
+    await waitFor(() => root.querySelector('[aria-label="新建测试任务"]') !== null);
+    const form = root.querySelector(".qpt-create-form")!;
+    await type(form.querySelectorAll("input[type=text]")[0]!, "只有标题");
+    await click(Array.from(form.querySelectorAll("button")).find((b) => b.textContent === "保存并发起 AI 分析")!);
     await settle();
-    // 描述为空被拦截：不发起创建
+    // 描述为空被拦截：不发起创建，仍留在表单页
     expect(fixture.state.created).toHaveLength(0);
-    expect(modal).toBeTruthy();
+    expect(root.querySelector('[aria-label="新建测试任务"]')).toBeTruthy();
   });
 
   it("同步 AI 分析：点击即完成并回填结构化结论（无会话、无流程）", async () => {

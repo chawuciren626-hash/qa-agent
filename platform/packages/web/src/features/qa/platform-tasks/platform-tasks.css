@@ -89,3 +89,9 @@
 .qpt-field textarea{resize:vertical}
 .qpt-field input:focus,.qpt-field select:focus,.qpt-field textarea:focus{outline:none;border-color:light-dark(#185fa5,#3b82f6);box-shadow:0 0 0 2px light-dark(#eaf2fb,#0f2740)}
 .qpt-m-foot{padding:12px 20px 16px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid light-dark(#eef0f4,#374151)}
+
+/* 新建任务整页表单（B1-3）：宽版式、大文本域，替代原创建弹窗 */
+.qpt-create-form{max-width:860px;padding:18px 4px 40px}
+.qpt-create-form .qpt-field>span{font-size:12.5px}
+.qpt-create-form .qpt-field textarea{min-height:180px;font-size:12.5px}
+.qpt-create-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px;padding-top:14px;border-top:1px solid light-dark(#eef0f4,#374151)}
