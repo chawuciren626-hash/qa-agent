@@ -17,8 +17,33 @@
  *
  * Pure, and free of Electron: the minter is a parameter, so the tests drive every outcome.
  */
+import { statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { MintedVia, MintTokenResult } from "@prismshadow/penguin-server/auth-token";
-import { isAppUrl } from "./util.js";
+import { desktopLoginUrl, isAppUrl } from "./util.js";
+
+/** After the first explicit logout, keep the profile in manual sign-in mode. */
+export function desktopLoginMode(profile: string, enabled = true) {
+  const marker = join(profile, "manual-sign-in");
+  let manual = false;
+  if (enabled) {
+    try {
+      statSync(marker);
+      manual = true;
+    } catch (error) {
+      manual = (error as NodeJS.ErrnoException).code !== "ENOENT";
+    }
+  }
+  return {
+    requiresPassword: () => manual,
+    landing: (origin: string, token: string) => manual ? origin + "/" : desktopLoginUrl(origin, token),
+    signedOut() {
+      if (!enabled || manual) return;
+      writeFileSync(marker, "1\n", { mode: 0o600 });
+      manual = true;
+    },
+  };
+}
 
 /**
  * The session cookie's name. Duplicated from the server's SESSION_COOKIE rather than
@@ -211,8 +236,7 @@ export type SignInMove = "rescue" | "leave";
  *   session — so the shell is told about it separately, by watching the request the App
  *   makes to end the session. Do not delete this branch on the grounds that the rescue
  *   ought to cover every route to the sign-in page: cover this one and Sign out becomes a
- *   no-op, with no way to hand the machine to someone else. The suppression lasts until
- *   something signs in again, or until the next launch, which is where this state begins.
+ *   no-op. This transient guard is separate from the profile's persistent manual-login mode.
  */
 export interface SignInGuard {
   /** Reports where the window has landed, and gets the move for it. */

@@ -1400,6 +1400,8 @@ export const en: Strings = {
     logoutConfirmTitle: "Sign out?",
     logoutConfirmBody:
       "This ends your session here and returns to the login page. Running conversations keep going on the server.",
+    logoutSetPasswordTitle: "Set a sign-in password",
+    logoutSetPasswordBody: "This account has no sign-in password yet. Set one before signing out so you can sign in again.",
     admin: "Admin",
     defaultAdminNote:
       "First run: the server prints a first-login link in its startup output — open it to claim the built-in admin “admin” and set a password. No initial password exists to type here",

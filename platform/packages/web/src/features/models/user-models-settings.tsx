@@ -49,9 +49,13 @@ const BUILTIN_PRESETS: ReadonlyArray<{ id: string; name: string; baseUrl: string
 ];
 const CUSTOM_PROVIDER = "__custom__";
 
-interface ProviderOption { id: string; name: string; baseUrl: string }
+interface ProviderOption { id: string; name: string; baseUrl: string; clientType?: string }
 
 const builtinOptions = (): ProviderOption[] => BUILTIN_PRESETS.map((p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl }));
+
+const channelOptions = (channels: ChannelInfo[]): ProviderOption[] => channels
+  .filter(channel => channel.id !== CUSTOM_PROVIDER && channel.id !== "custom")
+  .map(channel => ({ id: channel.id, name: channel.displayName, baseUrl: channel.baseUrl, clientType: channel.clientType }));
 
 /** 协议档位：空 = 跟随供应商默认（server 按端点探测）。 */
 const CLIENT_TYPES: ReadonlyArray<{ value: string; label: string }> = [
@@ -107,7 +111,7 @@ const emptyDraft = (options: ProviderOption[]): DraftState => ({
   modelId: "",
   displayName: "",
   vision: false,
-  clientType: "",
+  clientType: options[0]?.clientType ?? "",
   originalClientType: "",
   contextWindow: "",
   maxTokens: "",
@@ -127,16 +131,19 @@ export function UserModelsSettings() {
   /** 行级连通性测试进行中的行（provider\0modelId），按钮转圈并禁用。 */
   const [testingRow, setTestingRow] = useState<string | null>(null);
   /** 平台渠道目录（管理后台「渠道管理」维护）；读不到（非中央部署）为 null，回退内置预设。 */
-  const [channels, setChannels] = useState<ChannelInfo[] | null>(null);
+  const [providerOptions, setProviderOptions] = useState(builtinOptions);
+  const [addOpened, setAddOpened] = useState(false);
+  const [openingAdd, setOpeningAdd] = useState(false);
 
   useEffect(() => {
+    if (addOpened) return;
     let cancelled = false;
     void api.getChannels().then(
-      (result) => { if (!cancelled) setChannels(result.channels); },
-      () => { if (!cancelled) setChannels(null); },
+      (result) => { if (!cancelled) setProviderOptions(channelOptions(result.channels)); },
+      () => {},
     );
     return () => { cancelled = true; };
-  }, []);
+  }, [addOpened]);
 
   /** 读取与写入都走用户级端点 /api/user-models：不依赖「有没有项目」，登录即可配置。 */
   const reload = useCallback(async () => {
@@ -156,18 +163,6 @@ export function UserModelsSettings() {
   useEffect(() => { void reload(); }, [reload]);
 
   const models = useMemo(() => response?.models ?? [], [response]);
-  /** 供应商选项 = 内置预设 + 平台渠道（渠道里新增的追加在后面）；渠道是权威来源，渠道未覆盖的预设保留兜底。 */
-  const providerOptions = useMemo<ProviderOption[]>(() => {
-    const options = builtinOptions();
-    if (channels !== null) {
-      for (const channel of channels) {
-        if (!options.some((option) => option.id === channel.id)) {
-          options.push({ id: channel.id, name: channel.displayName, baseUrl: channel.baseUrl });
-        }
-      }
-    }
-    return options;
-  }, [channels]);
   const providerNames = useMemo(() => {
     const names = new Map<string, string>();
     for (const option of providerOptions) names.set(option.id, option.name);
@@ -178,7 +173,18 @@ export function UserModelsSettings() {
     return names;
   }, [response, models, providerOptions]);
 
-  const openAdd = () => { setTestResult(null); setDialog(emptyDraft(providerOptions)); };
+  const openAdd = async () => {
+    setTestResult(null);
+    setAddOpened(true);
+    setOpeningAdd(true);
+    try {
+      const options = await api.getChannels().then(result => channelOptions(result.channels)).catch(() => providerOptions);
+      setProviderOptions(options);
+      setDialog(emptyDraft(options));
+    } finally {
+      setOpeningAdd(false);
+    }
+  };
   const openEdit = (model: ModelInfo) => {
     setTestResult(null);
     const preset = providerOptions.find((item) => item.id === model.provider);
@@ -202,11 +208,11 @@ export function UserModelsSettings() {
 
   const pickPreset = (presetId: string) => {
     if (presetId === CUSTOM_PROVIDER) {
-      patchDialog({ presetId, baseUrl: "", providerName: dialog?.providerName || "" });
+      patchDialog({ presetId, baseUrl: "", clientType: "", providerName: dialog?.providerName || "" });
       return;
     }
     const preset = providerOptions.find((item) => item.id === presetId);
-    patchDialog({ presetId, baseUrl: preset?.baseUrl ?? "", providerName: "" });
+    patchDialog({ presetId, baseUrl: preset?.baseUrl ?? "", clientType: preset?.clientType ?? "", providerName: "" });
   };
 
   const draftProvider = dialog === null ? "" : dialog.presetId === CUSTOM_PROVIDER ? (dialog.providerName.trim() || "custom") : dialog.presetId;
@@ -257,6 +263,9 @@ export function UserModelsSettings() {
       }
       if (dialog.presetId === CUSTOM_PROVIDER && dialog.providerName.trim()) {
         connection.displayName = dialog.providerName.trim();
+      } else if (dialog.editRef === null) {
+        const channel = providerOptions.find(option => option.id === provider);
+        if (channel) connection.displayName = channel.name;
       }
 
       const rows = models
@@ -361,7 +370,7 @@ export function UserModelsSettings() {
               project_config.toml；新建项目与独立会话可直接选用（仅支持 OpenAI 兼容协议 API）。
             </p>
           </div>
-          <Button className="shrink-0" onClick={openAdd}>添加模型</Button>
+          <Button className="shrink-0" disabled={openingAdd} onClick={() => void openAdd()}>添加模型</Button>
         </div>
         <div className="mt-2 min-h-0 max-h-80 overflow-y-auto rounded-lg border border-line-muted [scrollbar-width:thin]">
           <div className="divide-y divide-line-muted">

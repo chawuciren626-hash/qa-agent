@@ -180,6 +180,27 @@ describe("desktop single-user mode", () => {
 });
 
 describe("desktop-session password change", () => {
+  it("sets an initial password, revokes the desktop session, and signs in with the password", async () => {
+    const t = await createDesktopApp();
+    try {
+      const cookie = await desktopLoginCookie(t.app);
+      const api = apiClient(t.app, cookie);
+      const password = "desktop-relogin-fixture";
+      expect((await api.put("/api/me/password", { newPassword: password })).status).toBe(204);
+      const logout = await api.post("/api/auth/logout", {});
+      expect(logout.status).toBe(204);
+      expect(logout.headers.get("set-cookie")).toContain("Max-Age=0");
+      expect((await api.get("/api/me")).status).toBe(401);
+      const login = await apiClient(t.app).post("/api/auth/login", { userId: "admin", password });
+      expect(login.status).toBe(200);
+      const nextCookie = login.headers.get("set-cookie")!.split(";")[0]!;
+      const next = await apiClient(t.app, nextCookie).get("/api/me");
+      expect(next.status).toBe(200);
+      expect(await next.json()).toMatchObject({ sessionVia: "password", user: { userId: "admin", passwordIsInitial: false } });
+    } finally {
+      await t.cleanup();
+    }
+  });
   it("allows omitting oldPassword for a desktop session and clears the initial flag", async () => {
     const t = await createDesktopApp();
     try {

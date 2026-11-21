@@ -3,8 +3,12 @@ import { AppLayout } from "../../components/layout/app-layout";
 import { createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, Navigate, useLocation } from "react-router";
-import { Button, PageFrame, PageHeader } from "@prismshadow/penguin-ui";
+import { Button, ConfirmModal, PageFrame, PageHeader } from "@prismshadow/penguin-ui";
 import { useAuth } from "../../state/auth";
+import { apiErrorText } from "../../lib/api-error";
+import { ChangePasswordDialog } from "../../components/account/change-password-dialog";
+import { S } from "../../lib/strings";
+import { isDesktopShellWindow } from "../../lib/account-menu";
 import { useProject } from "../../state/project";
 import { useSessions } from "../../state/sessions";
 import { isSidebarRow } from "../../lib/session-grouping";
@@ -19,6 +23,7 @@ import { CentralAgentSettingsPage } from "./central-agent-settings-page";
 import { CentralPluginsPage } from "./central-plugins-page";
 import { AdminSkillsPage } from "./admin-skills-page";
 import { AdminToolsPage } from "./admin-tools-page";
+import { AdminMcpPage } from "./admin-mcp-page";
 import { AdminOverviewPage } from "./admin-overview-page";
 import type { ManagedKind } from "../../lib/managed-resources";
 import { useUpdateBadges } from "../../lib/use-update-badges";
@@ -46,6 +51,7 @@ const navIcons: Record<string, ReactNode> = {
   menus: <><path d="M4 6h16M4 12h16M4 18h16"/></>,
   skills: <><path d="m12 3 2 5 5 2-5 2-2 5-2-5-5-2 5-2zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/></>,
   tools: <><path d="M14.7 6.3a4 4 0 0 0 5 5L21 21H3l1.3-9.7a4 4 0 0 0 5-5"/><path d="M9 3h6M12 3v4"/><circle cx="12" cy="15" r="2"/></>,
+  mcp: <><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01M17 7.5h.01M17 16.5h.01"/></>,
   permissions: <><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></>,
   audit: <><path d="M7 3h10l3 3v15H4V3h3zM8 11h8M8 15h8M8 19h5"/></>,
 };
@@ -59,8 +65,31 @@ function AdminAssistantHistory() {
 }
 
 function AdminAccountMenu({ central, userView, variant }: { central: boolean; userView: string | null; variant?: "side" | "top" }) {
-  const { user, logout } = useAuth();
+  const { user, logout, desktopMode, sessionVia, accountClient } = useAuth();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingLoginPassword, setSettingLoginPassword] = useState(false);
+  const [confirmingLogout, setConfirmingLogout] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState("");
+  const startLogout = () => {
+    setLogoutError("");
+    if (!accountClient && user?.passwordIsInitial && isDesktopShellWindow({ desktopMode, sessionVia })) {
+      setSettingLoginPassword(true);
+    } else setConfirmingLogout(true);
+  };
+  const confirmLogout = async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    setLogoutError("");
+    try {
+      await logout();
+      window.location.assign("/admin/login");
+    } catch (error) {
+      setLogoutError(apiErrorText(error));
+    } finally {
+      setLoggingOut(false);
+    }
+  };
   return <>
     <details className={`admin-account${variant === "top" ? " admin-account-top" : ""}`}>
       <summary>
@@ -72,9 +101,15 @@ function AdminAccountMenu({ central, userView, variant }: { central: boolean; us
         <p>当前：管理员视图</p>
         <a href={central ? "/user/" : userView ?? "/user/"}>切换到用户视图</a>
         <button type="button" onClick={event => { event.currentTarget.closest("details")?.removeAttribute("open"); setSettingsOpen(true); }}>设置</button>
-        <button type="button" onClick={() => void logout().then(() => window.location.assign("/admin/login"))}>退出登录</button>
+        <button type="button" onClick={startLogout}>退出登录</button>
+        {logoutError && <p role="alert">{logoutError}</p>}
       </div>
     </details>
+    <ChangePasswordDialog open={settingLoginPassword} onClose={() => setSettingLoginPassword(false)} firstDesktopLogout onSaved={() => setConfirmingLogout(true)} />
+    <ConfirmModal open={confirmingLogout} title={S.auth.logoutConfirmTitle} confirmLabel={S.auth.logout} cancelLabel={S.common.cancel} busy={loggingOut} onClose={() => { if (!loggingOut) setConfirmingLogout(false); }} onConfirm={() => void confirmLogout()}>
+      <p className="text-sm text-gray-600 dark:text-gray-300">{S.auth.logoutConfirmBody}</p>
+      {logoutError && <p role="alert" className="mt-2 text-sm text-red-600">{logoutError}</p>}
+    </ConfirmModal>
     <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} accountCenter={central} />
   </>;
 }
@@ -215,7 +250,7 @@ export function AdminHostGate({ children }: { children: ReactNode }) {
   const section = location.pathname.split("/")[1] || "agents";
   if (section === "chat") return <CentralAssistantContext.Provider value>{children}</CentralAssistantContext.Provider>;
   const kind = (section === "publications" ? location.pathname.split("/")[2] : section) as ManagedKind;
-  return <AdminChrome>{section === "overview" ? <AdminOverviewPage /> : section === "users" ? <AdminAccountsPage /> : section === "roles" ? <AdminRolesPage /> : section === "menus" ? <AdminMenusPage /> : section === "permissions" ? <AdminPermissionsPage /> : section === "audit" ? <AdminAuditPage /> : kind === "agents" ? (location.pathname.startsWith("/agents/") ? <CentralAgentSettingsPage /> : <CentralAgentsPage />) : kind === "plugins" ? <CentralPluginsPage /> : kind === "skills" ? <AdminSkillsPage central /> : section === "tools" ? <AdminToolsPage /> : kind === "models" ? <AdminChannelsPage /> : kind in RESOURCE_NAMES ? <CentralResourcesPage key={kind} kind={kind} /> : <PageFrame>未知管理模块。</PageFrame>}</AdminChrome>;
+  return <AdminChrome>{section === "overview" ? <AdminOverviewPage /> : section === "users" ? <AdminAccountsPage /> : section === "roles" ? <AdminRolesPage /> : section === "menus" ? <AdminMenusPage /> : section === "permissions" ? <AdminPermissionsPage /> : section === "audit" ? <AdminAuditPage /> : section === "mcp" ? <AdminMcpPage /> : kind === "agents" ? (location.pathname.startsWith("/agents/") ? <CentralAgentSettingsPage /> : <CentralAgentsPage />) : kind === "plugins" ? <CentralPluginsPage /> : kind === "skills" ? <AdminSkillsPage central /> : section === "tools" ? <AdminToolsPage /> : kind === "models" ? <AdminChannelsPage /> : kind in RESOURCE_NAMES ? <CentralResourcesPage key={kind} kind={kind} /> : <PageFrame>未知管理模块。</PageFrame>}</AdminChrome>;
 }
 
 export function AdminLayout() {

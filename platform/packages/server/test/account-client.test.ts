@@ -43,6 +43,7 @@ beforeEach(async()=>{
     const id=tokens.get((req.headers.cookie??'').replace('penguin_session=',''));
     if(!id){res.writeHead(401);res.end('{}');return;}
     if(req.url==="/api/control/access"){res.end(JSON.stringify({modules,resourceIds}));return;}
+    if(req.url==="/api/control/channels"){res.end(JSON.stringify({channels:[{id:"new-channel",displayName:"New channel",baseUrl:"https://example.com/v1",clientType:"openai-chat",models:0}]}));return;}
     if(req.url?.startsWith('/api/control/private/agents/')&&req.url.includes('/memory')){res.end(JSON.stringify({entries:memoryValue?[{name:'notes',value:memoryValue}]:[]}));return;}
     if(req.url==="/api/control/catalog/roles"){res.end(JSON.stringify({roles:[{agentId:roleAgentId,resourceId:'a'.repeat(36),version:roleVersion}]}));return;}
     if(req.url==="/api/control/catalog/roles/resolved"){
@@ -66,6 +67,14 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app?.cleanup();app=undefined;await new Promise<void>(resolve=>server.close(()=>resolve()));});
 describe('central identity with full local application',()=>{
+  it('forwards the live channel catalogue to ordinary signed-in users as read-only',async()=>{
+    const user=apiClient(app!.app,(await loginUser(app!.app,'ordinary','central-test-password')).cookie);
+    const response=await user.get('/api/control/channels');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({channels:[{id:"new-channel",displayName:"New channel",baseUrl:"https://example.com/v1",clientType:"openai-chat",models:0}]});
+    expect((await user.post('/api/control/channels',{})).status).toBe(404);
+    expect(captured.filter(request=>request.path==='/api/control/channels')).toHaveLength(1);
+  });
   it('forwards central Agent settings and scoped private reads through the authenticated bridge',async()=>{
     const admin=apiClient(app!.app,(await loginUser(app!.app,'admin','central-test-password')).cookie);
     const id='a'.repeat(36);

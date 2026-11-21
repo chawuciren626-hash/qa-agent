@@ -28,6 +28,8 @@ import { SettingsDialog } from "../../features/settings/settings-dialog";
 import { onSettingsRequest } from "../../features/settings/settings-request";
 import type { SettingsSectionKey } from "../../lib/settings-sections";
 import { isDesktopShellWindow } from "../../lib/account-menu";
+import { apiErrorText } from "../../lib/api-error";
+import { ChangePasswordDialog } from "../account/change-password-dialog";
 
 export function UserMenu({
   trigger,
@@ -58,7 +60,34 @@ export function UserMenu({
   /** The page a request asked for; the menu's own row asks for none (the viewer's first). */
   const [settingsSection, setSettingsSection] = useState<SettingsSectionKey | undefined>(undefined);
   const [confirmingLogout, setConfirmingLogout] = useState(false);
+  const [settingLoginPassword, setSettingLoginPassword] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState("");
   const [adminViewError, setAdminViewError] = useState("");
+
+  const prepareLogout = () => {
+    setOpen(false);
+    setLogoutError("");
+    if (!accountClient && user?.passwordIsInitial && isDesktopShellWindow({ desktopMode, sessionVia })) {
+      setSettingLoginPassword(true);
+    } else {
+      setConfirmingLogout(true);
+    }
+  };
+
+  const confirmLogout = async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    setLogoutError("");
+    try {
+      await logout();
+      navigate("/login", { replace: true });
+    } catch (error) {
+      setLogoutError(apiErrorText(error));
+    } finally {
+      setLoggingOut(false);
+    }
+  };
 
   const openAdminView = async () => {
     setOpen(false);
@@ -120,18 +149,7 @@ export function UserMenu({
                 setSettingsOpen(true);
               }}
             />
-            {/* Hidden in desktop mode: the window IS the session — logging out would
-                strand the user on a login page whose password was never shown. */}
-            {(!desktopMode || accountClient) && (
-              <MenuItem
-                danger
-                onSelect={() => {
-                  setOpen(false);
-                  setConfirmingLogout(true);
-                }}
-                label={S.auth.logout}
-              />
-            )}
+            <MenuItem danger onSelect={prepareLogout} label={S.auth.logout} />
           </Menu>
           {adminViewError && <p role="alert" className="px-3.5 py-1 text-xs text-red-600">{adminViewError}</p>}
         </div>
@@ -141,6 +159,12 @@ export function UserMenu({
         onClose={() => setSettingsOpen(false)}
         {...(settingsSection !== undefined ? { section: settingsSection } : {})}
       />
+      <ChangePasswordDialog
+        open={settingLoginPassword}
+        onClose={() => setSettingLoginPassword(false)}
+        firstDesktopLogout
+        onSaved={() => setConfirmingLogout(true)}
+      />
       {/* Signing out is confirmed first: the row sits in a menu of harmless entries, and a
           slip would end the session and land on the login page. Mounted beside the settings
           dialog, outside the dropdown, so it outlives the menu that opened it. */}
@@ -149,13 +173,12 @@ export function UserMenu({
         title={S.auth.logoutConfirmTitle}
         confirmLabel={S.auth.logout}
         cancelLabel={S.common.cancel}
-        onClose={() => setConfirmingLogout(false)}
-        onConfirm={() => {
-          setConfirmingLogout(false);
-          void logout().then(() => navigate("/login"));
-        }}
+        busy={loggingOut}
+        onClose={() => { if (!loggingOut) setConfirmingLogout(false); }}
+        onConfirm={() => void confirmLogout()}
       >
         <p className="text-sm text-gray-600 dark:text-gray-300">{S.auth.logoutConfirmBody}</p>
+        {logoutError && <p role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">{logoutError}</p>}
       </ConfirmModal>
     </>
   );

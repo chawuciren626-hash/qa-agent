@@ -25,13 +25,19 @@ import { apiErrorText } from "../../lib/api-error";
 import { useAuth } from "../../state/auth";
 import { omitsOldPassword } from "../../lib/account-menu";
 
-export function ChangePasswordDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  return open ? <ChangePasswordForm onClose={onClose} /> : null;
+interface PasswordFormOptions {
+  onClose: () => void;
+  firstDesktopLogout?: boolean;
+  onSaved?: () => void;
+}
+
+export function ChangePasswordDialog({ open, ...options }: PasswordFormOptions & { open: boolean }) {
+  return open ? <ChangePasswordForm {...options} /> : null;
 }
 
 const EMPTY = { oldPassword: "", newPassword: "", confirmPassword: "" };
 
-function ChangePasswordForm({ onClose }: { onClose: () => void }) {
+function ChangePasswordForm({ onClose, firstDesktopLogout, onSaved }: PasswordFormOptions) {
   const { refresh, desktopMode, sessionVia } = useAuth();
   // The shell's own window and a first-login session set the password without the old one —
   // for them the current password is random and was never shown (see omitsOldPassword). Both
@@ -64,15 +70,16 @@ function ChangePasswordForm({ onClose }: { onClose: () => void }) {
       // Saved: forget the form now, not at unmount. Re-reading the session next may redirect, and
       // the leave guard would hold that over a form with nothing left unsaved.
       discardUnsaved(form.scope);
-      await refresh();
       onClose();
+      onSaved?.();
+      void refresh().catch(() => {});
     } catch (e) {
       // Route by error code: invalid_password is about the NEW password's strength;
       // password_mismatch (and anything unrecognized) is about the current one.
       if (e instanceof ApiError && e.code === "invalid_password") {
         setRefused({ new: apiErrorText(e) });
       } else {
-        setRefused({ old: apiErrorText(e) });
+        setRefused(noOldPassword ? { new: apiErrorText(e) } : { old: apiErrorText(e) });
       }
     } finally {
       setBusy(false);
@@ -82,7 +89,7 @@ function ChangePasswordForm({ onClose }: { onClose: () => void }) {
   return (
     <Modal
       open
-      title={S.account.changePassword}
+      title={firstDesktopLogout ? S.auth.logoutSetPasswordTitle : S.account.changePassword}
       onClose={requestClose}
       footer={
         <>
@@ -101,6 +108,7 @@ function ChangePasswordForm({ onClose }: { onClose: () => void }) {
       }
     >
       <div className="space-y-3">
+        {firstDesktopLogout && <p className="text-sm text-gray-600 dark:text-gray-300">{S.auth.logoutSetPasswordBody}</p>}
         {!noOldPassword && (
           <PasswordInput
             label={S.account.oldPassword}

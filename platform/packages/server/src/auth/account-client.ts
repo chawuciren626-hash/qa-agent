@@ -606,7 +606,7 @@ export class AccountClient {
     const centralPrivate=/^\/api\/control\/private\/agents\/[a-f0-9-]{36}\/(memory|vault)$/.test(endpoint);
     const centralSkills=/^\/api\/control\/skills\/(catalog|admin(?:\/[a-f0-9-]{36}(?:\/export)?)?|categories(?:\/assign|\/assignment\/[a-z0-9_-]+|\/[a-z0-9_]+)?)$/.test(endpoint);
     const valid=(centralSkills && ["GET","POST","PUT","DELETE"].includes(c.req.method)) ||
-      (c.req.method==="GET"&&/^\/api\/control\/(access|catalog(?:\/roles(?:\/resolved)?|\/[a-z0-9-]+(?:\/resolved)?)?|admin\/(resources(?:\/[a-z0-9-]+\/history)?|agent-groups|permissions\/[a-z][a-z0-9_]*|roles|menus|audit))$/.test(endpoint)) ||
+      (c.req.method==="GET"&&/^\/api\/control\/(access|channels|catalog(?:\/roles(?:\/resolved)?|\/[a-z0-9-]+(?:\/resolved)?)?|admin\/(resources(?:\/[a-z0-9-]+\/history)?|agent-groups|permissions\/[a-z][a-z0-9_]*|roles|menus|audit))$/.test(endpoint)) ||
       (["POST","PUT"].includes(c.req.method)&&/^\/api\/control\/admin\/(resources(?:\/validate|\/[a-z0-9-]+(?:\/(publish|withdraw|rollback|validate|copy))?)?|agent-groups(?:\/assign|\/[a-z0-9_]+)?|permissions\/[a-z][a-z0-9_]*|roles(?:\/[a-f0-9-]{36})?|role-members\/[a-z][a-z0-9_]*|menus)$/.test(endpoint)) ||
       (c.req.method==="DELETE"&&/^\/api\/control\/admin\/(resources\/[a-z0-9-]+(?:\/copy)?|agent-groups\/[a-z0-9_]+|roles\/[a-f0-9-]{36})$/.test(endpoint)) ||
       (centralAgentAdmin && (c.req.method==="GET" || (c.req.method==="POST" && /\/(snapshot|kernel-update)$/.test(endpoint)))) ||

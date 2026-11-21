@@ -4,6 +4,7 @@
  * which pages count as the sign-in page.
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -11,6 +12,7 @@ import type { MintedVia, MintTokenResult } from "@prismshadow/penguin-server/aut
 import {
   ATTACH_SESSION_TTL_MS,
   createSignInGuard,
+  desktopLoginMode,
   isLoginPageUrl,
   planSignIn,
   SESSION_COOKIE,
@@ -20,6 +22,22 @@ import type { SessionMinter } from "../src/attach-session.js";
 
 const ORIGIN = "http://localhost:53187";
 const ROOT = "/home/someone/.penguin/data";
+
+it("keeps an explicitly signed-out local profile in password mode across launches", () => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "aith-manual-login-"));
+  try {
+    const first = desktopLoginMode(profile);
+    expect(first.landing(ORIGIN, "first-token")).toBe(ORIGIN + "/api/auth/claim?token=first-token");
+    first.signedOut();
+    expect(first.requiresPassword()).toBe(true);
+    expect(first.landing(ORIGIN, "reconnect-token")).toBe(ORIGIN + "/");
+    expect(desktopLoginMode(profile).landing(ORIGIN, "restart-token")).toBe(ORIGIN + "/");
+    expect(desktopLoginMode(profile, false).landing(ORIGIN, "central-token")).toBe(ORIGIN + "/api/auth/claim?token=central-token");
+  } finally {
+    fs.unlinkSync(path.join(profile, "manual-sign-in"));
+    fs.rmdirSync(profile);
+  }
+});
 
 const EXPIRES_AT = "2026-10-20T08:00:00.000Z";
 const MINTED: MintTokenResult = {

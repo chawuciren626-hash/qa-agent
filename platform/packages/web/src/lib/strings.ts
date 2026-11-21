@@ -1517,10 +1517,12 @@ export const zh = {
     showPassword: "显示密码",
     hidePassword: "隐藏密码",
     login: "登录",
-    logout: "登出",
+    logout: "退出登录",
     /** The sign-out confirmation: dialog name and body. */
-    logoutConfirmTitle: "登出？",
+    logoutConfirmTitle: "退出登录？",
     logoutConfirmBody: "将退出当前账号并回到登录页；进行中的对话会在服务端继续运行。",
+    logoutSetPasswordTitle: "设置登录密码",
+    logoutSetPasswordBody: "当前账号没有可用的登录密码。请先设置密码，退出后用它重新登录。",
     admin: "管理员",
     defaultAdminNote:
       "首次使用请打开服务端启动输出中的首次登录链接，认领内置管理员 admin 并设置密码。这里没有可输入的初始密码",

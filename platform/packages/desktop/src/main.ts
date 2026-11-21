@@ -77,6 +77,7 @@ import { appIdentity, desktopDataRoot, resolveProfile } from "./app-identity.js"
 import { qaInstallation } from "./qa-installation.js";
 import {
   createSignInGuard,
+  desktopLoginMode,
   isLoginPageUrl,
   planSignIn,
   signInFailureDialog,
@@ -112,7 +113,6 @@ import {
   APP_WINDOW_OPTIONS,
   childGoneLine,
   classifyWindowOpen,
-  desktopLoginUrl,
   hidesOnClose,
   isAppUrl,
   isExternalScheme,
@@ -480,10 +480,11 @@ let shellDataRoot: string | null = null;
 let attachedServer: ServerLock | null = null;
 /**
  * Which arrivals at the sign-in page the shell answers with a session — one attempt per
- * stay, and none at all after a sign-out. It starts fresh with the process, which is what
- * makes a launch the way back in after signing out (see attach-session.ts).
+ * stay. An explicit local sign-out also switches the profile to manual sign-in across launches.
  */
 const signInGuard = createSignInGuard();
+const usesCentralAccounts = Boolean(process.env.AITEST_ACCOUNT_CENTER_ORIGIN);
+const loginMode = desktopLoginMode(app.getPath("userData"), !usesCentralAccounts);
 
 /**
  * Puts a session cookie for the current origin into the window's cookie store, by minting a
@@ -532,16 +533,20 @@ const SIGN_OUT_REQUEST = "*://*/api/auth/logout";
  * a sign-out from any window of this app counts, and registering it again replaces it.
  */
 function watchForSignOut(target: BrowserWindow): void {
-  target.webContents.session.webRequest.onCompleted({ urls: [SIGN_OUT_REQUEST] }, (details) => {
-    // A refused sign-out leaves the session alive, so the window never reaches the sign-in
-    // page, and there is nothing to suppress.
-    if (details.statusCode < 400 && isAppUrl(details.url, appOrigin)) signInGuard.signedOut();
+  target.webContents.session.webRequest.onHeadersReceived({ urls: [SIGN_OUT_REQUEST] }, (details, done) => {
+    // Record intent before the renderer can handle the successful response and navigate.
+    if (details.method === "POST" && details.statusCode >= 200 && details.statusCode < 300 && isAppUrl(details.url, appOrigin)) {
+      signInGuard.signedOut();
+      try { loginMode.signedOut(); }
+      catch (error) { logLine("[shell] could not persist manual sign-in: " + String(error)); }
+    }
+    done({});
   });
 }
 
 /** Runs the guard's decision for wherever the main window has just landed. */
 function onMainWindowNavigated(url: string): void {
-  if (process.env.AITEST_ACCOUNT_CENTER_ORIGIN) return;
+  if (usesCentralAccounts || loginMode.requiresPassword()) return;
   if (signInGuard.arrived(url, appOrigin) !== "rescue") return;
   void signInFromDataRoot().then((signedIn) => {
     // The app root, not a reload: the page underneath IS the sign-in page, and reloading it
@@ -693,7 +698,7 @@ async function startServerAndWindow(dataRoot: string): Promise<void> {
     clearTimeout(healthyTimer);
     void handleServerExit(dataRoot, code);
   });
-  const url = desktopLoginUrl(started.origin, started.token);
+  const url = loginMode.landing(started.origin, started.token);
   if (win === null) createWindow(url);
   else void win.loadURL(url);
 }
@@ -745,10 +750,10 @@ async function boot(): Promise<void> {
         appOrigin = next.origin;
         connection.postMessage(updaterStatusMessage(getUpdaterStatus()));
         pushTrayStatus();
-        if (win) await win.loadURL(desktopLoginUrl(next.origin, next.token));
+        if (win && !loginMode.requiresPassword()) await win.loadURL(loginMode.landing(next.origin, next.token));
       } catch (err) { logLine(`[shell] local service reconnect failed: ${String(err)}`); }
     });
-    createWindow(desktopLoginUrl(connection.origin, connection.token));
+    createWindow(loginMode.landing(connection.origin, connection.token));
     return;
   }
   if (profile === "dev") {
@@ -763,7 +768,7 @@ async function boot(): Promise<void> {
     attachedServer = existing;
     appOrigin = `http://localhost:${existing.port}`;
     logLine(`[shell] attaching to the running server at ${appOrigin} (pid ${existing.pid})`);
-    await signInFromDataRoot();
+    if (!loginMode.requiresPassword()) await signInFromDataRoot();
     // Either way the window opens on the app root: signed in it goes straight into the App,
     // and otherwise the App sends it to the sign-in page the dialog has just explained. The
     // attempt is recorded with that URL, so arriving there does not buy a second one.

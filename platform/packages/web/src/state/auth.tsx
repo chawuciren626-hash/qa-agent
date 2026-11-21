@@ -53,8 +53,7 @@ interface AuthContextValue {
   previewIsolated: boolean;
   /**
    * Whether the server runs in desktop mode (spawned by the desktop shell). The UI then
-   * hides the logout entry, the initial-password banner and the self-update entry — the
-   * desktop app manages sign-in and updates itself.
+   * adjusts the password setup and self-update controls for the desktop shell.
    */
   desktopMode: boolean;
   accountClient: boolean;
@@ -192,11 +191,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
-    try {
-      await api.logout();
-    } finally {
-      setUser(null);
-    }
+    await api.logout();
+    setUser(null);
   }, []);
 
   const setUserInfo = useCallback((next: UserInfo) => setUser(next), []);
