@@ -107,3 +107,5 @@
 .qpt-end-chip.is-on{background:light-dark(#eaf2fb,#0f2740);border-color:light-dark(#185fa5,#3b82f6);color:light-dark(#12457d,#a8c8ea);font-weight:600}
 .qpt-run-kind{background:light-dark(#eef0f4,#374151);color:light-dark(#4b5563,#d1d5db)}
 .qpt-run-env{background:light-dark(#eaf2fb,#0f2740);color:light-dark(#12457d,#a8c8ea)}
+.qpt-channel{margin-bottom:10px}
+.qpt-channel-head{font-size:11.5px;font-weight:700;color:light-dark(#4b5563,#d1d5db);margin:0 0 5px;letter-spacing:.3px}

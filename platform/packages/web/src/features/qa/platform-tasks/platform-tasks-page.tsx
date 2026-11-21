@@ -520,6 +520,14 @@ function TaskDrawer({ detail, projectId, onClose, onAnalyze, analyzing }: {
   const t = detail.task;
   const isLocal = t.source === "local";
   const s = detail.summary;
+  // 执行通道分组（B5-2）：类型 × 环境 相同的运行归入同一通道。
+  const channelGroups: Array<[string, typeof detail.progress.runs]> = [];
+  for (const run of detail.progress.runs) {
+    const channel = `${RUN_KIND_LABEL[run.kind] ?? run.kind} · ${run.env || "未绑定环境"}`;
+    const group = channelGroups.find(([label]) => label === channel);
+    if (group) group[1].push(run);
+    else channelGroups.push([channel, [run]]);
+  }
   return (
     <aside className="qpt-drawer" aria-label="任务详情">
       <header className="qpt-dw-head">
@@ -613,17 +621,21 @@ function TaskDrawer({ detail, projectId, onClose, onAnalyze, analyzing }: {
         </section>
 
         <section className="qpt-dw-sec">
-          <h3>测试进展</h3>
+          <h3>测试进展 <small className="qpt-att-hint">按执行通道（类型 × 环境）分组</small></h3>
           {detail.progress.runs.length > 0 ? (
-            detail.progress.runs.map((r) => (
+            channelGroups.map(([channel, channelRuns]) => (
+              <div key={channel} className="qpt-channel">
+                <h4 className="qpt-channel-head">{channel}</h4>
+                {channelRuns.map((r) => (
               <div className="qpt-run" key={r.runId}>
                 <div className="qpt-run-l1">
                   <span className="qpt-mono">{r.runId}</span>
                   <span className={`qpt-pill qpt-st-${r.status}`}>{RUN_STATUS_LABEL[r.status] ?? r.status}</span>
-                  <span className="qpt-pill qpt-run-kind">{RUN_KIND_LABEL[r.kind] ?? r.kind}</span>
                   {r.env && <span className="qpt-pill qpt-run-env">{r.env}</span>}
                 </div>
                 <div className="qpt-run-l2 qpt-mono">{Object.keys(r.counts ?? {}).length ? JSON.stringify(r.counts) : (r.status === "planned" ? "预登记：等待执行发起" : "—")}</div>
+              </div>
+                ))}
               </div>
             ))
           ) : (
