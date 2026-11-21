@@ -159,3 +159,42 @@ export function terminateTask(
     { method: "POST", body: { reason } }
   );
 }
+
+// ---------------------------------------------------------------- 附件（B1-3b）
+
+export interface TaskAttachment {
+  attachmentId: string;
+  filename: string;
+  mime: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+export function listTaskAttachments(projectId: string, taskId: string): Promise<{ attachments: TaskAttachment[] }> {
+  return apiFetch<{ attachments: TaskAttachment[] }>(
+    `${base(projectId)}/${encodeURIComponent(taskId)}/attachments`
+  );
+}
+
+/** 上传文本附件：客户端读为 UTF-8 文本后 base64 传输（同 trace import 的传输先例）。 */
+export function uploadTaskAttachment(
+  projectId: string,
+  taskId: string,
+  input: { filename: string; mime: string; dataBase64: string }
+): Promise<{ attachment: TaskAttachment; attachments: TaskAttachment[] }> {
+  return apiFetch<{ attachment: TaskAttachment; attachments: TaskAttachment[] }>(
+    `${base(projectId)}/${encodeURIComponent(taskId)}/attachments`,
+    { method: "POST", body: input }
+  );
+}
+
+export function deleteTaskAttachment(
+  projectId: string,
+  taskId: string,
+  attachmentId: string
+): Promise<{ removed: boolean }> {
+  return apiFetch<{ removed: boolean }>(
+    `${base(projectId)}/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    { method: "DELETE" }
+  );
+}

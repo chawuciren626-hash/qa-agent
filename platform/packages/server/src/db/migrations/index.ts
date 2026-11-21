@@ -86,6 +86,7 @@ import { pointUidColumn } from "./steps/2026-11-19-point-uid.js";
 import { taskPlatformIntegration } from "./steps/2026-11-20-task-platform-integration.js";
 import { localTaskContext } from "./steps/2026-11-21-local-task-context.js";
 import { mcpServerCatalog } from "./steps/2026-11-21-mcp-server-catalog.js";
+import { taskAttachments } from "./steps/2026-11-21-task-attachments.js";
 
 export type { Migration } from "./migration.js";
 export { IrreversibleMigrationError, UnknownMigrationError, appliedMigrations } from "./runner.js";
@@ -137,6 +138,7 @@ export const MIGRATIONS: readonly Migration[] = [
   taskPlatformIntegration,
   localTaskContext,
   mcpServerCatalog,
+  taskAttachments,
 ];
 
 /**

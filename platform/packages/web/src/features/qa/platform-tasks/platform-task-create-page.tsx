@@ -6,13 +6,31 @@
  * 测试重点在前端拼装为描述的结构化小节（【测试重点】），不引入新的服务端字段。
  * 附件上传（B1-3b）将复用项目知识上传设施接入本页，当前未包含。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { toastError, toastSuccess } from "@prismshadow/penguin-ui";
 import { projectDisplayName, useProject } from "../../../state/project";
 import { listEnvironments } from "../project-management/api";
-import { analyzeTask, createLocalTask } from "./api";
+import { analyzeTask, createLocalTask, uploadTaskAttachment } from "./api";
 import "./platform-tasks.css";
+
+/** 与服务端上限对齐：单件 60KB、单任务 10 件（api/qa-platform-tasks 附件端点同口径）。 */
+const ATTACHMENT_MAX_BYTES = 60 * 1024;
+const ATTACHMENT_MAX_COUNT = 10;
+const TEXT_ACCEPT = ".md,.txt,.json,.csv,.tsv,.html,.htm,.xml,.yaml,.yml,.log,.ini,.conf,.text";
+
+type PendingAttachment = { filename: string; mime: string; contentText: string; sizeBytes: number };
+
+function utf8Base64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  bytes.forEach((b) => { binary += String.fromCharCode(b); });
+  return btoa(binary);
+}
+
+function isTextFile(file: File): boolean {
+  return file.type.startsWith("text/") || /\.(md|txt|json|csv|tsv|html?|xml|ya?ml|log|ini|conf)$/i.test(file.name);
+}
 
 export function PlatformTaskCreatePage() {
   const navigate = useNavigate();
@@ -25,6 +43,35 @@ export function PlatformTaskCreatePage() {
   const [focusNote, setFocusNote] = useState("");
   const [envBaseUrl, setEnvBaseUrl] = useState("");
   const [account, setAccount] = useState("");
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const addFiles = async (files: FileList | null) => {
+    if (!files?.length) return;
+    const next = [...attachments];
+    for (const file of Array.from(files)) {
+      if (next.length >= ATTACHMENT_MAX_COUNT) {
+        toastError(`附件最多 ${ATTACHMENT_MAX_COUNT} 件，${file.name} 未加入`);
+        break;
+      }
+      if (file.size > ATTACHMENT_MAX_BYTES) {
+        toastError(`「${file.name}」超过 60KB 上限，未加入`);
+        continue;
+      }
+      if (!isTextFile(file)) {
+        toastError(`「${file.name}」不是文本类文件，未加入（图片/压缩包暂不支持）`);
+        continue;
+      }
+      const contentText = await file.text();
+      if (!contentText.trim()) {
+        toastError(`「${file.name}」内容为空，未加入`);
+        continue;
+      }
+      next.push({ filename: file.name, mime: file.type || "text/plain", contentText, sizeBytes: file.size });
+    }
+    setAttachments(next);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
 
   // 新建时预填项目默认环境的地址（选填，可改可清空）
   useEffect(() => {
@@ -79,6 +126,19 @@ export function PlatformTaskCreatePage() {
         envBaseUrl: envBaseUrl.trim(),
         account: account.trim(),
       });
+      // 附件先落库再分析：分析上下文由服务端从附件表装配（taskInfo），失败逐件提示不阻断。
+      let attachFailures = 0;
+      for (const item of attachments) {
+        try {
+          await uploadTaskAttachment(projectId, created.task.id, {
+            filename: item.filename,
+            mime: item.mime,
+            dataBase64: utf8Base64(item.contentText),
+          });
+        } catch {
+          attachFailures += 1;
+        }
+      }
       // 分析是同步模型通道：失败/降级不阻断——任务已落库（可开始），结论可稍后重试补。
       let analysisNote = "";
       try {
@@ -89,8 +149,9 @@ export function PlatformTaskCreatePage() {
       } catch {
         analysisNote = "，但 AI 分析失败；可稍后在列表点「AI 分析」重试";
       }
-      if (analysisNote) {
-        toastError(`任务「${created.task.title}」已创建${analysisNote}`);
+      const attachNote = attachFailures ? `；${attachFailures} 个附件上传失败，可在任务详情中重传` : "";
+      if (analysisNote || attachFailures) {
+        toastError(`任务「${created.task.title}」已创建${attachNote}${analysisNote}`);
       } else {
         toastSuccess(`任务「${created.task.title}」已创建，AI 分析完成；可直接开始测试`);
       }
@@ -176,6 +237,37 @@ export function PlatformTaskCreatePage() {
               disabled={busy}
             />
           </label>
+          <div className="qpt-field">
+            <span>
+              附件 <small>选填；文本类文件（md/txt/json/csv/html 等）作为 AI 分析补充输入，单件 ≤60KB、最多 10 件</small>
+            </span>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept={TEXT_ACCEPT}
+              disabled={busy || attachments.length >= ATTACHMENT_MAX_COUNT}
+              onChange={(e) => void addFiles(e.target.files)}
+            />
+            {attachments.length > 0 && (
+              <ul className="qpt-att-list">
+                {attachments.map((item, index) => (
+                  <li key={`${item.filename}-${index}`} className="qpt-att-item">
+                    <span className="qpt-att-name">{item.filename}</span>
+                    <small>{Math.ceil(item.sizeBytes / 1024)}KB</small>
+                    <button
+                      type="button"
+                      aria-label={`移除附件 ${item.filename}`}
+                      onClick={() => setAttachments(attachments.filter((_, i) => i !== index))}
+                      disabled={busy}
+                    >
+                      移除
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           <div className="qpt-create-actions">
             <button type="button" className="qpm-btn-ghost" onClick={() => navigate("/qa/project/platform-tasks")} disabled={busy}>
               取消

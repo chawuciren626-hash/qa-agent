@@ -95,3 +95,10 @@
 .qpt-create-form .qpt-field>span{font-size:12.5px}
 .qpt-create-form .qpt-field textarea{min-height:180px;font-size:12.5px}
 .qpt-create-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px;padding-top:14px;border-top:1px solid light-dark(#eef0f4,#374151)}
+.qpt-att-list{list-style:none;margin:6px 0;padding:0}
+.qpt-att-item{display:flex;align-items:center;gap:8px;padding:5px 8px;border:1px solid light-dark(#e6e9ef,#374151);border-radius:8px;margin-bottom:6px;font-size:12px;background:light-dark(#fff,#1f2937)}
+.qpt-att-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:light-dark(#1f2329,#f3f4f6)}
+.qpt-att-item small{color:light-dark(#8f959e,#9ca3af)}
+.qpt-att-item button{border:1px solid light-dark(#e6e9ef,#4b5563);background:transparent;border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer;color:light-dark(#646a73,#d1d5db)}
+.qpt-att-item button:hover{border-color:light-dark(#c2410c,#f97316);color:light-dark(#c2410c,#f97316)}
+.qpt-att-hint{font-weight:400;font-size:11px;color:light-dark(#8f959e,#9ca3af);margin-left:6px}

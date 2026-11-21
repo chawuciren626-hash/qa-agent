@@ -167,11 +167,15 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
     const dispatchText = JSON.stringify(vi.mocked(app.deps.manager.startTask).mock.calls[0]?.[1]);
     expect(dispatchText).toContain("平台任务开工");
     expect(dispatchText).toContain("同步测试任务 pending");
+    // B1-5 登记前移：开工指令带【运行预登记】，指明平台分配的 run_id
+    expect(dispatchText).toContain("运行预登记");
+    expect(dispatchText).toContain("run_id=run-");
 
-    // 详情测试进展段带出会话绑定
+    // 详情测试进展段带出会话绑定与预登记 run（planned = 预约已建、事实未发生）
     const d = (await (await detail(pending.id)).json()) as Json;
     expect(d.progress.mainSessionId).toBe("session-pt-1");
-    expect(d.progress.runs).toEqual([]);
+    expect(d.progress.runs).toHaveLength(1);
+    expect(d.progress.runs[0].status).toBe("planned");
   });
 
   it("本地任务不分析即可开始（T5）；开始测试创建新会话并注入开工指令", async () => {
@@ -359,7 +363,8 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
       .get(project, "session-pt-3") as { env: string; title: string; status: string };
     expect(row).toMatchObject({ env: envName, title: "环境绑定验证任务", status: "active" });
 
-    // 不带环境的本地任务：开始测试不建档（与改造前一致，环境由会话内后续补选）
+    // 不带环境的本地任务：B1-5 起开始测试即建档并预登记 run——env 空串表示"未指定环境"，
+    // 环境由会话内后续补选；planned 行等待引擎侧发起升级，不冒充执行。
     const bare = await owner.post(`${base}/platform-tasks/local`, {
       title: "无环境开始",
       description: "没填 URL",
@@ -372,7 +377,11 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
     const bareRow = app.deps.db
       .prepare(`SELECT env FROM qa_tasks WHERE project_id = ? AND session_id = ?`)
       .get(project, "session-pt-4") as { env: string } | undefined;
-    expect(bareRow).toBeUndefined();
+    expect(bareRow?.env).toBe("");
+    const bareRuns = app.deps.db
+      .prepare(`SELECT status FROM qa_runs WHERE project_id = ? AND session_id = ?`)
+      .all(project, "session-pt-4") as Array<{ status: string }>;
+    expect(bareRuns.map((r) => r.status)).toEqual(["planned"]);
   });
 
   it("开始测试建会话的模型解析：项目无默认模型回退账号级设置（同聊天页选择器）；两处都没有给出可操作错误", async () => {
@@ -451,5 +460,50 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
       .get(ready.id) as { last_action_json: string };
     const action = JSON.parse(audit.last_action_json) as Json;
     expect(action).toMatchObject({ action: "terminate", user_id: user, reason: "等下一版本一并处理" });
+  });
+
+  it("附件（B1-3b）：上传/列举/删除闭环，二进制与超限拒收", async () => {
+    const created = await owner.post(`${base}/platform-tasks/local`, {
+      title: "附件回归任务",
+      description: "验证附件上传链路",
+      envBaseUrl: "http://demo.example.com",
+    });
+    expect(created.status).toBe(201);
+    const id = ((await created.json()) as Json).task.id as string;
+
+    const content = Buffer.from("导入模板字段说明：模板 A 为标准版，模板 B 为扩展版", "utf8").toString("base64");
+    const up = await owner.post(`${base}/platform-tasks/${id}/attachments`, {
+      filename: "模板说明.md",
+      mime: "text/markdown",
+      dataBase64: content,
+    });
+    expect(up.status).toBe(201);
+    const listed = (await (await owner.get(`${base}/platform-tasks/${id}/attachments`)).json()) as Json;
+    expect(listed.attachments).toHaveLength(1);
+    expect(listed.attachments[0].filename).toBe("模板说明.md");
+    expect(listed.attachments[0].sizeBytes).toBeGreaterThan(0);
+    // 列表视图不回传正文
+    expect(listed.attachments[0].contentText).toBeUndefined();
+
+    // 二进制拒收（PNG 魔数含控制字节）
+    const binary = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]).toString("base64");
+    const rejected = await owner.post(`${base}/platform-tasks/${id}/attachments`, {
+      filename: "x.png", mime: "image/png", dataBase64: binary,
+    });
+    expect(rejected.status).toBe(400);
+    expect(await errorCode(rejected)).toBe("attachment_not_text");
+
+    // 超限拒收（70KB > 60KB）
+    const tooLarge = await owner.post(`${base}/platform-tasks/${id}/attachments`, {
+      filename: "big.txt", mime: "text/plain", dataBase64: Buffer.from("x".repeat(70 * 1024), "utf8").toString("base64"),
+    });
+    expect(tooLarge.status).toBe(400);
+
+    // 删除后列表为空
+    const attachmentId = listed.attachments[0].attachmentId as string;
+    const del = await owner.delete(`${base}/platform-tasks/${id}/attachments/${attachmentId}`);
+    expect(del.status).toBe(200);
+    const after = (await (await owner.get(`${base}/platform-tasks/${id}/attachments`)).json()) as Json;
+    expect(after.attachments).toHaveLength(0);
   });
 });

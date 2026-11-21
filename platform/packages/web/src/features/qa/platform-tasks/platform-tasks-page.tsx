@@ -11,17 +11,21 @@
  * 来源双轨：platform（任务平台映射）/ local（本地新建），徽章区分。
  * 列表仅展示平台同步任务与用户创建的本地任务。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { toastError, toastSuccess } from "@prismshadow/penguin-ui";
 import { useProject, projectDisplayName } from "../../../state/project";
 import {
   analyzeTask,
+  deleteTaskAttachment,
   editTask,
   getTaskDetail,
+  listTaskAttachments,
   listTasks,
   startTask,
+  uploadTaskAttachment,
   type AiSummary,
+  type TaskAttachment,
   type TaskDetail,
   type TaskListItem,
 } from "./api";
@@ -372,6 +376,7 @@ export function PlatformTasksPage() {
           <div className="qpt-mask" onClick={() => setDrawerId(null)} />
           <TaskDrawer
             detail={drawerDetail}
+            projectId={projectId}
             onClose={() => setDrawerId(null)}
             onAnalyze={(t) => void doAnalyze(t)}
             analyzing={drawerId ? analyzing.has(drawerId) : false}
@@ -391,8 +396,100 @@ export function PlatformTasksPage() {
   );
 }
 
-function TaskDrawer({ detail, onClose, onAnalyze, analyzing }: {
+/** 任务附件管理（B1-3b）：列表 + 上传 + 删除；正文只在分析上下文出现，明细不含内容。 */
+function TaskAttachments({ projectId, taskId }: { projectId: string; taskId: string }) {
+  const [items, setItems] = useState<TaskAttachment[]>([]);
+  const [busy, setBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void listTaskAttachments(projectId, taskId)
+      .then((r) => { if (alive) setItems(r.attachments); })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, [projectId, taskId]);
+
+  const reload = async () => {
+    const r = await listTaskAttachments(projectId, taskId);
+    setItems(r.attachments);
+  };
+
+  const upload = async (files: FileList | null) => {
+    if (!files?.length) return;
+    setBusy(true);
+    try {
+      for (const file of Array.from(files)) {
+        if (file.size > 60 * 1024) { toastError(`「${file.name}」超过 60KB 上限，未上传`); continue; }
+        if (!file.type.startsWith("text/") && !/\.(md|txt|json|csv|tsv|html?|xml|ya?ml|log|ini|conf)$/i.test(file.name)) {
+          toastError(`「${file.name}」不是文本类文件，未上传`);
+          continue;
+        }
+        const contentText = await file.text();
+        if (!contentText.trim()) { toastError(`「${file.name}」内容为空，未上传`); continue; }
+        const bytes = new TextEncoder().encode(contentText);
+        let binary = "";
+        bytes.forEach((b) => { binary += String.fromCharCode(b); });
+        await uploadTaskAttachment(projectId, taskId, {
+          filename: file.name,
+          mime: file.type || "text/plain",
+          dataBase64: btoa(binary),
+        });
+      }
+      await reload();
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "附件上传失败");
+    } finally {
+      setBusy(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const remove = async (attachmentId: string, filename: string) => {
+    setBusy(true);
+    try {
+      await deleteTaskAttachment(projectId, taskId, attachmentId);
+      await reload();
+      toastSuccess(`附件「${filename}」已删除`);
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "附件删除失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="qpt-dw-sec">
+      <h3>附件 <small className="qpt-att-hint">文本类 · 单件 ≤60KB · 最多 10 件 · 作为 AI 分析补充输入</small></h3>
+      {items.length === 0 ? (
+        <p className="qpt-muted">暂无附件。</p>
+      ) : (
+        <ul className="qpt-att-list">
+          {items.map((item) => (
+            <li key={item.attachmentId} className="qpt-att-item">
+              <span className="qpt-att-name">{item.filename}</span>
+              <small>{Math.ceil(item.sizeBytes / 1024)}KB</small>
+              <button type="button" onClick={() => void remove(item.attachmentId, item.filename)} disabled={busy}>删除</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept=".md,.txt,.json,.csv,.tsv,.html,.htm,.xml,.yaml,.yml,.log,.ini,.conf,.text"
+        disabled={busy || items.length >= 10}
+        onChange={(e) => void upload(e.target.files)}
+        aria-label="上传附件"
+      />
+    </section>
+  );
+}
+
+function TaskDrawer({ detail, projectId, onClose, onAnalyze, analyzing }: {
   detail: TaskDetail | null;
+  projectId: string;
   onClose: () => void;
   onAnalyze: (task: TaskListItem) => void;
   analyzing: boolean;
@@ -452,6 +549,7 @@ function TaskDrawer({ detail, onClose, onAnalyze, analyzing }: {
               )}
             </>
           )}
+          <TaskAttachments projectId={projectId} taskId={t.id} />
         </section>
 
         <section className="qpt-dw-sec">

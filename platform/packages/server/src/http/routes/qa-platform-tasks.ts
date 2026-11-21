@@ -195,6 +195,45 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
     }
   });
 
+  // 附件（B1-3b）：AI 分析的文本型补充输入。base64 JSON 传输（同 trace import 先例），
+  // 仅收文本类——二进制对同步模型通道没有输入位置，明确拒收而不是静默丢内容。
+  app.post("/qa/platform-tasks/:taskId/attachments", async (c) => {
+    const { projectId, userId } = scope(c);
+    const taskId = requireValidId(c, "taskId");
+    try {
+      const body = await readJson(c);
+      const filename = strField(body.filename, "invalid_filename", "附件文件名", { required: true, max: 200 });
+      const mime = strField(body.mime, "invalid_mime", "附件类型", { max: 100 }) || "text/plain";
+      const dataBase64 = typeof body.dataBase64 === "string" ? body.dataBase64.trim() : "";
+      if (!dataBase64) throw new HttpError(400, "attachment_empty", "附件内容为空。");
+      if (dataBase64.length > 90 * 1024) throw new HttpError(400, "attachment_too_large", "单个附件超过 60KB 上限。");
+      const contentText = Buffer.from(dataBase64, "base64").toString("utf8");
+      if (!contentText.trim()) throw new HttpError(400, "attachment_empty", "附件内容为空。");
+      if (/[\u0000]/.test(contentText) || (contentText.match(/[\u0001-\u0008\u000e-\u001f]/g)?.length ?? 0) > 8) {
+        throw new HttpError(400, "attachment_not_text", "仅支持文本类附件（md/txt/json/csv/html/yaml 等）。");
+      }
+      const attachment = svc.addAttachment({ projectId, userId, id: taskId, filename, mime, contentText });
+      return c.json({ attachment, attachments: svc.listAttachments(projectId, taskId) }, 201);
+    } catch (e) {
+      asHttp(e);
+    }
+  });
+
+  app.get("/qa/platform-tasks/:taskId/attachments", async (c) => {
+    const { projectId } = scope(c);
+    const taskId = requireValidId(c, "taskId");
+    return c.json({ attachments: svc.listAttachments(projectId, taskId) });
+  });
+
+  app.delete("/qa/platform-tasks/:taskId/attachments/:attachmentId", async (c) => {
+    const { projectId, userId } = scope(c);
+    const taskId = requireValidId(c, "taskId");
+    const attachmentId = requireValidId(c, "attachmentId");
+    const removed = svc.removeAttachment(projectId, taskId, attachmentId, userId);
+    if (!removed) notFound();
+    return c.json({ removed: true });
+  });
+
   app.post("/qa/platform-tasks/:taskId/analyze", async (c) => {
     const { projectId, userId } = scope(c);
     const taskId = requireValidId(c, "taskId");

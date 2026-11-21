@@ -195,6 +195,15 @@ interface RawRow {
   updated_at: string;
 }
 
+/** 任务附件的列表视图（不含正文——正文只进分析上下文，不经 API 明细回传）。 */
+export interface TaskAttachment {
+  attachmentId: string;
+  filename: string;
+  mime: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
 export class QaPlatformTaskService {
   constructor(
     private readonly db: PlatformTaskDb,
@@ -547,8 +556,114 @@ export class QaPlatformTaskService {
     return { updated: updated ? this.toListItem(updated) : null, summary, ...(degraded ? { degraded } : {}) };
   }
 
-  /** 任务材料（简报/开工指令共用）：标题、描述、备注、环境与账号。 */
+  // ------------------------------------------------------------------ 附件（B1-3b）
+
+  /** 附件进入分析上下文的总预算（字符）：超出截断，防止单文件淹没分析提示词。 */
+  private static readonly ATTACHMENT_PROMPT_BUDGET = 20000;
+
+  listAttachments(projectId: string, id: string): TaskAttachment[] {
+    const found = this.findAny(projectId, id);
+    if (!found) return [];
+    const rows = this.db
+      .prepare(
+        `SELECT attachment_id, filename, mime, size_bytes, created_at FROM qa_task_attachments
+         WHERE project_id = ? AND task_source = ? AND task_id = ?
+         ORDER BY created_at DESC, attachment_id DESC`,
+      )
+      .all(projectId, found.source, id) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      attachmentId: String(row.attachment_id),
+      filename: String(row.filename),
+      mime: String(row.mime),
+      sizeBytes: Number(row.size_bytes),
+      createdAt: String(row.created_at),
+    }));
+  }
+
+  addAttachment(input: {
+    projectId: string;
+    userId: string;
+    id: string;
+    filename: string;
+    mime: string;
+    contentText: string;
+  }): TaskAttachment {
+    const found = this.findAny(input.projectId, input.id);
+    if (!found) throw this.attachmentError(404, "task_not_found", "任务不存在。");
+    if (!input.contentText.trim()) throw this.attachmentError(400, "attachment_empty", "附件内容为空。");
+    const bytes = Buffer.byteLength(input.contentText, "utf8");
+    if (bytes > 60 * 1024) throw this.attachmentError(400, "attachment_too_large", "单个附件超过 60KB 上限。");
+    const count = (
+      this.db
+        .prepare("SELECT COUNT(*) AS n FROM qa_task_attachments WHERE project_id = ? AND task_source = ? AND task_id = ?")
+        .get(input.projectId, found.source, input.id) as { n: number }
+    ).n;
+    if (count >= 10) throw this.attachmentError(400, "attachment_limit", "单任务附件最多 10 件。");
+    const attachmentId = `att_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+    const filename = input.filename.trim().slice(0, 200) || "attachment.txt";
+    const mime = input.mime.trim().slice(0, 100) || "text/plain";
+    const now = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO qa_task_attachments
+           (attachment_id, project_id, task_source, task_id, filename, mime, size_bytes, content_text, created_by, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(attachmentId, input.projectId, found.source, input.id, filename, mime, bytes, input.contentText, input.userId, now, now);
+    this.audit(input.projectId, input.id, found.source, "attachment_add", input.userId, { filename, sizeBytes: bytes });
+    return { attachmentId, filename, mime, sizeBytes: bytes, createdAt: now };
+  }
+
+  removeAttachment(projectId: string, id: string, attachmentId: string, userId: string): boolean {
+    const found = this.findAny(projectId, id);
+    if (!found) return false;
+    const info = this.db
+      .prepare(
+        "SELECT filename FROM qa_task_attachments WHERE attachment_id = ? AND project_id = ? AND task_source = ? AND task_id = ?",
+      )
+      .get(attachmentId, projectId, found.source, id) as { filename: string } | undefined;
+    if (!info) return false;
+    this.db.prepare("DELETE FROM qa_task_attachments WHERE attachment_id = ?").run(attachmentId);
+    this.audit(projectId, id, found.source, "attachment_remove", userId, { filename: info.filename });
+    return true;
+  }
+
+  private attachmentError(status: number, code: string, message: string) {
+    const err = new Error(message) as Error & { status?: number; code?: string };
+    err.status = status;
+    err.code = code;
+    return err;
+  }
+
+  /** 附件 → 分析上下文块（简报/开工指令/analyze 共用）：单件与总预算截断。 */
+  private attachmentPromptBlocks(projectId: string, id: string, source: "platform" | "local"): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT filename, content_text FROM qa_task_attachments
+         WHERE project_id = ? AND task_source = ? AND task_id = ?
+         ORDER BY created_at ASC, attachment_id ASC`,
+      )
+      .all(projectId, source, id) as Array<{ filename: string; content_text: string }>;
+    if (!rows.length) return [];
+    let budget = QaPlatformTaskService.ATTACHMENT_PROMPT_BUDGET;
+    const blocks: string[] = [];
+    for (const row of rows) {
+      if (budget <= 0) {
+        blocks.push(`【附件资料 ${row.filename}】（超出分析预算未注入）`);
+        continue;
+      }
+      let text = row.content_text;
+      if (text.length > budget) text = `${text.slice(0, budget)}\n…[已截断]`;
+      budget -= text.length;
+      blocks.push(`【附件资料 ${row.filename}】\n${text}`);
+    }
+    return blocks;
+  }
+
+  /** 任务材料（简报/开工指令共用）：标题、描述、备注、附件、环境与账号。 */
   private taskInfo(projectId: string, id: string, source: "platform" | "local", row: RawRow): TaskInfo {
+    // 附件是任务材料的一部分：analyze 提示词、开工简报共用同一份注入（预算内截断）。
+    const attachments = this.attachmentPromptBlocks(projectId, id, source);
     if (source === "platform") {
       const full = this.db
         .prepare(`SELECT title, local_title_note, local_test_focus_note FROM platform_task_links WHERE link_id = ? AND project_id = ?`)
@@ -558,7 +673,7 @@ export class QaPlatformTaskService {
       return {
         title: full?.title ?? row.title,
         description: "",
-        notes: [full?.local_title_note, full?.local_test_focus_note].filter(Boolean).join("；"),
+        notes: [full?.local_title_note, full?.local_test_focus_note, ...attachments].filter(Boolean).join("\n"),
         envUrl: "",
         account: "",
       };
@@ -571,7 +686,7 @@ export class QaPlatformTaskService {
     return {
       title: full?.title ?? row.title,
       description: full?.description ?? "",
-      notes: "",
+      notes: attachments.join("\n"),
       envUrl: full?.env_base_url ?? "",
       account: full?.account ?? "",
     };
