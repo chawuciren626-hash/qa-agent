@@ -54,6 +54,22 @@ def invoke(tool_id: str, payload: dict) -> object:
     if tool_id == "regression.select":
         from .regression.selector import select_regression
         return select_regression(payload["cases"], payload.get("tier", "smoke"), payload.get("budget_s"))
+    if tool_id == "desktop.snapshot":
+        # 桌面结构层（零模型）：UIA 控件树快照 + 每元素 ≥2 指纹。桌面 computer-use 的
+        # 取原料层；视觉层（Midscene）的反查与重放层的定位端都以它为准。
+        from .probe.desktop_probe import DesktopProbe, DesktopProbeUnavailable
+        try:
+            return DesktopProbe(
+                max_nodes=int(payload.get("max_nodes") or 600),
+                max_depth=int(payload.get("max_depth") or 14),
+            ).snapshot(payload.get("window_hint") or {})
+        except DesktopProbeUnavailable as error:
+            raise RuntimeError(str(error)) from error
+    if tool_id == "desktop.replay":
+        # 桌面重放层（零模型）：UIA 锚点驱动的封闭动作集。定位失败如实失败交归因，
+        # 绝不猜点；这里不做任何视觉调用。
+        from .exec.desktop_engine import run_plan
+        return run_plan(payload["plan"])
     if tool_id == "knowledge.extract":
         # 条款化：先把资料切成带原文位置（file+line+章节路径）的条款，再把外部抽取的
         # 知识项按条款回填位置。没有位置的知识项一律丢弃并计数——不可定位即不可信。

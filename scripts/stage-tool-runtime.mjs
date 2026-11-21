@@ -28,6 +28,13 @@ export const BROWSER_STAGE_TOOLS = Object.freeze({
   'dom.snapshot': { stage: 'execution', source: 'scripts/browser-task.mjs' },
   'login.captcha_chain': { stage: 'execution', source: 'scripts/browser-task.mjs' },
 });
+// 桌面阶段工具由 desktop-task.mjs / desktop-visual.mjs 执行（结构与重放层最终落在
+// Python 探针，但调用入口、锁与回执都在 Node 引擎），同属 execution 阶段。
+export const DESKTOP_STAGE_TOOLS = Object.freeze({
+  'desktop.snapshot': { stage: 'execution', source: 'scripts/desktop-task.mjs' },
+  'desktop.visual_probe': { stage: 'execution', source: 'scripts/desktop-visual.mjs' },
+  'desktop.replay': { stage: 'execution', source: 'scripts/desktop-task.mjs' },
+});
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const NODE_STAGE_CHECK_IDS = new Set(['requirement.parse', 'expected.provenance', 'requirement.completeness', 'testpoint.coverage', 'defects.cluster', 'coverage.split', 'm1.consistency']);
@@ -114,7 +121,7 @@ export function stageToolReceipts(root, runId, { beforeStage = null } = {}) {
     const path = `audit/stage-tools/${name}`;
     try {
       const record = JSON.parse(readRunFile(dir, path).data);
-      if (record.run_id !== runId || record.status !== 'completed' || (!STAGE_TOOLS[record.tool_id] && !BROWSER_STAGE_TOOLS[record.tool_id])) continue;
+      if (record.run_id !== runId || record.status !== 'completed' || (!STAGE_TOOLS[record.tool_id] && !BROWSER_STAGE_TOOLS[record.tool_id] && !DESKTOP_STAGE_TOOLS[record.tool_id])) continue;
       if (beforeStage && record.stage === beforeStage) continue;
       if (manifest.stages?.[record.stage]?.status !== 'completed') continue;
       rows.push({ stage: record.stage, tool_id: record.tool_id, receipt_path: path,

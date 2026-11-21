@@ -6,7 +6,8 @@ import { directoryContext } from './directory-context.mjs';
 import { executionChildEnv } from './execution-child-env.mjs';
 
 const browserActions=new Set(['explore_url','browser_task']);
-const allowed=new Set([...browserActions,'run_stage_tool']);
+const desktopActions=new Set(['desktop_task']);
+const allowed=new Set([...browserActions,...desktopActions,'run_stage_tool']);
 const MAX_REQUEST=16*1024;
 const MAX_STAGE_REQUEST=2*1024*1024;
 

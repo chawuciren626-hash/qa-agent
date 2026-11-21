@@ -8,6 +8,9 @@ pytest>=8
 pyyaml>=6
 requests>=2.31
 beautifulsoup4>=4.12
+# 桌面 computer-use 结构层（probe/desktop_probe.py 的 UIA 控件树与截图反查）；
+# Windows 机器上缺它会直接 ImportError，桌面探针工具在 runtime_cli 注册但不可用。
+pywinauto>=0.6.9; sys_platform == "win32"
 python-docx==1.2.0
 reportlab==5.0.1
 lxml==6.1.3

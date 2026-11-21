@@ -15,7 +15,7 @@ const reviewMode = process.argv.find((arg) => arg.startsWith('--review-mode='))?
 const workflowMode = process.argv.find(arg=>arg.startsWith('--workflow-mode='))?.slice(16) ?? 'lifecycle';
 const sourceMode = process.argv.find(arg=>arg.startsWith('--source-mode='))?.slice(14) ?? 'provided_materials';
 const executionPlatform = process.argv.find(arg=>arg.startsWith('--execution-platform='))?.slice(21) ?? 'web';
-if (!['web','android','miniprogram'].includes(executionPlatform)) throw new Error('execution-platform must be web, android or miniprogram');
+if (!['web','android','miniprogram','desktop'].includes(executionPlatform)) throw new Error('execution-platform must be web, android, miniprogram or desktop');
 if (!['provided_materials','live_product'].includes(sourceMode) || (sourceMode==='live_product' && workflowMode!=='task')) throw new Error('Invalid source mode for this workflow');
 if (!['task','lifecycle'].includes(workflowMode)) throw new Error('workflow-mode must be task or lifecycle');
 if (!['auto','staged'].includes(reviewMode)) throw new Error('review-mode must be auto or staged');
@@ -34,7 +34,7 @@ function selectWithDependencies(stageId) {
 }
 requested.forEach(selectWithDependencies);
 if (sourceMode==='live_product') branches.forEach(id=>selected.add(id));
-if (executionPlatform!=='web' && (!selected.has('execution') || selected.has('api_execution'))) throw new Error('Mobile execution requires the execution stage without api_execution in this run');
+if (executionPlatform!=='web' && (!selected.has('execution') || selected.has('api_execution'))) throw new Error('Non-web execution requires the execution stage without api_execution in this run');
 
 withRunLock(root, project, runId, () => {
 const { manifestPath, manifest } = getRunContext(root, project, runId);
@@ -44,8 +44,9 @@ const now = new Date().toISOString();
 const planStages = workflow.stages.map((definition) => ({ ...definition, depends_on: workflowMode==='task'?[]:definition.depends_on, confirmation: workflowMode==='task'?(reviewMode==='staged'?'after':'none'):reviewMode === 'auto' && definition.confirmation === 'after' ? 'none' : definition.confirmation, result_confirmation: workflowMode==='lifecycle' && reviewMode==='staged' ? definition.result_confirmation : undefined, selected: selected.has(definition.id) }));
 if (executionPlatform!=='web') {
   const execution = planStages.find(stage=>stage.id==='execution');
-  execution.agent = executionPlatform==='android'?'android_test_agent':'miniprogram_test_agent';
-  execution.skills = [executionPlatform==='android'?'android-execution':'miniprogram-execution'];
+  execution.agent = executionPlatform==='android'?'android_test_agent':executionPlatform==='miniprogram'?'miniprogram_test_agent':'desktop_test_agent';
+  // 桌面轨的运行规则在角色提示词与 desktopScenarioPrompt 里，不依赖 Skill 包。
+  execution.skills = executionPlatform==='android'?['android-execution']:executionPlatform==='miniprogram'?['miniprogram-execution']:[];
 }
 if (sourceMode==='live_product') {
   for (const stage of planStages) if (!branches.includes(stage.id)) stage.depends_on=[...branches];

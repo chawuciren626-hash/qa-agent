@@ -29,9 +29,9 @@ const statusName = (value: string) => states[value] ?? value;
 const fileUrl = (sessionId: string, file: string, download: boolean) => `/api/sessions/${encodeURIComponent(sessionId)}/files/content?path=${encodeURIComponent(file)}${download ? "&download=1" : ""}`;
 const formattedSize = (size: number) => size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MB` : size >= 1024 ? `${Math.ceil(size / 1024)} KB` : `${size} B`;
 const artifactTime = (value?: string) => { if (!value) return "—"; const date = new Date(value); return Number.isNaN(date.getTime()) ? "—" : `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")} ${String(date.getHours()).padStart(2,"0")}:${String(date.getMinutes()).padStart(2,"0")}:${String(date.getSeconds()).padStart(2,"0")}`; };
-type ExecutionTab = "web" | "api" | "app" | "miniprogram";
-const executionTabs: { id: ExecutionTab; label: string }[] = [{ id: "web", label: "Web 自动化" }, { id: "api", label: "接口自动化" }, { id: "app", label: "App 自动化" }, { id: "miniprogram", label: "小程序自动化" }];
-const executionTabFor = (id: string, platform: string): ExecutionTab => id === "api_execution" ? "api" : platform === "android" ? "app" : platform === "miniprogram" ? "miniprogram" : "web";
+type ExecutionTab = "web" | "api" | "app" | "miniprogram" | "desktop";
+const executionTabs: { id: ExecutionTab; label: string }[] = [{ id: "web", label: "Web 自动化" }, { id: "api", label: "接口自动化" }, { id: "app", label: "App 自动化" }, { id: "miniprogram", label: "小程序自动化" }, { id: "desktop", label: "桌面自动化" }];
+export const executionTabFor = (id: string, platform: string): ExecutionTab => id === "api_execution" ? "api" : platform === "android" ? "app" : platform === "miniprogram" ? "miniprogram" : platform === "desktop" ? "desktop" : "web";
 
 export function StageMarkdown({ markdown, label }: { markdown: string; label: string }) {
   const sections = splitStageMarkdown(localizeGeneratedMarkdown(normalizeStageMarkdown(markdown)));

@@ -93,6 +93,10 @@ export const TOOL_BINDINGS = {
   browser_task: { requires: ['dom.snapshot'] },
   explore_url: { requires: ['dom.snapshot'] },
 
+  // —— 桌面 computer-use：没有控件树快照回执，桌面动作不准跑 ——
+  // 快照既是证据底座，也是视觉动作降级锚点的反查源；停用即整条桌面执行拒绝。
+  desktop_task: { requires: ['desktop.snapshot'] },
+
   // —— 报告：选集口径决定「能不能说没问题」 ——
   // requirement.completeness 是软依赖：报告照出，但若它被停用，覆盖率分母不会被修正，
   // 报告里那一段会写「未生成」——降级要留痕，不能静默当没这回事。

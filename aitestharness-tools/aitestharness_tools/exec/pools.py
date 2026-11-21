@@ -1,7 +1,11 @@
-"""§11.7 调度分池：接口/Web/设备/小程序四池，混合用例进主 driver 池。
+"""§11.7 调度分池：接口/Web/设备/小程序/桌面五池，混合用例进主 driver 池。
 
-默认容量（§11.7）：接口 20~50 无资源限制、Web=CPU 核心数、设备 1~2、小程序 1~2。
+默认容量（§11.7）：接口 20~50 无资源限制、Web=CPU 核心数、设备 1~2、小程序 1~2、
+桌面 1（屏幕是整机独占资源，两条桌面 run 并行就是互相点击对方的窗口）。
 混合用例 → 分配到主 driver 的池；执行中向辅助池申请资源（辅助资源本工具只记账不分配）。
+
+桌面池的进入方式：driver_kind 枚举不新增（v2 §6.4 的 IR 变更纪律），计划里显式声明
+`pool: "desktop"`；driver 侧仍是 native（桌面 GUI 属原生应用测试），只是资源归口不同。
 """
 from __future__ import annotations
 
@@ -18,6 +22,9 @@ _DRIVER_TO_POOL = {
     "miniprogram": "miniprogram_pool",
     "db": "api_pool",          # db 断言无独占资源，随接口池
 }
+_DESKTOP_POOL = "desktop_pool"
+# 计划里的池声明名 → caps 键。桌面计划写 pool:"desktop"；caps 键是资源池全名。
+_LANE_TO_POOL = {"desktop": _DESKTOP_POOL}
 
 
 class PoolScheduler:
@@ -29,6 +36,7 @@ class PoolScheduler:
             "web_pool": web_cap,
             "device_pool": (capacities or {}).get("device_pool", 1),  # §11.4：单设备串行
             "miniprogram_pool": (capacities or {}).get("miniprogram_pool", 1),
+            "desktop_pool": (capacities or {}).get("desktop_pool", 1),  # 单屏独占：默认 1
         }
         self.caps = caps
         self.in_use = {k: 0 for k in caps}
@@ -36,11 +44,18 @@ class PoolScheduler:
         self._aux_leased: list[dict] = []
 
     def submit(self, plan: dict) -> dict:
-        """计划 → 池分配决定。返回 {pool, main_driver, aux: [...], queued: bool}。"""
+        """计划 → 池分配决定。返回 {pool, main_driver, aux: [...], queued: bool}。
+
+        `pool: "desktop"` 显式覆盖（桌面 computer-use 计划的声明方式）；
+        其余按 driver → 池映射走。
+        """
         main = plan.get("main_driver") or plan.get("driver") or "api"
         if main not in ENUMS["driver_kind"]:
             raise ValueError(f"unknown driver {main!r}")
-        pool = _DRIVER_TO_POOL[main]
+        requested = plan.get("pool")
+        pool = _LANE_TO_POOL.get(requested) if requested else None
+        if pool is None:
+            pool = _DRIVER_TO_POOL[main]
         # 混合用例：找辅助 driver（≤2 段，切走不切回）
         aux = []
         for step in plan.get("steps") or []:
