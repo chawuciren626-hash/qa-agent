@@ -369,3 +369,25 @@
 - a4b6f40（B1 全量+B2-1/B3/B4-1/B5-1）已按部署手册合并部署至 D:\AITestHarness 并**通过用户真实验收**；记录 output/release/task-pipeline-a4b6f40/deployment-record.md；隔离构建树 E:\AItestHarness-deploy 保留。
 - B2-2 引擎收口已提交 9584fb3（approve 门禁拒绝 failed 工具回执 + finalize 扩展三设计阶段，契约 21/21+104/104）。
 - 下一批顺序：B4-2（M2a Web 取原料 + origin:environment 探索派发通道）→ B5 主体 → B6 → B7 → B8。每批提交后继续，不停轮。
+
+## 18. 第二轮批次记录（2026-11-22）
+
+| 提交 | 内容 |
+| --- | --- |
+| `892ae0d` | B2-2a stage_finalize 扩展三设计阶段（按阶段路由诊断） |
+| `9584fb3` | B2-2b 引擎收口：approve 门禁拒绝 failed 工具回执的批准 |
+| `76b2738` | B4-2 收口：探索成功自动派生 ui_locator_bundle 候选（幂等，待人审晋升） |
+| `ef47fb5` | B5-2 测试进展按执行通道（类型×环境）分组 |
+| `8de38a4` | B7-1 change_source 迁移列 + 创建/编辑/简报/提示词注入 + UI 字段 |
+| `0457f1f` | B8-1 缺陷生命周期服务端桥接（owner 经任务详情调引擎 CLI，run 锁+证据校验自带） |
+| `e122778` | B8-2 缺陷详情生命周期动作按钮（确认/标记已修复带理由；复测按钮待复测批次 UI） |
+| `6e6ce7f` | 验收通过与部署记录入册（a4b6f40 部署 D:\AITestHarness 并通过用户真实验收） |
+
+验证：每批触达契约与 typecheck 全绿（structured-actions 85、approve+confirm-gate 21、探索 22、web 7/7、qa-platform-tasks 11/11）。
+
+**仍未完成（需设计决策，勿直接赶工）**：
+1. B6 MCP：stage_finalize 是会话内动作（owning dispatch 归属），MCP 出口需无会话形态的收口封装——先出设计。
+2. B8 复测 UI：发起复测需创建复测批次（retest run + invocation 选择）——依赖 B5 回归轮次 UI。
+3. B7 diff 拉取：MR API vs 本地导出形态定稿后接内容装配。
+4. B5 主体：脚本资产化 lifecycle 与分片并行池配额（引擎执行层改造，单独立项）。
+5. 存量债务：web 设计规则 14 + schema↔迁移链漂移 18（建议单开小批，逐条归因）。
