@@ -18,6 +18,10 @@
  *      构建——question 不是事实，不能冒充）；逆向需求文档（doc-reverse-prd-<env>）
  *      从地图 + 语义证据 + 假设渲染，人读交付物，每条标注验证等级。
  *
+ * 归档语义（快照与 PRD 一致）：归档是所有者的决定，自动联动尊重它——跳过本轮快照
+ * 更新与知识构建，摘要里如实标注 snapshotArchived（想恢复联动就取消归档），不把
+ * 每轮探索变成一条报错。归档期间 PRD 仍按自己的归档语义独立产出。
+ *
  * 诚实边界：联动失败不改探索结论——探索本身的契约（合并 + 四层回写）已经完成，
  * 失败原因如实写进轮次摘要（summary.knowledgeBuild.error），不吞掉也不冒充成功。
  */
@@ -74,9 +78,9 @@ export interface ExplorationKnowledgeSyncInput {
 export interface ExplorationKnowledgeBuildInfo {
   documentId: string;
   revision: number;
-  /** null = 本轮没有可构建的事实（未建资料、未构建）。 */
+  /** null = 本轮没有可构建的事实或联动被跳过（归档/空快照），未构建。 */
   buildVersion: number | null;
-  /** true = 事实没变，构建返回既有版本（不升版本）。 */
+  /** true = 事实没变（或本轮跳过），构建沿用既有版本（不升版本）。 */
   unchanged: boolean;
   itemCount: number;
   /** 逆向需求文档（第二批）：null = 无证据与假设，未建。 */
@@ -84,6 +88,8 @@ export interface ExplorationKnowledgeBuildInfo {
   prdRevision?: number | null;
   /** true = PRD 已被所有者归档，本轮跳过自动重写（不报错；恢复自动重写请取消归档）。 */
   prdArchived?: boolean;
+  /** true = 探索快照已被所有者归档，本轮跳过资料更新与知识构建（恢复联动请取消归档）。 */
+  snapshotArchived?: boolean;
 }
 
 export type ExplorationKnowledgeSync = (
@@ -135,7 +141,20 @@ export function explorationKnowledgeSync(deps: {
       });
       revision = created.document.currentRevision;
     } else if (row.status !== "active") {
-      throw new Error(`探索快照资料已被归档（${documentId}），无法继续修订`);
+      // 归档是所有者的决定：跳过快照更新与知识构建（本轮事实无法拼接进冻结的快照，
+      // 硬构建会造出假证据），摘要如实标注 snapshotArchived；PRD 仍按自己的语义独立产出。
+      const prd = await writeReversePrd(deps.db as unknown as KnowledgeDb, store, input);
+      return {
+        documentId,
+        revision: Number(row.current_revision),
+        buildVersion: null,
+        unchanged: true,
+        itemCount: 0,
+        snapshotArchived: true,
+        prdDocumentId: prd?.documentId ?? null,
+        prdRevision: prd?.revision ?? null,
+        prdArchived: prd?.archived === true,
+      };
     } else if (row.content_hash !== contentHash) {
       const updated = store.updateDocument({
         projectId: input.projectId,
@@ -395,12 +414,10 @@ async function writeReversePrd(
     return { documentId, revision: created.document.currentRevision };
   }
   // 归档是所有者的决定：PRD 不再自动重建，也不把每轮探索变成一条报错——跳过并在
-  // 摘要里如实说明（想恢复自动重写就取消归档）。快照文档的归档仍视为错误：它是
-  // 知识构建的原文来源，缺了会把整条联动静默掏空。
+  // 摘要里如实说明（想恢复自动重写就取消归档）。
   if (row.status !== "active") {
     return { documentId, revision: Number(row.current_revision), archived: true };
   }
-  if (row.status !== "active") throw new Error(`逆向需求文档已被归档（${documentId}），无法继续修订`);
   if (row.content_hash !== contentHash) {
     const updated = store.updateDocument({
       projectId: input.projectId,

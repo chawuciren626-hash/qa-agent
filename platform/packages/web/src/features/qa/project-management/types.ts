@@ -57,6 +57,8 @@ export interface ExplorationKnowledgeBuildInfo {
   buildVersion: number | null;
   unchanged: boolean;
   itemCount: number;
+  /** true = 探索快照资料已被归档，本轮跳过资料更新与知识构建（取消归档后恢复自动联动）。 */
+  snapshotArchived?: boolean;
 }
 
 export interface ExplorationSummary {

@@ -499,4 +499,50 @@ describe("exploration → 项目资料联动（B1）", () => {
     const knowledge = latestExploration(deps.db, projectId, "test");
     expect(knowledge?.summary?.knowledgeLayers).toEqual(["module", "interface", "wall"]);
   });
+
+  it("快照被归档：联动跳过并如实标注（不再报错），取消归档后恢复", async () => {
+    const projectId = await projectWithRegisteredEnv();
+    const firstDeps = syncDepsOf(projectId);
+    startExploration(firstDeps, projectId, "test", {});
+    await waitForStatus(firstDeps, projectId, (view) => view?.status === "succeeded");
+
+    // 所有者归档探索快照（项目资料页的归档操作）——归档是决定，联动尊重它。
+    test!.deps.db
+      .prepare("UPDATE qa_documents SET status='archived' WHERE project_id=? AND document_id=?")
+      .run(projectId, "doc-explore-test");
+
+    const secondDeps = syncDepsOf(projectId);
+    startExploration(secondDeps, projectId, "test", {});
+    const second = await waitForStatus(secondDeps, projectId, (view) => view?.round === 2 && view.status === "succeeded");
+    const kb = second.summary?.knowledgeBuild as
+      | { snapshotArchived?: boolean; buildVersion: number | null; revision: number; error?: string }
+      | undefined;
+    expect(kb).toBeDefined();
+    expect(kb!.error).toBeUndefined();
+    expect(kb!.snapshotArchived).toBe(true);
+    expect(kb!.buildVersion).toBeNull();
+    // 快照冻结：不新增修订、不新增构建（本轮事实不硬拼进归档文档造假证据）。
+    const revisions = test!.deps.db
+      .prepare("SELECT count(*) AS n FROM qa_document_revisions WHERE document_id=?")
+      .get("doc-explore-test") as { n: number };
+    expect(revisions.n).toBe(1);
+    const builds = test!.deps.db
+      .prepare("SELECT count(*) AS n FROM qa_knowledge_builds WHERE project_id=?")
+      .get(projectId) as { n: number };
+    expect(builds.n).toBe(1);
+
+    // 取消归档：联动恢复，内容与归档前一致 → 沿用既有构建版本（unchanged）。
+    test!.deps.db
+      .prepare("UPDATE qa_documents SET status='active' WHERE project_id=? AND document_id=?")
+      .run(projectId, "doc-explore-test");
+    const thirdDeps = syncDepsOf(projectId);
+    startExploration(thirdDeps, projectId, "test", {});
+    const third = await waitForStatus(thirdDeps, projectId, (view) => view?.round === 3 && view.status === "succeeded");
+    const kb3 = third.summary?.knowledgeBuild as
+      | { snapshotArchived?: boolean; buildVersion: number | null; unchanged: boolean }
+      | undefined;
+    expect(kb3!.snapshotArchived).toBeUndefined();
+    expect(kb3!.buildVersion).toBe(1);
+    expect(kb3!.unchanged).toBe(true);
+  });
 });

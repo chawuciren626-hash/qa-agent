@@ -498,6 +498,14 @@ export function ProjectEnvironmentsPage() {
                               项目资料 v{exploration.summary.knowledgeBuild.buildVersion} · {exploration.summary.knowledgeBuild.itemCount} 条知识
                             </span>
                           )}
+                          {exploration.summary.knowledgeBuild && !("error" in exploration.summary.knowledgeBuild) && exploration.summary.knowledgeBuild.snapshotArchived === true && (
+                            <span
+                              className="qpm-tag qpm-tag-sync"
+                              title={`项目资料 ${exploration.summary.knowledgeBuild.documentId} 已被归档，本轮跳过资料更新与知识构建；在项目资料中取消归档后恢复自动联动`}
+                            >
+                              资料联动已跳过：探索快照已归档
+                            </span>
+                          )}
                           {exploration.summary.knowledgeBuild && "error" in exploration.summary.knowledgeBuild && (
                             <span className="qpm-tag qpm-tag-manual" title={exploration.summary.knowledgeBuild.error}>
                               项目资料联动失败：{exploration.summary.knowledgeBuild.error.slice(0, 40)}
