@@ -54,13 +54,14 @@ import {
   type RuleVersionView,
 } from "./project-knowledge-model";
 
-type Tab = "documents" | "candidates" | "rules" | "clauses";
+type Tab = "documents" | "candidates" | "rules" | "clauses" | "assets";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "documents", label: "资料" },
   { id: "candidates", label: "知识候选" },
   { id: "rules", label: "正式规则" },
   { id: "clauses", label: "知识条款" },
+  { id: "assets", label: "测试资产" },
 ];
 
 const FORMATS: DocumentFormat[] = ["markdown", "text", "json", "csv", "html"];
@@ -758,13 +759,14 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
   return (
     <main className={`flex h-full flex-col gap-4 overflow-hidden p-6 ${embedded ? "qa-knowledge-embedded" : ""}`}>
       <header className="shrink-0">
-        <h1 className="text-xl font-semibold">{embedded ? { documents: "项目参考资料", candidates: "待确认知识", rules: "正式规则", clauses: "知识条款" }[tab] : "项目资料与知识"}</h1>
+        <h1 className="text-xl font-semibold">{embedded ? { documents: "项目参考资料", candidates: "待确认知识", rules: "正式规则", clauses: "知识条款", assets: "测试资产" }[tab] : "项目资料与知识"}</h1>
         <p className="mt-1 text-sm opacity-70">
           {projectDisplayName(currentProject!)} · {embedded ? {
             documents: "管理当前项目的参考文本及历史版本。可在我的资料中选择“用于项目任务”，确认后纳入。",
             candidates: "查看候选结论及来源依据，由项目所有者确认后生成正式规则。",
             rules: "查看已确认的业务规则，支持版本追溯、修订和停用。",
             clauses: "资料切成的条款与由条款构建的知识版本。",
+            assets: "引擎测试资产目录的只读投影；治理动作走引擎登记与评审入口。",
           }[tab] : "资料按修订保存；候选必须由项目所有者明确确认才会成为正式规则；知识版本按条款构建，带原文位置。"}
         </p>
         <p className="mt-2 text-xs opacity-70" role="status">
@@ -772,8 +774,8 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {!embedded && <div className="flex rounded border border-[var(--border)]" role="tablist">
-            {/* 嵌入任务面板时页签由外壳固定为资料/候选/规则三种，条款页只在独立的资料页出现。 */}
-            {TABS.map((entry) => (
+            {/* 嵌入任务面板时页签由外壳固定为资料/候选/规则三种，条款与资产页只在独立的资料页出现。 */}
+            {TABS.filter(entry => !embedded || (entry.id !== "clauses" && entry.id !== "assets")).map((entry) => (
               <button
                 key={entry.id}
                 role="tab"
@@ -794,6 +796,8 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
           </Button>
         </div>
       </header>
+
+      {tab === "assets" && <TestAssetsSection base={base} />}
 
       {error && (
         <p role="alert" className="shrink-0 rounded border border-red-300 p-2 text-sm text-red-600">
@@ -1729,5 +1733,96 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
         </div>
       </Modal>
     </main>
+  );
+}
+
+// ---------------------------------------------------------------- 测试资产（B3 资产中心）
+
+type AssetRow = {
+  id: string; kind: string; name: string; version: string; status: string;
+  scope: string; tags: string[]; source: string; validatedAt: string | null;
+};
+
+const ASSET_KIND_LABELS: Record<string, string> = {
+  requirement_rule: "业务规则", test_data_profile: "测试数据策略", ui_locator_bundle: "页面定位器",
+  assertion_bundle: "断言规则", api_contract: "接口契约", defect_pattern: "缺陷模式",
+};
+
+const ASSET_STATUS_TONES: Record<string, string> = {
+  candidate: "text-amber-600 border-amber-300", verified: "text-green-700 border-green-300",
+  deprecated: "text-gray-500 border-gray-300",
+};
+
+/**
+ * 测试资产目录（只读投影）：引擎侧 config/test-assets.json 经 /qa/assets 暴露。
+ * 治理动作（登记/晋升/停用）走引擎 CLI 与评审流程，这里不做写操作。
+ */
+function TestAssetsSection({ base }: { base: string }) {
+  const [assets, setAssets] = useState<AssetRow[] | null>(null);
+  const [errors, setErrors] = useState<string[]>([]);
+  const [unavailable, setUnavailable] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    apiFetch<{ assets: AssetRow[]; kinds: string[]; errors?: string[]; unavailable?: string }>(`${base}/qa/assets`)
+      .then((result) => {
+        if (!alive) return;
+        setAssets(result.assets);
+        setErrors(result.errors ?? []);
+        setUnavailable(result.unavailable ?? null);
+      })
+      .catch((error) => {
+        if (alive) setUnavailable(error instanceof Error ? error.message : "加载失败");
+      });
+    return () => { alive = false; };
+  }, [base]);
+
+  if (unavailable) return <p className="text-sm opacity-70" role="status">测试资产目录不可用：{unavailable}</p>;
+  if (assets === null) return <p className="text-sm opacity-70">加载中…</p>;
+
+  const byKind = new Map<string, AssetRow[]>();
+  for (const asset of assets) {
+    const list = byKind.get(asset.kind) ?? [];
+    list.push(asset);
+    byKind.set(asset.kind, list);
+  }
+
+  return (
+    <div className="mt-4 space-y-5">
+      {errors.length > 0 && (
+        <p role="alert" className="rounded border border-amber-300 p-2 text-xs text-amber-700">
+          目录校验问题：{errors.join("；")}
+        </p>
+      )}
+      {assets.length === 0 && (
+        <p className="text-sm opacity-70">目录暂无测试资产。资产由探索/任务产出经引擎登记入口进入，评审确认后晋升 verified。</p>
+      )}
+      {[...byKind.entries()].map(([kind, rows]) => (
+        <section key={kind} aria-label={ASSET_KIND_LABELS[kind] ?? kind}>
+          <h3 className="mb-2 text-sm font-semibold">
+            {ASSET_KIND_LABELS[kind] ?? kind} <span className="text-xs font-normal opacity-60">共 {rows.length} 项</span>
+          </h3>
+          <ul className="space-y-2">
+            {rows.map((asset) => (
+              <li key={asset.id} className="rounded border border-[var(--border)] p-3 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <b>{asset.name}</b>
+                  <span className={`rounded border px-1.5 text-xs ${ASSET_STATUS_TONES[asset.status] ?? ""}`}>
+                    {asset.status === "candidate" ? "候选" : asset.status === "verified" ? "已验证" : "已停用"}
+                  </span>
+                  <span className="text-xs opacity-60">v{asset.version}</span>
+                  <span className="text-xs opacity-60">{asset.scope}</span>
+                </div>
+                <p className="mt-1 text-xs opacity-70">
+                  id {asset.id} · 来源 {asset.source || "—"}
+                  {asset.validatedAt ? ` · 验证于 ${asset.validatedAt}` : ""}
+                  {asset.tags.length ? ` · 标签 ${asset.tags.join("、")}` : ""}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
   );
 }

@@ -172,6 +172,43 @@ export function registerQaProjectKnowledgeRoutes(app: Hono<AppEnv>, deps: Agents
     return c.json(await personalReferences.promote(projectId, userId, requireValidId(c, 'itemId'), await readJson(c)));
   });
 
+  // 测试资产（B3 资产中心）：引擎侧 test-asset 目录的只读投影——状态机（candidate/verified/
+  // deprecated）与治理（晋升、登记）仍由引擎 CLI（register-test-asset / assets:validate）承载，
+  // 这里不提供写路径；正文（data）不回传，明细列表只暴露治理元数据。
+  app.get('/qa/assets', async c => {
+    const projectId = requireValidId(c, 'projectId');
+    deps.access.requireProjectAccess(c.var.user.userId, projectId);
+    const engineRoot = deps.config?.root;
+    if (!engineRoot) return c.json({ assets: [], kinds: [], unavailable: 'engine_root_missing' });
+    try {
+      const catalogModule = qaEngineModule('test-asset-catalog') as {
+        readCatalog: (path: string) => { catalog_version: number; assets: Array<Record<string, unknown>> };
+        catalogPath: (root: string) => string;
+        validateCatalog: (catalog: unknown) => string[];
+        assetKinds: Set<string>;
+      };
+      const catalog = catalogModule.readCatalog(catalogModule.catalogPath(engineRoot));
+      const errors = catalogModule.validateCatalog(catalog);
+      const assets = (Array.isArray(catalog.assets) ? catalog.assets : []).map(asset => ({
+        id: String(asset.id ?? ''),
+        kind: String(asset.kind ?? ''),
+        name: String(asset.name ?? ''),
+        version: String(asset.version ?? ''),
+        status: String(asset.status ?? ''),
+        scope: String(asset.scope ?? ''),
+        tags: Array.isArray(asset.tags) ? asset.tags.map(String) : [],
+        source: typeof asset.source === 'string' ? asset.source : String((asset.source as { kind?: string } | undefined)?.kind ?? ''),
+        validatedAt: (asset.validation as { validated_at?: string } | undefined)?.validated_at ?? null,
+      }));
+      return c.json({ assets, kinds: [...catalogModule.assetKinds], errors });
+    } catch (error) {
+      return c.json({
+        assets: [], kinds: [],
+        unavailable: error instanceof Error ? error.message.slice(0, 200) : 'catalog_read_failed',
+      });
+    }
+  });
+
   app.get("/qa/documents", async (c) => {
     const { projectId } = scope(c);
     return c.json(store.listDocuments({
