@@ -248,26 +248,38 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
         );
       }
     }
-    // 本地任务带环境：开始测试即把 env 绑进会话任务档案（ensureTask 幂等，已有档案不动），
-    // run 执行由此拿到被测地址。绑定失败不回滚开始测试——环境可在会话内补选。
-    if (found.source === "local" && found.row.env_name) {
-      try {
-        new QaTaskRunRegistry(deps.db as unknown as KnowledgeDb).ensureTask({
-          projectId,
-          sessionId,
-          userId,
-          env: found.row.env_name,
-          title: found.row.title,
-        });
-      } catch {
-        // 环境绑定是增强，不是闸：失败留给会话内补选。
-      }
+    // B1-5 登记前移：先建任务档案并预登记 run（status='planned'）。run_id 平台分配、随开工
+    // 指令下发，队长 create_run 以同一 id 采纳；manifest 落盘后 observeRun 升级为事实行，
+    // startRun 把发起升级为 running。预登记失败不拦开始测试——登记是判据通道不是闸
+    // （对齐 run-registration 纪律），失败退回旧路径由引擎侧 startRun 兜底登记。
+    let plannedRunId: string | null = null;
+    try {
+      const planned = new QaTaskRunRegistry(deps.db as unknown as KnowledgeDb).createPlannedRun({
+        projectId,
+        sessionId,
+        userId,
+        env: found.source === "local" ? found.row.env_name ?? "" : undefined,
+        title: found.row.title,
+        briefing: { taskId, source: found.source },
+      });
+      plannedRunId = planned.runId;
+    } catch {
+      // 环境绑定与预登记都是增强，不是闸：失败留给会话内补选/引擎侧兜底。
     }
     // 开工指令先于状态绑定发送（忙时排队）：失败任务保持可开始、可重试，不留半启动状态。
     const workStart = svc.workStartBriefing(projectId, taskId);
     if (!workStart) throw notFound();
+    const startMessages = plannedRunId
+      ? [
+          userText(workStart, "server"),
+          userText(
+            `【运行预登记】本次运行已由平台预登记，run_id=${plannedRunId}。create_run 必须复用该 id（请求体带 "run_id":"${plannedRunId}"），不得自行生成新 id；plan/extend 均沿用此 run。manifest 将以此 id 落盘并与预登记行对账。`,
+            "server",
+          ),
+        ]
+      : [userText(workStart, "server")];
     try {
-      await deps.manager.startTask(sessionId, [userText(workStart, "server")], { queueIfBusy: true });
+      await deps.manager.startTask(sessionId, startMessages, { queueIfBusy: true });
     } catch (e) {
       throw new HttpError(
         409,

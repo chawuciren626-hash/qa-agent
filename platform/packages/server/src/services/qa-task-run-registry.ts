@@ -515,6 +515,70 @@ export class QaTaskRunRegistry {
     return (rows as Record<string, unknown>[]).map((row) => this.mapRun(row));
   }
 
+  // ------------------------------------------------------- 发起前预登记（B1-5 登记前移）
+
+  /**
+   * 开始测试的那一刻先建 run 行（status='planned'），run_id 由平台分配并随开工指令下发；
+   * 队长 `create_run` 带 `run_id` 采纳同一 id，manifest 落盘后 `observeRun` 走既有 UPDATE
+   * 分支把预约行升级为事实行，`startRun` 把发起升级为 running——"先登记、后派发"由此成立，
+   * 工作区出现"有执行痕迹、无登记行"在结构上不可能。
+   *
+   * 与旧不变量（"不允许绕过 manifest 插入 run"）的关系：planned 行是**预约**，不是事实——
+   * dispatch_json 带 registration:'planned' 与发起意图，读侧据此分辨预约与事实；它不冒充
+   * 执行（started_at 为空、stalled 判定只看 running），队长没采纳它就永远停在 planned，
+   * 由人决定清理或重试，系统不自动补。
+   */
+  createPlannedRun(input: {
+    projectId: string;
+    sessionId: string;
+    userId: string;
+    env?: string;
+    kind?: RunKind;
+    title?: string;
+    briefing?: Record<string, unknown>;
+  }): QaRun {
+    return this.tx(() => {
+      const task = this.ensureTask({
+        projectId: input.projectId,
+        sessionId: input.sessionId,
+        userId: input.userId,
+        env: input.env,
+        title: input.title,
+      });
+      const now = this.at();
+      // run_id 格式与 RUN_ID 口径一致；时间戳命名与 create-run.mjs 的缺省生成同形，
+      // 两边谁先产生都认得出是同一次运行。
+      const runId = `run-${now.replace(/[:.]/g, "-")}`;
+      const next = this.db
+        .prepare("SELECT COALESCE(MAX(run_index), 0) + 1 AS n FROM qa_runs WHERE task_id = ?")
+        .get(task.taskId) as { n: number };
+      this.db
+        .prepare(
+          `INSERT INTO qa_runs
+             (run_id, task_id, project_id, session_id, env, kind, status, run_index, manifest_path,
+              manifest_sha256, manifest_version, sut_version, baseline_hash, resource_pool, device_id,
+              batch_id, counts_json, dispatch_json, started_at, finished_at,
+              created_at, created_by, updated_at)
+           VALUES (?,?,?,?,?,?,'planned',?,'','',NULL,NULL,NULL,NULL,NULL,
+                   NULL,'{}',?,NULL,NULL,?,?,?)`,
+        )
+        .run(
+          runId,
+          task.taskId,
+          input.projectId,
+          input.sessionId,
+          input.env ?? task.env,
+          input.kind ?? "run",
+          Number(next.n ?? 1),
+          JSON.stringify({ registration: "planned", ...(input.briefing ?? {}) }),
+          now,
+          input.userId,
+          now,
+        );
+      return this.run(input.projectId, runId)!;
+    });
+  }
+
   // ------------------------------------------------------- 发起与结束（判据 1 排查线）
 
   /**
@@ -542,8 +606,18 @@ export class QaTaskRunRegistry {
   }): QaRun {
     if (!input.runId) throw new Error("startRun requires a run_id");
     return this.tx(() => {
-      if (this.run(input.projectId, input.runId)) {
-        throw new Error(`run ${input.runId} already exists in project ${input.projectId}`);
+      const existing = this.run(input.projectId, input.runId);
+      if (existing) {
+        // B1-5 登记前移：planned 行是本层发出去的预约，发起命令到达即兑现——升级为
+        // running（started_at 用发起时刻，与 startRun 既有语义一致），不算重复发起。
+        // 其余状态照旧拒绝：那是调用方拼错了 id。
+        if (existing.status !== "planned") {
+          throw new Error(`run ${input.runId} already exists in project ${input.projectId}`);
+        }
+        this.db
+          .prepare("UPDATE qa_runs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE run_id = ?")
+          .run(this.at(), this.at(), input.runId);
+        return this.run(input.projectId, input.runId)!;
       }
       const task = this.ensureTask({
         projectId: input.projectId,
