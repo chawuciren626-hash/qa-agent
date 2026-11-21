@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiFetch } from "../../api/client";
 import { loadVerifiedJson, localizeActualResult, type Defect, type ResultArtifact } from "./task-results";
 import { ResultEvidenceFields } from "./result-evidence";
 import { localizedValue } from "./stage-localization";
@@ -17,6 +18,9 @@ export function DefectResults({ projectId, sessionId, runId, artifacts, refresh 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("all");
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const [lifecycleNote, setLifecycleNote] = useState<string | null>(null);
+  const [lifecycleReason, setLifecycleReason] = useState("");
   useEffect(() => {
     const controller = new AbortController();
     setRecords(null); setSelected(null); setError(""); setPage(1);
@@ -29,6 +33,19 @@ export function DefectResults({ projectId, sessionId, runId, artifacts, refresh 
     return () => controller.abort();
   }, [sessionId, runId, artifact?.path, artifact?.verified, refresh]);
   const summary = severitySummary(records ?? []);
+  const runLifecycle = async (action: "confirm" | "fixed") => {
+    if (!selected?.defect_id || lifecycleBusy) return;
+    setLifecycleBusy(true); setLifecycleNote(null);
+    try {
+      await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/agents/qa/tasks/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/defects/${encodeURIComponent(selected.defect_id)}/lifecycle`, {
+        method: "POST", body: { action, reason: lifecycleReason },
+      });
+      setLifecycleNote(`已提交「${action === "confirm" ? "确认缺陷" : "标记已修复"}」；台账状态以缺陷台账为准（重新加载后可见）。`);
+      setLifecycleReason("");
+    } catch (cause) {
+      setLifecycleNote(cause instanceof Error ? cause.message : "缺陷操作未生效。");
+    } finally { setLifecycleBusy(false); }
+  };
   const unassessed = summary.unknown + summary.unrecorded;
   const visible = (records ?? []).filter(row => {
     if (severityFilter === "all") return true;
@@ -45,6 +62,13 @@ export function DefectResults({ projectId, sessionId, runId, artifacts, refresh 
     {selected && <div className="qtd-mask" role="presentation"><section className="qtd-modal qtd-defect-modal" role="dialog" aria-modal="true" aria-label="缺陷详情"><header><strong>{selected.defect_id || "缺陷"} · {selected.title || "详情"}</strong><button type="button" aria-label="关闭缺陷详情" onClick={()=>setSelected(null)}>×</button></header><div className="qtd-detail-fields">
       {([["缺陷现象",selected.actual_result],["复现步骤",selected.steps_to_reproduce],["预期结果",selected.expected_result],["影响范围",selected.impact],["处理建议",selected.recommendation],["分类",localizedValue(selected.category ?? "unknown")],["状态",localizedValue(selected.lifecycle_status ?? "unknown")],["严重程度",severityLabel(selected.severity)],["严重程度理由",selected.severity_reason],["关联用例",selected.related_cases]] as [string, unknown][]).map(([label,value])=><div key={label as string}><strong>{label}</strong><span>{label === "缺陷现象" ? localizeActualResult(value) : ["复现步骤","处理建议"].includes(label as string) ? breakNumberedItems(display(value)) : display(value)}</span></div>)}
       {isSeverityUnknown(selected.severity) && <p role="note">该缺陷严重度未评估或未记录，需补充影响证据或人工复核，不能按低风险处理。</p>}
+      <div className="qtd-lifecycle">
+        <input type="text" value={lifecycleReason} onChange={(e) => setLifecycleReason(e.target.value)} placeholder="操作理由（确认/修复时填写）" disabled={lifecycleBusy} aria-label="缺陷操作理由" />
+        <button type="button" disabled={lifecycleBusy || !selected.defect_id} onClick={() => void runLifecycle("confirm")}>{lifecycleBusy ? "提交中…" : "确认缺陷"}</button>
+        <button type="button" disabled={lifecycleBusy || !selected.defect_id} onClick={() => void runLifecycle("fixed")}>{lifecycleBusy ? "提交中…" : "标记已修复"}</button>
+        <span className="qtd-lifecycle-note">复测需先创建复测批次；台账状态以缺陷台账为准。</span>
+        {lifecycleNote && <p role="status" className="qtd-lifecycle-status">{lifecycleNote}</p>}
+      </div>
       <ResultEvidenceFields sessionId={sessionId} runId={runId} references={selected.evidence_refs}/>
     </div><footer><button type="button" onClick={()=>setSelected(null)}>关闭</button></footer></section></div>}
   </section>;
