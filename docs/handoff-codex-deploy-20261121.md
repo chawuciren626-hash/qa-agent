@@ -260,7 +260,7 @@ node scripts/local-service.mjs resume D:\AITestHarness\installation.json
 | `c708525` | **P2-7**：阶段工具降级（run_stage_tool 流水 `output/runtime/tool-usage.jsonl` 按 run_id 过滤）进报告运行时段落，口径对齐 `qa-run-health.ts`；无流水不说"零次" | §8 差距①：降级此前只进流水与健康端点，报告一字未提 |
 | `8672041` | **P2-8**：证据验证轮契约（单目标/Done when/证据格式/步数预算/红线）进执行阶段派发合同 | 会话侧证据验证轮的合同此前未标准化 |
 | `745066c` | **P2-11**：AGENTS.md 路径修正（仓库 E:\AItestHarness、部署 D:\AITestHarness） |
-| `df42865` | **P0 实测回归**：探索合并基线读取 JSON 优先 YAML 兜底——pyyaml 注入后 canonical maps 落盘变 safe_dump 格式，round-3 合并炸在 json.loads（saucedemo 用户实测复现）；smoke 加 YAML 基线用例 | 用户第 3 轮探索「合并/回写失败」实测：round-1 时代是 JSON、注入 pyyaml 后 round-2 起是 YAML，promote 把 YAML 顶上 canonical 后只认 JSON 的读取必炸 | 旧记录指向不存在的 `E:\AItestHarness\installed` |
+| `b5d8957` | **P0 实测回归**：探索合并基线读取 JSON 优先 YAML 兜底——pyyaml 注入后 canonical maps 落盘变 safe_dump 格式，round-3 合并炸在 json.loads（saucedemo 用户实测复现）；smoke 加 YAML 基线用例 | 用户第 3 轮探索「合并/回写失败」实测：round-1 时代是 JSON、注入 pyyaml 后 round-2 起是 YAML，promote 把 YAML 顶上 canonical 后只认 JSON 的读取必炸 | 旧记录指向不存在的 `E:\AItestHarness\installed` |
 
 ### 11.2 验证
 
