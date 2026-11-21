@@ -1,7 +1,7 @@
 # 本机开发与部署约定
 
-- 本目录是后续开发的主 Git 仓库。本机路径为 `E:\AITestHarness\source`；旧 `E:\Codex\AITestWorker` 保留作回退，不再向旧副本同步新的开发改动。
-- 本机已部署应用位于 `E:\AITestHarness\installed`。源码与部署副本独立；改变源码不等于运行中的应用已更新。涉及实际应用行为时，明确区分源码测试、构建/部署和已安装环境验收。
+- 本目录是后续开发的主 Git 仓库（本机路径 `E:\AItestHarness`，即远端 `qa-agent` 仓库的本地克隆）；旧 `E:\Codex\AITestWorker` 已下线。
+- 本机已部署应用位于 `D:\AITestHarness`（统一布局：引擎 `app/engine`、宿主 `runtime/penguin`、数据 `data/`、会话工作区 `workspaces/`；以 `installation.json` 与 `runtime/penguin/resources/app/aitest-source-runtime.json` 所在目录为准）。源码与部署副本独立；改变源码不等于运行中的应用已更新。涉及实际应用行为时，明确区分源码测试、构建/部署和已安装环境验收。
 - 日常开发优化完成后，验证并直接同步本地运行副本，让用户打开 AITestHarness 即可验收；不为每轮优化生成安装包或 Release 包。仅在用户明确要求时提交 Git、推送或打包 Release。同步仍需备份、校验和保护运行中任务。
 - 产品继续保留 PenguinHarness 运行底座。通过版本锁定、兼容层、隔离验证和应用构建跟随上游升级，不直接让上游安装器覆盖受管理的宿主。
 - 模型凭据、宿主数据、工作区、桌面状态、迁移备份和安装二进制不提交 Git，不纳入源码发布白名单。真实任务产物与工程合成验证分别记录。
