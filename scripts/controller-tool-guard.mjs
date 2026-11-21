@@ -10,7 +10,6 @@ parentActions.add('resolve_child_handle');
 parentActions.add('plan_test_tracks');
 parentActions.add('configure_delivery');
 parentActions.add('create_api_snapshot_report');
-parentActions.add('platform_task_writeback');
 
 // This host-tool guard prevents accidental bypasses; it is not an OS security sandbox.
 export function guardControllerTool(root,input) {

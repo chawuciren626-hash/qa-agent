@@ -20,7 +20,6 @@ const fixture = vi.hoisted(() => {
     priority: "high", packageVersion: 3, roundNo: 3,
     productLines: [{ name: "gov 用户端", isPrimary: true }],
     suggestedPriority: "high", analysisSource: "demo", status: "ready", edited: false,
-    analysisState: null, analysisSessionId: null, analysisError: null,
     mainSessionId: null, sourceUrl: "https://platform.example.com/tasks/active?taskId=FB202611090001",
     updatedAt: "2026-11-20T07:00:00.000Z",
   };
@@ -40,14 +39,19 @@ const fixture = vi.hoisted(() => {
     counts: { pending_analysis: 1, ready: 2 } as Record<string, number>,
     created: [] as Array<Record<string, unknown>>,
     detailCalls: [] as string[],
+    analyzeCalls: 0,
   };
   const detail: TaskDetail = {
     task: { ...platformReady, feedbackType: "requirement", estimatedHours: 24, description: null,
-      localTitleNote: "", localTestFocusNote: "", localEditedAt: null, createdBy: null, analysisError: null,
+      localTitleNote: "", localTestFocusNote: "", localEditedAt: null, createdBy: null,
       envName: null, envBaseUrl: null, account: null },
     summary: {
+      requirement_summary: "整理登录页会话保持策略并回归主流程。",
       requirement_points: ["统一登录入口的会话保持策略"],
       suggested_test_scope: ["登录页主流程回归"],
+      test_environment: "http://demo.example.com",
+      test_account: "qa_tester",
+      test_password: "secret-pwd-1",
       suggested_priority: "high",
       priority_reason: "平台优先级=高（演示产出）",
       risks: [], open_questions: [],
@@ -74,7 +78,10 @@ vi.mock("../src/features/qa/platform-tasks/api", () => ({
     return { task };
   },
   editTask: async () => ({ updated: fixture.platformReady, analysisStale: false }),
-  analyzeTask: async () => ({ updated: fixture.platformReady, summary: fixture.detail.summary }),
+  analyzeTask: async () => {
+    fixture.state.analyzeCalls += 1;
+    return { updated: fixture.platformReady, summary: fixture.detail.summary };
+  },
   startTask: async () => ({ task: fixture.platformReady, sessionId: "session-new-1", previousStatus: "ready" }),
   terminateTask: async () => ({ updated: fixture.platformReady }),
 }));
@@ -102,6 +109,7 @@ afterEach(async () => {
   fixture.state.counts = { pending_analysis: 1, ready: 2 };
   fixture.state.created = [];
   fixture.state.detailCalls = [];
+  fixture.state.analyzeCalls = 0;
   fixture.detail = JSON.parse(JSON.stringify(fixture.detailBase));
 });
 
@@ -195,39 +203,21 @@ describe("platform tasks page", () => {
     expect(modal).toBeTruthy();
   });
 
-  it("总控预分析进行中：分析按钮禁用为「分析中…」并提供查看会话入口", async () => {
-    fixture.state.items = [
-      { ...fixture.platformPending, analysisState: "running", analysisSessionId: "session-analysis-1" },
-      fixture.platformReady, fixture.localTask,
-    ];
+  it("同步 AI 分析：点击即完成并回填结构化结论（无会话、无流程）", async () => {
     const root = await renderPage();
-    const runningRow = root.querySelectorAll("tbody tr")[0]!;
-    expect(runningRow.textContent).toContain("淘宝渠道");
-    const analyzingBtn = Array.from(runningRow.querySelectorAll("button")).find((b) => b.textContent === "分析中…");
-    expect(analyzingBtn?.disabled).toBe(true);
-    const openSession = Array.from(runningRow.querySelectorAll("button")).find((b) => b.textContent === "查看会话");
-    expect(openSession).toBeTruthy();
-    expect(openSession?.disabled).toBe(false);
+    const pendingRow = root.querySelectorAll("tbody tr")[0]!;
+    const analyzeBtn = Array.from(pendingRow.querySelectorAll("button")).find((b) => b.textContent === "重试分析");
+    expect(analyzeBtn).toBeTruthy();
+    await click(analyzeBtn!);
+    await waitFor(() => fixture.state.analyzeCalls === 1, 100);
+    // 分析是同步的：不创建会话、不出现「查看会话」入口
+    expect(root.textContent).not.toContain("查看会话");
+    await settle();
   });
 
-  it("预分析失败：重新分析按钮可点且 title 带失败原因", async () => {
-    fixture.state.items = [
-      { ...fixture.platformReady, analysisState: "failed", analysisError: "总控回写超时（15s）" },
-      fixture.platformPending, fixture.localTask,
-    ];
-    const root = await renderPage();
-    const failedRow = root.querySelectorAll("tbody tr")[0]!;
-    expect(failedRow.textContent).toContain("gov 用户端登录优化");
-    const retry = Array.from(failedRow.querySelectorAll("button")).find((b) => b.textContent === "重新分析");
-    expect(retry).toBeTruthy();
-    expect(retry?.disabled).toBe(false);
-    expect(retry?.getAttribute("title")).toContain("总控回写超时");
-  });
-
-  it("详情抽屉：真实管线来源标注为总控需求分析并显示分析会话入口", async () => {
+  it("详情抽屉：结构化结论展示需求整理、测试环境与账号密码", async () => {
     fixture.detail = {
       ...fixture.detail,
-      task: { ...fixture.detail.task, analysisSessionId: "session-analysis-1", analysisState: "done" },
       summary: { ...fixture.detail.summary!, source: "requirement_analysis" },
     };
     const root = await renderPage();
@@ -238,9 +228,15 @@ describe("platform tasks page", () => {
     await waitFor(() => fixture.state.detailCalls.length === 1);
     const drawer = root.querySelector(".qpt-drawer")!;
     const text = drawer.textContent ?? "";
-    expect(text).toContain("总控需求分析（真实管线）");
-    const link = drawer.querySelector(".qpt-sum-foot a");
-    expect(link?.textContent).toContain("查看分析会话");
+    expect(text).toContain("模型分析（任务填写内容）");
+    expect(text).toContain("需求内容整理");
+    expect(text).toContain("整理登录页会话保持策略并回归主流程。");
+    expect(text).toContain("测试环境与账号");
+    expect(text).toContain("http://demo.example.com");
+    expect(text).toContain("qa_tester");
+    expect(text).toContain("secret-pwd-1");
+    // 无会话链接
+    expect(drawer.querySelector(".qpt-sum-foot a")).toBeNull();
   });
 
   it("详情抽屉三段式：查看后渲染 AI 分析结论段并标注 AI 建议", async () => {

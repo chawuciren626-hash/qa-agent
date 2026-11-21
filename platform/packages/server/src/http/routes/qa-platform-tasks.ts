@@ -16,7 +16,7 @@ import { HttpError } from "../errors.js";
 import { readJson, requireValidId } from "../validate.js";
 import { qaEnabled } from "../../services/qa-engine.js";
 import { QaPlatformTaskService } from "../../services/qa-platform-task-service.js";
-import type { AnalysisRuntime, PlatformTaskDb } from "../../services/qa-platform-task-service.js";
+import type { PlatformTaskDb } from "../../services/qa-platform-task-service.js";
 import { normalizeBaseUrl, upsertEnvironment } from "../../services/project-environment-service.js";
 import { QaTaskRunRegistry } from "../../services/qa-task-run-registry.js";
 import type { KnowledgeDb } from "../../services/qa-project-knowledge.js";
@@ -134,18 +134,6 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
     throw e as Error;
   };
 
-  // 总控预分析运行时：会话通道与定时任务 scheduler 同源（startTask + userText("server")）；
-  // 建会话走 createWorkSession（项目默认模型 → 当前账号模型设置回退）。
-  const analysisRuntime: AnalysisRuntime = {
-    listAgents: (projectId) => deps.agentService.listAgents(projectId),
-    createSession: (args) => createWorkSession(deps, args),
-    findSession: (sessionId) => deps.sessionsRepo.findById(sessionId) ?? null,
-    startTask: (sessionId, text, opts) =>
-      deps.manager.startTask(sessionId, [userText(text, "server")], opts),
-    isSessionBusy: (sessionId) =>
-      deps.manager.statusOf(sessionId) !== "idle" || deps.manager.pendingFollowUpCount(sessionId) > 0,
-  };
-
   app.get("/qa/platform-tasks", async (c) => {
     const { projectId } = scope(c);
     const includeTerminated = c.req.query("includeTerminated") === "true";
@@ -211,33 +199,9 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
     const { projectId, userId } = scope(c);
     const taskId = requireValidId(c, "taskId");
     try {
-      // 总控预分析：登记 running 并发简报后立即返回，结论走 analysis-result 异步回写。
-      const result = await svc.analyze({ projectId, userId, id: taskId }, analysisRuntime);
+      // 同步分析：项目默认模型直接分析任务填写内容并回填结构化结论（无会话、无流程）。
+      const result = await svc.analyze({ projectId, userId, id: taskId });
       if (!result.updated) notFound();
-      return c.json(result);
-    } catch (e) {
-      asHttp(e);
-    }
-  });
-
-  // 总控回写端点（platform_task_writeback 动作调用；Bearer api-token 或登录会话均可，
-  // 非进行中（running）的回写被拒——重复回写/无主回写都挡在外面）。
-  app.post("/qa/platform-tasks/:taskId/analysis-result", async (c) => {
-    const { projectId, userId } = scope(c);
-    const taskId = requireValidId(c, "taskId");
-    const body = await readJson(c);
-    if (!body.summary || typeof body.summary !== "object" || Array.isArray(body.summary)) {
-      throw new HttpError(400, "invalid_summary", "summary 必须是包含分析结论的对象。");
-    }
-    try {
-      const result = svc.applyEngineAnalysis({
-        projectId,
-        userId,
-        id: taskId,
-        summary: body.summary,
-        ...(typeof body.run_id === "string" && body.run_id.trim() ? { runId: body.run_id.trim() } : {}),
-        ...(typeof body.session_id === "string" && body.session_id.trim() ? { sessionId: body.session_id.trim() } : {}),
-      });
       return c.json(result);
     } catch (e) {
       asHttp(e);
@@ -262,12 +226,6 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
         throw new HttpError(404, "session_not_found", "指定的会话不存在或不属于当前项目。");
       }
       sessionId = existing.sessionId;
-    } else if (
-      found.row.analysis_session_id &&
-      deps.sessionsRepo.findById(found.row.analysis_session_id)?.projectId === projectId
-    ) {
-      // 分析会话原地升级为测试工作会话：总控已掌握任务上下文，开工指令在同一会话续跑。
-      sessionId = found.row.analysis_session_id;
     } else {
       // 新建测试工作会话：默认总控（test_agent，正式流程的编排者）；调用方可显式指定。
       const agents = await deps.agentService.listAgents(projectId);

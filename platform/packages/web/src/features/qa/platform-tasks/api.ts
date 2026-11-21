@@ -24,11 +24,6 @@ export interface TaskListItem {
   productLines: Array<{ name: string; isPrimary: boolean }>;
   suggestedPriority: string | null;
   analysisSource: string | null;
-  /** 总控预分析进行态：running/done/failed；null=未发起或走同步模型通道。 */
-  analysisState: string | null;
-  analysisSessionId: string | null;
-  /** 最近一次预分析失败原因（failed 态 tooltip 用）。 */
-  analysisError: string | null;
   status: string;
   edited: boolean;
   mainSessionId: string | null;
@@ -37,8 +32,16 @@ export interface TaskListItem {
 }
 
 export interface AiSummary {
+  /** 需求内容整理（一段话概括要测什么）。 */
+  requirement_summary?: string;
   requirement_points: string[];
   suggested_test_scope: string[];
+  /** 测试环境（URL 或说明，从填写内容与任务环境字段整理）。 */
+  test_environment?: string;
+  /** 测试账号（从填写内容提取）。 */
+  test_account?: string;
+  /** 测试密码（从填写内容提取；来自用户自己录入的任务材料）。 */
+  test_password?: string;
   suggested_priority: string;
   priority_reason: string;
   risks: string[];
@@ -46,9 +49,6 @@ export interface AiSummary {
   analyzed_at: string;
   source: string;
   stage?: string;
-  /** 总控回写附带的追溯引用（真实管线才有）。 */
-  run_id?: string;
-  session_id?: string;
 }
 
 export interface TaskProgressRun {
@@ -68,8 +68,6 @@ export interface TaskDetail {
     localTestFocusNote: string;
     localEditedAt: string | null;
     createdBy: string | null;
-    /** 最近一次总控预分析失败原因（failed 态展示）。 */
-    analysisError: string | null;
     /** 本地任务：测试环境关联（env 名 + URL 快照）；未填为 null。 */
     envName: string | null;
     envBaseUrl: string | null;
@@ -128,14 +126,14 @@ export function editTask(
 }
 
 /**
- * 发起 AI 分析（总控预分析）：登记 running 并发简报后立即返回，结论由总控异步回写，
- * 列表轮询 analysisState 直到 done/failed。
+ * 发起 AI 分析：项目默认模型同步分析任务填写内容，直接返回结构化结论（需求整理/
+ * 测试环境/测试账号/建议范围等）并落库。
  */
 export function analyzeTask(
   projectId: string,
   taskId: string
-): Promise<{ updated: TaskListItem | null; summary: AiSummary | null; analysisState?: string; sessionId?: string }> {
-  return apiFetch<{ updated: TaskListItem | null; summary: AiSummary | null; analysisState?: string; sessionId?: string }>(
+): Promise<{ updated: TaskListItem | null; summary: AiSummary | null; degraded?: { reason: string } }> {
+  return apiFetch<{ updated: TaskListItem | null; summary: AiSummary | null; degraded?: { reason: string } }>(
     `${base(projectId)}/${encodeURIComponent(taskId)}/analyze`,
     { method: "POST", body: {} }
   );

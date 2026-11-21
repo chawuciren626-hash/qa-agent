@@ -125,7 +125,7 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
     expect(localUpdated).toMatchObject({ title: "新标题", priority: "medium" });
   });
 
-  it("TLQ-1 闸：pending_analysis 禁止开始测试；预分析回写完成后放行并原地升级会话", async () => {
+  it("TLQ-1 闸：pending_analysis 禁止开始测试；同步分析回填后放行（开工指令注入新总控会话）", async () => {
     syncedTasks();
     const body = (await (await list()).json()) as Json;
     const pending = body.items.find((i: Json) => i.status === "pending_analysis") as Json;
@@ -134,159 +134,44 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
     expect(blocked.status).toBe(409);
     expect(await errorCode(blocked)).toBe("analysis_required");
 
-    // 分析（T2 总控预分析）：登记 running 并发简报即返回，结论走 analysis-result 回写
+    // 分析（T2 同步模型通道）：测试应用未配置模型 → demo 回退（degraded 如实带原因），
+    // 结论同步落库、状态 pending_analysis → ready；不建会话。
     vi.spyOn(app.deps.agentService, "listAgents").mockResolvedValue([
       { agentId: "test_agent" },
     ] as never);
     const spySession = vi
       .spyOn(app.deps.sessionService, "createSession")
       .mockResolvedValue({ sessionId: "session-pt-1" } as never);
-    // 会话查证同步 mock：开始测试"原地升级"判断按 projectId 命中
-    vi.spyOn(app.deps.sessionsRepo, "findById").mockImplementation(((sessionId: string) =>
-      sessionId === "session-pt-1" ? { sessionId, projectId: project } : null) as never);
     vi.spyOn(app.deps.manager, "startTask").mockResolvedValue({ sessionId: "session-pt-1", queued: false } as never);
 
     const analyzed = await owner.post(`${base}/platform-tasks/${pending.id}/analyze`, {});
     expect(analyzed.status).toBe(200);
     const after = ((await analyzed.json()) as Json) as Json;
-    expect(after.analysisState).toBe("running");
-    expect(after.sessionId).toBe("session-pt-1");
-    expect(after.summary).toBeNull();
+    expect(after.summary).toMatchObject({ source: "demo", suggested_priority: "medium" });
+    expect(after.degraded).toBeDefined();
+    expect(after.updated.status).toBe("ready");
+    expect(spySession).not.toHaveBeenCalled();
 
-    // 回写前的开始测试仍被挡（running ≠ 分析完成）
-    const blockedWhileRunning = await owner.post(`${base}/platform-tasks/${pending.id}/start`, {});
-    expect(blockedWhileRunning.status).toBe(409);
+    // 回写端点已下线：不再接受平台任务分析回写
+    const writeback = await owner.post(`${base}/platform-tasks/${pending.id}/analysis-result`, { summary: { requirement_points: ["x"] } });
+    expect(writeback.status).toBe(404);
 
-    const written = await owner.post(`${base}/platform-tasks/${pending.id}/analysis-result`, {
-      session_id: "session-pt-1",
-      summary: {
-        requirement_points: ["登录优化涉及验证码与记住密码两条链路"],
-        suggested_test_scope: ["验证码错误重试", "记住密码跨会话"],
-        suggested_priority: "high",
-        priority_reason: "登录是核心入口",
-        risks: [],
-        open_questions: [],
-      },
-    });
-    expect(written.status).toBe(200);
-    const writeBody = ((await written.json()) as Json) as Json;
-    expect(writeBody.summary.source).toBe("requirement_analysis");
-    expect(writeBody.updated.status).toBe("ready");
-
-    // 重复回写被拒（非 running）
-    const replay = await owner.post(`${base}/platform-tasks/${pending.id}/analysis-result`, { summary: { requirement_points: ["x"] } });
-    expect(replay.status).toBe(409);
-
-    // 开始测试：分析会话原地升级（不新建会话），开工指令经 manager.startTask 注入
+    // 开始测试：新建总控会话并注入开工指令（含任务标题与 AI 结论参考）
     const started = await owner.post(`${base}/platform-tasks/${pending.id}/start`, {});
     expect(started.status).toBe(200);
     const startBody = (await started.json()) as Json;
     expect(startBody).toMatchObject({ sessionId: "session-pt-1", previousStatus: "ready" });
     expect(startBody.task.status).toBe("in_progress");
     expect(startBody.task.mainSessionId).toBe("session-pt-1");
-    // 分析会话原地升级：createSession 只在预分析时调用过 1 次，start 不再新建
     expect(spySession).toHaveBeenCalledTimes(1);
+    const dispatchText = JSON.stringify(vi.mocked(app.deps.manager.startTask).mock.calls[0]?.[1]);
+    expect(dispatchText).toContain("平台任务开工");
+    expect(dispatchText).toContain("同步测试任务 pending");
 
     // 详情测试进展段带出会话绑定
     const d = (await (await detail(pending.id)).json()) as Json;
     expect(d.progress.mainSessionId).toBe("session-pt-1");
     expect(d.progress.runs).toEqual([]);
-  });
-
-  it("预分析进行中重复触发被拒；会话空闲未回写时自动调和为 failed 并可重试", async () => {
-    syncedTasks();
-    const body = (await (await list()).json()) as Json;
-    const pending = body.items.find((i: Json) => i.status === "pending_analysis") as Json;
-    vi.spyOn(app.deps.agentService, "listAgents").mockResolvedValue([{ agentId: "test_agent" }] as never);
-    vi.spyOn(app.deps.sessionService, "createSession").mockResolvedValue({ sessionId: "session-pt-9" } as never);
-    vi.spyOn(app.deps.sessionsRepo, "findById").mockImplementation(((id: string) =>
-      id === "session-pt-9" ? { sessionId: id, projectId: project } : null) as never);
-    vi.spyOn(app.deps.manager, "startTask").mockResolvedValue({ sessionId: "session-pt-9", queued: false } as never);
-
-    await owner.post(`${base}/platform-tasks/${pending.id}/analyze`, {});
-
-    // 会话仍在执行（running）：重复 analyze 409 analysis_in_progress
-    vi.spyOn(app.deps.manager, "statusOf").mockReturnValue("running");
-    const busy = await owner.post(`${base}/platform-tasks/${pending.id}/analyze`, {});
-    expect(busy.status).toBe(409);
-    expect(await errorCode(busy)).toBe("analysis_in_progress");
-
-    // 会话已空闲但没等到回写：调和为 failed 放行重试；本次重新派发回 running（同会话续跑）
-    vi.spyOn(app.deps.manager, "statusOf").mockReturnValue("idle");
-    const retried = await owner.post(`${base}/platform-tasks/${pending.id}/analyze`, {});
-    expect(retried.status).toBe(200);
-    expect((((await retried.json()) as Json) as Json).analysisState).toBe("running");
-    const d = (await (await detail(pending.id)).json()) as Json;
-    expect(d.task.analysisState).toBe("running");
-    expect(d.task.analysisSessionId).toBe("session-pt-9");
-  });
-
-  it("简报发送失败：analysis_state 落 failed 并返回 409，可重试", async () => {
-    syncedTasks();
-    const body = (await (await list()).json()) as Json;
-    const pending = body.items.find((i: Json) => i.status === "pending_analysis") as Json;
-    vi.spyOn(app.deps.agentService, "listAgents").mockResolvedValue([{ agentId: "test_agent" }] as never);
-    vi.spyOn(app.deps.sessionService, "createSession").mockResolvedValue({ sessionId: "session-pt-10" } as never);
-    vi.spyOn(app.deps.manager, "startTask").mockRejectedValue(new Error("runtime gone"));
-
-    const failed = await owner.post(`${base}/platform-tasks/${pending.id}/analyze`, {});
-    expect(failed.status).toBe(409);
-    expect(await errorCode(failed)).toBe("analysis_dispatch_failed");
-    const d = (await (await detail(pending.id)).json()) as Json;
-    expect(d.task.analysisState).toBe("failed");
-    expect(d.task.analysisError).toContain("runtime gone");
-    expect(d.task.analysisSessionId).toBe("session-pt-10");
-  });
-
-  it("无项目默认模型时回退账号级模型设置（同聊天页选择器）；两处都没有给出可操作错误", async () => {
-    const created = await owner.post(`${base}/platform-tasks/local`, {
-      title: "账号级模型回退",
-      description: "项目无默认模型，账号设置里有模型",
-    });
-    const id = ((await created.json()) as Json).task.id as string;
-
-    vi.spyOn(app.deps.agentService, "listAgents").mockResolvedValue([{ agentId: "test_agent" }] as never);
-    vi.spyOn(app.deps.manager, "startTask").mockResolvedValue({ sessionId: "session-pt-7", queued: false } as never);
-    // 第一次（无模型对）按 createSession 的 no_default_model 语义拒绝；带账号级模型对的第二次成功
-    const noDefault = Object.assign(new Error("This Project has no default model yet."), {
-      status: 400,
-      code: "no_default_model",
-    });
-    const spySession = vi
-      .spyOn(app.deps.sessionService, "createSession")
-      .mockRejectedValueOnce(noDefault)
-      .mockResolvedValueOnce({ sessionId: "session-pt-7" } as never)
-      .mockRejectedValue(noDefault);
-
-    // 账号级模型记录：default_model 未设，回退第一条（与聊天页选择器同源）
-    const { createHash } = await import("node:crypto");
-    const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
-    const recordDir = `${app.deps.config!.root}/.account-models`;
-    const recordFile = `${recordDir}/${createHash("sha256").update(user).digest("hex")}.json`;
-    mkdirSync(recordDir, { recursive: true });
-    writeFileSync(
-      recordFile,
-      JSON.stringify({
-        version: 1,
-        userId: user,
-        updatedAt: new Date().toISOString(),
-        models: { providers: {}, models: [{ provider: "custom", model_id: "gpt-smoke", display_name: "gpt-smoke" }] },
-      })
-    );
-
-    const analyzed = await owner.post(`${base}/platform-tasks/${id}/analyze`, {});
-    expect(analyzed.status).toBe(200);
-    expect(((await analyzed.json()) as Json).analysisState).toBe("running");
-    expect(spySession).toHaveBeenCalledTimes(2);
-    expect(spySession.mock.calls[1]?.[0]).toMatchObject({ modelId: "gpt-smoke", provider: "custom" });
-
-    // 账号也没有任何模型：409 no_model_configured（消息可操作）
-    const another = await owner.post(`${base}/platform-tasks/local`, { title: "无模型任务", description: "" });
-    const anotherId = ((await another.json()) as Json).task.id as string;
-    rmSync(recordFile);
-    const failed = await owner.post(`${base}/platform-tasks/${anotherId}/analyze`, {});
-    expect(failed.status).toBe(409);
-    expect(await errorCode(failed)).toBe("no_model_configured");
   });
 
   it("本地任务不分析即可开始（T5）；开始测试创建新会话并注入开工指令", async () => {
@@ -325,7 +210,8 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
     });
     const id = ((await created.json()) as Json).task.id as string;
 
-    // 同步模型通道只在 runtime 未注入时走（service 直连）；HTTP 层恒走总控预分析
+    // completeOnce 在路由注册时已捕获：HTTP 层用真实依赖（未配置模型 → demo 回退），
+    // 真实模型路径由 service 直连覆盖（构造时注入自定义 completeOnce）。
     const svc = new QaPlatformTaskService(app.deps.db as never, {
       completeOnce: async (_projectId, prompt, opts) => {
         expect(opts?.maxTokens).toBe(2000);
@@ -337,8 +223,12 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
           text: [
             "```json",
             JSON.stringify({
+              requirement_summary: "整理导出大文件的分页边界与字段完整性回归要点。",
               requirement_points: ["大文件导出分页边界", "导出字段完整性"],
               suggested_test_scope: ["分页参数边界值", "字段缺失校验"],
+              test_environment: "http://portal.example.com",
+              test_account: "qa_user",
+              test_password: "pwd-from-description",
               suggested_priority: "high",
               priority_reason: "核心导出链路，边界易碎",
               risks: ["导出超时"],
@@ -353,9 +243,15 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
     expect(good.summary?.source).toBe("requirement_analysis");
     expect(good.summary?.suggested_priority).toBe("high");
     expect(good.summary?.requirement_points).toHaveLength(2);
+    // 结构化数据：需求整理 + 测试环境/账号/密码（只整理用户填写内容）
+    expect(good.summary?.requirement_summary).toContain("导出大文件");
+    expect(good.summary?.test_environment).toBe("http://portal.example.com");
+    expect(good.summary?.test_account).toBe("qa_user");
+    expect(good.summary?.test_password).toBe("pwd-from-description");
     expect(good.degraded).toBeUndefined();
     const afterGood = (await (await detail(id)).json()) as Json;
     expect(afterGood.summary.source).toBe("requirement_analysis");
+    expect(afterGood.summary.test_account).toBe("qa_user");
     expect(afterGood.summary.priority_reason).toContain("边界易碎");
 
     // 模型答非所问：回退 demo，degraded 带原因
@@ -477,6 +373,57 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
       .prepare(`SELECT env FROM qa_tasks WHERE project_id = ? AND session_id = ?`)
       .get(project, "session-pt-4") as { env: string } | undefined;
     expect(bareRow).toBeUndefined();
+  });
+
+  it("开始测试建会话的模型解析：项目无默认模型回退账号级设置（同聊天页选择器）；两处都没有给出可操作错误", async () => {
+    const created = await owner.post(`${base}/platform-tasks/local`, {
+      title: "账号级模型回退",
+      description: "项目无默认模型，账号设置里有模型",
+    });
+    const id = ((await created.json()) as Json).task.id as string;
+
+    vi.spyOn(app.deps.agentService, "listAgents").mockResolvedValue([{ agentId: "test_agent" }] as never);
+    vi.spyOn(app.deps.manager, "startTask").mockResolvedValue({ sessionId: "session-pt-7", queued: false } as never);
+    // 第一次（无模型对）按 createSession 的 no_default_model 语义拒绝；带账号级模型对的第二次成功
+    const noDefault = Object.assign(new Error("This Project has no default model yet."), {
+      status: 400,
+      code: "no_default_model",
+    });
+    const spySession = vi
+      .spyOn(app.deps.sessionService, "createSession")
+      .mockRejectedValueOnce(noDefault)
+      .mockResolvedValueOnce({ sessionId: "session-pt-7" } as never)
+      .mockRejectedValue(noDefault);
+
+    // 账号级模型记录：default_model 未设，回退第一条（与聊天页选择器同源）
+    const { createHash } = await import("node:crypto");
+    const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const recordDir = `${app.deps.config!.root}/.account-models`;
+    const recordFile = `${recordDir}/${createHash("sha256").update(user).digest("hex")}.json`;
+    mkdirSync(recordDir, { recursive: true });
+    writeFileSync(
+      recordFile,
+      JSON.stringify({
+        version: 1,
+        userId: user,
+        updatedAt: new Date().toISOString(),
+        models: { providers: {}, models: [{ provider: "custom", model_id: "gpt-smoke", display_name: "gpt-smoke" }] },
+      })
+    );
+
+    // 开始测试（本地任务不强制分析）：建工作会话走账号级模型回退
+    const started = await owner.post(`${base}/platform-tasks/${id}/start`, {});
+    expect(started.status).toBe(200);
+    expect(spySession).toHaveBeenCalledTimes(2);
+    expect(spySession.mock.calls[1]?.[0]).toMatchObject({ modelId: "gpt-smoke", provider: "custom" });
+
+    // 账号也没有任何模型：409 no_model_configured（消息可操作）
+    const another = await owner.post(`${base}/platform-tasks/local`, { title: "无模型任务", description: "" });
+    const anotherId = ((await another.json()) as Json).task.id as string;
+    rmSync(recordFile);
+    const failed = await owner.post(`${base}/platform-tasks/${anotherId}/start`, {});
+    expect(failed.status).toBe(409);
+    expect(await errorCode(failed)).toBe("no_model_configured");
   });
 
   it("终止封存：terminated 默认隐藏，includeTerminated 才可见；审计落 last_action_json", async () => {

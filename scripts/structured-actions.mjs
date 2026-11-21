@@ -44,7 +44,6 @@ import { mobileAuthorization, assertMobileDispatch, assertMobileTarget, acquireM
 import { archiveVerifiedWebScripts, reuseWebScripts } from './web-script-library.mjs';
 
 import { apiTask, validateApiOperation } from './api-task.mjs';
-import { writebackPlatformTaskAnalysis, validatePlatformTaskRef, validatePlatformSummary } from './qa-platform-writeback.mjs';
 import { createApiSnapshotReport, verifySnapshotReport } from './api-snapshot.mjs';
 import { planTestTracks, testTrackStatus, validateTrackRequest, trackInstructions, assertTrackStage, assertSiblingResources, publishTrackDelivery, configureDelivery } from './test-tracks.mjs';
 
@@ -83,8 +82,7 @@ const definitions = {
   complete: ['run_id','stage','dispatch_id','child_session','artifacts'],
   block: ['run_id','stage','dispatch_id','reason'], fail: ['run_id','stage','dispatch_id','reason'],
   request_confirmation: ['run_id','stage'], resolve_confirmation: ['run_id','stage','decision','reason','source_text','source_message_key'],
-  generate_analysis: ['run_id'], validate_analysis: ['run_id'], validate_artifacts: ['run_id','stage'], revise_stage:['run_id','stage','reason'],
-  platform_task_writeback: ['run_id','task_ref','summary']
+  generate_analysis: ['run_id'], validate_analysis: ['run_id'], validate_artifacts: ['run_id','stage'], revise_stage:['run_id','stage','reason']
 };
 const hash = data => createHash('sha256').update(data).digest('hex');
 const requireInput = (ok, message) => { if (!ok) throw new CommandUsageError(message); };
@@ -167,8 +165,7 @@ export function actionCatalog(root) {
       complete:{required:['run_id','stage','dispatch_id','artifacts'],optional:['child_session'],note:'Omit child_session to resolve the unique returned professional child from parent trace. Never search files or guess session IDs.'},
       dispatch: {required:['run_id','stage','agent','skills'],optional:['mode'],mode:'Omit mode normally. Lifecycle URL testing uses mode="browser" with optional source_text containing the exact native user request authorizing the target and test scope (required for browser dispatch). No environment JSON or scripts. Script preparation remains mode="prepare". After a legacy browser pause only, use mode="resume_browser". human_protocol=1 uses the host human-action card and the original child session, never a new dispatch. Never use "default".'},
       lifecycle_browser:{note:'browser_task supports independent execution AND lifecycle execution dispatched with mode=browser. Lifecycle execution/defects/report use browser task artifacts, retain saved dependencies, and must preserve untested design coverage. Never synthesize script invocation records.'},
-      archive_input: {required:['run_id','name'],exactly_one_of:['source','text'],note:'Chinese/Unicode basenames and internal spaces are supported; no path separators, control characters, Windows reserved names or trailing dots/spaces. For uploads use source with the exact current parent session scratchpad file path, or project inputs/acceptance. Copies original bytes with SHA256; never retype attachments into text. Native user text and current-message attachments are captured automatically at create/dispatch. Read input_context before manually archiving duplicates. text is only for literal user text. Omit the unused field.'},
-      platform_task_writeback:{required:['run_id','task_ref','summary'],note:'平台任务预分析回写（仅总控）：把 requirement_analysis_agent 预分析的结构化结论 POST 回平台任务列表。task_ref 原样照抄任务简报（[平台任务简报] 消息）里的 {kind,task_id,project_id}，不猜不拼。summary 含 requirement_points / suggested_test_scope（至少一处非空，1-20 条）、suggested_priority（high|medium|low）、priority_reason、risks、open_questions。只在收到简报的预分析 run 内使用；服务端拒绝（如 analysis_not_running/invalid_summary）说明具体原因并如实报告用户，不重放、不改写绕过；回写成功只是建议回填，不代表测试通过。'}
+      archive_input: {required:['run_id','name'],exactly_one_of:['source','text'],note:'Chinese/Unicode basenames and internal spaces are supported; no path separators, control characters, Windows reserved names or trailing dots/spaces. For uploads use source with the exact current parent session scratchpad file path, or project inputs/acceptance. Copies original bytes with SHA256; never retype attachments into text. Native user text and current-message attachments are captured automatically at create/dispatch. Read input_context before manually archiving duplicates. text is only for literal user text. Omit the unused field.'}
     },
     examples: {
       browser_start:{action:'browser_task',run_id:'run-example',operation:{type:'start',request_id:'browser-start',url:'https://example.test/login',source_path:'inputs/request.txt',scope:'User-authorized form validation'}},
@@ -178,8 +175,7 @@ export function actionCatalog(root) {
       extend_to_cases:{action:'extend_plan',run_id:'run-example',stages:['test_cases'],reason:'User requested continuing this run through test case design'},
       dispatch_analysis:dispatchTemplate('analysis'),
       prepare_execution:{...dispatchTemplate('execution'),mode:'prepare'},
-      archive_text:{action:'archive_input',run_id:'run-example',name:'requirement.md',text:'User requirement text'},
-      platform_task_writeback:{action:'platform_task_writeback',run_id:'run-example',task_ref:{kind:'platform',task_id:'ptl-example',project_id:'default_project'},summary:{requirement_points:['要点1','要点2'],suggested_test_scope:['范围1'],suggested_priority:'high',priority_reason:'核心链路变更',risks:[],open_questions:['待确认问题']}}
+      archive_text:{action:'archive_input',run_id:'run-example',name:'requirement.md',text:'User requirement text'}
     },
     notes: ['actions lists allowed fields, NOT required fields. Optional fields must be omitted when unused.', 'stages/skills/artifacts are arrays; archive_input requires exactly one of source/text', 'Default: draft stages continue after verified handoff; ask the user for unresolved business decisions and before real execution. review_mode=staged preserves the former per-stage confirmation flow.'] };
 }
@@ -193,8 +189,6 @@ function validate(request) {
     if(key==='tracks'){validateTrackRequest(request);continue;}
     if(key==='operation') {try {if(request.action==='api_task') validateApiOperation(request.operation); else if(request.action==='draft_records') validateDraftOperation(request.operation); else if(request.action==='android_task') validateAndroidOperation(request.operation); else if(request.action==='miniprogram_task') validateMiniprogramOperation(request.operation); else if(request.action==='desktop_task') validateDesktopOperation(request.operation); else validateBrowserOperation(request.operation);} catch(error){throw new CommandUsageError(error.message);} continue;}
     if (key === 'payload') { requireInput(request[key] === undefined || request[key] && typeof request[key] === 'object' && !Array.isArray(request[key]), 'Tool payload must be a JSON object'); continue; }
-    if (key === 'task_ref') { requireInput(validatePlatformTaskRef(request[key]) === null, validatePlatformTaskRef(request[key])); continue; }
-    if (key === 'summary') { requireInput(validatePlatformSummary(request[key]) === null, validatePlatformSummary(request[key])); continue; }
     if (key === 'source_path') { requireInput(request[key] === undefined || typeof request[key] === 'string' && request[key].trim(), 'source_path must be a run-local JSON path'); continue; }
     if (key === 'resource_keys') {requireInput(request[key]===undefined || Array.isArray(request[key]) && request[key].length<=40 && request[key].every(k=>typeof k==='string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(k)),'Invalid resource_keys');continue;}
     if (key === 'child_session' && request[key] === undefined) continue;
@@ -239,14 +233,6 @@ function readSource(root,r) {
         clauses:structure.clauses.map(item=>({...item,line:item.line+r.start_line-1}))}
     : {status:structure.status,reason:structure.reason};
   return {status:'completed',exit_code:0,execution_mode:'in_process',launches_child:false,result:{path:r.path,sha256:file.sha256,total_lines:lines.length,start_line:r.start_line,end_line:end,requested_end_line:r.end_line,truncated:end!==r.end_line,quote,quote_json:JSON.stringify(quote),source_structure}};
-}
-/** 平台任务回写：进程内调用回写模块，HTTP 业务失败返回 failed 结果（不抛 usage 错）。 */
-async function platformWriteback(r) {
-  const outcome=await writebackPlatformTaskAnalysis({taskRef:r.task_ref,summary:r.summary,runId:r.run_id});
-  const envelope={status:outcome.ok?'completed':'failed',exit_code:outcome.ok?0:2,execution_mode:'in_process',launches_child:false,
-    result:{action:'platform_task_writeback',ok:outcome.ok,http_status:outcome.status,code:outcome.code??null,message:outcome.message??null}};
-  if(!outcome.ok) envelope.result.next_action='report_writeback_failure_to_user_without_retry_loop';
-  return envelope;
 }
 
 export function actionCommand(request, session) {
@@ -868,7 +854,6 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
       const command=actionCommand(parsed,session);
       if (parsed.action === 'read_source') return readSource(root,parsed);
       if (parsed.action === 'archive_input') return archive(root,parsed,session,agentRoot);
-      if (parsed.action === 'platform_task_writeback') return platformWriteback(parsed);
       const inputContext=parsed.action==='dispatch'?captureUserInputs(root,parsed.run_id,session,agentRoot,assertParentSession(root,parsed.run_id,session,agentRoot)):null;
       const env={...process.env,...(agentRoot?{PENGUIN_AGENT_ROOT:agentRoot}:{})};
       delete env.QA_CONTROLLER_SESSION;
