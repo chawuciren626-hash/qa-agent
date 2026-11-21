@@ -138,7 +138,10 @@ def main() -> int:
         explore_dir4.mkdir(parents=True)
         maps_dir = Path(tmp) / "maps-baseline"
         maps_dir.mkdir(parents=True)
-        (maps_dir / "maps-root.yaml").write_text(json.dumps({
+        # 基线写成真 YAML：内置 Python 注入 pyyaml 后，canonical maps 落盘走 safe_dump
+        # （round-2 起），而基线读取此前只认 JSON——saucedemo round-3 合并就是炸在这里。
+        import yaml as _yaml
+        (maps_dir / "maps-root.yaml").write_text(_yaml.safe_dump({
             "pages": [
                 {"route": "/assets/index-aSZoiKGF.css", "registered": False},
                 {"route": "/favicon.ico", "registered": False},
@@ -146,7 +149,7 @@ def main() -> int:
                 {"route": "/legacy.html", "registered": False},
             ],
             "apis": [{"method": "GET", "path": "/openapi/health", "module": "default", "required": []}],
-        }), encoding="utf-8")
+        }, allow_unicode=True, sort_keys=False), encoding="utf-8")
         (explore_dir4 / "pages.json").write_text(json.dumps([
             {"route": "/", "ok": True, "controls": 3, "tables": 0, "structure": login_structure},
         ]), encoding="utf-8")
@@ -159,7 +162,7 @@ def main() -> int:
         if proc4.returncode == 0:
             maps4 = json.loads((explore_dir4 / "maps-test.json").read_text(encoding="utf-8"))
             routes4 = {p["route"] for p in maps4.get("pages", [])}
-            check("基线真实路由并入", "/legacy.html" in routes4, f"routes={sorted(routes4)}")
+            check("YAML 格式基线真实路由并入", "/legacy.html" in routes4, f"routes={sorted(routes4)}")
             check("基线静态资源不并入", not (routes4 & {"/assets/index-aSZoiKGF.css", "/favicon.ico", "/manifest.json"}),
                   f"routes={sorted(routes4)}")
             paths4 = {a["path"] for a in maps4.get("apis", [])}

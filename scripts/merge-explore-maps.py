@@ -122,8 +122,21 @@ def main() -> int:
     capture_dir = Path(args.capture_dir or ROOT / "output" / "real-acceptance" / args.project)
 
     def load(base: Path, name: str, default):
+        # JSON 优先、YAML 兜底：maps 落盘格式取决于运行时有没有 PyYAML（有则 safe_dump、
+        # 无则 json 兜底）——内置 Python 注入 pyyaml 后，同一个 .yaml 文件两种格式都出现过
+        # （round-1 是 JSON、round-2 起是 YAML），只认 JSON 会在 bootstrap 基线上炸出
+        # 「Expecting value: line 1 column 1」。
         path = base / name
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
+        if not path.exists():
+            return default
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            return default
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            import yaml
+            return yaml.safe_load(text) or default
 
     structured = load(explore_dir, "structure.json", {}) or load(capture_dir, "structured-dom.json", {})
 
