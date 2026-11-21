@@ -49,6 +49,7 @@ import { planTestTracks, testTrackStatus, validateTrackRequest, trackInstruction
 
 const definitions = {
   run_stage_tool: ['run_id','stage','tool_id','payload','source_path'],
+  stage_finalize: ['run_id','stage','tools'],
   create_api_snapshot_report: ['run_id','snapshot_path'],
   configure_delivery: ['run_id','scope_name'],
   plan_test_tracks: ['run_id','tracks','stages','review_mode','workflow_mode','source_mode','scope_name'],
@@ -149,6 +150,7 @@ export function actionCatalog(root) {
       execution_counts:{note:'finish.statistics distinguishes assertion records from linked design cases. Optional UI assertion/response_check case_ref:{source_path:"inputs/cases.json",case_id:"actual source case"} requires an existing unique case with expected; no predecessor, no need to create cases just for counts. Standalone assert may use recheck_of:<earlier assertion case_id>, preserving target, condition, expected and case_ref. It is later read-only observation, not permission to repeat a product action. Original failures retained; missing mappings mean unknown case count, not inferred prefixes. Framework retry totals use recorded histories, exclude retry=0 initial runs, expose missing-history coverage; receipt reads, model retries and tool corrections are not product executions. Never infer whole-case success or coverage percent from linked assertions.'},
       api_controls:{note:'Independent browser session only. Optional browser_task {type:"api_check",request_id,check:{url,method:"GET|HEAD",http_status,field?,equals?,source_path,quote,case_id,title,expected,case_ref?}} checks an explicitly authorized, supplied/observed same-origin read endpoint using current browser cookies. No custom headers, query/fragment/credentials in URL, body, redirects, automatic retries or writes. HEAD/status-only checks need no JSON; business checks compare code/status/success scalar, bounded 64KiB/5s. GET is not automatically safe: never call known side-effect endpoints or infer permission from a document URL. Only when current user scope explicitly includes simulation, click/press may include fault:{url,method:"GET",mode:"abort|http_error",http_status?:500|502|503|504,source_path,quote} plus a UI assertion. Exact main-frame XHR/fetch match, at most one request; aborted locally or replaced with a fixed synthetic error, no request sent to backend for that match. No response_check/data_effect combination. Fault disabled in finally; unmatched/uncertain fault is blocked observation, not success or real product defect. Later UI observations remain simulation_affected until successful goto. No automatic repeat action to obtain a match. Source quote must be present but does not itself establish authorization semantics. No extra approval documents or lifecycle prerequisites.'},
       diagnose_analysis:{required:['run_id'],note:'Read-only draft ledger and exact citation diagnosis; no Markdown needed. Require result.status=passed before generate_analysis. Does not approve semantics or complete a stage; repeated diagnostics do not consume generation retries.'},
+      stage_finalize:{required:['run_id','stage','tools'],note:'One-call factory check for the analysis toolchain: tools is an array of {tool_id, payload|source_path} (max 6, each validated against the owning dispatch); runs every tool plus the ledger diagnosis in one exec and returns a merged verdict. A failed entry does not stop the rest - fix the reported issues together and rerun once. Replaces per-tool rounds; verdict=passed before generate_analysis.'},
       diagnose_test_points:{required:['run_id'],note:'Read-only aggregate draft JSON, reference and coverage diagnosis. No XMind needed; no generation/validation retry consumed. Inspect result.status, errors and coverage; context/environment are supporting only, normative behavior and confirmed assumptions require coverage. Missing category retains legacy mandatory coverage. Never recategorize approved rules just to pass. Formal validation after export remains required.'},
       diagnose_test_cases:{required:['run_id'],note:'Read-only draft diagnosis. Automatically follows saved task/lifecycle mode; task mode needs no analysis or test points. data_diagnostics measures string test_data in code_points/utf16/utf8_bytes/graphemes and checks optional design_contract.data_checks (length or integer minor_unit_sum). Save case JSON and task summary first. Use this instead of node -e, nested shells or arithmetic scripts. No Excel needed. Fix all result.errors before export_test_cases; require result.status=passed, not only outer completed. Measurements are not business approval.'},
       prepare_execution_plan:{required:['run_id'],optional:['profile','environment_config','changed_modules','changed_tags'],note:'Only in an active execution prepare dispatch. Selects cases (default full profile; targeted requires changed_modules or changed_tags as comma-separated values), builds the plan, and copies matching verified project Web scripts into this run. Check script_reuse.reused and script_reuse.remaining; author only remaining cases. Isolated sessions use this run environment/test-env.json by default. No browser launch or execution authorization.'},
@@ -525,6 +527,36 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
           implementation_sha256:result.implementation_sha256,input:result.input_source ?? {payload_sha256:hash(JSON.stringify(parsed.payload))},
           output:{receipt_path:result.tool_receipt}}, {receipt:result.tool_receipt,runId:parsed.run_id,stage:parsed.stage});
         return { status: 'completed', exit_code: 0, execution_mode: 'in_process', launches_child: false, result };
+      }
+      if (parsed.action === 'stage_finalize') {
+        // B2 出厂校验（合并调用）：一次 exec 跑完本阶段全部确定性工具 + 阶段诊断，合并结论
+        // 一次返回——工具逐个落独立 receipt（单个失败不中断其余），verdict 如实汇总。
+        // 派发归属与 run_stage_tool 同闸：只有当前 owning dispatch 可以收口。
+        requireInput(parsed.stage === 'analysis', 'stage_finalize covers the analysis toolchain in this slice');
+        requireInput(Array.isArray(parsed.tools) && parsed.tools.length >= 1 && parsed.tools.length <= 6, 'stage_finalize accepts 1-6 tool entries');
+        requireInput(parsed.tools.every(t => t && typeof t === 'object' && typeof t.tool_id === 'string'
+          && (t.payload === undefined) !== (t.source_path === undefined)), 'each finalize entry needs tool_id and exactly one of payload/source_path');
+        const manifest = JSON.parse(readRunFile(runDirectory(root, parsed.run_id), 'manifest.json').data);
+        const dispatch = manifest.orchestration?.events?.filter(e => e.type === 'dispatched' && e.stage === parsed.stage).at(-1);
+        requireInput(dispatch?.['parent-session-id'] === session, 'Current owning stage dispatch required for finalize');
+        const results = [];
+        for (const entry of parsed.tools) {
+          try {
+            const result = runStageTool(root, { runId: parsed.run_id, stage: parsed.stage, toolId: entry.tool_id, payload: entry.payload, sourcePath: entry.source_path });
+            results.push({ tool_id: entry.tool_id, status: 'completed', result: result.result, tool_receipt: result.tool_receipt, implementation_sha256: result.implementation_sha256 });
+          } catch (error) {
+            results.push({ tool_id: entry.tool_id, status: 'failed', error: error instanceof Error ? error.message : String(error) });
+          }
+        }
+        const diagnosis = diagnoseRequirementLedger(parsed.run_id, p => readRunFile(runDirectory(root, parsed.run_id), p).data);
+        const failedTools = results.filter(r => r.status !== 'completed').map(r => r.tool_id);
+        const verdict = failedTools.length === 0 && diagnosis.status === 'passed' ? 'passed' : 'failed';
+        tracedTools = results.map(r => r.tool_id);
+        recordToolUsage(root, parsed.action, { tools: tracedTools, runId: parsed.run_id, stage: parsed.stage,
+          receipts: results.map(r => r.tool_receipt).filter(Boolean) });
+        const data = { verdict, tools: results, diagnosis, ...(failedTools.length ? { failed_tools: failedTools } : {}) };
+        return { status: 'completed', exit_code: 0, execution_mode: 'in_process', launches_child: false, result: data, data,
+          next_action: verdict === 'passed' ? 'generate_in_current_authorized_dispatch' : 'correct_all_reported_draft_issues' };
       }
       if(parsed.action==='api_task') {
         const rows=assertParentSession(root,parsed.run_id,session,agentRoot);

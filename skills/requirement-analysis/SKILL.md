@@ -17,7 +17,7 @@ sections:
 
 ## 阶段工具执行协议（强制）
 
-生命周期按派发阶段协议执行可测性、验收条件和适用的 IR 检查。按派发顺序诊断台账、生成正文并校验，保留真实工具回执。
+生命周期的出厂校验走**合并调用**：保存台账后用一次 `stage_finalize`（tools 依次为 requirement.testability、requirement.acceptance、irval.check 的条目）跑完全部确定性工具并合并台账诊断，返回统一 verdict；verdict=passed 才生成正文，再 validate_analysis 校验产物。保留真实工具回执（每个工具的独立 receipt 在 verdict 里带出）。frontmatter 的 tools 是本阶段的收口校验清单——哪些工具必须通过，而不是逐个调用的清单。
 
 材料有歧义、矛盾或不可测表述时，按需读[需求缺口与风险取舍](references/requirement-gaps.md)。适用于task和lifecycle，不新增文档上传后的固定确认节点。
 
@@ -42,7 +42,7 @@ sections:
 
 范围修订后做一次跨规则复核：同一主题可能同时出现在功能规则、数据约束、非功能要求、验收标准和待确认项，不能仅修改某个模块或总控列出的示例ID。逐项核对用户补充对应的全部受影响ID、修改后的scope/status和来源引用；混合规则保留未排除行为，将排除维度另行记录并引用排除原话。交付摘要列出本次变更与保留项，不把结构诊断通过描述为语义审查通过。此复核由角色内部完成，不新增用户授权或解锁节点。
 
-先保存 requirement-ledger.json，再用 diagnose_analysis 检查全部规则及引用；result.status=passed 后才正式 generate_analysis、validate_analysis。诊断不依赖 Markdown，不代表语义确认。引用保留原始 LF/CRLF，可使用 read_source.quote_json 的 JSON 字符串值。正式正文缺失时不能用 analysis_summary 代替草稿诊断。按 recovery 进行安全纠错，stalled 表示连续无进展，应换方法或返回实际错误和已保存草稿，保留原始输入及旧失败记录；不套用历史固定次数限制。
+先保存 requirement-ledger.json，再用一次 `stage_finalize` 完成出厂校验：tools 依次填 requirement.testability、requirement.acceptance、irval.check 三个条目（payload 或 source_path），一次 exec 返回合并 verdict 与台账诊断；verdict=passed 才正式 generate_analysis、validate_analysis。verdict=failed 时按 failed_tools 与诊断清单**一次修正后重跑 finalize**（单次合并调用，不逐工具消耗回合、不逐错误消耗正式交付预算）。校验不依赖 Markdown，不代表语义确认。引用保留原始 LF/CRLF，可使用 read_source.quote_json 的 JSON 字符串值。正式正文缺失时不能用 analysis_summary 代替校验。按 recovery 进行安全纠错，stalled 表示连续无进展，应换方法或返回实际错误和已保存草稿，保留原始输入及旧失败记录；不套用历史固定次数限制。
 
 本Skill中的docs/路径均相对工程根，不相对会话工作空间或Skill安装位置。读取catalog.runtime_context.shared_docs_root或派发中的Engine directory，使用绝对路径读共享资料；本次需求则只读派发列出的run inputs，不混用工程历史输入。
 
