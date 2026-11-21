@@ -521,8 +521,10 @@ export function createWorkspaceUI(deps) {
         s.status !== "archived",
     );
     const groups = { ...storedGroups, ...qaWorkspaceGroups(storedGroups, sessions) };
+    // B1-2 双入口：侧栏按钮是「测试助手」（日常问答与单项辅助，落在 default_agent）；
+    // 正式测试任务从「测试任务」页发起（服务端创建 test_agent 工作会话）。
     const agentId =
-      project.agents.find((a) => a.agentId === "test_agent")?.agentId ||
+      project.agents.find((a) => a.agentId === "default_agent")?.agentId ||
       project.currentAgent?.agentId;
     function go(path, state) {
       navigate(path, state ? { state } : undefined);
