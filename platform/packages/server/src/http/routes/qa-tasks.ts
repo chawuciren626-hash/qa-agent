@@ -16,6 +16,7 @@ import { readJson, requireValidId } from "../validate.js";
 import { qaEnabled } from "../../services/qa-engine.js";
 import type { KnowledgeDb } from "../../services/qa-project-knowledge.js";
 import { QaTaskRunRegistry, RESOURCE_POOLS, TASK_STATUSES, type TaskStatus } from "../../services/qa-task-run-registry.js";
+import { loadPoolCapacity } from "../../services/pool-capacity.js";
 import type { AgentsRouteDeps } from "./agents.js";
 
 const RUN_ID = /^run-[A-Za-z0-9-]+$/;
@@ -23,7 +24,7 @@ const SESSION_ID = /^[A-Za-z0-9_-]+$/;
 
 export function registerQaTaskRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps): void {
   if (!qaEnabled || !deps.config) return;
-  const registry = new QaTaskRunRegistry(deps.db as unknown as KnowledgeDb);
+  const registry = new QaTaskRunRegistry(deps.db as unknown as KnowledgeDb, undefined, undefined, undefined, loadPoolCapacity(deps.config?.root));
 
   const scope = (c: Context<AppEnv>) => {
     const projectId = requireValidId(c, "projectId");

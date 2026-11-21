@@ -19,6 +19,7 @@ import { QaPlatformTaskService } from "../../services/qa-platform-task-service.j
 import type { PlatformTaskDb } from "../../services/qa-platform-task-service.js";
 import { normalizeBaseUrl, upsertEnvironment } from "../../services/project-environment-service.js";
 import { QaTaskRunRegistry } from "../../services/qa-task-run-registry.js";
+import { loadPoolCapacity } from "../../services/pool-capacity.js";
 import type { KnowledgeDb } from "../../services/qa-project-knowledge.js";
 import { readUserModelRef } from "./user-models.js";
 import type { AgentsRouteDeps } from "./agents.js";
@@ -299,7 +300,7 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
     // （对齐 run-registration 纪律），失败退回旧路径由引擎侧 startRun 兜底登记。
     let plannedRunId: string | null = null;
     try {
-      const planned = new QaTaskRunRegistry(deps.db as unknown as KnowledgeDb).createPlannedRun({
+      const planned = new QaTaskRunRegistry(deps.db as unknown as KnowledgeDb, undefined, undefined, undefined, loadPoolCapacity(deps.config?.root)).createPlannedRun({
         projectId,
         sessionId,
         userId,

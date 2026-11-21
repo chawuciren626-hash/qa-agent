@@ -33,6 +33,7 @@ import {
   type RunKind,
   type RunManifestFacts,
 } from "../../services/qa-task-run-registry.js";
+import { loadPoolCapacity } from "../../services/pool-capacity.js";
 import type { AgentsRouteDeps } from "./agents.js";
 import { readRunTrace } from "../../services/qa-run-trace.js";
 import { runHealthSummary } from "../../services/qa-run-health.js";
@@ -42,7 +43,7 @@ const SESSION_ID = /^[A-Za-z0-9_-]+$/;
 
 export function registerQaRunExecutionRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps): void {
   if (!qaEnabled || !deps.config) return;
-  const registry = new QaTaskRunRegistry(deps.db as unknown as KnowledgeDb);
+  const registry = new QaTaskRunRegistry(deps.db as unknown as KnowledgeDb, undefined, undefined, undefined, loadPoolCapacity(deps.config?.root));
 
   const scope = (c: Context<AppEnv>) => {
     const projectId = requireValidId(c, "projectId");

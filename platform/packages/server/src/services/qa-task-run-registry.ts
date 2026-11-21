@@ -256,7 +256,14 @@ export class QaTaskRunRegistry {
     private readonly now: () => number = () => Date.now(),
     private readonly id: () => string = () => randomUUID(),
     private readonly staleMs: number = DEFAULT_STALE_RUN_MS,
+    /** 池容量覆盖（B5）：缺省用 DEFAULT_POOL_CAPACITY；由调用方从 config/pool-capacity.json 装配。 */
+    private readonly poolCapacity: Record<ResourcePool, number> = { ...DEFAULT_POOL_CAPACITY },
   ) {}
+
+  /** 池容量：本 registry 生效值（覆盖值经 loadPoolCapacity 装配，非法项已回退默认）。 */
+  poolCapacityFor(pool: ResourcePool): number {
+    return Math.max(1, Math.floor(this.poolCapacity[pool] ?? DEFAULT_POOL_CAPACITY[pool]));
+  }
 
   private mapRun(row: Record<string, unknown>): QaRun {
     return mapRun(row, this.now(), this.staleMs);
@@ -716,7 +723,7 @@ export class QaTaskRunRegistry {
     capacity?: number;
     ttlMs?: number;
   }): { slot: number; leaseUntil: string } | null {
-    const capacity = Math.max(1, Math.floor(input.capacity ?? DEFAULT_POOL_CAPACITY[input.pool]));
+    const capacity = Math.max(1, Math.floor(input.capacity ?? this.poolCapacityFor(input.pool)));
     const ttl = Math.max(1000, Math.floor(input.ttlMs ?? 30 * 60 * 1000));
     return this.tx(() => {
       const nowMs = this.now();
@@ -776,7 +783,7 @@ export class QaTaskRunRegistry {
     free: number;
     holders: { slot: number; projectId: string; runId: string; leaseUntil: string; expired: boolean }[];
   } {
-    const limit = Math.max(1, Math.floor(capacity ?? DEFAULT_POOL_CAPACITY[pool]));
+     const limit = Math.max(1, Math.floor(capacity ?? this.poolCapacityFor(pool)));
     const nowMs = this.now();
     const rows = this.db
       .prepare("SELECT slot, project_id, holder_run_id, lease_until FROM qa_pool_leases WHERE pool = ? ORDER BY slot")
