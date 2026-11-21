@@ -227,10 +227,8 @@ export function HarnessHistoryOverlay({ open, onClose }: { open: boolean; onClos
     <div
       // z-50 like Modal's overlay: a portaled menu or tooltip (z-[60]) opened from inside still paints above it.
       // ui-scrim: the overlay is the dimmed layer, with the panel inside it.
+      // 弹窗只经"X/取消"等显式操作关闭，不响应遮罩空白点击。
       className="ui-scrim anim-fade fixed inset-0 z-50 bg-black/45"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
     >
       {/* 12px off every edge (the top one below the title-bar band): enough to read as a layer
           over the app, not a page of it. */}

@@ -728,7 +728,7 @@ function EnvironmentDialog({
   };
 
   return (
-    <div className="qpm-modal-mask" role="presentation" onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
+    <div className="qpm-modal-mask" role="presentation">
       <div className="qpm-modal" role="dialog" aria-modal="true" aria-label="添加环境">
         <div className="qpm-modal-head">
           <h2>添加环境</h2>
@@ -814,7 +814,7 @@ function HypothesisDialog({
   };
 
   return (
-    <div className="qpm-modal-mask" role="presentation" onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
+    <div className="qpm-modal-mask" role="presentation">
       <div className="qpm-modal" role="dialog" aria-modal="true" aria-label="补充场景假设">
         <div className="qpm-modal-head">
           <h2>补充场景</h2>
@@ -928,7 +928,7 @@ function ExplorationDialog({
   };
 
   return (
-    <div className="qpm-modal-mask" role="presentation" onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
+    <div className="qpm-modal-mask" role="presentation">
       <div className="qpm-modal" role="dialog" aria-modal="true" aria-label="派发探索">
         <div className="qpm-modal-head">
           <h2>派发探索 · {environment.env} 环境</h2>

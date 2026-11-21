@@ -123,9 +123,6 @@ export function CreateProjectDialog({
     <div
       className="qpm-modal-mask"
       role="presentation"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) requestClose();
-      }}
     >
       <div className="qpm-modal" role="dialog" aria-modal="true" aria-labelledby="qpm-create-title">
         <header className="qpm-modal-head">
