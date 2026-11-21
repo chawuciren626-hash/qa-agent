@@ -23,6 +23,7 @@ import { registerQaPlatformTaskRoutes } from "./qa-platform-tasks.js";
 import { registerQaRunExecutionRoutes } from "./qa-run-execution.js";
 import { registerQaU2ContractRoutes } from "./qa-u2-contracts.js";
 import { registerQaU3SafetyRoutes } from "./qa-u3-safety.js";
+import type { UtilityCompletion } from "../../services/project-config-service.js";
 import type {
   AgentCreateResponse,
   AgentsResponse,
@@ -73,6 +74,11 @@ export interface AgentsRouteDeps {
   /** Service-copy receiver; unset falls back to the local development simulator under the data root. */
   knowledgeReceiver?: KnowledgeReceiver;
   authState?: AuthState;
+  /**
+   * 项目默认模型的一次性补全（QA 平台任务的 AI 分析走它）。unset 时分析回退演示产出；
+   * 测试以 override 共享 ProjectConfigService 实例的方式注入假模型。
+   */
+  completeOnce?: (projectId: string, prompt: string, opts?: { maxTokens?: number; requestTimeoutMs?: number }) => Promise<UtilityCompletion>;
 }
 
 /** Window size in days for the card's activity sparkline (last 30 days, including today). */

@@ -204,3 +204,25 @@ node scripts/local-service.mjs resume D:\AITestHarness\installation.json
 - platform vitest 在本机存在预存 boot 失败（`project-exploration.test.ts` 等 12 例），CI 基线为准
 - 证据层候选归属当前挂项目所有者（rationale 标注系统来源）；会话侧证据轮（附录 A 契约）落地后改用真实 session 归属
 - 批次 C 的 db schema 迁移若并入发布，必须走 `release.mjs` 第 3 步（迁移失败发布中止），禁止只在源码目录跑 migration
+
+## 9. Codex 集成验证更新（2026-11-21，以本节为准）
+
+批次 D 的四个提交已在本地 main；本次纳入批次 C 的本地任务环境关联、总控预分析异步回写、分析会话复用及存量数据库迁移。运行数据、凭据、构建产物及 `.zcode/` 不提交、不推送。
+
+原部署门槛的两处剩余失败已处理：
+
+- `account-client.test.ts`：原测试仅注释声明创建 test_agent，实际在非 QA 测试模式没有目标 Agent。现在通过宿主服务补齐本地目标，仍由真实路由应用模板；保留对 HTTP 状态及模板结果的断言，并在失败时输出响应正文。
+- `vendor-group-models.test.ts`：模型页已有四个添加入口，更新入口清单并钉住新增空态入口的 `isAddableGroup` 条件，继续拒绝供应商分组直接添加模型。
+- 新增 `local-task-context-migration.test.ts`：验证旧任务表补列、历史行保留、重复迁移及全新 schema 幂等。
+
+验证结果：
+
+- 工程验收 9 套共 156/156 通过（含 structured-actions、桌面执行、writeback、部署维护及源码清单验证）。
+- 服务端选定 6 套 54 通过、1 个原有跳过；本地任务服务端套件单独配置 AITEST_ENGINE_ROOT 后 11/11 通过。
+- Web 选定 5 套 28/28 通过；server/web/desktop 类型检查均通过。
+- amsp → core → cli → hmr → server → desktop → web 已按顺序构建完成。
+- 真实安装库的一致性备份在 `D:\backups\integration-2026-11-21T03-28-56Z`。新构建的迁移程序在备份副本上连续运行两次，账本为 39/39，未再写迁移；111 张业务表行数无变化，integrity_check=ok，任务上下文列及对应迁移已存在。原始备份未被演练修改。
+
+边界：扩大运行 `db-migrations.test.ts` 时有 4 个 schema/回退形状断言失败。使用未修改的 de048be schema 和排除本次 local-task-context 的迁移集合，已复现旧 schema 与旧迁移的对象差异及回退形状不一致；该套件不能标为全绿。本次专门升级测试及真实库演练通过，部署不做历史 schema 清理或降级。
+
+部署状态：源码集成验证完成，随后通过官方脚本进行备份、维护暂停、引擎同步、应用发布、数据库迁移、角色同步及恢复；执行结果追加于下节。角色同步应指向实际项目的 agents 目录，不能把 data/penguin 根目录当作 Agent 根目录。现有项目缺少新增 desktop_test_agent 时，通过核心 Agent 初始化入口补齐，再同步受管理指令与工具契约。

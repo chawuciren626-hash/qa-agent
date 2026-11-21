@@ -91,11 +91,15 @@ describe('central identity with full local application',()=>{
     const projectId=`${identity.user.userId}-template_project`;
     const created=await user.post('/api/projects',{projectId});
     if(created.status!==201)throw Error(await created.text());
-    // Provision the published Agent through the host; ordinary users cannot create definitions.
+    // Upstream test mode has no bundled QA roles. Provision the local target through
+    // the host service; ordinary users still cannot create definitions via HTTP.
+    if (!await app!.deps.agentConfigService.exists(projectId, "test_agent")) {
+      await app!.deps.agentService.createAgent(projectId, "test_agent");
+    }
     const resourceId='a'.repeat(36);
     const startAt=new Date(Date.now()+24*60*60*1000).toISOString();
     const schedule=await user.post('/api/control/agent-template/apply',{resourceId,projectId,kind:'schedule',name:'daily_check',startAt,enabled:true});
-    expect(schedule.status).toBe(201);
+    expect(schedule.status, await schedule.clone().text()).toBe(201);
     const listed=await (await user.get(`/api/projects/${projectId}/agents/test_agent/schedules`)).json() as {schedules:{name:string}[]};
     expect(listed.schedules.map(item=>item.name)).toContain('daily_check');
     const api=await user.post('/api/control/agent-template/apply',{resourceId,projectId,kind:'api'});

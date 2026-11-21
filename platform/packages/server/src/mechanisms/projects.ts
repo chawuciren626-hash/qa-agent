@@ -216,7 +216,11 @@ export abstract class ProjectConfigStore {
     apiKey: string,
     applyKeyToExisting: boolean,
   ): Promise<PlatformModelApplyResult>;
-  abstract completeOnce(projectId: string, prompt: string): Promise<UtilityCompletion>;
+  abstract completeOnce(
+    projectId: string,
+    prompt: string,
+    opts?: { maxTokens?: number; requestTimeoutMs?: number },
+  ): Promise<UtilityCompletion>;
 }
 
 export interface ModelPromotion {

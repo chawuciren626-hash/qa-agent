@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { toastError, toastSuccess } from "@prismshadow/penguin-ui";
 import { useProject, projectDisplayName } from "../../../state/project";
+import { listEnvironments } from "../project-management/api";
 import {
   analyzeTask,
   createLocalTask,
@@ -50,7 +51,9 @@ const PRIORITY_LABEL: Record<string, string> = { high: "高", medium: "中", low
 type EditTarget =
   | { kind: "create" }
   | { kind: "platform"; id: string; title: string; notes: { localTitleNote: string; localTestFocusNote: string } }
-  | { kind: "local"; id: string; title: string; description: string; priority: string };
+  | { kind: "local"; id: string; title: string; description: string; envBaseUrl: string; account: string };
+
+type LocalTaskPayload = { title: string; description: string; envBaseUrl: string; account: string };
 
 export function PlatformTasksPage() {
   const navigate = useNavigate();
@@ -69,9 +72,9 @@ export function PlatformTasksPage() {
   const [drawerDetail, setDrawerDetail] = useState<TaskDetail | null>(null);
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (opts?: { silent?: boolean }) => {
     if (!projectId) return;
-    setLoading(true);
+    if (!opts?.silent) setLoading(true);
     try {
       const data = await listTasks(projectId, includeTerm);
       setItems(data.items);
@@ -79,9 +82,9 @@ export function PlatformTasksPage() {
       setDemoSeeded(data.demoSeeded);
       setLoadError("");
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : "加载平台任务失败，请重试");
+      if (!opts?.silent) setLoadError(e instanceof Error ? e.message : "加载平台任务失败，请重试");
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, [projectId, includeTerm]);
 
@@ -91,6 +94,14 @@ export function PlatformTasksPage() {
 
   const visible = items.filter((i) => (seg === "all" ? true : i.status === seg));
   const countOf = (key: string) => (key === "all" ? items.length : counts[key] ?? 0);
+
+  // 总控预分析进行中：静默轮询直到回写收尾（done/failed），按钮与 AI 建议随之更新。
+  const runningAnalysis = visible.some((i) => i.analysisState === "running");
+  useEffect(() => {
+    if (!projectId || !runningAnalysis) return;
+    const timer = setInterval(() => { void reload({ silent: true }); }, 4000);
+    return () => clearInterval(timer);
+  }, [projectId, runningAnalysis, reload]);
 
   const openDrawer = async (id: string) => {
     if (!projectId) return;
@@ -108,13 +119,12 @@ export function PlatformTasksPage() {
     if (!projectId) return;
     setAnalyzing((prev) => new Set(prev).add(task.id));
     try {
-      const result = await analyzeTask(projectId, task.id);
-      toastSuccess(`「${task.title}」AI 分析完成：结构化结论已回填`);
+      await analyzeTask(projectId, task.id);
+      toastSuccess(`「${task.title}」已提交 AI 分析：总控预分析进行中，完成后自动回填结论`);
       if (drawerId === task.id) void openDrawer(task.id);
-      void result;
       await reload();
     } catch (e) {
-      toastError(e instanceof Error ? e.message : "AI 分析失败，请重试");
+      toastError(e instanceof Error ? e.message : "AI 分析提交失败，请重试");
     } finally {
       setAnalyzing((prev) => {
         const next = new Set(prev);
@@ -145,7 +155,19 @@ export function PlatformTasksPage() {
 
   const openEdit = (task: TaskListItem) => {
     if (task.source === "local") {
-      setEditTarget({ kind: "local", id: task.id, title: task.title, description: "", priority: task.priority });
+      setEditTarget({ kind: "local", id: task.id, title: task.title, description: "", envBaseUrl: "", account: "" });
+      // 全量字段回填：详情加载后覆盖空值（异步 fire-and-forget）
+      if (projectId) {
+        void getTaskDetail(projectId, task.id)
+          .then((d) => {
+            setEditTarget((prev) =>
+              prev && prev.kind === "local" && prev.id === task.id
+                ? { ...prev, description: d.task.description ?? "", envBaseUrl: d.task.envBaseUrl ?? "", account: d.task.account ?? "" }
+                : prev
+            );
+          })
+          .catch(() => undefined);
+      }
     } else {
       setEditTarget({ kind: "platform", id: task.id, title: task.title, notes: { localTitleNote: "", localTestFocusNote: "" } });
       // 抽屉里可能已有备注：详情加载后回填（异步 fire-and-forget）
@@ -163,12 +185,45 @@ export function PlatformTasksPage() {
     }
   };
 
-  const saveEdit = async (payload: { platform?: { localTitleNote: string; localTestFocusNote: string }; local?: { title: string; description: string; priority: string } }) => {
+  // 「AI 分析保存」：创建后立即发起总控预分析，轮询直到回写收尾（done/failed）或超时。
+  const ANALYSIS_POLL_MS = 2500;
+  const ANALYSIS_WAIT_MS = 120_000;
+  const waitForAnalysis = async (taskId: string): Promise<TaskDetail | null> => {
+    const deadline = Date.now() + ANALYSIS_WAIT_MS;
+    while (projectId && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, ANALYSIS_POLL_MS));
+      try {
+        const d = await getTaskDetail(projectId, taskId);
+        if (d.task.analysisState !== "running") return d;
+      } catch {
+        // 单次轮询失败不中断：分析会话还在跑，下一拍再看。
+      }
+    }
+    return null;
+  };
+
+  const saveEdit = async (payload: { platform?: { localTitleNote: string; localTestFocusNote: string }; local?: LocalTaskPayload }) => {
     if (!projectId || !editTarget) return;
+    let createdTask: { id: string; title: string } | null = null;
     try {
       if (editTarget.kind === "create" && payload.local) {
-        await createLocalTask(projectId, payload.local);
-        toastSuccess(`本地任务「${payload.local.title}」已创建，状态=可开始；可点「AI 分析」生成结构化测试建议（可选）`);
+        // 先落库（防丢），再 AI 分析；分析收尾才关弹窗——列表刷新后任务可直接开始测试
+        const created = await createLocalTask(projectId, payload.local);
+        createdTask = { id: created.task.id, title: payload.local.title };
+        await reload();
+        await analyzeTask(projectId, created.task.id);
+        const final = await waitForAnalysis(created.task.id);
+        setEditTarget(null);
+        await reload();
+        if (final?.summary) {
+          toastSuccess(`「${payload.local.title}」已保存，AI 分析完成；任务可直接开始测试`);
+        } else if (final) {
+          toastError(
+            `「${payload.local.title}」已保存为可开始，但 AI 分析失败：${final.task.analysisError ?? "未知原因"}；可稍后点「AI 分析」重试`
+          );
+        } else {
+          toastSuccess(`「${payload.local.title}」已保存为可开始；AI 分析仍在进行，结论完成后自动回填`);
+        }
       } else if (editTarget.kind === "platform" && payload.platform) {
         const result = await editTask(projectId, editTarget.id, payload.platform);
         toastSuccess(
@@ -176,14 +231,22 @@ export function PlatformTasksPage() {
             ? "已保存补充性字段（不被平台同步覆盖）。资料已修改，建议点「AI 分析」重新分析。"
             : "已保存补充性字段。"
         );
+        setEditTarget(null);
+        await reload();
       } else if (editTarget.kind === "local" && payload.local) {
         const result = await editTask(projectId, editTarget.id, payload.local);
         toastSuccess(result.analysisStale ? "本地任务已保存。内容有修改，建议重新 AI 分析。" : "本地任务已保存。");
+        setEditTarget(null);
+        await reload();
       }
-      setEditTarget(null);
-      await reload();
     } catch (e) {
-      toastError(e instanceof Error ? e.message : "保存失败，请重试");
+      const savedNote = createdTask ? `任务「${createdTask.title}」已保存为可开始；` : "";
+      toastError(savedNote + (e instanceof Error ? e.message : "保存失败，请重试"));
+      if (createdTask) {
+        // 创建成功、分析提交失败：任务已在列表，收起弹窗让用户继续
+        setEditTarget(null);
+        await reload();
+      }
     }
   };
 
@@ -287,7 +350,11 @@ export function PlatformTasksPage() {
                           : task.source === "local" ? "本地任务" : "—"}
                       </div>
                     </td>
-                    <td><span className={`qpt-pri qpt-pri-${task.priority}`}>{PRIORITY_LABEL[task.priority] ?? task.priority}</span></td>
+                    <td>
+                      {task.source === "local"
+                        ? <span className="qpt-muted" title="本地任务不手工定级，以 AI 建议优先级为准">—</span>
+                        : <span className={`qpt-pri qpt-pri-${task.priority}`}>{PRIORITY_LABEL[task.priority] ?? task.priority}</span>}
+                    </td>
                     <td className="qpt-mono">{task.packageVersion != null ? `v${task.packageVersion}` : "—"}</td>
                     <td>{task.roundNo != null ? `第 ${task.roundNo} 轮` : "—"}</td>
                     <td>
@@ -303,11 +370,33 @@ export function PlatformTasksPage() {
                         <button type="button" className="qpt-op" onClick={() => openEdit(task)}>编辑</button>
                         <button type="button" className="qpt-op" onClick={() => void openDrawer(task.id)}>查看</button>
                         {task.status !== "result_returned" && task.status !== "terminated" && (
-                          task.status === "pending_analysis" && !task.suggestedPriority ? (
+                          task.analysisState === "running" ? (
+                            <>
+                              <button
+                                type="button"
+                                className="qpt-op qpt-op-accent"
+                                disabled
+                                title="总控预分析进行中，完成后自动回填结论"
+                              >
+                                分析中…
+                              </button>
+                              {task.analysisSessionId && (
+                                <button
+                                  type="button"
+                                  className="qpt-op"
+                                  title="进入总控分析会话查看进度"
+                                  onClick={() => task.analysisSessionId && navigate(`/chat/${task.analysisSessionId}`)}
+                                >
+                                  查看会话
+                                </button>
+                              )}
+                            </>
+                          ) : task.status === "pending_analysis" && !task.suggestedPriority ? (
                             <button
                               type="button"
                               className="qpt-op qpt-op-accent"
                               disabled={analyzingThis}
+                              title={task.analysisState === "failed" && task.analysisError ? task.analysisError : undefined}
                               onClick={() => void doAnalyze(task)}
                             >
                               {analyzingThis ? "分析中…" : task.analysisSource === null && task.status === "pending_analysis" ? "重试分析" : "AI 分析"}
@@ -317,6 +406,7 @@ export function PlatformTasksPage() {
                               type="button"
                               className="qpt-op qpt-op-accent"
                               disabled={analyzingThis}
+                              title={task.analysisState === "failed" && task.analysisError ? task.analysisError : undefined}
                               onClick={() => void doAnalyze(task)}
                             >
                               {analyzingThis ? "分析中…" : "重新分析"}
@@ -358,13 +448,20 @@ export function PlatformTasksPage() {
       {drawerId && (
         <>
           <div className="qpt-mask" onClick={() => setDrawerId(null)} />
-          <TaskDrawer detail={drawerDetail} onClose={() => setDrawerId(null)} onAnalyze={(t) => void doAnalyze(t)} analyzing={drawerId ? analyzing.has(drawerId) : false} />
+          <TaskDrawer
+            detail={drawerDetail}
+            onClose={() => setDrawerId(null)}
+            onAnalyze={(t) => void doAnalyze(t)}
+            analyzing={drawerId ? analyzing.has(drawerId) : false}
+            onOpenSession={(id) => navigate(`/chat/${id}`)}
+          />
         </>
       )}
 
-      {editTarget && (
+      {editTarget && projectId && (
         <EditModal
           target={editTarget}
+          projectId={projectId}
           onClose={() => setEditTarget(null)}
           onSave={saveEdit}
         />
@@ -373,11 +470,12 @@ export function PlatformTasksPage() {
   );
 }
 
-function TaskDrawer({ detail, onClose, onAnalyze, analyzing }: {
+function TaskDrawer({ detail, onClose, onAnalyze, analyzing, onOpenSession }: {
   detail: TaskDetail | null;
   onClose: () => void;
   onAnalyze: (task: TaskListItem) => void;
   analyzing: boolean;
+  onOpenSession: (sessionId: string) => void;
 }) {
   if (!detail) {
     return (
@@ -413,7 +511,13 @@ function TaskDrawer({ detail, onClose, onAnalyze, analyzing }: {
             <div><dt>预估工时</dt><dd>{t.estimatedHours != null ? `${t.estimatedHours}h` : "—"}</dd></div>
           </dl>
           {isLocal ? (
-            <div className="qpt-local-note"><b>需求描述 / 测试背景</b><p>{t.description || "（未填写）"}</p></div>
+            <>
+              <div className="qpt-local-note"><b>需求描述 / 测试背景</b><p>{t.description || "（未填写）"}</p></div>
+              <dl className="qpt-fgrid">
+                <div><dt>测试环境</dt><dd className="qpt-mono">{t.envBaseUrl || "（未填写）"}</dd></div>
+                <div><dt>登录账号</dt><dd>{t.account || "（未填写）"}</dd></div>
+              </dl>
+            </>
           ) : (
             <>
               {t.localEditedAt && (t.localTitleNote || t.localTestFocusNote) && (
@@ -442,20 +546,38 @@ function TaskDrawer({ detail, onClose, onAnalyze, analyzing }: {
               </div>
               {s.risks.length > 0 && <div className="qpt-sum-block"><h4>风险点</h4><ul className="qpt-risk">{s.risks.map((p, i) => <li key={i}>{p}</li>)}</ul></div>}
               {s.open_questions.length > 0 && <div className="qpt-sum-block"><h4>待确认问题</h4><ul className="qpt-openq">{s.open_questions.map((p, i) => <li key={i}>{p}</li>)}</ul></div>}
+              {t.analysisState === "failed" && t.analysisError && (
+                <p className="qpt-reason qpt-risk">最近一次重新分析失败：{t.analysisError}</p>
+              )}
               <p className="qpt-sum-foot">
-                分析时间 {s.analyzed_at || "—"} · 来源：{s.source === "demo" ? "演示产出（真管线接通后替换）" : "第一阶段需求分析（S3）"}
+                分析时间 {s.analyzed_at || "—"} · 来源：{s.source === "requirement_analysis" ? "总控需求分析（真实管线）" : s.source === "demo" ? "演示产出（真管线接通后替换）" : s.source}
+                {t.analysisSessionId && (
+                  <>
+                    {" · "}
+                    <a href="#" className="qpt-session-link" onClick={(e) => { e.preventDefault(); onOpenSession(t.analysisSessionId!); }}>查看分析会话</a>
+                  </>
+                )}
               </p>
             </>
           ) : (
             <div className="qpt-sum-empty">
-              {isLocal
-                ? "尚未分析：点「AI 分析」基于需求描述生成结构化测试建议（可选）。"
-                : t.status === "pending_analysis"
-                  ? "尚未分析：交接包入库后自动触发第一阶段分析（T2）；也可手动重试。"
-                  : "暂无分析结论。"}
+              {t.analysisState === "running" ? (
+                <p>总控预分析进行中，完成后自动回填结论。{t.analysisSessionId && (
+                  <><a href="#" onClick={(e) => { e.preventDefault(); onOpenSession(t.analysisSessionId!); }}>查看分析会话</a>。</>
+                )}</p>
+              ) : (
+                <>
+                  {isLocal
+                    ? "尚未分析：点「AI 分析」基于需求描述生成结构化测试建议（可选）。"
+                    : t.status === "pending_analysis"
+                      ? "尚未分析：点「AI 分析」由总控预分析产出结构化测试建议（T2）。"
+                      : "暂无分析结论。"}
+                  {t.analysisState === "failed" && t.analysisError && <p className="qpt-risk">上次分析失败：{t.analysisError}</p>}
+                </>
+              )}
               {t.status !== "result_returned" && t.status !== "terminated" && (
-                <button type="button" className="qpt-op qpt-op-accent" disabled={analyzing} onClick={() => onAnalyze(t)}>
-                  {analyzing ? "分析中…" : s || t.suggestedPriority ? "重新分析" : isLocal ? "AI 分析" : "重试分析"}
+                <button type="button" className="qpt-op qpt-op-accent" disabled={analyzing || t.analysisState === "running"} onClick={() => onAnalyze(t)}>
+                  {analyzing || t.analysisState === "running" ? "分析中…" : s || t.suggestedPriority ? "重新分析" : isLocal ? "AI 分析" : "重试分析"}
                 </button>
               )}
             </div>
@@ -483,31 +605,56 @@ function TaskDrawer({ detail, onClose, onAnalyze, analyzing }: {
   );
 }
 
-function EditModal({ target, onClose, onSave }: {
+function EditModal({ target, projectId, onClose, onSave }: {
   target: EditTarget;
+  projectId: string;
   onClose: () => void;
-  onSave: (payload: { platform?: { localTitleNote: string; localTestFocusNote: string }; local?: { title: string; description: string; priority: string } }) => Promise<void>;
+  onSave: (payload: { platform?: { localTitleNote: string; localTestFocusNote: string }; local?: LocalTaskPayload }) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [localTitleNote, setLocalTitleNote] = useState(target.kind === "platform" ? target.notes.localTitleNote : "");
   const [localTestFocusNote, setLocalTestFocusNote] = useState(target.kind === "platform" ? target.notes.localTestFocusNote : "");
   const [title, setTitle] = useState(target.kind === "local" ? target.title : "");
   const [description, setDescription] = useState(target.kind === "local" ? target.description : "");
-  const [priority, setPriority] = useState(target.kind === "local" ? target.priority : "medium");
+  const [envBaseUrl, setEnvBaseUrl] = useState(target.kind === "local" ? target.envBaseUrl : "");
+  const [account, setAccount] = useState(target.kind === "local" ? target.account : "");
   const isCreate = target.kind === "create";
+  const isLocalForm = isCreate || target.kind === "local";
+
+  // 新建时预填项目默认环境的地址（选填，可改可清空）；编辑值以回填的详情为准
+  useEffect(() => {
+    if (!isCreate) return;
+    let cancelled = false;
+    void listEnvironments(projectId)
+      .then((r) => {
+        if (cancelled) return;
+        const def =
+          r.environments.find((e) => e.isDefault) ??
+          (r.defaultEnv ? r.environments.find((e) => e.env === r.defaultEnv) : undefined);
+        if (def?.baseUrl) setEnvBaseUrl((prev) => prev || def.baseUrl);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isCreate, projectId]);
 
   const submit = async () => {
-    if (isCreate || target.kind === "local") {
+    if (isLocalForm) {
       if (!title.trim()) {
         toastError("任务名称必填");
+        return;
+      }
+      if (!description.trim()) {
+        toastError("需求描述必填：它是 AI 分析的主输入");
         return;
       }
     }
     setBusy(true);
     try {
       await onSave(
-        isCreate || target.kind === "local"
-          ? { local: { title: title.trim(), description, priority } }
+        isLocalForm
+          ? { local: { title: title.trim(), description: description.trim(), envBaseUrl: envBaseUrl.trim(), account: account.trim() } }
           : { platform: { localTitleNote: localTitleNote.trim(), localTestFocusNote: localTestFocusNote.trim() } }
       );
     } finally {
@@ -521,31 +668,32 @@ function EditModal({ target, onClose, onSave }: {
       <div className="qpt-mbox">
         <header className="qpt-m-head">
           <h2>{heading}</h2>
-          <button type="button" className="qpt-dw-close" onClick={onClose}>✕</button>
+          <button type="button" className="qpt-dw-close" onClick={onClose} disabled={busy}>✕</button>
         </header>
         <div className="qpt-m-body">
           <p className="qpt-m-hint">
             {isCreate
-              ? "本地任务不走平台拉取，创建后直接进入「可开始」状态；可点「AI 分析」让 AI 根据需求描述产出结构化测试建议（可选，非必经）。"
+              ? "点「AI 分析保存」：先创建任务（立即进入「可开始」），再由总控 AI 基于需求描述自动产出结构化测试建议，分析完成后任务出现在列表并可直接开始测试。"
               : target.kind === "platform"
                 ? "平台交接包为不可变版本快照，这里只能编辑本地补充性字段；保存后作为 AI 分析的附加输入，且不会被平台后续同步覆盖（T4）。"
                 : "本地任务字段全部本地可编辑，不影响任何平台数据；内容修改后建议重新 AI 分析。"}
           </p>
-          {isCreate || target.kind === "local" ? (
+          {isLocalForm ? (
             <>
               <label className="qpt-field"><span>任务名称 *</span>
-                <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例如：导入模板边界值回归" />
+                <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例如：导入模板边界值回归" disabled={busy} />
               </label>
-              <label className="qpt-field"><span>优先级</span>
-                <select value={priority} onChange={(e) => setPriority(e.target.value)}>
-                  <option value="high">高</option>
-                  <option value="medium">中</option>
-                  <option value="low">低</option>
-                </select>
+              <label className="qpt-field"><span>测试环境 URL <small>选填；默认取项目环境，开始测试时自动绑定</small></span>
+                <input type="text" value={envBaseUrl} onChange={(e) => setEnvBaseUrl(e.target.value)}
+                  placeholder="例如 http://gateway.example.com" disabled={busy} />
               </label>
-              <label className="qpt-field"><span>需求描述 / 测试背景 <small>作为 AI 分析主输入</small></span>
+              <label className="qpt-field"><span>登录账号 <small>选填；作为 AI 分析上下文，密码请在会话内输入</small></span>
+                <input type="text" value={account} onChange={(e) => setAccount(e.target.value)}
+                  placeholder="例如 qa_tester" disabled={busy} />
+              </label>
+              <label className="qpt-field"><span>需求描述 / 测试背景 * <small>AI 分析主输入</small></span>
                 <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={4}
-                  placeholder="描述要测什么、背景与预期" />
+                  placeholder="描述要测什么、背景与预期" disabled={busy} />
               </label>
             </>
           ) : (
@@ -561,8 +709,10 @@ function EditModal({ target, onClose, onSave }: {
           )}
         </div>
         <footer className="qpt-m-foot">
-          <button type="button" className="qpt-op" onClick={onClose}>取消</button>
-          <button type="button" className="qpt-op qpt-op-main" disabled={busy} onClick={() => void submit()}>{busy ? "保存中…" : "保存"}</button>
+          <button type="button" className="qpt-op" onClick={onClose} disabled={busy}>取消</button>
+          <button type="button" className="qpt-op qpt-op-main" disabled={busy} onClick={() => void submit()}>
+            {busy ? (isCreate ? "AI 分析中…" : "保存中…") : isCreate ? "AI 分析保存" : "保存"}
+          </button>
         </footer>
       </div>
     </div>

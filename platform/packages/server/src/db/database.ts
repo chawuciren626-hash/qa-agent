@@ -81,6 +81,13 @@ export function openDatabase(dbPath: string): DatabaseSync {
   // 建档五步进度：老 web.db 的 project_environments 没有这一列，CREATE 不会补，
   // 而服务端每次上报进度都要写它。
   ensureColumn(db, "project_environments", "steps_json", "TEXT");
+  // 平台任务 AI 分析接线：预分析总控会话与进行态（老库 CREATE 不会补列）。
+  ensureColumn(db, "platform_task_links", "analysis_session_id", "TEXT");
+  ensureColumn(db, "platform_task_links", "analysis_state", "TEXT");
+  ensureColumn(db, "platform_task_links", "analysis_error", "TEXT");
+  ensureColumn(db, "qa_local_tasks", "analysis_session_id", "TEXT");
+  ensureColumn(db, "qa_local_tasks", "analysis_state", "TEXT");
+  ensureColumn(db, "qa_local_tasks", "analysis_error", "TEXT");
   // Superseded by idx_usage_session_ts (session_id, ts), which SCHEMA_SQL just created on
   // this database: the old index is a strict prefix of it, so every query it served is
   // served identically. Dropping is safe — an index is derived, never data.

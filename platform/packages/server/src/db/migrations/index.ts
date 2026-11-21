@@ -84,6 +84,7 @@ import { qaRunExecution } from "./steps/2026-11-19-qa-run-execution.js";
 import { mapsHash } from "./steps/2026-11-19-maps-hash.js";
 import { pointUidColumn } from "./steps/2026-11-19-point-uid.js";
 import { taskPlatformIntegration } from "./steps/2026-11-20-task-platform-integration.js";
+import { localTaskContext } from "./steps/2026-11-21-local-task-context.js";
 import { mcpServerCatalog } from "./steps/2026-11-21-mcp-server-catalog.js";
 
 export type { Migration } from "./migration.js";
@@ -134,6 +135,7 @@ export const MIGRATIONS: readonly Migration[] = [
   mapsHash,
   pointUidColumn,
   taskPlatformIntegration,
+  localTaskContext,
   mcpServerCatalog,
 ];
 

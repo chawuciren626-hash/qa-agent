@@ -126,13 +126,11 @@ describe("the ways the page can open the add-model dialog", () => {
   /** Every call that OPENS add mode (setAddingTo(null) closes it and is not one of these). */
   const openers = [...source.matchAll(/setAddingTo\((?!null\))([^)]*)\)/g)].map((m) => m[1]);
 
-  it("are exactly three, none of which can name a vendor group", () => {
-    // A fourth would be a new way into the state this change closed, so it has to be read
-    // here rather than discovered as a bug report. The three: the "no models at all" empty
-    // state, which opens custom; the group header's Add model action, which the header only
-    // carries where group-header.ts puts it; and a brand-new group, whose name is rejected
-    // when it collides with a built-in id.
-    expect([...openers].sort()).toEqual(['"custom"', "group.provider.id", "name"].sort());
+  it("are exactly four, none of which can name a vendor group", () => {
+    // Empty catalogue, group menu, new custom group and the active group's empty
+    // state are the four entry points. The last must also reject vendor groups.
+    expect([...openers].sort()).toEqual(['"custom"', "group.provider.id", "name", "activeGroup.provider.id"].sort());
+    expect(source).toMatch(/isAddableGroup\(activeGroup.provider.id\)\s*&&\s*<Button[^>]*onClick=\{\(\) => setAddingTo\(activeGroup.provider.id\)\}/);
     expect(source).toContain('case "addModel":');
     expect(source).toContain("MODEL_PROVIDERS.some((p) => p.id === trimmed)");
     for (const p of MODEL_PROVIDERS.filter((provider) => isVendorGroup(provider.id))) {

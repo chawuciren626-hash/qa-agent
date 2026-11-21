@@ -1966,6 +1966,8 @@ export class SessionApiRoutes {
       sessionService,
       sessionsRepo,
       traceIndex: this.traceIndex,
+      // QA 平台任务 AI 分析的项目默认模型通道；运行时查实例方法，测试可 override。
+      completeOnce: (projectId, prompt, opts) => projectConfigService.completeOnce(projectId, prompt, opts),
     });
     this.agentConfigRoutes = agentConfigRoutes({
       agentConfigService,

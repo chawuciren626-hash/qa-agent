@@ -1152,8 +1152,11 @@ CREATE TABLE IF NOT EXISTS platform_task_links ( -- 平台任务映射：任务�
   main_session_id        TEXT,                             -- 首轮测试工作会话
   status                 TEXT NOT NULL DEFAULT 'pending_analysis'
                          CHECK(status IN ('pending_analysis','ready','in_progress','impact_pending','result_returned','terminated')),
-  ai_summary_json        TEXT,                             -- 第一阶段分析结构化摘要（T2；演示期 source:'demo'）
+  ai_summary_json        TEXT,                             -- 第一阶段分析结构化摘要（T2；真实管线 source:'requirement_analysis'）
   suggested_priority     TEXT,                             -- AI 建议优先级
+  analysis_session_id    TEXT,                             -- 预分析总控会话（开始测试时升级为测试工作会话）
+  analysis_state         TEXT,                             -- 预分析进行态：running/done/failed；NULL=未发起
+  analysis_error         TEXT,                             -- 最近一次预分析失败原因（回写/派发失败）
   local_title_note       TEXT NOT NULL DEFAULT '',         -- 本地补充字段（T4：不被同步覆盖）
   local_test_focus_note  TEXT NOT NULL DEFAULT '',
   local_edited_at        TEXT,
@@ -1175,7 +1178,13 @@ CREATE TABLE IF NOT EXISTS qa_local_tasks ( -- 本地新建任务（T5）：不�
                     CHECK(status IN ('ready','in_progress','result_returned','terminated')),
   ai_summary_json   TEXT,
   suggested_priority TEXT,
+  analysis_session_id TEXT,                                 -- 预分析总控会话（开始测试时升级为测试工作会话）
+  analysis_state    TEXT,                                   -- 预分析进行态：running/done/failed；NULL=未发起
+  analysis_error    TEXT,                                   -- 最近一次预分析失败原因（回写/派发失败）
   main_session_id   TEXT,
+  env_name          TEXT,                                   -- 测试环境（关联 project_environments.env）；NULL=未填
+  env_base_url      TEXT,                                   -- 环境URL快照（保存时校验归一）
+  account           TEXT,                                   -- 登录账号（选填；密码不落任务表）
   last_action_json  TEXT NOT NULL DEFAULT '{}',
   created_by        TEXT NOT NULL DEFAULT '',
   created_at        TEXT NOT NULL,
@@ -1203,4 +1212,21 @@ CREATE TABLE IF NOT EXISTS mcp_server_catalog ( -- 管理后台 MCP 服务目录
   updated_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_catalog_enabled ON mcp_server_catalog(enabled, name);
+CREATE TABLE IF NOT EXISTS mcp_server_assignments ( -- 目录下发台账：只记目录推送的装配；Agent 侧手工移除后台账行保留（漂移展示）
+  server_name  TEXT NOT NULL REFERENCES mcp_server_catalog(name) ON DELETE CASCADE,
+  project_id   TEXT NOT NULL,
+  agent_id     TEXT NOT NULL,
+  assigned_by  TEXT NOT NULL,
+  assigned_at  TEXT NOT NULL,
+  PRIMARY KEY (server_name, project_id, agent_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_assign_agent ON mcp_server_assignments(project_id, agent_id);
+CREATE TABLE IF NOT EXISTS mcp_server_audit ( -- 目录审计：登记/修改/启停/测试/下发/撤销
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_name TEXT NOT NULL,
+  action      TEXT NOT NULL,
+  actor       TEXT NOT NULL,
+  detail      TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL
+);
 `;

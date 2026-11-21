@@ -1427,8 +1427,18 @@ export class ProjectConfigService implements ProjectConfigStore {
    * out-of-band requests set them that way: a reasoning model spends thinking out of
    * `maxTokens`, so a budget the size of the answer ends the request at `finish_reason=length`
    * with no text at all.
+   *
+   * `opts` raises the budget and the wait for asks whose answer is longer than an identifier
+   * (today the structured requirement summary the platform-task analyze builds): `maxTokens`
+   * replaces the shared meta budget outright — thinking stays off, so the whole budget is
+   * answer — and `requestTimeoutMs` replaces the 15s utility wait. Unset fields keep the
+   * defaults.
    */
-  async completeOnce(projectId: string, prompt: string): Promise<UtilityCompletion> {
+  async completeOnce(
+    projectId: string,
+    prompt: string,
+    opts?: { maxTokens?: number; requestTimeoutMs?: number },
+  ): Promise<UtilityCompletion> {
     const raw = await this.readRaw(projectId);
     const ref = optRef(raw.default_model);
     if (ref === undefined) {
@@ -1448,6 +1458,8 @@ export class ProjectConfigService implements ProjectConfigStore {
       // reason rather than an exception out of a dialog's helper.
       const llm = new GenerativeModel({
         ...utilityCompletionConfig(ref.model_id, entry, providerTableOf(raw)[ref.provider]),
+        ...(opts?.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
+        ...(opts?.requestTimeoutMs !== undefined ? { requestTimeoutMs: opts.requestTimeoutMs } : {}),
         ...this.requestApiKeyResolver(projectId, ref.provider, ref.model_id),
       });
       return await collectUtilityCompletion(

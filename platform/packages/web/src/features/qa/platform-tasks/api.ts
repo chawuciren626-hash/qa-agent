@@ -24,6 +24,11 @@ export interface TaskListItem {
   productLines: Array<{ name: string; isPrimary: boolean }>;
   suggestedPriority: string | null;
   analysisSource: string | null;
+  /** 总控预分析进行态：running/done/failed；null=未发起或走同步模型通道。 */
+  analysisState: string | null;
+  analysisSessionId: string | null;
+  /** 最近一次预分析失败原因（failed 态 tooltip 用）。 */
+  analysisError: string | null;
   status: string;
   edited: boolean;
   mainSessionId: string | null;
@@ -41,6 +46,9 @@ export interface AiSummary {
   analyzed_at: string;
   source: string;
   stage?: string;
+  /** 总控回写附带的追溯引用（真实管线才有）。 */
+  run_id?: string;
+  session_id?: string;
 }
 
 export interface TaskProgressRun {
@@ -60,6 +68,13 @@ export interface TaskDetail {
     localTestFocusNote: string;
     localEditedAt: string | null;
     createdBy: string | null;
+    /** 最近一次总控预分析失败原因（failed 态展示）。 */
+    analysisError: string | null;
+    /** 本地任务：测试环境关联（env 名 + URL 快照）；未填为 null。 */
+    envName: string | null;
+    envBaseUrl: string | null;
+    /** 本地任务：登录账号（选填；密码不落任务表）。 */
+    account: string | null;
   };
   summary: AiSummary | null;
   progress: { mainSessionId: string | null; runs: TaskProgressRun[] };
@@ -81,9 +96,13 @@ export function getTaskDetail(projectId: string, taskId: string): Promise<TaskDe
   return apiFetch<TaskDetail>(`${base(projectId)}/${encodeURIComponent(taskId)}`);
 }
 
+/**
+ * 新建本地任务。优先级不再由表单收集（以 AI 建议为准）；测试环境 URL 与登录账号选填，
+ * 服务端把 URL 解析/登记进项目环境后存关联结果。
+ */
 export function createLocalTask(
   projectId: string,
-  input: { title: string; description: string; priority: string }
+  input: { title: string; description: string; envBaseUrl?: string; account?: string }
 ): Promise<{ task: TaskListItem }> {
   return apiFetch<{ task: TaskListItem }>(`${base(projectId)}/local`, {
     method: "POST",
@@ -94,7 +113,14 @@ export function createLocalTask(
 export function editTask(
   projectId: string,
   taskId: string,
-  input: { localTitleNote?: string; localTestFocusNote?: string; title?: string; description?: string; priority?: string }
+  input: {
+    localTitleNote?: string;
+    localTestFocusNote?: string;
+    title?: string;
+    description?: string;
+    envBaseUrl?: string;
+    account?: string;
+  }
 ): Promise<{ updated: TaskListItem | null; analysisStale: boolean }> {
   return apiFetch<{ updated: TaskListItem | null; analysisStale: boolean }>(
     `${base(projectId)}/${encodeURIComponent(taskId)}/edit`,
@@ -102,11 +128,15 @@ export function editTask(
   );
 }
 
+/**
+ * 发起 AI 分析（总控预分析）：登记 running 并发简报后立即返回，结论由总控异步回写，
+ * 列表轮询 analysisState 直到 done/failed。
+ */
 export function analyzeTask(
   projectId: string,
   taskId: string
-): Promise<{ updated: TaskListItem | null; summary: AiSummary | null }> {
-  return apiFetch<{ updated: TaskListItem | null; summary: AiSummary | null }>(
+): Promise<{ updated: TaskListItem | null; summary: AiSummary | null; analysisState?: string; sessionId?: string }> {
+  return apiFetch<{ updated: TaskListItem | null; summary: AiSummary | null; analysisState?: string; sessionId?: string }>(
     `${base(projectId)}/${encodeURIComponent(taskId)}/analyze`,
     { method: "POST", body: {} }
   );
