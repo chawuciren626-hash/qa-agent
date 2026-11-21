@@ -210,7 +210,6 @@ import { navNoteFor, useUpdateBadges } from "../../lib/use-update-badges";
 import { pendingScheduleSessions } from "../../features/schedules/schedule-panel-state";
 import { useSchedulesAcross } from "../../features/schedules/schedule-store";
 import { QaSidebar, QaSessionActions } from "../../features/qa/workspace-ui";
-import { QaBrandSidebar } from "../../features/qa/project-management/brand-sidebar";
 import { useCompany } from "../../state/company";
 import { NoOrganizationsSidebar, OrgSwitcher } from "../../features/company/org-switcher";
 import { CompanyBetaBadge } from "../../features/company/company-beta";
@@ -1964,11 +1963,9 @@ export function Sidebar({
     </>
   );
 
-  // 外壳状态 A（品牌态）：项目管理页 /qa/projects 的侧栏只保留品牌块、项目管理导航、
-  // 说明卡与账号区（应用外壳两态布局规格 §3）。其余路由维持既有工作台态侧栏不变。
-  if (!inCompany && location.pathname === "/qa/projects") return (
-    <QaBrandSidebar {...(onCollapse ? { onCollapse } : {})} />
-  );
+  // 导航扁平化（重构方案 §2）：项目管理页与其他路由共用工作台侧栏——项目管理
+  // 本身是侧栏菜单项，不再作为进入工作区前的独立品牌态外壳；项目页对未进入
+  // 项目的情况已有空态守卫（projectId 为空时跳过请求）。
 
   // Deployment identity is known before this shell mounts. An unfinished Agent fetch
   // must not briefly select the upstream sidebar (also applies on Project switches).

@@ -353,7 +353,7 @@ export function ProjectManagementPage() {
         <header className="qpm-head">
           <div>
             <h1>项目管理</h1>
-            <p>选择或新建一个项目后，将进入项目工作台（新建任务、项目视图、定时任务、项目资料等）。</p>
+            <p>选择或新建一个项目作为当前工作上下文；任务、视图、环境、资料等页面随顶部项目切换器联动。</p>
           </div>
           <div className="qpm-head-actions">
             <button type="button" className="qpm-icon-btn" aria-label="刷新项目列表" onClick={refresh} disabled={loading && !result}>
