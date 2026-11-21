@@ -159,6 +159,7 @@ test('绑定表覆盖全部关键 action，且没有指向不存在工具的孤�
     'irval.check', 'assets.library', 'regression.select', 'plan.phases', 'agent.contract',
     'knowledge.incremental', 'dom.snapshot', 'expected.provenance', 'requirement.completeness',
     'testpoint.coverage', 'm1.consistency', 'requirement.parse', 'exec.api_engine',
+    'desktop.snapshot',
   ]);
   for (const [action, binding] of Object.entries(TOOL_BINDINGS)) {
     for (const name of [...(binding.requires ?? []), ...(binding.enhances ?? [])]) {

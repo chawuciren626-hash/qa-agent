@@ -42,8 +42,8 @@
 
 ### 任务与确认策略
 
-<!-- qa-roles: test_agent,automation_execution_agent,desktop_test_agent -->
-全流程URL测试优先使用浏览器策略：总控dispatch execution时传mode=browser和source_text（本会话明确授权同目标/范围测试的用户原文）。不要求用户填写环境JSON、生成脚本或重复批准。已完成的设计依赖仍由工程核验；执行、缺陷和报告采用派发中列出的浏览器产物契约，不补脚本execution-state/metrics。人工登录pause后等待宿主卡片；用户确认后续接原子会话、原派发和原浏览器，不视为任务完成。尚未确认的业务预期不得作为通过/失败标准；未测项必须出现在覆盖说明和报告中。脚本批量执行仍可选择prepare路径，不与已启动浏览器混用。桌面GUI被测对象走桌面轨：desktop_test_agent用desktop_task，先snapshot后动作，视觉命中降级UIA锚点，重放零模型，desktop_locked如实等待。
+<!-- qa-roles: test_agent,automation_execution_agent -->
+全流程URL测试优先使用浏览器策略：总控dispatch execution时传mode=browser和source_text（本会话明确授权同目标/范围测试的用户原文）。不要求用户填写环境JSON、生成脚本或重复批准。已完成的设计依赖仍由工程核验；执行、缺陷和报告采用派发中列出的浏览器产物契约，不补脚本execution-state/metrics。人工登录pause后等待宿主卡片；用户确认后续接原子会话、原派发和原浏览器，不视为任务完成。尚未确认的业务预期不得作为通过/失败标准；未测项必须出现在覆盖说明和报告中。脚本批量执行仍可选择prepare路径，不与已启动浏览器混用。
 <!-- /qa-roles -->
 
 | 模式 | 推进方式 | 人工介入 |
@@ -125,9 +125,8 @@ execution的prepare派发也可由总控preview_revision/revise_stage处理，�
 
 ### 执行与事实边界
 
-<!-- qa-roles: test_agent,automation_execution_agent,desktop_test_agent -->
+<!-- qa-roles: test_agent,automation_execution_agent -->
 - task功能测试使用browser_task，纯只读探索使用explore_url，不用可达性代替功能实测。当前已授权范围不重复确认，支付/通知/删除/权限变更等范围外高风险操作须询问。
-- 桌面被测对象使用desktop_task：doctor→snapshot→动作；视觉兜底回执的anchor/anchor_ok是唯一可进剧本的部分，坐标只作证据；replay按锚点零模型执行，计划含坐标即质量缺陷；desktop_locked不抢占，如实上报。桌面截图与UI树是敏感证据，交付时标明。
 - 登录/验证码/MFA用pause保留浏览器并提出具体人工事项；human_protocol=1由宿主人工卡片续接原子会话，子Agent先snapshot核实登录状态，只继续未执行步骤，不重新start、dispatch或重复提交。仅旧协议兼容resume_browser。等待不是测试完成。
 - 已知动态预期使用click/press携带assertion。同操作快照、dynamic_feedback、晚于动作的独立assert和截图是不同采样，读取timing.mode、preceding_action、delay_after_action_ms；晚观察失败不证明点击时从未显示提示。dynamic_feedback只证明观察，不能直接判通过，不为补证据重放操作。
 - 保留原始统计和受控证据。刷新/导航后重新核对前置输入与定位，不能假定旧状态仍有效。网络历史错误、同域请求和HTTP 200均不能单独证明本次业务结果；没有直接证据不声称无副作用或已排除环境原因。

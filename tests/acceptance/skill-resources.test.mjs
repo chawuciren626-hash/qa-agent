@@ -100,7 +100,7 @@ test('all current role packages install with their optional skills and readable 
   const engine = resolve(import.meta.dirname, '../..');
   const manifest = JSON.parse(readFileSync(resolve(engine, 'penguin/agents.json')));
   const workflow = JSON.parse(readFileSync(resolve(engine, 'config/orchestration-workflow.json')));
-  assert.equal(manifest.agents.length, 10);
+  assert.equal(manifest.agents.length, 11);
   for (const agent of manifest.agents) mkdirSync(resolve(f.target, agent.id, 'agent_state'), { recursive: true });
   syncPenguinAgents(engine, f.target, { apply: true });
   for (const agent of manifest.agents) for (const skill of agent.skills) {
@@ -142,7 +142,7 @@ test('installed instructions separate task and lifecycle without legacy mandator
     assert.match(installed, /相同有效执行批准不重复索取/);
     assert.match(installed, /未知副作用/);
     for (const phrase of obsolete) assert.ok(!installed.includes(phrase), `${agent.id}: obsolete ${phrase}`);
-    if (!['test_agent','android_test_agent','miniprogram_test_agent'].includes(agent.id)) {
+    if (!['test_agent','android_test_agent','miniprogram_test_agent','desktop_test_agent'].includes(agent.id)) {
       assert.ok(installed.indexOf('## 独立任务（task）') < installed.indexOf('## 生命周期模式（lifecycle）'));
       assert.ok(installed.includes('## 独立任务（task）'));
     }
@@ -296,7 +296,7 @@ test('functional/API scope applies to every business role without disabling runt
   const manifest = JSON.parse(readFileSync(resolve(engine, 'penguin/agents.json')));
   const runtime = readFileSync(resolve(engine, manifest.shared_instructions), 'utf8');
   for (const phrase of ['需求分析、测试点、用例、Web/接口执行、缺陷分析和报告', 'scope=out_of_scope', '不列为必答澄清', '不规划空生命周期', '业务权限', '凭据脱敏', '不直接执行或覆盖历史结果']) assert.ok(runtime.includes(phrase), phrase);
-  assert.equal(manifest.agents.length, 10); // No unimplemented performance/security agents registered.
+  assert.equal(manifest.agents.length, 11); // desktop_test_agent 是已落地的 computer-use 轨道；仍未注册任何性能/安全角色。
   for (const path of ['skills/requirement-analysis/SKILL.md', 'skills/test-point-design/SKILL.md', 'penguin/agents/test_point_agent/AGENTS.md']) {
     const text = readFileSync(resolve(engine, path), 'utf8');
     assert.match(text, /性能\/安全测试/);
