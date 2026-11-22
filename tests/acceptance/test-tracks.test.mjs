@@ -109,7 +109,7 @@ test('ordinary runs configure module names and seal the name at first completed 
   const f=await fixture(['functional'],['analysis'],{},true),id=f.id;
   const configured=await f.call({action:'configure_delivery',run_id:id,scope_name:'订单模块'});
   assert.equal(configured.status,'completed',JSON.stringify(configured));
-  const dispatch=await f.call({action:'dispatch',run_id:id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis']});
+  const dispatch=await f.call({action:'dispatch',run_id:id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis','api-contract-analysis']});
   assert.equal(dispatch.status,'completed',JSON.stringify(dispatch));
   f.put(id,'analysis/requirement_analysis.md','# 订单模块需求分析\n合成需求分析。');
   f.put(id,taskResultPath('analysis'),{run_id:id,stage:'analysis',outcome:'completed',summary:'订单模块需求分析',source_paths:['inputs/functional.txt'],questions:[],limitations:[]});

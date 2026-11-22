@@ -1,60 +1,172 @@
 ---
 name: test-case-writing
-version: 2026.11.02.2
-description: 根据测试点生成符合项目 JSON Schema 的结构化测试用例。
+version: 2026.11.22.1
+description: 把测试点写成可执行、可判定的结构化测试用例，每个预期都有原文依据，产出 JSON 与 Excel。
 task: case_step_fill
 stage: test_cases
 tools: ["plan.gates", "irval.check"]
 sections:
-  criteria: ["阶段工具执行协议（强制）"]
-  knowledge: ["数据与来源表达（两种模式共用）"]
-  steps: ["分批保存", "独立任务（task）", "生命周期模式（lifecycle）"]
+  criteria: ["产物格式（强制）", "预期依据", "测试数据表达", "自检清单", "不要做"]
+  knowledge: ["设计方法", "锚点与资产引用", "功能轨与接口轨分流"]
+  steps: ["输入", "输出", "任务形态（按派发单选，不按自己习惯）", "工作步骤"]
 ---
 
 # 测试用例编写 Skill
 
-路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+路径基准：`docs/`、`schemas/`、`config/` 按工程动作目录返回的 `runtime_context.engine_root` 解析。正式产物在本次 run 的 `design/` 下。
 
-## 阶段工具执行协议（强制）
+## 输入
 
-生命周期按派发协议检查计划闸门和适用的 IR，集中诊断用例后导出并校验。预期保留原文依据，适用检查保留真实回执。
+| 来源 | 用途 | 必需 |
+|---|---|---|
+| `design/test_points.json` | 测试点，用例的来源与追溯锚 | 全流程必需 |
+| `analysis/requirement-ledger.json` | 规则状态，决定 `basis.status` 与能否进执行 | 全流程必需 |
+| `analysis/requirement_analysis.md`、`analysis/api_contract.json` | 预期原文与接口契约 | 全流程必需 |
+| 派发单 | run、范围、条数上限、功能/接口轨 | 是 |
+| 单点任务的派发材料 | 无测试点时的直接来源 | 单点任务 |
 
-两种模式均可按需读取已安装的test-design-methods中的控件、业务权限或AI功能场景参考。检查清单只用于查漏；预期仍须有当前有效依据，未确认建议不进入expected，不为套模板扩大平台、条数或执行范围。
+## 输出
 
-## 分批保存
+| 文件 | 性质 | 说明 |
+|---|---|---|
+| `design/test_cases.json` | 必交，事实源 | Excel 从它导出 |
+| `design/test_cases.xlsx` | 必交 | 用工程导出器生成，不手改表格 |
+| `design/test_cases.md` | 可选 | 阅读版，内容与 JSON 一致 |
+| `design/test_cases-task.json` | 单点任务必交 | 全流程不交 |
 
-大批量用例使用公共运行规则中的draft_records：inspect获取当前sha256；按case_id分批upsert，每批1至20条完整用例。修订仅提交问题ID，不重写已有正确用例。samples可按指定Unicode码点生成test_data长度样本，测量口径不代替需求依据。复用inputs中的用例可seed初始化缺失草稿，旧规则引用仍须按本任务核验，不继承批准。批次保存后继续剩余设计，最终统一diagnose_test_cases、export_test_cases、validate_artifacts，不对每批增加人工确认或整套导出。
+## 任务形态（按派发单选，不按自己习惯）
 
-用户或派发限制用例条数时，最终条数不得超过上限，且每条用例只关联一个测试点。上游测试点数量多于上限说明测试点粒度过细：先要求总控修订测试点、合并同一规则下的变体，再按合并后的测试点设计；不通过一对多关联、复制用例或自行删减测试点规避，也不为凑上限删掉必要的异常或边界预期。
+| | 全流程（lifecycle） | 单点任务（task） |
+|---|---|---|
+| 依据 | 测试点 + 台账 + 分析正文 | 派发材料 |
+| `related_test_point` | 必填，必须是本次测试点 JSON 里的 ID | 无测试点来源时省略 |
+| `design_contract.basis` | 必填，`rule_id` 来自台账且包含在关联测试点的 `rule_ids` 里 | 引用派发材料，不编 `rule_id` |
+| 预期依据 | `basis` + 逐句来源 | `expected_basis` 逐句来源 |
+| 执行合同 | 必需 | 可省略 |
 
-## 数据与来源表达（两种模式共用）
+生命周期模式下的完整用例格式（必填字段、`execution_metadata`、`design_contract` 三子结构）
+按需查 [references/lifecycle.md](references/lifecycle.md)，不要提前整篇照搬。
 
-提交草稿前由本角色完成语义自检，不新增审批或必填文件：逐字段检查test_data怎样在前置条件或步骤中生效。空字符串需明确清空并核对为空；仅写“不清空”“保持为空”或把空值列入数据，不能保证未知初始状态为空。null、缺失字段、空白字符串是不同输入；false/0不能当作未提供。准备方式应适合当前UI/API，不凭空编造控件或接口。刷新、导航或重置后不能沿用已失效的输入状态。
+## 产物格式（强制）
 
-diagnose_test_cases.data_diagnostics中的data_usage和semantic_review是专业自检提示，不是用户确认项或新质量门。未显式引用不自动证明错误（自然语言前提也可有效），已引用也不证明语义正确；核对否定、顺序和实际准备效果，发现矛盾自行修订再导出。
+### 顶层结构
 
-逐个预期子句对照当前来源：原文只要求提示时，不擅加停留页面、禁止保存、不产生数据、HTTP状态码等断言；有明确来源才保留。可选建议与已要求预期分开，非必要扩展直接省略，不为自己添加的细节追问用户。真正影响既定测试目标的歧义才提出问题。没有访问产品时只描述测试设计，不声称已观察实现。
+数组，或 `{ "run_id": "...", "cases": [...] }`；数组键只认 `cases` 或 `test_cases`，不同时存在两个。
 
-输入样本只在test_data保存一份。steps用“输入test_data.title”这样的字段引用（字段名使用ASCII标识符），不再重复粘贴长字符串、金额或样本长度；Excel会自动在步骤下展示真实数据。诊断会检查显式引用的字段是否存在。边界目标写在data_checks，例如上限50的紧邻超限样本检查expected=51；测量不符应修正样本，不通过改成86等任意超限值冒充精确边界。
+### 单条字段
 
-data_checks.unit只是测量口径，不是用户确认的产品规则。原文只说“字/字符”时，优先选择普通ASCII字母作为长度样本，使码点、UTF-16、字素和UTF-8字节计数一致；不自行写“产品已确认按码点计数”。只有不同口径确实影响当前预期时才提出业务问题。不要在preconditions中添加没有来源的“已确认”条件。
+| 字段 | 必填 | 取值 | 说明 |
+|---|---|---|---|
+| `case_id` | 是 | 唯一，`TC-001` 起 | 不复用 |
+| `title` | 是 | 一句话：场景 + 关键条件 | 不写编号 |
+| `priority` | 是 | `P0` / `P1` / `P2` / `P3` | 只这四个 |
+| `type` | 是 | 功能 / 接口 / 兼容性 / 权限 / 数据 | 自由文本，同一批里用词保持一致 |
+| `preconditions` | 是 | 字符串数组 | 能复现的前置状态；不写"已确认"这类无来源条件 |
+| `steps` | 是 | 字符串数组 | 一条一动作，可照着做 |
+| `expected` | 是 | 字符串 | 主预期，可观察、可判定 |
+| `automation_feasible` | 是 | true / false | 判断能否自动化，不承诺已跑通 |
+| `related_test_point` | 是 | 测试点 ID | 必须真实存在 |
+| `design_contract` | 是 | 对象，见下 | 结构不完整会被拒 |
+| `test_data` | 否 | 对象 | 数据只在这里存一份 |
+| `module` | 否 | 模块名 | 与测试点 module 一致 |
+| `end` | 否 | `web` / `web_admin` / `app` / `miniprogram` / `desktop` / `api` / `""` | 与关联测试点一致 |
+| `execution_layer` | 否 | `ui` / `api` | 不写 both |
+| `expectations` | 否 | 数组 `{text, kind, source:{type,ref,quote}}` | 多子句预期时逐句给来源 |
+| `expected_basis` | 否 | 数组 `{expected, kind, source_path, quote}` | 单点任务用它替代 basis |
 
-task没有真实测试点来源时省略related_test_point，也省略虚构的basis/rule_id；已有编号只能引用task.source_paths中的实际资料，不能为了关联而补造前序。lifecycle仍按真实测试点和台账引用。诊断通过只证明可机械核验的部分，交付前仍应自行核对预期与原文，不把语义审查交给用户。
+### `design_contract`
 
-## 独立任务（task）
+| 子字段 | 必填 | 结构 |
+|---|---|---|
+| `basis` | 是，至少 1 条 | `{rule_id, source, rule, status}`；`status` 只取 `confirmed` / `pending` / `conflicted` |
+| `assumptions` | 是，可为空数组 | `{statement, status, confirmation_ref?}`；`status` 取 `pending` / `confirmed` / `rejected`，`confirmed` 必须带 `confirmation_ref` |
+| `data_checks` | 是，可为空数组 | 长度：`{kind:"length", key, unit, expected}`，`unit` 取 `code_points` / `utf16` / `utf8_bytes` / `graphemes`；金额：`{kind:"minor_unit_sum", currency, total_key, terms}` |
 
-新生成用例增加expected_basis数组，为expected中的每个预期子句记录{expected,kind,source_path,quote}。expected是主预期中的完整子句，kind为requirement（需求）、contract（接口/业务约定）或ui_explicit（页面明确约束）；source_path取本次task.source_paths，quote逐字摘录已有资料。示例：expected为“显示请输入标题”，依据为{"expected":"显示请输入标题","kind":"requirement","source_path":"inputs/request.txt","quote":"标题为空时提示请输入标题"}。不要生成新的前序台账或让用户填写这些字段。
+`assumptions` 只放影响业务预期或授权的真实假设。定位控件、清空输入、核对文案、检查可达性属于执行准备，写进 `steps` / `preconditions`，不要塞成 pending 假设。
 
-diagnose_test_cases.expectation_diagnostics会检查引用是否存在、预期是否全部关联，自行修正后导出。source_located只说明来源文本可定位，不代表语义正确或来源权威已验证；引用整句需求也不能支撑自行附加的保存、跳转、数据库、HTTP状态等预期。页面真实行为不等于界面明确约束，更不证明服务端行为。
+### 执行相关约定字段（引擎按需读取，不进 Schema 强校验）
 
-必要但尚无依据的业务问题记入任务questions；可选工程假设或建议只写observations:[{statement,kind,reason}]，kind为engineering_assumption或needs_confirmation，不放入expected、不作为通过/失败标准。非必要扩展可以省略，不逐项追问。Excel自动增加“预期依据”表并区分建议，不需要额外脚本。旧用例缺失依据只提示未记录，不要求用户补文件或解锁。
+- `execution_contract`：`data_isolation`（如 `read_only`）、`setup`、`assertion_mode`、`cleanup_required`。
+- `execution_metadata`：`modules`、`tags`、`risk_level`、`execution_cost`、`data_impact`、`environment_dependencies`、`automation_maturity`、`estimated_duration_ms`。没有可靠依据用保守值。
 
-直接从当前材料生成design/test_cases.json，条目包含case_id、title、module、priority、preconditions字符串数组、steps字符串数组、test_data、expected。已有测试点/规则引用可选，不强制related_test_point或完整design_contract，不编造前序产物。保存草稿和任务说明后调用diagnose_test_cases，它自动使用独立任务模式，不要求分析或测试点前序；修正后用export_test_cases导出Excel，再validate_artifacts。
+### Excel
 
-边界数据直接写入test_data，通过diagnose_test_cases返回的data_diagnostics检查实际长度（code_points、utf16、utf8_bytes、graphemes），不启动node -e、嵌套PowerShell或临时脚本数数。需要精确长度或金额校验时，可仅补design_contract.data_checks，不添加虚构basis或前置产物。例如长度检查为{"kind":"length","key":"title","unit":"code_points","expected":51}；金额使用整数最小货币单位及minor_unit_sum，结构见docs/design-quality-gate.md。工具只测量数据，不替用户决定业务规则；计数单位确有业务歧义才提问。技术诊断结果自行消化，不把计算日志全部发给用户。
+用工程导出器从 JSON 生成，配置在 `config/test-delivery-template.json`：双工作表，第 5 行表头、第 6 行数据、冻结 D6，步骤与测试数据合并展示。设计版统一标「未执行」，实际结果与证据由报告阶段按 `case_id` 关联，不改设计版。表格内容与 JSON 不一致即校验失败——改 JSON 重导，不手改单元格。
 
-按派发的独立契约填写当前阶段*-task.json。草稿用diagnose_task，交付用validate_artifacts，由父总控handoff。source_paths保留实际依据，不生成虚假前序产物；questions不放技术检查、解锁或重复批准要求。任务与确认策略由公共运行指令统一规定，本Skill不新增节点。
+## 预期依据
 
-## 生命周期模式（lifecycle）
+这是本阶段最容易被放水的地方，按顺序检查：
 
-仅在当前派发明确为lifecycle时，读取test-case-writing Skill的[生命周期参考](references/lifecycle.md)。该参考保留台账、追溯、设计与执行合同要求；task只执行上面的独立分支，不加载此参考或生命周期Schema。
+1. **逐句拆**。`expected` 里每个可判断的子句都要有来源；多子句用 `expectations` 逐句挂 `{text,kind,source:{type,ref,quote}}`。
+2. **引用逐字**。`quote` 抄原文，不改写、不概括；`ref` 用本 run 内真实文件路径。
+3. **引用存在 ≠ 语义成立**。原文只要求提示时，不能追加"停留当前页""不保存数据""返回 200""写入数据库"；页面实际行为不等于界面明确约束，更不代表服务端行为。
+4. **没有来源的结论不进 `expected`**。可放 `observations:[{statement,kind,reason}]`，`kind` 取 `engineering_assumption` 或 `needs_confirmation`，不作为通过/失败标准。
+5. **真正影响测试目标的歧义才提问**，写进任务结果文件的 `questions`；自己的推测不要去问用户，也不要为消除歧义把 `pending` 改成 `confirmed`。
+
+## 测试数据表达
+
+1. 样本只在 `test_data` 存一份；`steps` 用字段引用（如"在标题框输入 test_data.title"），字段名用 ASCII 标识符。
+2. 空串、`null`、缺失字段、纯空白是四种不同输入：要空就明确写"清空并核对为空"，不能只写"保持为空"。
+3. `false` 和 `0` 不等于"未提供"。
+4. 刷新、跳转、重置后不沿用已失效的输入状态。
+5. 精确边界写进 `data_checks`：上限 50 就用 51，诊断返回实际长度后再核对；不符就改样本，不把 51 改成 86 凑通过。
+6. `unit` 只是测量口径，不是产品规则。原文只说"字/字符"时优先用普通 ASCII 字母，让各口径计数一致；不自行宣称"产品已确认按码点计数"。
+
+## 设计方法
+
+按需选用，不要求每条用例套全部方法：
+
+| 场景 | 方法 | 用例要点 |
+|---|---|---|
+| 输入范围、格式 | 等价类 + 边界值 | 有效/无效各一条，边界取紧邻值 |
+| 多条件组合 | 决策表 | 每个可行组合一条，不能把 AND 改成 OR |
+| 状态流转 | 状态迁移 | 合法迁移、禁止迁移、失败后状态 |
+| 完整流程 | 场景法 | 关键检查点，不只看最后跳转 |
+| 表单、列表、弹窗、开关 | 控件场景 | 必填、格式、长度、禁用态、默认值、空数据态 |
+| 业务权限 | 角色矩阵 | 无权限不可见、不可操作、不可越权调用 |
+
+## 锚点与资产引用
+
+- 页面锚点、元素定位、测试数据与断言资产只引用 verified 条目；`asset_refs` 记录资产 ID 与版本。
+- 禁自造选择器：CSS/XPath/坐标、凭经验猜的框架类名都算自造。
+- 缺 verified 锚点时在用例里注明缺口并上报队长安排探索，不用猜测的定位补齐，也不为可执行降低预期。
+- 没有访问过产品时只写测试设计，不声称已观察实现。
+
+## 功能轨与接口轨分流
+
+- 派发指明只做功能或只做接口时，只写那一条链路的用例。
+- 逐条标 `execution_layer`：功能 `ui`、接口 `api`，不写 `both`，不把同一条复制两套。
+- 接口用例保留 `case_id` 与来源，用 `api_scenario` 表达可执行步骤与断言，文件包装 `api_plan` 表达 scope、并发与写授权引用；参数、预期、状态码都要有来源，不臆造。
+- 标题与交接标明「功能」或「接口」；另一轨由关联子流程处理，不跨 run 拼接资料。
+
+## 工作步骤
+
+1. 读派发单，确定 run、范围、条数上限、轨别、任务形态。
+2. 读测试点与台账，建映射；先保高风险测试点各至少一条用例。
+3. 逐条写：前置、数据、步骤、预期、优先级、类型、可自动化。
+4. 保存草稿：
+   - 一次能写完直接写完整 JSON。
+   - 条目多按批保存：先查草稿指纹拿 `sha256` 与条目数，再按批 upsert，每批 1–20 条完整用例，`request_id` 每批固定唯一，`base_sha256` 用上次返回值（首批 `missing`）。
+   - 修订只提交问题 ID，冲突先查回条目再合并，禁止整份重写。
+5. 自检诊断（只传 `run_id`）：看 `result.status`，不看外层 `completed`；一次改完 `errors` 与数据/语义提示。
+6. 导出 Excel（只传 `run_id`），不手改表格。
+7. 阶段校验 `stage=test_cases`：Excel 与 JSON 逐项一致，失败改 JSON 重导。
+8. 交接：测试点覆盖数、未覆盖项、未决预期、自动化判断。
+
+## 自检清单
+
+1. 每条 `related_test_point` 真实存在，每个测试点至少一条用例
+2. `design_contract` 三个子字段齐全，`basis` 的 `rule_id` 在台账里存在
+3. 每个预期子句有逐字引用，没有自行追加的结论
+4. `test_data` 里的每个字段在步骤或前置条件里被真实使用
+5. 边界与金额的精确值在 `data_checks` 里，且与样本一致
+6. 未确认、未验证的部分在 `assumptions` / `observations` 里标出
+
+## 不要做
+
+- 不执行测试、不判缺陷、不出报告。
+- 不把步骤复述成预期，不写"系统正常""功能可用"这类无法判定的预期。
+- 不为凑条数删掉必要的异常或边界用例，也不一对多关联、复制用例。
+- 不改测试点或台账来消掉诊断报错。
+- 不跑 curl、浏览器、自编请求去"确认一下"，也不跑临时脚本数长度。
+- 不手改导出的 Excel，不安装依赖只为导出表格。

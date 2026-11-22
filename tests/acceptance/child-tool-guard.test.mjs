@@ -136,3 +136,25 @@ test('patch targets are checked independently and cannot mix stages',()=>{
   assert.deepEqual(guardChildTool(f.root,{tool_name:'apply_patch',session_id:f.session_id,arguments:{patch:allowed}},options),{});
   assert.equal(guardChildTool(f.root,{tool_name:'apply_patch',session_id:f.session_id,arguments:{patch:mixed}},options).decision,'deny');
 });
+
+test('platform executors own the execution stage and only their own action',()=>{
+  const f=fixture();
+  for(const agentId of ['android_test_agent','miniprogram_test_agent','desktop_test_agent']) {
+    const trace=resolve(f.agentRoot,agentId,'traces/2026-10-14');
+    mkdirSync(trace,{recursive:true});
+    writeFileSync(resolve(trace,`${f.session_id}_001.jsonl`),JSON.stringify({payload:{type:'text',role:'user',text:'run_id=run-a stage dispatch'}}));
+    const options={agentId,agentRoot:f.agentRoot};
+    // The handoff file is the one thing these roles must be able to write.
+    assert.deepEqual(guardChildTool(f.root,f.input('write_file','output/runs/run-a/execution/execution-task.json',{content:'{}'}),options),{},agentId);
+    assert.equal(guardChildTool(f.root,f.input('write_file','output/runs/run-a/execution/android-evidence/page.png',{content:'x'}),options).decision,'deny',agentId);
+    assert.equal(guardChildTool(f.root,f.input('write_file','output/runs/run-a/execution/test_results.json',{content:'{}'}),options).decision,'deny',agentId);
+    assert.equal(guardChildTool(f.root,f.input('write_file','output/runs/run-a/design/test_cases.json',{content:'[]'}),options).decision,'deny',agentId);
+  }
+  writeFileSync(resolve(f.root,'output/runs/run-a/manifest.json'),JSON.stringify({stages:{execution:{status:'in_progress'}},orchestration:{events:[{type:'dispatched',stage:'execution','parent-session-id':'session-parent'}]}}));
+  const inline=action=>({tool_name:'exec_command',session_id:f.session_id,arguments:{cmd:`node scripts/project-action.mjs execute --controller-session=session-parent --request=output/action-requests/${action}.json`,qa_request:{action,run_id:'run-a',operation:{type:'health',request_id:'health'}}}});
+  // Sharing the stage must not hand the platform roles the browser actions.
+  assert.deepEqual(guardChildTool(f.root,inline('android_task'),{agentId:'android_test_agent',agentRoot:f.agentRoot}),{});
+  assert.equal(guardChildTool(f.root,inline('browser_task'),{agentId:'android_test_agent',agentRoot:f.agentRoot}).decision,'deny');
+  assert.equal(guardChildTool(f.root,inline('android_task'),{agentId:'miniprogram_test_agent',agentRoot:f.agentRoot}).decision,'deny');
+  assert.deepEqual(guardChildTool(f.root,inline('explore_url'),{agentId:'automation_execution_agent',agentRoot:f.agentRoot}),{});
+});

@@ -1,6 +1,8 @@
 # Android ADB 执行：参数、证据与链路
 
-本文件是 `android-execution` Skill 的参考，描述已实现的 ADB 后端契约。字段以 `scripts/android-task.mjs` 的校验为准；公共动作和调度接入由宿主契约提供。
+本文件是 `android-execution` Skill 的参考，描述已实现的 ADB 后端契约：操作字段怎么填、回执怎么读、产物落在哪、典型链路长什么样。参数取值以引擎校验为准；动作名与调度接入由派发契约给出。
+
+> 这里只讲"动作怎么调"。什么算通过、什么不能写进结果，见 SKILL.md。人工排查用的命令行入口不在执行角色的可用范围内。
 
 ## 操作字段
 
@@ -47,9 +49,12 @@
 | 字段 | 取值 |
 | --- | --- |
 | 回执 `status` | `ok`、`blocked`、`failed`、`needs_inspection` |
-| `failure_category` | `none`、`product_defect`、`script_issue`、`environment_issue`、`test_data_issue`、`needs_review` |
+| `failure_category` | `none`、`script_issue`、`environment_issue`、`needs_review` |
 | `action_outcome` | `not_executed`、`completed_with_error`、`unknown` |
 | `do_not_replay` | 结果未知的副作用为 `true` |
+
+回执的 `failure_category` 只说**这次执行**卡在脚本、环境还是待复核，不判产品责任。
+`product_defect` / `test_data_issue` 这类归因是缺陷分析角色的分类，执行阶段不写。
 
 常用诊断类别：`adb_not_found`、`adb_timeout`、`adb_connection_lost`、`device_not_found`、`device_offline`、`device_unauthorized`、`device_locked`、`device_not_booted`、`package_not_installed`、`package_not_allowed`、`launcher_unresolved`、`locator_not_found`、`locator_ambiguous`、`unsupported_input`、`session_blocked`、`no_active_session`、`duplicate_case_id`、`app_error`、`app_focus_timeout`。
 
@@ -72,7 +77,7 @@
 
 ```json
 [
-  {"type":"doctor","request_id":"doctor-01","device":"emulator-5554","appium_url":"http://127.0.0.1:4723/status"},
+  {"type":"doctor","request_id":"doctor-01","device":"emulator-5554"},
   {"type":"start","request_id":"start-01","package":"com.example.app","device":"emulator-5554"},
   {"type":"snapshot","request_id":"snap-01","limit":80},
   {"type":"assert","request_id":"assert-login","condition":"visible","target":{"by":"text","value":"登录"},"case_id":"TC-01","title":"登录页可见","expected":"启动后显示登录标题"},
@@ -83,7 +88,7 @@
 ]
 ```
 
-命令行等价入口：
+命令行等价入口（仅供人工排查本机设备，执行角色不走这条路）：
 
 ```sh
 node scripts/android-task-cli.mjs --run-dir <运行目录> --operation '<JSON>'
@@ -95,4 +100,5 @@ node scripts/android-task-cli.mjs --run-dir <运行目录> --operation '<JSON>'
 - `input text` 不支持非 ASCII 和 shell 元字符；需要时另行接入 ADBKeyboard 或 Appium。
 - WebView 内容不保证出现在 UI 树；混合框架需先验证可访问性。
 - 断言只覆盖 UI 状态；后端持久化、跨设备与性能未验证。
-- 公共动作名、权限、阶段写入与结果汇入 `test_results.json` 由宿主统一接入；在动作未注册前，不宣称已通过调度执行。
+- 收尾由引擎算终态并固定补两条限制说明（仅 ADB 后端、只验 UI 层），
+  你另加的限制会合并进结果，不能删掉固定那两条。

@@ -1,93 +1,141 @@
 ---
 name: android-execution
-version: 2026.11.02.1
-description: 通过ADB后端在真实Android设备或模拟器上执行应用启动、控件操作、UI断言、截图与失败取证；区分动作完成、断言通过与基础设施异常，结果未知时不重放，供自动化执行角色在Android派发范围内使用。
+version: 2026.11.22.1
+description: 在真实 Android 设备或模拟器上按用例逐条执行 ADB 链路测试：动作随带断言、请求编号稳定、定位歧义即阻塞、结果未知不重放，产出可直接用于缺陷分析与报告的真实 UI 层结果。
 metadata:
   scope: android-adb-backend
-sections:
-  criteria: ["核心原则"]
-  knowledge: ["请求格式与证据"]
-  steps: ["操作流程", "1. 环境检查", "2. 启动与观察", "3. 操作", "4. 结束与交付", "失败与恢复"]
+sections: ["产物格式（强制）", "断言判据", "自检清单", "不要做"]
+knowledge: ["动作与断言不是一回事", "定位与输入的现实限制", "失败与恢复怎么分"]
+steps: ["输入", "输出", "工作步骤"]
 ---
 
 # Android 执行 Skill
 
-路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+## 输入
 
-本 Skill 指导在**已授权**的 Android 设备或模拟器上执行一条可追溯的测试链路。当前实现为 ADB 后端：通过 `adb shell input`、`uiautomator dump`、`screencap`、`logcat` 完成观察与操作，不创建 Appium 会话，也不运行 Espresso／Compose／XCUITest 套件。
+| 来源 | 内容 | 用法 |
+|---|---|---|
+| 派发单的执行清单 | 本轮要跑的用例、顺序、前置、数据、步骤、预期 | **范围上限**，逐条落实，不自行增删 |
+| `design/test_cases.json` | 用例正文与预期依据 | 清单缺字段时回查；断言用真实用例编号指回 |
+| 派发单的授权说明 | 用户原话里出现的包名与设备 | 只认这里列出的包；不在名单里的包不启动 |
+| 预检回执 | 设备、系统版本、安装状态、前台 Activity | 环境事实以此为准，不靠猜 |
+| 上轮结果（回归时） | 上次的结果与缺陷台账 | 只用于选范围，旧通过不算本次通过 |
 
-先确认派发范围：平台为 android、包名、设备序列号、授权动作类型。没有安装包、设备或账号时明确报告阻塞，不把模拟、历史材料或合成数据当作真实验收。
+## 输出
 
-## 核心原则
+| 文件 | 谁写 | 说明 |
+|---|---|---|
+| `execution/android-results.json` | 入口封存 | 断言明细 + 证据索引 + 限制说明，只读 |
+| `execution/test_results.json` | 引擎从上一份封存 | 缺陷与报告阶段的唯一事实源，只读 |
+| `execution/execution-task.json` | 你 | 交接小结，见下 |
+| `execution/android-evidence/`、`android-receipts/`、`android-sessions/` | 入口 | 截图、UI 树、日志、回执、会话归档，只读 |
 
-1. **先观察再操作**：`snapshot` 或 `health` 确认前台应用与当前页面，再定位控件。页面变化后重新观察，不复用失效坐标。
-2. **动作成功不等于用例通过**：`tap/input/key/swipe/start` 无断言时回执为 `ok`，但只代表动作被执行。业务结论必须由带 `case_id`、`title`、`expected` 的断言产生。
-3. **断言只证明 UI 层**：默认 `verification_scope` 为 `android_ui`，不证明后端持久化、其他设备或性能。需要接口核验时按授权另行接入，并分别记录。
-4. **结果未知不重放**：回执 `status=needs_inspection` 或 `do_not_replay=true` 时，先检查设备状态与证据，再决定人工核实；不得用同一请求重试写操作，也不得换 ID 猜测重放。
-5. **会话被阻塞时停止**：基础设施异常会把会话置为 `blocked`。检查证据后，只有确认设备可用才用 `resume_blocked=true` 开启新会话；旧会话保留在 `execution/android-sessions/`。
-6. **敏感数据不外泄**：密码、令牌等设置 `secret=true`；回执只记录哈希和长度。日志与 UI 证据会脱敏，但截图像素可能仍含敏感内容，交付时说明。
-7. **一次操作一次断言**：多个业务条件分别断言，各自的 `case_id` 唯一；重复 `case_id` 会被拒绝，不覆盖已有结果。
+## 产物格式（强制）
 
-## 操作流程
+`execution-task.json`：
 
-### 1. 环境检查
+| 字段 | 要求 |
+|---|---|
+| `run_id` | 与本次运行一致 |
+| `stage` | `execution` |
+| `outcome` | `completed` 或 `partial`；结果 blocked 或有未测用例时必须 `partial` |
+| `summary` | 一段话：跑了什么、通过/失败/未测各几条、结论边界 |
+| `source_paths` | 非空，写真实读过或产出的路径（用例文件、结果文件） |
+| `questions` / `limitations` | 数组，可为空；不能用一句话糊过去 |
+| `limitations` | 至少写：只验 UI 层、后端未验、设备与系统版本 |
 
-`doctor`：检查 adb、SDK、Java、Appium 端点、设备连接、启动完成、锁屏、前台 Activity、目标包与启动入口。结果写入 `execution/android-evidence/<request_id>.preflight.json`。
+断言的最小要素：
 
-- `status=ready` 才进入启动；`blocked` 时读取 `blockers[0].id` 与 `reason`，按真实原因报告（无设备、未启动、未安装、锁屏等）。
-- Appium 不可用只是能力限制，不是设备故障；ADB 链路仍可继续。
-- 不要把 `doctor` 的成功当作业务可用。
+| 要素 | 说明 |
+|---|---|
+| `case_id` | 用例编号，会话内**唯一**，重复会被拒绝，不覆盖已有结果 |
+| `title` / `expected` | 断言在验什么、期望什么 |
+| `condition` | `visible` / `not_visible` / `text` / `activity` |
+| `target` 或 `value` | `visible`/`not_visible` 要 `target`；`text`/`activity` 要 `value` |
 
-### 2. 启动与观察
+- `text` 不给 `target` 时是**全页文本搜索**——适合验提示语出现，不适合验"某个位置显示了什么"。
+- 一次断言只验一个条件。一个用例有多个条件就分多条断言，各自的 `case_id` 唯一。
+- 断言随动作走：先动作、后断言时页面状态已变，必须重新观察再断言。
 
-`start`：需要 `package`。可选 `activity`（`package/Activity`）、`device`、`resume_blocked`、`unlock`、`timeout_ms`。启动后轮询前台包名，返回 `focused`、`current_activity`、`resolved_activity`。
+终态由入口算，不由你填：
 
-- `focused=false` 且回执 `blocked/app_focus_timeout`：应用可能已启动但未获得前台，重新 `health` 或 `snapshot` 观察，不重复点击启动按钮。
-- 首屏出现后先用 `snapshot` 获取控件树；`limit` 控制返回节点数量。
-- 判断启动成功要依据前台 Activity 与首屏可见内容，而不是 `am start` 的 `Status: ok`。
+| 情形 | 终态 |
+|---|---|
+| 全部断言通过 | `completed` |
+| 有断言失败 | `failed` |
+| 一条断言都没有 | `blocked`（原因 `needs_review`：观察和动作不是通过用例） |
+| 会话被阻塞或有断言受阻 | `blocked` |
 
-`health`：只读，返回前台 Activity、屏幕状态与会话状态；`next_action` 指向阻塞后的正确处理。它不依赖已有会话，可用于排查。
+## 动作与断言不是一回事
 
-`snapshot`：返回当前 Activity、UI 树摘要，以及截图、UI XML、设备事实证据。
+回执 `ok` 只说明这条动作被发出去并执行了。它不说明点对了、不说明业务生效。
+所以：
 
-### 3. 操作
+- 点开一个页面、看到一个列表，都是**动作**。要变成用例结论，必须再补一条断言。
+- 断言通过只说明当前 UI 符合期望，不说明后端写成功、不说明别的机型一致。
+- 界面上出现"保存成功"提示，不证明是这次操作引起的——要先确认前置状态。
 
-`tap`：必须提供 `target`。定位支持 `by: text|id|desc|class`、`match: exact|contains`、`index`。多节点匹配时按工程错误阻塞，不猜测；用更精确的定位或 `index` 消除歧义。
+## 定位与输入的现实限制
 
-`input`：`text` 仅支持可安全传给 `adb shell input text` 的字符（ASCII 可见字符与常用符号）。中文、emoji 或 shell 元字符会被拒绝，标记 `unsupported_input`；不要改写文本冒充已输入。敏感内容设置 `secret=true`。
+| 限制 | 表现 | 正确处理 |
+|---|---|---|
+| 定位歧义 | 一个条件匹配到多个节点 | 引擎直接阻塞，不猜；换精确 `by` 或加 `index` 消歧 |
+| 非 ASCII 输入 | 中文、emoji、全角符号被拒（`unsupported_input`） | 记"该步未测：通道不支持"，不改写文本冒充 |
+| shell 元字符 | `$`、反引号、引号等被拒 | 同上，不做转义绕过 |
+| 启动未到前台 | 回执说已启动但前台不是目标应用 | 重新观察前台 Activity，不重复点启动 |
+| 屏幕锁定 | 预检即阻塞 | 按真实原因报（锁定/未安装/未连接），不静默解锁重试 |
 
-`key`：支持 `back/home/enter/delete/tab/escape/menu/app_switch/search/volume_up/volume_down`。
+## 失败与恢复怎么分
 
-`swipe`：`from`/`to` 为 `[x, y]`，可选 `duration_ms`。
+| 现象 | 归类 | 处理 |
+|---|---|---|
+| 定位歧义、参数非法、重复用例、越权包 | 脚本/范围问题 | 修正后用**新**请求编号；原回执保留 |
+| 设备离线、锁屏、未安装、会话阻塞 | 环境问题 | 查设备与证据；恢复后显式重新启动并续接原会话 |
+| 断言没满足 | 待判定 | 结合截图、UI 树、日志判断是产品、脚本还是数据；证据不足留待复核 |
+| 写操作结果未知 | 不可重放 | 先查设备上实际状态；必要时人工核实，不重放 |
+| 连接断开 | 基础设施 | 不是产品失败；恢复后重新观察再继续 |
 
-`wait`：等待可见、不可见、文本或 Activity 条件成立；超时返回 `blocked/needs_review`，不登记为通过。
+一条铁律：**同类请求不能换编号重试写操作**。重放会真的产生第二笔业务数据。
 
-`assert`：只读断言，支持 `visible/not_visible/text/activity`。失败只说明当前 UI 不符合预期，不能直接判定产品缺陷。
+## 工作步骤
 
-`screenshot`：保存 PNG 并记录 sha256；校验 PNG 签名，非图片输出视为失败。
+1. 读执行清单，确认包在授权名单里、设备已指定。缺任何一项就报阻塞，不猜。
+2. 预检：确认设备连上、应用已装、能启动。预检通过不当作业务可用。
+3. 启动到首屏，观察当前 Activity 与控件树，记下这是第几条用例的前置状态。
+4. 对每条用例：准备前置 → 操作 → **当场断言** → 记结果 → 再进下一条。
+   页面变化后重新观察，不复用失效的定位。
+5. 走不下去的步骤：记"未测 + 原因"，继续能做的用例，不要整轮停在一处。
+6. 收尾前检查：有没有用例只做了动作没断言？有没有断言条数少于用例数？
+7. 收尾：由入口封结果并生成证据索引；你写交接小结，说明覆盖到哪、限制是什么。
+8. 把真实产物路径交给总控核验，不改运行清单、不宣称验收通过。
 
-### 4. 结束与交付
+操作字段、参数取值与典型链路见 [references/android-adb-ops.md](references/android-adb-ops.md)。
 
-`finish`：生成 `execution/android-results.json`（与 `schemas/test_result.schema.json` 兼容）、证据索引和限制说明。
+## 断言判据
 
-- 无任何断言时状态为 `blocked`，原因 `needs_review`：观察和动作不是通过用例。
-- 存在失败断言时状态为 `failed`；全部通过为 `completed`；会话被阻塞或断言受阻为 `blocked`。
-- 交付时说明 ADB 后端边界、未验证范围、设备与系统版本；不要用断言数量替代业务用例数量。
+| 想验的东西 | 该用的条件 | 顺带说明的限制 |
+|---|---|---|
+| 页面切过去了 | `activity` 匹配目标组件 | 只证明前台组件，不证明内容 |
+| 元素出现了 | `visible` + `target` | 只证明存在且非零尺寸，不证明可点 |
+| 元素消失了 | `not_visible` + `target` | 超时才算通过，别急着判失败 |
+| 文案对了 | `text` + `value`（或带 `target`） | 只证明文本匹配，不证明来源 |
+| 保存/提交生效 | 先用 `text`/`visible` 验界面反馈，再另行核验数据（若授权） | 界面反馈不等于持久化 |
 
-## 失败与恢复
+## 自检清单
 
-| 回执 | 含义 | 处理 |
-| --- | --- | --- |
-| `blocked` + `failure_category=script_issue` | 定位歧义、非法输入、重复用例、越权包等 | 修正参数或定位后使用新请求；原回执保留 |
-| `blocked` + `failure_category=environment_issue` | 设备离线、锁屏、未安装、会话阻塞 | 检查设备与证据；恢复后显式 `start` 并 `resume_blocked=true` |
-| `failed` + `needs_review` | 断言未满足 | 结合截图、UI、日志判定产品、脚本或数据原因；证据不足保留待复核 |
-| `needs_inspection` + `action_outcome=unknown` | 副作用可能已执行但结果未知 | 先查询实际状态；不得重放，必要时由人工核实 |
-| `duplicate=true` | 幂等命中旧回执 | 直接使用旧结果，不重新执行 |
+1. 每条用例都有对应断言回执，没有"只点了没断言"的通过项
+2. `case_id` 没有重复，没有覆盖旧结果
+3. 未测的用例写了原因，没有糊成"已测试"
+4. 没有换编号重放过结果未知的操作
+5. 没有手写或修改受控证据
+6. `execution-task.json` 的 `outcome` 与真实完成度一致（有未测就是 `partial`）
+7. 交接里写了只验 UI 层、设备型号与系统版本、后端未验
 
-断开连接本身不是产品失败。恢复步骤：`health` 确认会话与设备状态 → 检查 `execution/android-sessions/` 与未决 intent → 确认设备可用后 `start` + `resume_blocked=true` → 重新观察再继续未执行步骤。
+## 不要做
 
-## 请求格式与证据
-
-操作参数、证据目录、会话文件和典型链路见 [references/android-adb-ops.md](references/android-adb-ops.md)。所有路径相对当前运行目录；证据路径不得越界。
-
-需要扩展 Appium、原生测试套件或其他平台时，回到公共升级流程，不在本 Skill 内假设未实现的能力。
+- 不执行授权名单之外的包，不在未指定设备时启动
+- 不把动作成功写成用例通过，不用断言数量替代用例数量
+- 不改写输入文本冒充输入成功，不靠猜坐标点控件
+- 不重放结果未知的写操作，不因为"再试一次"而产生第二笔数据
+- 不手写结果文件、截图、UI 树，不为了过校验去改证据
+- 不判断缺陷归属，不宣称业务验收通过

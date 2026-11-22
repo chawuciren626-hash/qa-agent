@@ -160,3 +160,16 @@ Thumbs.db
 !/docs/agent-skill-prompt-inventory-2026-11-13.md
 !/docs/construction-integration-2026-11-09.md
 !/docs/main-consolidation-20261120.md
+
+# Prompt/skill rewrite 2026-11-22
+!/docs/qa-team-playbook-20261122.md
+!/docs/engine-change-backlog-20261122.md
+!/docs/prompt-review-20261122.md
+!/docs/change-summary-20261122.md
+
+# Local backups and tool state (never commit)
+.backup-prompts-*/
+.tmp-review/
+.trae/
+.zcode/
+.workbuddy/

@@ -11,17 +11,19 @@ import { actionCatalog } from '../../scripts/structured-actions.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const legacy = [
-  ['analysis', 'requirement_analysis_agent', 'requirement-analysis', [], 'after'],
-  ['test_points', 'test_point_agent', 'test-point-design', ['analysis'], 'after'],
-  ['test_cases', 'test_case_agent', 'test-case-writing', ['test_points'], 'after'],
-  ['execution', 'automation_execution_agent', 'playwright-execution', ['test_cases'], 'before'],
-  ['defects', 'defect_analysis_agent', 'bug-reporting', ['execution'], 'after'],
-  ['report', 'test_report_agent', 'test-report-writing', ['defects'], 'after']
+  // The analysis role owns two Skills: functional requirements and API contracts are
+  // separate expertise, so the dual-track split does not turn into a second role.
+  ['analysis', 'requirement_analysis_agent', ['requirement-analysis','api-contract-analysis'], [], 'after'],
+  ['test_points', 'test_point_agent', ['test-point-design'], ['analysis'], 'after'],
+  ['test_cases', 'test_case_agent', ['test-case-writing'], ['test_points'], 'after'],
+  ['execution', 'automation_execution_agent', ['playwright-execution'], ['test_cases'], 'before'],
+  ['defects', 'defect_analysis_agent', ['bug-reporting'], ['execution','api_execution'], 'after'],
+  ['report', 'test_report_agent', ['test-report-writing'], ['defects'], 'after']
 ];
 
 test('registry preserves the six legacy contracts and returns detached plan projections', () => {
   const workflow = workflowDefinition();
-  assert.deepEqual(workflow.stages.filter(s=>s.id!=='api_execution'), legacy.map(([id, agent, skill, depends_on, confirmation]) => ({ id, agent, skills: [skill], depends_on, confirmation, ...(id==='execution'?{result_confirmation:'after'}:{}) })));
+  assert.deepEqual(workflow.stages.filter(s=>s.id!=='api_execution'), legacy.map(([id, agent, skills, depends_on, confirmation]) => ({ id, agent, skills, depends_on, confirmation, ...(id==='execution'?{result_confirmation:'after'}:{}) })));
   workflow.stages[1].depends_on.push('report');
   assert.deepEqual(stageDefinition('test_points').depends_on, ['analysis']);
   assert.throws(() => stageDefinitions[0].skills.push('other'), TypeError);

@@ -57,7 +57,7 @@ test('stage tool action invokes implementation and links its receipt', { skip: !
     assert.equal((await f.execute({action:'plan_run',run_id:f.run_id,stages:['analysis']})).exit_code, 0);
     assert.equal((await f.execute({action:'archive_input',run_id:f.run_id,name:'requirement.txt',text:'管理员可以创建用户'})).exit_code, 0);
     assert.equal((await f.execute({action:'archive_input',run_id:f.run_id,name:'requirement-ir.json',text:JSON.stringify({requirement:{id:'R1',title:'创建用户',description:'创建用户',expected:'显示成功',preconditions:'管理员已登录'}})})).exit_code, 0);
-    const dispatched = await f.execute({action:'dispatch',run_id:f.run_id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis']});
+    const dispatched = await f.execute({action:'dispatch',run_id:f.run_id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis','api-contract-analysis']});
     assert.equal(dispatched.exit_code, 0, JSON.stringify(dispatched));
     assert.match(contractText(dispatched), /run_stage_tool/);
     const result = await f.execute({action:'run_stage_tool',run_id:f.run_id,stage:'analysis',tool_id:'requirement.testability',
@@ -193,7 +193,7 @@ async function returnedAnalysis(review_mode='staged') {
     for(const stage of manifest.orchestration.plan.stages) if(stage.confirmation==='after') stage.confirmation='none';
     writeFileSync(path,JSON.stringify(manifest));
   } else await f.execute({action:'plan_run',run_id:f.run_id,stages:['analysis'],review_mode});
-  const dispatched=await f.execute({action:'dispatch',run_id:f.run_id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis']});
+  const dispatched=await f.execute({action:'dispatch',run_id:f.run_id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis','api-contract-analysis']});
   const {dir}=designArtifacts(root,f.run_id);
   const child=`session-2026-10-09-00-00-01-${randomUUID().replaceAll('-','')}`;
   const at=new Date().toISOString();
@@ -326,7 +326,7 @@ test('diagnosis remains read-only and revision gets a new generation budget with
   const paused=await f.execute({action:'generate_analysis',run_id:f.run_id});assert.equal(paused.recovery.stalled,true);
   const revision=await f.execute({action:'revise_stage',run_id:f.run_id,stage:'analysis',reason:'Synthetic draft correction'});
   assert.equal(revision.exit_code,0,JSON.stringify(revision));
-  const dispatched=await f.execute({action:'dispatch',run_id:f.run_id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis']});
+  const dispatched=await f.execute({action:'dispatch',run_id:f.run_id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis','api-contract-analysis']});
   assert.equal(dispatched.exit_code,0,JSON.stringify(dispatched));
   writeFileSync(path,good);
   const generated=await f.execute({action:'generate_analysis',run_id:f.run_id});
@@ -471,7 +471,7 @@ test('user feedback archives exact native text and requires a cited revised anal
   assert.equal(f.read().stages.analysis.status,'revision_requested');
   const after=readFileSync(resolve(f.dir,'manifest.json'));
   const repeated=await f.execute({action:'apply_analysis_feedback',run_id:f.run_id,text});assert.equal(repeated.data.already_recorded,true);assert.deepEqual(readFileSync(resolve(f.dir,'manifest.json')),after);
-  const dispatched=await f.execute({action:'dispatch',run_id:f.run_id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis']});
+  const dispatched=await f.execute({action:'dispatch',run_id:f.run_id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis','api-contract-analysis']});
   assert.equal(dispatched.data.event.revision_context.feedback_input.path,feedback.data.feedback_input.path);
   assert.ok(contractText(dispatched).includes(JSON.stringify(resolve(f.dir,feedback.data.feedback_input.path))));
   assert.ok(contractText(dispatched).includes(`READ AND EDIT WORKING LEDGER ONLY at ${resolve(f.dir,'analysis/requirement-ledger.json')}`));
@@ -527,7 +527,7 @@ test('audited stage recovery archives the reviewed draft and grants dispatch-loc
   const result=spawnSync(process.execPath,['scripts/recover-stage.mjs',f.run_id,'analysis',`--expected-sha256=${digest}`,'--actor=synthetic-engineer','--reason=reviewed','--approval-ref=synthetic-technical-repair-only','--evidence=inputs/review.txt',`--parent-session-id=${f.id}`],{cwd:root,encoding:'utf8',env:{...process.env,PENGUIN_AGENT_ROOT:f.agentRoot}});
   assert.equal(result.status,0,result.stderr);
   const event=f.read().orchestration.events.at(-1);assert.deepEqual(readFileSync(resolve(f.dir,event.archive,'analysis/requirement-ledger.json')),readFileSync(ledgerPath));
-  await f.execute({action:'dispatch',run_id:f.run_id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis']});
+  await f.execute({action:'dispatch',run_id:f.run_id,stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis','api-contract-analysis']});
   writeFileSync(ledgerPath,good);
   const generated=await f.execute({action:'generate_analysis',run_id:f.run_id});assert.equal(generated.exit_code,0,JSON.stringify(generated));
   assert.notEqual(generated.task_key,old.task_key);assert.equal(readControllerSession(root,f.id).corrections[old.task_key],3);

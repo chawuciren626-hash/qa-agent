@@ -171,7 +171,7 @@ for(const mismatch of [false,true]) test(mismatch?'structured worker and HTML re
   p.scenarios[0].steps[0].assertions.push({type:'content_type',value:'application/json'});
   if(mismatch)p.scenarios[0].steps.push({...step(`${url}/items`,'wrong-media'),assertions:[{type:'status',value:200},{type:'content_type',value:'text/plain'}]});
   await call({action:'archive_input',name:'cases.json',text:JSON.stringify(p)});
-  await call({action:'dispatch',stage:'api_execution',agent:'api_automation_agent',skills:['api-test-execution','api-testing']});
+  await call({action:'dispatch',stage:'api_execution',agent:'api_automation_agent',skills:['api-test-execution']});
   const previous=process.env.QA_APP_DATA_ROOT;process.env.QA_APP_DATA_ROOT=mkdtempSync(resolve(tmpdir(),'qa-api-private-'));
   try {
     const action=operation=>call({action:'api_task',operation});

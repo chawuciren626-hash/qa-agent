@@ -6,10 +6,11 @@
       "id": "analysis",
       "label": "需求分析",
       "agent": "requirement_analysis_agent",
-      "skills": [
-        "requirement-analysis"
-      ],
-      "depends_on": [],
+   "skills": [
+    "requirement-analysis",
+    "api-contract-analysis"
+   ],
+   "depends_on": [],
       "confirmation": "after",
       "lifecycle_artifacts": [
         "analysis/requirement_analysis.md",
@@ -94,8 +95,7 @@
       "label": "接口测试执行",
       "agent": "api_automation_agent",
       "skills": [
-        "api-test-execution",
-        "api-testing"
+        "api-test-execution"
       ],
       "depends_on": [
         "test_cases"
@@ -118,7 +118,8 @@
         "bug-reporting"
       ],
       "depends_on": [
-        "execution"
+        "execution",
+        "api_execution"
       ],
       "confirmation": "after",
       "lifecycle_artifacts": [

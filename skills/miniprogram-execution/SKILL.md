@@ -1,95 +1,144 @@
 ---
 name: miniprogram-execution
-version: 2026.11.02.1
-description: 通过微信开发者工具自动化后端执行小程序启动、页面操作、UI/数据断言、截图与失败取证；区分开发者工具验证与真机验证，结果未知时不重放，供自动化执行角色在小程序派发范围内使用。
+version: 2026.11.22.1
+description: 在微信开发者工具里按用例逐条执行小程序测试：动作随带断言、请求编号稳定、定位歧义即阻塞、结果未知不重放，结果明确区分"工具层验证"与"真机验收"，产出可直接用于缺陷分析与报告的真实页面结果。
 metadata:
   scope: wechat-devtools-automator-backend
-sections:
-  criteria: ["核心原则"]
-  knowledge: ["请求格式与证据"]
-  steps: ["操作流程", "1. 环境检查", "2. 启动与观察", "3. 操作与断言", "4. 结束与交付", "失败与恢复"]
+sections: ["产物格式（强制）", "断言判据", "自检清单", "不要做"]
+knowledge: ["开发者工具能证明什么", "定位与输入的现实限制", "失败与恢复怎么分"]
+steps: ["输入", "输出", "工作步骤"]
 ---
 
 # 小程序执行 Skill
 
-路径基准：`docs/`、`schemas/`、`scripts/`、`config/`、`skills/` 按 `project-action.mjs catalog` 返回的 `runtime_context.engine_root` 解析；`references/`、`templates/` 相对本 Skill 目录。
+## 输入
 
-本 Skill 指导在**已授权**的微信小程序项目上执行一条可追溯的测试链路。当前实现为微信开发者工具 + `miniprogram-automator` 后端，不连接真机，不调用 `miniprogram-ci` 上传代码，也不读取微信账号凭据。
+| 来源 | 内容 | 用法 |
+|---|---|---|
+| 派发单的执行清单 | 本轮要跑的用例、顺序、前置、数据、步骤、预期 | **范围上限**，逐条落实，不自行增删 |
+| `design/test_cases.json` | 用例正文与预期依据 | 清单缺字段时回查；断言用真实用例编号指回 |
+| 派发单的授权说明 | 用户原话里出现的 AppID | 只认这里列出的 AppID；`touristappid` 不算授权目标 |
+| 预检回执 | 工程配置、AppID、开发者工具版本、目标类型 | 环境事实以此为准，不靠猜 |
+| 上轮结果（回归时） | 上次的结果与缺陷台账 | 只用于选范围，旧通过不算本次通过 |
 
-先确认派发范围：项目目录、AppID 或合成身份、是否允许启动开发者工具、允许操作的动作、是否允许截图。缺少开发者工具、自动化依赖或项目配置时明确报告阻塞，不把单元测试、截图或历史材料当作真实业务验收。
+## 输出
 
-## 核心原则
+| 文件 | 谁写 | 说明 |
+|---|---|---|
+| `execution/miniprogram-results.json` | 入口封存 | 断言明细 + 证据索引 + 限制说明，只读 |
+| `execution/test_results.json` | 引擎从上一份封存 | 缺陷与报告阶段的唯一事实源，只读 |
+| `execution/execution-task.json` | 你 | 交接小结，见下 |
+| `execution/miniprogram-evidence/`、`miniprogram-receipts/`、`miniprogram-sessions/` | 入口 | 截图、页面快照、回执、会话归档，只读 |
 
-1. **开发者工具不等于真机**：所有结果标记 `target.kind=devtools`、`real_device=false`。真机兼容性、微信客户端差异、机型与性能不在本 Skill 证明范围内。
-2. **先观察再操作**：`doctor` 预检后 `start`，再用 `snapshot` 确认当前页面与可定位元素。页面变化后重新观察，不复用失效元素。
-3. **动作成功不等于用例通过**：`tap/input/start` 无断言时回执为 `ok`，但只代表动作被执行。业务结论必须由带 `case_id`、`title`、`expected` 的断言产生。
-4. **断言只证明开发者工具 UI/页面数据层**：`verification_scope.layer=miniprogram_devtools_ui` 不证明后端持久化、网络服务、其他客户端或性能。
-5. **结果未知不重放**：回执 `status=needs_inspection`、`do_not_replay=true` 或缺少写回执时，先检查证据与开发者工具状态，再决定人工核实；不得用同一请求重试写操作，也不得换 ID 猜测重放。
-6. **会话被阻塞时停止**：基础设施异常会把会话置为 `blocked`。确认开发者工具可用后才用 `resume_blocked=true` 开启新会话；旧会话保留在 `execution/miniprogram-sessions/`。
-7. **敏感数据不外泄**：密码、令牌设置 `secret=true`；回执只记录长度和 SHA-256。截图可能仍含敏感内容，交付时说明。
-8. **一次断言一个用例**：每个断言的 `case_id` 唯一；重复 `case_id` 被拒绝，不覆盖已有结果。
+## 产物格式（强制）
 
-## 操作流程
+`execution-task.json`：
 
-### 1. 环境检查
+| 字段 | 要求 |
+|---|---|
+| `run_id` | 与本次运行一致 |
+| `stage` | `execution` |
+| `outcome` | `completed` 或 `partial`；结果 blocked 或有未测用例时必须 `partial` |
+| `summary` | 一段话：跑了什么、通过/失败/未测各几条、结论边界 |
+| `source_paths` | 非空，写真实读过或产出的路径（用例文件、结果文件） |
+| `questions` / `limitations` | 数组，可为空；不能用一句话糊过去 |
+| `limitations` | 至少写：仅开发者工具层、未验真机、未验后端持久化 |
 
-`doctor`：检查 `project.config.json`、`app.json`、AppID、开发者工具 CLI、`miniprogram-automator`、目标类型。结果写入 `execution/miniprogram-evidence/<request_id>.preflight.json`。
+断言的最小要素：
 
-- `status=ready` 才进入启动；`blocked` 时读取 `blockers[0].id` 与 `reason`，按真实原因报告。
-- `touristappid` 只表示合成/游客项目，不能当作生产 AppID 验收。
-- `target_kind=device` 会报告 `real_device_not_supported`，不会假装打开真机。
-- 不要把 `doctor` 成功当作业务可用。
+| 要素 | 说明 |
+|---|---|
+| `case_id` | 用例编号，会话内**唯一**，重复会被拒绝，不覆盖已有结果 |
+| `title` / `expected` | 断言在验什么、期望什么 |
+| `condition` | `page` / `visible` / `not_visible` / `text` / `data` |
+| `target` 或 `value` / `path` | `visible`/`not_visible`/`text` 要 `target`；`page` 要 `value`；`data` 要 `path` |
 
-### 2. 启动与观察
+- `data` 读的是页面 `data()` 里的路径值——这是本通道**最有说服力**的一层，比看文本可靠。
+- `page` 只证明当前页面路径，不证明页面加载完成或数据正确。
+- 一次断言只验一个条件；一个用例多个条件就分多条，各自 `case_id` 唯一。
 
-`start`：需要 `operation.project_dir` 或 CLI `--project`。可选 `devtools_cli`、`port`、`resume_blocked`、`timeout_ms`。
+终态由入口算，不由你填：
 
-- 开发者工具启动后轮询 `currentPage()`；无页面时按 `app_error` 阻塞并保留会话。
-- 首次页面快照写入 `execution/miniprogram-evidence/<request_id>.snapshot.json`。
-- 启动回执中的 `page_path` 只说明当前页面，不证明业务预期。
+| 情形 | 终态 |
+|---|---|
+| 全部断言通过 | `completed` |
+| 有断言失败 | `failed` |
+| 一条断言都没有 | `blocked`（原因 `needs_review`：观察和动作不是通过用例） |
+| 会话被阻塞或有断言受阻 | `blocked` |
 
-`snapshot`：返回页面路径、页面数据摘要、元素文本摘要，以及截图（`screenshot=false` 可关闭）和快照 JSON。
+## 开发者工具能证明什么
 
-### 3. 操作与断言
+| 能证明 | 不能证明 |
+|---|---|
+| 页面能打开、路由正确 | 真机兼容性、机型差异 |
+| 控件存在、文本正确 | 微信客户端版本差异 |
+| 页面数据符合预期 | 后端持久化、其他客户端看到的一致 |
+| 交互后页面状态变化 | 性能、网络弱环境表现 |
 
-`tap`：必须提供 `target`。定位支持 `by: id|class|text`、`match: exact|contains`、`index`。多元素匹配按 `locator_ambiguous` 阻塞，不猜测；优先使用稳定 `id`。
+所以每条交接都要带上"仅工具层"这句话。开发者工具里通过，不等于用户可以用了。
+用游客/合成身份跑出来的结果**不能**进正式报告——这类结果在封存时就会被拒。
 
-`input`：`target` + `text`。敏感内容设置 `secret=true`，回执不包含原文。输入是否触发页面事件取决于小程序控件，必须用断言确认业务结果。
+## 定位与输入的现实限制
 
-`wait`：等待 `visible/not_visible/text/page/data` 条件成立；超时返回 `blocked`，不登记为通过。
+| 限制 | 表现 | 正确处理 |
+|---|---|---|
+| 定位歧义 | 一个条件匹配到多个元素 | 引擎直接阻塞，不猜；优先用稳定 `id`，或加 `index` 消歧 |
+| 元素未渲染 | 目标找不到 | 先观察当前页面与页面数据，确认是不是还没到那一页 |
+| 输入不触发业务 | 填了字但页面数据没变 | 用 `data` 断言验业务结果，不要只看输入框有值 |
+| 工程或端口不一致 | 会话中途换目录/换端口被拒 | 一个运行固定一个工程一个端口，不中途换 |
+| 真机要求 | 目标类型是设备 | 直接报"真机通道不可用"，不拿工具结果顶替 |
 
-`assert`：只读断言，支持：
-- `page`：当前页面路径。
-- `visible/not_visible`：目标元素是否存在。
-- `text`：目标元素文本。
-- `data`：页面 `data()` 的路径值。
+## 失败与恢复怎么分
 
-断言失败只说明开发者工具当前状态不符合预期，不能直接判定产品缺陷；证据不足时保留 `needs_review`。
+| 现象 | 归类 | 处理 |
+|---|---|---|
+| 定位歧义、参数错误、重复用例、AppID 不在授权里 | 脚本/范围问题 | 修正后用**新**请求编号；原回执保留 |
+| 开发者工具缺失、连接断开、会话阻塞 | 环境问题 | 查工具与证据；恢复后显式重新启动并续接原会话 |
+| 断言没满足 | 待判定 | 结合截图、页面快照、页面数据判断是产品、脚本还是数据；证据不足留待复核 |
+| 写操作结果未知 | 不可重放 | 先查工具与页面实际状态；必要时人工核实，不重放 |
+| 连接断开 | 基础设施 | 不是产品失败；恢复后重新观察再继续 |
 
-`screenshot`：保存 PNG 并记录 SHA-256；校验 PNG 签名，非图片输出视为失败。
+一条铁律：**同类请求不能换编号重试写操作**。重放会真的产生第二笔业务数据。
 
-### 4. 结束与交付
+## 工作步骤
 
-`finish`：生成 `execution/miniprogram-results.json`（与 `schemas/test_result.schema.json` 兼容）、证据索引和限制说明。
+1. 读执行清单，确认 AppID 在授权名单里、工程目录已给定。缺任何一项就报阻塞。
+2. 预检：确认工程配置读得到、AppID 对得上、工具能起来。预检通过不当作业务可用。
+3. 打开项目到首个页面，观察页面路径与页面数据，记下这是第几条用例的前置状态。
+4. 对每条用例：准备前置 → 操作 → **当场断言** → 记结果 → 再进下一条。
+   页面变化后重新观察，不复用失效的元素。
+5. 走不下去的步骤：记"未测 + 原因"，继续能做的用例，不要整轮停在一处。
+6. 收尾前检查：有没有用例只做了动作没断言？断言条数是不是少于用例数？
+7. 收尾：由入口封结果并生成证据索引；你写交接小结，说明覆盖到哪、限制是什么。
+8. 把真实产物路径交给总控核验，不改运行清单、不宣称真机验收通过。
 
-- 无任何断言时状态为 `blocked`，原因 `needs_review`：观察和动作不是通过用例。
-- 存在失败断言时状态 `failed`；全部通过为 `completed`；会话被阻塞或断言受阻为 `blocked`。
-- 交付时写明 `target.kind=devtools`、未验证真机、未验证后端持久化；不要用断言数量替代业务用例数量。
+操作字段、参数取值与典型链路见 [references/miniprogram-devtools-ops.md](references/miniprogram-devtools-ops.md)。
 
-## 失败与恢复
+## 断言判据
 
-| 回执 | 含义 | 处理 |
-| --- | --- | --- |
-| `blocked` + `script_issue` | 定位歧义、参数错误、重复用例 | 修正参数或定位后使用新请求；原回执保留 |
-| `blocked` + `environment_issue` | 开发者工具缺失、连接断开、会话阻塞 | 检查工具与证据；恢复后显式 `start` 并 `resume_blocked=true` |
-| `failed` + `needs_review` | 断言未满足 | 结合截图、快照、页面数据判断产品、脚本或数据原因 |
-| `needs_inspection` + `action_outcome=unknown` | 写操作可能已执行但结果未知 | 先查询实际状态；不得重放，由人工核实 |
-| `duplicate=true` | 幂等命中旧回执 | 直接使用旧结果，不重新执行 |
+| 想验的东西 | 该用的条件 | 顺带说明的限制 |
+|---|---|---|
+| 跳到目标页了 | `page` 匹配页面路径 | 只证明路径，不证明内容加载完 |
+| 元素出现了 | `visible` + `target` | 只证明存在，不证明可交互 |
+| 元素消失了 | `not_visible` + `target` | 超时才算通过 |
+| 文案对了 | `text` + `target` + `value` | 只证明文本匹配，不证明来源 |
+| 业务逻辑正确 | `data` + `path` | 只证明当前页面数据，不证明后端 |
 
-断开连接本身不是产品失败。恢复步骤：`doctor` 确认工具可用 → 检查 `execution/miniprogram-sessions/`、未决 intent 与证据 → 确认开发者工具可用后 `start` + `resume_blocked=true` → 重新观察再继续未执行步骤。
+## 自检清单
 
-## 请求格式与证据
+1. 每条用例都有对应断言回执，没有"只点了没断言"的通过项
+2. `case_id` 没有重复，没有覆盖旧结果
+3. 未测的用例写了原因，没有糊成"已测试"
+4. 没有换编号重放结果未知的操作
+5. 没有手写或修改受控证据；没有中途换工程目录或端口
+6. `execution-task.json` 的 `outcome` 与真实完成度一致
+7. 交接里写了仅开发者工具层、未验真机、未验后端
 
-操作参数、证据目录、会话文件、CLI 与典型链路见 [references/miniprogram-devtools-ops.md](references/miniprogram-devtools-ops.md)。所有路径相对当前运行目录；证据路径不得越界。
+## 不要做
 
-需要 Appium/真机、`miniprogram-ci` 上传、云真机或其他平台时，回到公共升级流程，不在本 Skill 内假设未实现的能力。
+- 不执行授权名单之外的 AppID，不拿 `touristappid` 或合成身份冒充真实项目
+- 不把动作成功写成用例通过，不用断言数量替代用例数量
+- 不把开发者工具结果说成真机验收
+- 不重放结果未知的写操作，不因为"再试一次"而产生第二笔数据
+- 不手写结果文件、截图、页面快照，不为了过校验去改证据
+- 不上传代码、不碰微信账号凭据，不判断缺陷归属

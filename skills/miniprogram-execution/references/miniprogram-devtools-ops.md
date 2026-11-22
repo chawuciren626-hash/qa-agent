@@ -20,6 +20,8 @@
 node scripts/miniprogram-task-cli.mjs --run-dir <run-dir> --operation-file <operation.json> --project <project-dir>
 ```
 
+这条命令行入口仅供人工排查本机工具链，执行角色不走这条路。
+
 CLI 成功时输出完整回执 JSON。`status` 不是 `ok` 或 `needs_inspection` 时退出码为 1；参数错误退出码 2。
 
 ## 运行目录与证据
@@ -101,8 +103,12 @@ CLI 成功时输出完整回执 JSON。`status` 不是 `ok` 或 `needs_inspectio
 ```
 
 ```json
-{"type":"finish","request_id":"finish-1","screenshot":true,"summary":"登录与订单取消","limitations":["只验证开发者工具"]}
+{"type":"finish","request_id":"finish-1","screenshot":true,"summary":"登录与订单取消","limitations":["本轮未覆盖支付页"]}
 ```
+
+收尾时引擎会固定补上几条限制（仅开发者工具模拟、未验真机与客户端差异、只验工具层 UI、不读写微信凭据；
+合成后端还会额外标一条）。你写的 `limitations` 是**补充**，不能删掉固定那几条。
+一条断言都没有时终态是 `blocked`，原因 `needs_review`。
 
 ## 回执状态
 

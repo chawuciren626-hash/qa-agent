@@ -132,7 +132,7 @@ test('local executor runs an owned deterministic stage tool and records host exe
   for(const request of [
     {action:'archive_input',name:'requirement.txt',text:'The operator can create a user.'},
     {action:'plan_run',stages:['analysis']},
-    {action:'dispatch',stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis']},
+    {action:'dispatch',stage:'analysis',agent:'requirement_analysis_agent',skills:['requirement-analysis','api-contract-analysis']},
   ]) {const result=await call({...request,run_id});assert.equal(result.exit_code,0,JSON.stringify(result));}
   const request={action:'run_stage_tool',run_id,stage:'analysis',tool_id:'requirement.testability',payload:{requirement:{id:'R1',title:'Create user',description:'The operator can create a user.',expected:'User appears in list.',preconditions:'Operator is signed in.'}}};
   writeFileSync(f.file,JSON.stringify(request));

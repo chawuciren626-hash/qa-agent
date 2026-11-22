@@ -30,8 +30,10 @@
       "prompt": "penguin/agents/requirement_analysis_agent/AGENTS.md",
       "skills": [
         "requirement-analysis",
+        "api-contract-analysis"
+      ],
+      "retired_skills": [
         "test-design-methods",
-        "api-contract-analysis",
         "change-analysis"
       ]
     },
@@ -39,7 +41,9 @@
       "id": "test_point_agent",
       "prompt": "penguin/agents/test_point_agent/AGENTS.md",
       "skills": [
-        "test-point-design",
+        "test-point-design"
+      ],
+      "retired_skills": [
         "test-design-methods",
         "api-testing",
         "anchor-verification"
@@ -49,7 +53,9 @@
       "id": "test_case_agent",
       "prompt": "penguin/agents/test_case_agent/AGENTS.md",
       "skills": [
-        "test-case-writing",
+        "test-case-writing"
+      ],
+      "retired_skills": [
         "test-design-methods",
         "api-testing"
       ]
@@ -58,7 +64,9 @@
       "id": "automation_execution_agent",
       "prompt": "penguin/agents/automation_execution_agent/AGENTS.md",
       "skills": [
-        "playwright-execution",
+        "playwright-execution"
+      ],
+      "retired_skills": [
         "api-testing"
       ]
     },
@@ -81,7 +89,9 @@
       "id": "defect_analysis_agent",
       "prompt": "penguin/agents/defect_analysis_agent/AGENTS.md",
       "skills": [
-        "bug-reporting",
+        "bug-reporting"
+      ],
+      "retired_skills": [
         "qa-investigation"
       ]
     },
@@ -96,7 +106,9 @@
       "id": "api_automation_agent",
       "prompt": "penguin/agents/api_automation_agent/AGENTS.md",
       "skills": [
-        "api-test-execution",
+        "api-test-execution"
+      ],
+      "retired_skills": [
         "api-testing"
       ]
     },

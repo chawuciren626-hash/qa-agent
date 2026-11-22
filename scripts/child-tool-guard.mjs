@@ -12,9 +12,20 @@ const stages={
   test_point_agent:'test_points',
   test_case_agent:'test_cases',
   automation_execution_agent:'execution',
+  android_test_agent:'execution',
+  miniprogram_test_agent:'execution',
+  desktop_test_agent:'execution',
   api_automation_agent:'api_execution',
   defect_analysis_agent:'defects',
   test_report_agent:'report'
+};
+// Platform executors share the execution stage but not its browser actions. Without
+// their own action list they could reach browser_task/explore_url, and without any
+// stage entry they could not write execution-task.json at all (unknown role → deny).
+const platformActions={
+  android_test_agent:['android_task'],
+  miniprogram_test_agent:['miniprogram_task'],
+  desktop_test_agent:['desktop_task']
 };
 
 function parse(input) {
@@ -71,7 +82,8 @@ export function guardChildTool(root,input,{agentId,agentRoot}) {
           if(manifest.stages?.[stage]?.status!=='in_progress' || !dispatch?.['parent-session-id']) throw new Error('Active professional dispatch required');
           const common=['read_source','run_status','validate_artifacts','extract_word','diagnose_task','run_stage_tool'];
           const own={api_execution:['api_task'],analysis:['api_task','generate_analysis','validate_analysis','diagnose_analysis','analysis_summary'],test_points:['api_task','draft_records','diagnose_test_points','export_test_points'],test_cases:['api_task','draft_records','diagnose_test_cases','export_test_cases'],execution:['browser_task','explore_url','prepare_execution_plan','validate_execution_prepare'],defects:['assess_evidence','normalize_defects'],report:['build_report_metrics','export_report']};
-          if(![...common,...own[stage]].includes(args.qa_request.action) || (args.qa_request.stage!==undefined && args.qa_request.stage!==stage)) throw new Error('Action belongs to another role; use this stage catalog');
+          const roleActions=platformActions[agentId] ?? own[stage];
+          if(![...common,...roleActions].includes(args.qa_request.action) || (args.qa_request.stage!==undefined && args.qa_request.stage!==stage)) throw new Error('Action belongs to another role; use this stage catalog');
           if(args.qa_request.action==='api_task' && stage!=='api_execution' && args.qa_request.operation?.type!=='inspect_contract') throw new Error('Design roles may only inspect API contracts');
           prepareInlineAction(root,args,{runId,parentSession:dispatch['parent-session-id']});
         }

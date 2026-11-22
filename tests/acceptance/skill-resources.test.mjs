@@ -109,7 +109,8 @@ test('all current role packages install with their optional skills and readable 
     }
   }
   for (const stage of workflow.stages) {
-    assert.equal(stage.skills.length, stage.id === 'api_execution' ? 2 : 1);
+    // One Skill per role: the API track keeps contract checking inside api-test-execution.
+    assert.equal(stage.skills.length, stage.id === 'analysis' ? 2 : 1);
     const agent = manifest.agents.find(agent => agent.id === stage.agent);
     assert.ok(stage.skills.every(skill => agent.skills.includes(skill)));
   }
@@ -152,27 +153,25 @@ test('installed instructions separate task and lifecycle without legacy mandator
 test('professional task instructions match dispatch contracts without inventing predecessor files', () => {
   const engine = resolve(import.meta.dirname, '../..');
   const roles = [
-    ['analysis', 'requirement_analysis_agent', 'requirement-analysis', /无需requirement-ledger/],
-    ['test_points', 'test_point_agent', 'test-point-design', /rule_ids可选/],
-    ['test_cases', 'test_case_agent', 'test-case-writing', /不强制related_test_point或(?:完整)?design_contract/],
-    ['defects', 'defect_analysis_agent', 'bug-reporting', /无需执行批次/],
-    ['report', 'test_report_agent', 'test-report-writing', /不调用build_report_metrics/]
+    ['analysis', 'requirement_analysis_agent', 'requirement-analysis', /台账在这里不强制|不强制.{0,6}台账/],
+    ['test_points', 'test_point_agent', 'test-point-design', /rule_ids.{0,12}(?:加分|可选|不是硬要求)/],
+    ['test_cases', 'test_case_agent', 'test-case-writing', /不强制.{0,4}related_test_point/],
+    ['defects', 'defect_analysis_agent', 'bug-reporting', /不需要执行批次/],
+    ['report', 'test_report_agent', 'test-report-writing', /质量指标/]
   ];
   for (const [stage, role, skill, rule] of roles) {
-    for (const file of [`penguin/agents/${role}/AGENTS.md`, `skills/${skill}/SKILL.md`]) {
-      const prompt = readFileSync(resolve(engine, file), 'utf8');
-      const task = prompt.split('## 独立任务（task）')[1]?.split('## 生命周期模式（lifecycle）')[0];
-      assert.ok(task, file);
-      assert.match(task, rule);
-      assert.match(task, /diagnose_task/);
-      assert.match(task, /validate_artifacts/);
-      assert.match(task, /handoff/);
-      if(stage==='test_cases') {
-        assert.match(task,/data_diagnostics/);
-        assert.match(task,/design_contract.data_checks/);
-        assert.doesNotMatch(task,/不调用diagnose_test_cases/);
-      }
+    const prompt = readFileSync(resolve(engine, `penguin/agents/${role}/AGENTS.md`), 'utf8');
+    const task = prompt.split('## 独立任务（task）')[1]?.split('## 生命周期模式（lifecycle）')[0];
+    assert.ok(task, role);
+    assert.match(task, rule);
+    // Roles carry professional judgement; the dispatch carries how an action is invoked.
+    assert.doesNotMatch(prompt, /node scripts\/|qa_request|validate_artifacts\(|diagnose_task\(/);
+    if(stage==='test_cases') {
+      assert.match(task,/data_diagnostics/);
+      assert.match(task,/design_contract.data_checks/);
+      assert.doesNotMatch(task,/不调用diagnose_test_cases/);
     }
+    assert.ok(readFileSync(resolve(engine, `skills/${skill}/SKILL.md`), 'utf8').length>0, skill);
     const dispatch = independentPrompt(stage, 'run-policy-contract');
     if(stage==='test_cases') {
       assert.match(dispatch,/explicitly clear the field and verify empty/);
@@ -201,10 +200,10 @@ test('execution task stops at controlled execution artifacts despite multi-deliv
 
 test('controller instructions bind role and task while allowing localized display descriptions', () => {
   const prompt=readFileSync(resolve(import.meta.dirname,'../../penguin/agents/test_agent/AGENTS.md'),'utf8');
-  assert.match(prompt,/把返回的 delegation 对象传给 run_subagent，目标角色必填/);
-  assert.match(prompt,/不改写 prompt 或追加业务目标/);
-  assert.match(prompt,/delegation 中短 prompt 已登记绑定，合同由子 Agent 自读/);
-  assert.match(prompt,/child_started=false 必须实际调用 run_subagent/);
+  assert.match(prompt,/派发对象原样交给队员/);
+  assert.match(prompt,/不改写、不追加业务目标/);
+  assert.match(prompt,/短指令已经登记过绑定，合同由队员自己读/);
+  assert.match(prompt,/没起来[\s\S]{0,12}必须真的再派一次/);
 });
 
 test('shared runtime commands do not infer PowerShell from Windows',()=>{
@@ -286,9 +285,9 @@ test('shared policy is compact, model-neutral and keeps task memory separate fro
   ]) assert.match(runtime, rule);
   assert.doesNotMatch(runtime, /step-3\.7-flash|tokendance|宿主子Agent没有工具hook|限次修正|预算耗尽/);
   const controller = readFileSync(resolve(engine, 'penguin/agents/test_agent/AGENTS.md'), 'utf8');
-  assert.match(controller, /合同由子 Agent 自读，不展开转抄/);
-  assert.match(controller, /不先读专业 Skill 全文或产物 Schema 替队员工作/);
-  assert.match(controller, /最终报告由报告 Agent 产出/);
+  assert.match(controller, /合同由队员自己读，你不要展开转抄/);
+  assert.match(controller, /不先读专业 Skill 全文或产物 Schema 替他想/);
+  assert.match(controller, /最终报告由报告角色产出/);
 });
 
 test('functional/API scope applies to every business role without disabling runtime protection', () => {
