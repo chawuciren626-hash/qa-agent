@@ -57,6 +57,7 @@ export function createExecutionCases(testCases) {
       priority: normalizePriority(testCase),
       resource_keys: caseResourceKeys(testCase),
       asset_refs: testCase.asset_refs ?? [],
+      anchors: Array.isArray(testCase.anchors) ? testCase.anchors : [],
       execution_contract: normalizeContract(testCase)
     };
   });

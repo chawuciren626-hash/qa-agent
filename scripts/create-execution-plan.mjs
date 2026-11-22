@@ -3,6 +3,7 @@ import { dataPath } from './directory-context.mjs';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createExecutionCases, extractCases, validateExecutionPlan } from "./execution-plan.mjs";
+import { applyAnchorBindings, loadCatalog } from "./locator-anchor-adapter.mjs";
 import { inspectDesign, designReceipt, readRunFile, runDirectory } from './design-quality.mjs';
 
 const root = resolve(import.meta.dirname, "..");
@@ -30,7 +31,18 @@ const selectedIds = requested.filter(c => c.automation_feasible).map(c => c.case
 if (!selectedIds.length) throw new Error('Selection contains only manual cases; no automated execution plan can be created. See selection/test-selection.json.');
 const checked = inspectDesign({ root, runId, source: sourceArg, selectedIds });
 if (checked.errors.length) throw new Error(checked.errors.join('\n'));
-const cases = createExecutionCases(checked.cases);
+// 锚点适配：用例声明的 target_controls 从资产目录解析成 asset_refs + 结构 anchors；
+// 没有资产目录时保持原计划契约，不阻断执行。
+const catalogSource = loadCatalog(root);
+const designCases = catalogSource.catalog ? applyAnchorBindings(checked.cases, catalogSource.catalog) : checked.cases;
+const cases = createExecutionCases(designCases);
+const anchorBindings = catalogSource.catalog
+  ? {
+      catalog: catalogSource.path.replace(/\\/g, "/"),
+      cases: cases.filter(testCase => testCase.anchors.length).length,
+      anchors: cases.reduce((total, testCase) => total + testCase.anchors.length, 0),
+    }
+  : null;
 const smokeCases = cases.filter(testCase => testCase.priority === 'P0').map(testCase => testCase.case_id);
 const regressionCases = cases.filter(testCase => testCase.priority !== 'P0').map(testCase => testCase.case_id);
 const phases = [
@@ -49,6 +61,7 @@ const plan = {
   cases,
   phases,
   priority_summary: prioritySummary,
+  anchor_bindings: anchorBindings,
   manual_pending: manualPending,
   design_gate: designReceipt(checked),
   execution_policy: {
