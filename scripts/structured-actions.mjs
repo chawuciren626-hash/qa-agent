@@ -1166,3 +1166,36 @@ export function actionFailureSummary(root,session) {
     coverage:'Structured action receipts only; direct CLI and other tools are not fully covered; zero is not proof of no retry',
     user_summary:`会话状态：${state.status}。结构化动作记录${records.length}次，停止后被拒绝${denied}次。此统计不覆盖直接CLI及其他工具，不能据此声称从未重试。`};
 }
+
+// ---- B2-2 续（C4）：修订简报装配器 ----
+// 重启路径（原会话死亡/轮次阈值/预审判污染）时，为新会话冷启动装配修订上下文。
+// 装配内容 = 台账 + 最新版本产物 + 未决问题 + 用户反馈历史。台账完备度决定质量。
+
+/**
+ * 从 run 目录装配修订简报，供重启路径的新会话使用。
+ * 各阶段产物约定见 docs/artifact-contracts.md。
+ */
+export function assembleRevisionBrief(root, runId, stage) {
+  const dir = runDirectory(root, runId);
+  const manifest = JSON.parse(readRunFile(dir, 'manifest.json').data);
+  const artifacts = manifest.stages?.[stage]?.artifacts ?? [];
+  const brief = { stage, run_id: runId, ledger_present: false, latest_artifacts: [], open_questions: [], feedback_history: [] };
+  // 台账（仅 analysis 阶段有 requirement-ledger.json）
+  const ledgerPath = resolve(dir, 'analysis/requirement-ledger.json');
+  if (existsSync(ledgerPath)) {
+    try { brief.ledger = JSON.parse(readFileSync(ledgerPath, 'utf8')); brief.ledger_present = true; } catch { /* 坏 JSON 留空 */ }
+  }
+  // 最新版本产物（从 artifact contract files 取已校验文件）
+  for (const file of (manifest.orchestration?.events ?? []).filter(e => e.type === 'completed' && e.stage === stage).at(-1)?.evidence?.artifact_contract?.files ?? []) {
+    try { brief.latest_artifacts.push({ path: file.path, sha256: file.sha256 }); } catch { /* skip */ }
+  }
+  // 未决问题（从阶段 summary/questions 取）
+  const stageInfo = manifest.stages?.[stage];
+  if (stageInfo?.questions?.length) brief.open_questions = stageInfo.questions;
+  // 用户反馈历史（从 confirmation 历史取 revision_requested 事件）
+  for (const event of manifest.orchestration?.events ?? []) {
+    if (event.type === 'confirmation_resolved' && event.stage === stage && event.decision === 'revision_requested')
+      brief.feedback_history.push({ at: event.at, confirmation_id: event.confirmation_id });
+  }
+  return brief;
+}
