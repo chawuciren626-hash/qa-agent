@@ -13,7 +13,6 @@ import { Hono } from "hono";
 import type { ServerConfig } from "../../config.js";
 import type { Db, AuthState } from "../../hmr/capabilities.js";
 import { registerQaProjectRoutes } from "./qa-project.js";
-import { qaEnabled, qaEngineModule } from "../../services/qa-engine.js";
 import { registerQaProjectKnowledgeRoutes } from "./qa-project-knowledge.js";
 import { registerQaConfirmGateRoutes } from "./qa-confirm-gate.js";
 import type { KnowledgeAuthorizer } from "../../services/qa-knowledge-authorization.js";
@@ -114,21 +113,6 @@ export function agentsRoutes(deps: AgentsRouteDeps): Hono<AppEnv> {
     // Defensive id validation: don't rely on the implicit invariant that requireProjectAccess always runs before path construction.
     const projectId = requireValidId(c, "projectId");
     deps.access.requireProjectAccess(c.var.user.userId, projectId);
-    // B4-1 续：确保 agents.json 声明的 QA 角色在项目中已创建（走 createAgent 正规链路：filesystem + DB + 管理后台可见）。
-    // 仅在 qaEnabled 且引擎模块可用时执行；缺失的角色自动补建，已存在的跳过。
-    if (qaEnabled) {
-      try {
-        const qaBootstrap = qaEngineModule("qa-project-bootstrap") as { qaRoles(): { id: string }[] };
-        const qaRoles = qaBootstrap.qaRoles();
-        const currentAgents = await deps.agentService.listAgents(projectId);
-        const existingIds = new Set(currentAgents.map(a => a.agentId));
-        for (const role of qaRoles) {
-          if (!existingIds.has(role.id)) {
-            try { await deps.agentService.createAgent(projectId, role.id, role.id, `AITestHarness QA 智能体：${role.id}`); } catch { /* 并发或已存在：跳过 */ }
-          }
-        }
-      } catch { /* 引擎模块不可用：静默跳过，列表按现状返回 */ }
-    }
     const items = await deps.agentService.listAgents(projectId);
     // One query for the whole list: which Agents have their API switch on (this server's web.db).
     const apiEnabled = new Set(deps.agentApi.enabledAgents(projectId));
