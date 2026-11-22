@@ -1244,4 +1244,428 @@ CREATE TABLE IF NOT EXISTS mcp_server_audit ( -- 目录审计：登记/修改/�
   detail      TEXT NOT NULL DEFAULT '',
   created_at  TEXT NOT NULL
 );
+
+-- ===== 迁移链表/索引补齐（债务清理批）：以下对象原本只在迁移步骤创建，
+-- fresh 库缺失导致 db-migrations / db-migration-steps 形态对比失败。
+-- SQL 原文取自 migrated 库 sqlite_master.sql（逐字回填，保证形态一致）。
+-- [table] qa_case_graph_links
+CREATE TABLE qa_case_graph_links (
+  link_id     TEXT PRIMARY KEY,
+  mission_id  TEXT NOT NULL REFERENCES qa_test_missions(mission_id) ON DELETE CASCADE,
+  project_id  TEXT NOT NULL,
+  oracle_id   TEXT NOT NULL REFERENCES qa_oracle_entries(oracle_id) ON DELETE CASCADE,
+  point_key   TEXT NOT NULL,
+  case_key    TEXT NOT NULL,
+  relation    TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  created_by  TEXT NOT NULL,
+  UNIQUE(mission_id, point_key, case_key, oracle_id, relation)
+);
+-- [table] qa_execution_envelopes
+CREATE TABLE qa_execution_envelopes (
+  envelope_id           TEXT PRIMARY KEY,
+  mission_id            TEXT NOT NULL REFERENCES qa_test_missions(mission_id) ON DELETE CASCADE,
+  project_id            TEXT NOT NULL,
+  label                 TEXT NOT NULL,
+  target_ref            TEXT NOT NULL,
+  target_version        TEXT NOT NULL,
+  actual_version        TEXT,
+  carrier               TEXT NOT NULL,
+  os_name               TEXT NOT NULL,
+  account_role          TEXT NOT NULL,
+  agent_id              TEXT NOT NULL,
+  agent_bundle_hash     TEXT NOT NULL,
+  skills_json           TEXT NOT NULL,
+  plugins_json          TEXT NOT NULL,
+  model_json            TEXT NOT NULL,
+  connectors_json       TEXT NOT NULL,
+  backend               TEXT NOT NULL,
+  authorization_state   TEXT NOT NULL,
+  resource_set_hash     TEXT NOT NULL,
+  data_state_json       TEXT NOT NULL,
+  cleanup_plan_json     TEXT NOT NULL,
+  identity_hash         TEXT NOT NULL,
+  status                TEXT NOT NULL,
+  revision              INTEGER NOT NULL,
+  created_at            TEXT NOT NULL,
+  created_by            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL,
+  UNIQUE(mission_id, label)
+);
+-- [table] qa_oracle_entries
+CREATE TABLE qa_oracle_entries (
+  oracle_id          TEXT PRIMARY KEY,
+  mission_id         TEXT NOT NULL REFERENCES qa_test_missions(mission_id) ON DELETE CASCADE,
+  project_id         TEXT NOT NULL,
+  oracle_key         TEXT NOT NULL,
+  capability         TEXT NOT NULL,
+  statement          TEXT NOT NULL,
+  source_type        TEXT NOT NULL,
+  source_ref         TEXT NOT NULL,
+  source_hash        TEXT,
+  status             TEXT NOT NULL,
+  confirmed_by       TEXT,
+  confirmed_at       TEXT,
+  confirmation_reason TEXT,
+  evidence_refs_json TEXT NOT NULL,
+  revision           INTEGER NOT NULL,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL,
+  UNIQUE(mission_id, oracle_key)
+);
+-- [table] qa_test_missions
+CREATE TABLE qa_test_missions (
+  mission_id          TEXT PRIMARY KEY,
+  project_id          TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  title               TEXT NOT NULL,
+  objective           TEXT NOT NULL,
+  scope_json          TEXT NOT NULL,
+  risks_json          TEXT NOT NULL,
+  authorization_json  TEXT NOT NULL,
+  deliverables_json   TEXT NOT NULL,
+  status              TEXT NOT NULL,
+  revision            INTEGER NOT NULL,
+  content_hash        TEXT NOT NULL,
+  created_at          TEXT NOT NULL,
+  created_by          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL
+);
+-- [table] qa_u2_attempt_events
+CREATE TABLE qa_u2_attempt_events (
+  event_id    TEXT PRIMARY KEY,
+  attempt_id  TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL,
+  detail_json TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  created_by  TEXT NOT NULL
+);
+-- [table] qa_u2_case_attempts
+CREATE TABLE qa_u2_case_attempts (
+  attempt_case_id  TEXT PRIMARY KEY,
+  attempt_id       TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
+  mission_id       TEXT NOT NULL,
+  envelope_id      TEXT NOT NULL,
+  project_id       TEXT NOT NULL,
+  case_key         TEXT NOT NULL,
+  oracle_id        TEXT NOT NULL,
+  point_key        TEXT NOT NULL,
+  relation         TEXT NOT NULL,
+  status           TEXT NOT NULL,
+  observed         TEXT NOT NULL DEFAULT '',
+  failure_class    TEXT,
+  defect_refs_json TEXT NOT NULL,
+  evidence_json    TEXT NOT NULL,
+  started_at       TEXT,
+  finished_at      TEXT,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  UNIQUE(attempt_id, case_key)
+);
+-- [table] qa_u2_execution_attempts
+CREATE TABLE qa_u2_execution_attempts (
+  attempt_id               TEXT PRIMARY KEY,
+  mission_id               TEXT NOT NULL REFERENCES qa_test_missions(mission_id) ON DELETE CASCADE,
+  envelope_id              TEXT NOT NULL REFERENCES qa_execution_envelopes(envelope_id) ON DELETE CASCADE,
+  project_id               TEXT NOT NULL,
+  attempt_status           TEXT NOT NULL,
+  result                   TEXT NOT NULL,
+  cleanup_state            TEXT NOT NULL,
+  observed_summary         TEXT NOT NULL DEFAULT '',
+  metrics_json             TEXT NOT NULL,
+  evidence_json            TEXT NOT NULL,
+  defect_refs_json         TEXT NOT NULL,
+  envelope_identity_claim  TEXT NOT NULL,
+  revision                 INTEGER NOT NULL,
+  started_at               TEXT NOT NULL,
+  finished_at              TEXT,
+  created_at               TEXT NOT NULL,
+  created_by               TEXT NOT NULL,
+  updated_at               TEXT NOT NULL
+);
+-- [table] qa_u3_cancellations
+CREATE TABLE qa_u3_cancellations (
+  cancellation_id  TEXT PRIMARY KEY,
+  attempt_id       TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
+  project_id       TEXT NOT NULL,
+  session_id       TEXT,
+  kind             TEXT NOT NULL,
+  status           TEXT NOT NULL,
+  model_ack        TEXT NOT NULL,
+  tool_ack         TEXT NOT NULL,
+  browser_ack      TEXT NOT NULL,
+  wsl_ack          TEXT NOT NULL,
+  callback_ack     TEXT NOT NULL,
+  residual_state   TEXT NOT NULL,
+  notes            TEXT NOT NULL DEFAULT '',
+  evidence_json    TEXT NOT NULL,
+  requested_at     TEXT NOT NULL,
+  requested_by     TEXT NOT NULL,
+  acknowledged_at  TEXT,
+  acknowledged_by  TEXT,
+  updated_at       TEXT NOT NULL
+);
+-- [table] qa_u3_case_checkpoints
+CREATE TABLE qa_u3_case_checkpoints (
+  checkpoint_id  TEXT PRIMARY KEY,
+  attempt_id     TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
+  case_attempt_id TEXT NOT NULL REFERENCES qa_u2_case_attempts(attempt_case_id) ON DELETE CASCADE,
+  project_id     TEXT NOT NULL,
+  ordinal        INTEGER NOT NULL,
+  kind           TEXT NOT NULL,
+  label          TEXT NOT NULL,
+  status         TEXT NOT NULL,
+  payload_json   TEXT NOT NULL,
+  evidence_json  TEXT NOT NULL,
+  created_at     TEXT NOT NULL,
+  created_by     TEXT NOT NULL,
+  UNIQUE(case_attempt_id, ordinal)
+);
+-- [table] qa_u3_cleanup_actions
+CREATE TABLE qa_u3_cleanup_actions (
+  action_id       TEXT PRIMARY KEY,
+  attempt_id      TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
+  effect_id       TEXT REFERENCES qa_u3_side_effects(effect_id) ON DELETE CASCADE,
+  case_attempt_id TEXT REFERENCES qa_u2_case_attempts(attempt_case_id) ON DELETE CASCADE,
+  project_id      TEXT NOT NULL,
+  action          TEXT NOT NULL,
+  state           TEXT NOT NULL,
+  verification_json TEXT NOT NULL,
+  failure_class   TEXT,
+  defect_refs_json TEXT NOT NULL,
+  evidence_json   TEXT NOT NULL,
+  started_at      TEXT,
+  finished_at     TEXT,
+  created_at      TEXT NOT NULL,
+  created_by      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+-- [table] qa_u3_fault_injections
+CREATE TABLE qa_u3_fault_injections (
+  injection_id   TEXT PRIMARY KEY,
+  attempt_id     TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
+  project_id     TEXT NOT NULL,
+  case_attempt_id TEXT REFERENCES qa_u2_case_attempts(attempt_case_id) ON DELETE CASCADE,
+  kind           TEXT NOT NULL,
+  state          TEXT NOT NULL,
+  expected_effect TEXT NOT NULL,
+  observed_effect TEXT NOT NULL,
+  cleanup_state  TEXT NOT NULL,
+  evidence_json  TEXT NOT NULL,
+  injected_at    TEXT NOT NULL,
+  injected_by    TEXT NOT NULL,
+  recovered_at   TEXT,
+  updated_at     TEXT NOT NULL
+);
+-- [table] qa_u3_interface_coverage
+CREATE TABLE qa_u3_interface_coverage (
+  coverage_id       TEXT PRIMARY KEY,
+  attempt_id        TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
+  case_attempt_id   TEXT REFERENCES qa_u2_case_attempts(attempt_case_id) ON DELETE CASCADE,
+  project_id        TEXT NOT NULL,
+  route_key         TEXT NOT NULL,
+  method            TEXT NOT NULL,
+  path              TEXT NOT NULL,
+  route_documented  INTEGER NOT NULL,
+  contract_version  TEXT,
+  source_ref        TEXT,
+  executed          INTEGER NOT NULL,
+  request_valid     INTEGER NOT NULL,
+  structure_asserted INTEGER NOT NULL,
+  business_asserted INTEGER NOT NULL,
+  risk_branch       INTEGER NOT NULL,
+  cleanup_verified  INTEGER NOT NULL,
+  result            TEXT NOT NULL,
+  evidence_json     TEXT NOT NULL,
+  notes             TEXT NOT NULL DEFAULT '',
+  created_at        TEXT NOT NULL,
+  created_by        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  UNIQUE(attempt_id, route_key)
+);
+-- [table] qa_u3_process_verifications
+CREATE TABLE qa_u3_process_verifications (
+  verification_id TEXT PRIMARY KEY,
+  cancellation_id TEXT NOT NULL REFERENCES qa_u3_cancellations(cancellation_id) ON DELETE CASCADE,
+  attempt_id      TEXT NOT NULL,
+  project_id      TEXT NOT NULL,
+  target_kind     TEXT NOT NULL,
+  target          TEXT NOT NULL,
+  pid             INTEGER,
+  process_group   TEXT,
+  verification_method TEXT NOT NULL,
+  before_alive    INTEGER,
+  after_alive     INTEGER,
+  exit_code       INTEGER,
+  state           TEXT NOT NULL,
+  evidence_json   TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  created_by      TEXT NOT NULL
+);
+-- [table] qa_u3_side_effects
+CREATE TABLE qa_u3_side_effects (
+  effect_id        TEXT PRIMARY KEY,
+  attempt_id       TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
+  case_attempt_id  TEXT REFERENCES qa_u2_case_attempts(attempt_case_id) ON DELETE CASCADE,
+  project_id       TEXT NOT NULL,
+  kind             TEXT NOT NULL,
+  target           TEXT NOT NULL,
+  idempotency_key  TEXT NOT NULL DEFAULT '',
+  state            TEXT NOT NULL,
+  cleanup_state    TEXT NOT NULL,
+  request_digest   TEXT,
+  result_digest    TEXT,
+  cleanup_plan_json TEXT NOT NULL,
+  evidence_json    TEXT NOT NULL,
+  discovered_at    TEXT NOT NULL,
+  updated_at       TEXT NOT NULL
+);
+-- [table] schema_migrations
+CREATE TABLE schema_migrations (
+    name       TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+  );
+-- [table] task_platform_events
+CREATE TABLE task_platform_events (
+        event_id               TEXT PRIMARY KEY,
+        event_type             TEXT NOT NULL,
+        external_tenant_id     TEXT NOT NULL,
+        external_task_id       TEXT NOT NULL,
+        task_no                TEXT NOT NULL,
+        package_version        INTEGER NOT NULL,
+        parent_package_version INTEGER,
+        pm_round_id            TEXT,
+        occurred_at            TEXT NOT NULL,
+        product_line_ids_json  TEXT NOT NULL DEFAULT '[]'
+      );
+-- [table] task_platform_ingest_cursor
+CREATE TABLE task_platform_ingest_cursor (
+        id         INTEGER PRIMARY KEY CHECK(id = 1),
+        cursor     TEXT,
+        updated_at TEXT NOT NULL
+      );
+-- [table] task_platform_packages
+CREATE TABLE task_platform_packages (
+        id              TEXT PRIMARY KEY,
+        task_link_id    TEXT NOT NULL REFERENCES task_platform_task_links(link_id) ON DELETE CASCADE,
+        package_version INTEGER NOT NULL,
+        event_id        TEXT NOT NULL,
+        event_type      TEXT NOT NULL,
+        content_hash    TEXT NOT NULL,
+        payload_json    TEXT NOT NULL,
+        document_id     TEXT NOT NULL,
+        revision        INTEGER NOT NULL,
+        activated       INTEGER NOT NULL DEFAULT 1 CHECK(activated IN (0,1)),
+        received_at     TEXT NOT NULL,
+        UNIQUE(task_link_id, package_version)
+      );
+-- [table] task_platform_project_links
+CREATE TABLE task_platform_project_links (
+        link_id                 TEXT PRIMARY KEY,
+        project_id              TEXT NOT NULL,
+        source_system           TEXT NOT NULL,
+        external_tenant_id      TEXT NOT NULL,
+        external_product_line_id TEXT NOT NULL,
+        external_line_code      TEXT NOT NULL,
+        display_name            TEXT NOT NULL,
+        external_url            TEXT,
+        sync_status             TEXT NOT NULL DEFAULT 'active' CHECK(sync_status IN ('active','inactive')),
+        last_synced_at          TEXT,
+        UNIQUE(source_system, external_tenant_id, external_product_line_id)
+      );
+-- [table] task_platform_result_outbox
+CREATE TABLE task_platform_result_outbox (
+        id              TEXT PRIMARY KEY,
+        task_id         TEXT NOT NULL,
+        result_id       TEXT NOT NULL,
+        result_version  INTEGER NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        payload_json    TEXT NOT NULL,
+        attempts        INTEGER NOT NULL DEFAULT 0,
+        next_retry_at   TEXT NOT NULL,
+        last_error      TEXT,
+        delivered_at    TEXT,
+        created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        UNIQUE(result_id, result_version)
+      );
+-- [table] task_platform_task_links
+CREATE TABLE task_platform_task_links (
+        link_id                 TEXT PRIMARY KEY,
+        project_id              TEXT NOT NULL,
+        source_system           TEXT NOT NULL,
+        external_tenant_id      TEXT NOT NULL,
+        external_task_id        TEXT NOT NULL,
+        external_task_no        TEXT NOT NULL,
+        current_package_version INTEGER NOT NULL,
+        current_pm_round_id     TEXT,
+        status                  TEXT NOT NULL DEFAULT 'pending_analysis'
+          CHECK(status IN ('pending_analysis','ready','in_progress','impact_pending','result_returned','terminated')),
+        ai_summary_json         TEXT,
+        suggested_priority      TEXT CHECK(suggested_priority IN ('high','medium','low')),
+        created_at              TEXT NOT NULL,
+        updated_at              TEXT NOT NULL,
+        UNIQUE(source_system, external_tenant_id, external_task_id)
+      );
+-- [index] idx_qa_case_graph_links_case
+CREATE INDEX idx_qa_case_graph_links_case
+  ON qa_case_graph_links(project_id, case_key);
+-- [index] idx_qa_execution_envelopes_mission
+CREATE INDEX idx_qa_execution_envelopes_mission
+  ON qa_execution_envelopes(mission_id, status);
+-- [index] idx_qa_oracle_entries_mission
+CREATE INDEX idx_qa_oracle_entries_mission
+  ON qa_oracle_entries(mission_id, status);
+-- [index] idx_qa_test_missions_project
+CREATE INDEX idx_qa_test_missions_project
+  ON qa_test_missions(project_id, status, updated_at DESC);
+-- [index] idx_qa_test_points_uid
+CREATE INDEX idx_qa_test_points_uid ON qa_test_points(project_id, point_uid);
+-- [index] idx_qa_u2_attempt_events_attempt
+CREATE INDEX idx_qa_u2_attempt_events_attempt
+  ON qa_u2_attempt_events(attempt_id, created_at);
+-- [index] idx_qa_u2_attempts_envelope
+CREATE INDEX idx_qa_u2_attempts_envelope
+  ON qa_u2_execution_attempts(envelope_id, started_at DESC);
+-- [index] idx_qa_u2_attempts_mission
+CREATE INDEX idx_qa_u2_attempts_mission
+  ON qa_u2_execution_attempts(mission_id, attempt_status, started_at DESC);
+-- [index] idx_qa_u2_case_attempts_project_case
+CREATE INDEX idx_qa_u2_case_attempts_project_case
+  ON qa_u2_case_attempts(project_id, case_key, updated_at DESC);
+-- [index] idx_qa_u3_cancellations_attempt
+CREATE INDEX idx_qa_u3_cancellations_attempt
+  ON qa_u3_cancellations(attempt_id, status, requested_at DESC);
+-- [index] idx_qa_u3_checkpoints_attempt
+CREATE INDEX idx_qa_u3_checkpoints_attempt
+  ON qa_u3_case_checkpoints(attempt_id, ordinal);
+-- [index] idx_qa_u3_cleanup_actions_attempt
+CREATE INDEX idx_qa_u3_cleanup_actions_attempt
+  ON qa_u3_cleanup_actions(attempt_id, state, updated_at DESC);
+-- [index] idx_qa_u3_fault_injections_attempt
+CREATE INDEX idx_qa_u3_fault_injections_attempt
+  ON qa_u3_fault_injections(attempt_id, kind, state);
+-- [index] idx_qa_u3_interface_coverage_attempt
+CREATE INDEX idx_qa_u3_interface_coverage_attempt
+  ON qa_u3_interface_coverage(attempt_id, result);
+-- [index] idx_qa_u3_process_verifications_cancellation
+CREATE INDEX idx_qa_u3_process_verifications_cancellation
+  ON qa_u3_process_verifications(cancellation_id, target_kind);
+-- [index] idx_qa_u3_side_effects_attempt
+CREATE INDEX idx_qa_u3_side_effects_attempt
+  ON qa_u3_side_effects(attempt_id, cleanup_state, updated_at DESC);
+-- [index] idx_qa_u3_side_effects_idempotency
+CREATE INDEX idx_qa_u3_side_effects_idempotency
+  ON qa_u3_side_effects(attempt_id, idempotency_key);
+-- [index] idx_tp_events_task
+CREATE INDEX idx_tp_events_task
+        ON task_platform_events(external_tenant_id, external_task_id, package_version);
+-- [index] idx_tp_outbox_due
+CREATE INDEX idx_tp_outbox_due
+        ON task_platform_result_outbox(delivered_at, next_retry_at);
+-- [index] idx_tp_packages_link
+CREATE INDEX idx_tp_packages_link ON task_platform_packages(task_link_id, package_version DESC);
+-- [index] idx_tp_project_links_project
+CREATE INDEX idx_tp_project_links_project ON task_platform_project_links(project_id);
+-- [index] idx_tp_task_links_project_status
+CREATE INDEX idx_tp_task_links_project_status
+        ON task_platform_task_links(project_id, status, updated_at DESC);
 `;
