@@ -110,6 +110,18 @@ export function CentralAgentSettingsPage() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); throw cause; }
     finally { setBusy(false); }
   };
+  const saveDraftAudience = async (shared: boolean) => {
+    if (!resource || resource.published || resource.version !== 0) return;
+    setBusy(true); setError("");
+    try {
+      const result = await controlRequest(`/api/control/admin/resources/${encodeURIComponent(resource.id)}`, "PUT", {
+        kind: resource.kind, name: resource.name, description: resource.description,
+        payload: resource.payload, audience: shared ? ["*"] : [], revision: resource.revision,
+      }) as Resource;
+      setResource(result);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "????????"); }
+    finally { setBusy(false); }
+  };
   const updateKernel = async (reset: boolean) => {
     if (!resource || !editable) return;
     setBusy(true); setError("");
@@ -139,6 +151,14 @@ export function CentralAgentSettingsPage() {
     <div className="agent-settings-columns"><nav className="agent-settings-nav" role="tablist" aria-orientation="vertical" aria-label={S.agent.settings}>{tabs.map(item => <button key={item.key} id={`agent-settings-tab-${item.key}`} type="button" role="tab" aria-selected={tab === item.key} aria-controls="agent-settings-panel" onClick={() => switchTab(item.key)} className={`agent-settings-nav-item${tab === item.key ? " active" : ""}`}><span>{item.label()}</span></button>)}</nav>
       <div id="agent-settings-panel" role="tabpanel" aria-labelledby={`agent-settings-tab-${tab}`} className="agent-settings-panel">
         {tab === "overview" && <CentralOverview body={selected} data={data} resource={resource} editable={editable} busy={busy} save={save} updateKernel={updateKernel} importSnapshot={importSnapshot} snapshotVersion={viewingDraft ? "draft" : String(effectiveVersion)} />}
+        {tab === "overview" && <section className="mt-4 space-y-2 border-t border-gray-200 pt-4 dark:border-gray-800" aria-label="??????">
+          <p className="text-sm font-medium">??????</p>
+          <p className="text-sm">{resource.audience.includes("*") ? "????????" : resource.audience.length ? "????" : "????"}</p>
+          {viewingDraft && resource.version === 0 && resource.audience.every(id => id === "*") && <>
+            <p className="text-xs text-fg-muted">????????????????????????????????????? Agent ????</p>
+            <Button size="sm" disabled={busy} onClick={() => void saveDraftAudience(!resource.audience.includes("*"))}>{resource.audience.includes("*") ? "????????" : "????????????"}</Button>
+          </>}
+        </section>}
         {tab === "prompt" && <fieldset disabled={!editable}><PromptTab key={`${resourceId}:${requestedVersion}`} data={data} onSave={save} /></fieldset>}
         {tab === "runtime" && <fieldset disabled={!editable}><RuntimeTab key={`${resourceId}:${requestedVersion}`} data={data} onSave={save} projectId="" /></fieldset>}
         {tab === "tools" && <div className="space-y-6"><fieldset disabled={!editable}><ToolsTab key={`${resourceId}:${requestedVersion}`} data={data} onSave={save} /></fieldset><CentralAgentPlatformTools agentId={String(payload.agentId ?? "")} /></div>}

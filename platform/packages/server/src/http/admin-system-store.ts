@@ -5,12 +5,12 @@ import { HttpError } from "./errors.js";
 export const ADMIN_MENU_KEYS = ["overview", "chat", "agents", "models", "plugins", "skills", "tools", "users", "roles", "menus", "audit"] as const;
 export type AdminMenuKey = typeof ADMIN_MENU_KEYS[number];
 export type AdminMenuItem = { key: string; name: string; path: string; group: "main" | "sys"; icon: string; color: string; visible: boolean; builtin: boolean };
-const names = ["概览", "管理员助手", "Agent管理", "模型配置", "插件管理", "技能管理", "工具管理", "用户管理", "角色管理", "菜单管理", "操作日志"];
+const names = ["概览", "管理员助手", "Agent管理", "渠道管理", "插件管理", "技能管理", "工具管理", "用户管理", "角色管理", "菜单管理", "操作日志"];
 const colors = ["#5a8dea", "#8a7ff0", "#2866a4", "#36ae83", "#dea52e", "#d85ca5", "#3d8fbd", "#5a8dea", "#8a7ff0", "#98a3b3", "#36ae83"];
 const systemKeys = new Set(["users", "roles", "menus", "audit"]);
 const requiredKeys = new Set(["users", "roles", "menus"]);
 const defaultMenus = (): AdminMenuItem[] => ADMIN_MENU_KEYS.map((key, index) => ({
-  key, name: names[index]!, path: key === "chat" ? "/chat/new" : `/${key}`,
+  key, name: names[index]!, path: key === "chat" ? "/chat/new" : key === "models" ? "/channels" : `/${key}`,
   group: systemKeys.has(key) ? "sys" : "main", icon: key, color: colors[index]!, visible: true, builtin: true,
 }));
 const invalid = (message: string): never => { throw new HttpError(400, "invalid_admin_system", message); };
@@ -91,7 +91,7 @@ export class AdminSystemStore {
       seen.add(item.key as string);
       const builtin = ADMIN_MENU_KEYS.includes(item.key as AdminMenuKey);
       if (builtin !== item.builtin || (requiredKeys.has(item.key as string) && !item.visible)) return invalid("内置菜单不可删除，必要入口不可隐藏。");
-      return { key: item.key as string, name: item.name.trim(), path: item.path, group: item.group as "main" | "sys",
+      return { key: item.key as string, name: item.key === "models" ? "渠道管理" : item.name.trim(), path: item.key === "models" ? "/channels" : item.path, group: item.group as "main" | "sys",
         icon: item.icon as string, color: item.color as string, visible: item.visible, builtin: item.builtin };
     });
     if (ADMIN_MENU_KEYS.some(key => !seen.has(key))) return invalid("内置菜单不可删除。");

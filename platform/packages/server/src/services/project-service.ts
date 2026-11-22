@@ -193,7 +193,7 @@ export class ProjectService implements ProjectLifecycle {
       await this.projectConfig.writeInitialConfig(projectId, displayName, owner.userId);
       // The presets' promotions live in web.db, keyed to the row inserted above (and removed
       // with it by the rollback below).
-      await this.projectConfig.seedPresetPromotions(projectId);
+      if (!qaEnabled) await this.projectConfig.seedPresetPromotions(projectId);
       await this.projectConfig.applySharedModelExtras(projectId, owner.userId);
       // In the testing product, ordinary Projects start with professional QA roles
       // only. The administrator assistant's catalog is the sole QA Project that

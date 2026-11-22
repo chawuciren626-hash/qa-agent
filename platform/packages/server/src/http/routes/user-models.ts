@@ -9,8 +9,7 @@
  * publishSharedModels 同步到该用户名下所有项目（含将来新建的项目）。
  *
  * 不依赖项目意味着：
- * - 读：直接读用户记录；没有记录时回退到该用户任一可访问项目的模型块（首次打开就有内容），
- *   再没有就回退内置种子（presetProjectConfig），保证页面永远有东西可看。
+ * - 读：只读当前用户自己的记录；没有记录时返回空列表。
  * - 写：先把变更应用到"用户记录"，再同步到该用户名下的项目；没有项目时只写用户记录，
  *   建第一个项目时 project-service 的 writeInitialConfig 会自动继承。
  * - 凭证（api_key）与项目级一致：只写不读，响应里掩码。
@@ -26,7 +25,6 @@ import { badRequest, readJson } from "../validate.js";
 import type { Access } from "../../mechanisms/projects.js";
 import type { ProjectConfigStore } from "../../mechanisms/projects.js";
 import type { RawTable } from "../../services/project-config-service.js";
-import { presetProjectConfig } from "../../services/project-config-seed.js";
 
 /** One user's stored model block, versioned so a future shape change can migrate instead of guess. */
 interface UserModelRecord {
@@ -98,25 +96,9 @@ export function userModelRoutes(deps: UserModelRoutesDeps): Hono<AppEnv> {
   const readRecord = async (userId: string): Promise<UserModelRecord | null> =>
     readUserModelRecord(deps.root, userId);
 
-  /** The project whose model block this user's record was first seeded from (any accessible one). */
-  const seedFromProject = async (userId: string): Promise<RawTable | null> => {
-    for (const projectId of deps.access.accessibleProjectIds(userId)) {
-      try {
-        const raw = await deps.projectConfigService.readRaw(projectId);
-        if (Array.isArray(raw.models)) return raw;
-      } catch {
-        /* 该项目配置不可读：继续找下一个，最后退回种子 */
-      }
-    }
-    return null;
-  };
-
-  /** Read: user record → accessible project block → built-in seed. Same view as the project page. */
   app.get("/", async (c) => {
-    const userId = c.var.user.userId;
-    const record = await readRecord(userId);
-    const raw = record?.models ?? (await seedFromProject(userId)) ?? (presetProjectConfig() as unknown as RawTable);
-    return c.json(await deps.projectConfigService.modelViewOfRaw(raw));
+    const record = await readRecord(c.var.user.userId);
+    return c.json(await deps.projectConfigService.modelViewOfRaw(record?.models ?? { models: [] }));
   });
 
   /**

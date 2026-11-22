@@ -8,6 +8,7 @@
  * URL-encoding issues), GET /api/projects/:p/models/balance. Any member can read (api_key is
  * masked) and read a group's balance; only the owner can modify, test, or detect.
  */
+import { qaEnabled } from "../../services/qa-engine.js";
 import { Hono } from "hono";
 import { providerInfo } from "../../model-catalog/catalog.js";
 import type {
@@ -371,7 +372,7 @@ export function modelsRoutes(deps: ModelsRouteDeps | ModelCatalogRouteDeps): Hon
   // "Add new models" (`add`) and "Restore defaults" (`restore`) against the built-in catalog
   // (owner): server-side, because restore resets rows, group tables, promotions and the two
   // references at once, and add seeds the promotions of the rows it adds.
-  app.post("/sync-presets", async (c) => {
+  if (!qaEnabled) app.post("/sync-presets", async (c) => {
     const projectId = requireValidId(c, "projectId");
     deps.access.requireProjectOwner(c.var.user.userId, projectId);
     const body = await readJson(c);

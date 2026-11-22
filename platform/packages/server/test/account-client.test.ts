@@ -76,6 +76,26 @@ describe('central identity with full local application',()=>{
     expect((await user.post('/api/control/channels',{})).status).toBe(404);
     expect(captured.filter(request=>request.path==='/api/control/channels')).toHaveLength(1);
   });
+  it('uses the central channel admin catalogue without forwarding user keys or legacy operations', async()=>{
+    const admin=apiClient(app!.app,(await loginUser(app!.app,'admin','central-test-password')).cookie);
+    const user=apiClient(app!.app,(await loginUser(app!.app,'ordinary','central-test-password')).cookie);
+    const catalog='/api/control/admin/model-config/central-model-catalog';
+    const provider=catalog+'/providers/custom';
+    const fields={displayName:'Custom',baseUrl:'https://example.com/v1',clientType:'openai-chat'};
+    expect((await admin.get(catalog)).status).toBe(200);
+    expect((await admin.post(catalog+'/detect',{baseUrl:fields.baseUrl})).status).toBe(200);
+    expect((await admin.put(provider,fields)).status).toBe(200);
+    expect((await admin.delete(provider)).status).toBe(200);
+    expect((await admin.put(provider,{apiKey:'synthetic-key'})).status).toBe(400);
+    expect((await admin.put(catalog,{models:[]})).status).toBe(404);
+    expect((await user.get(catalog)).status).toBe(403);
+    expect(captured.filter(request=>request.path.startsWith(catalog))).toEqual([
+      {path:catalog,body:undefined},
+      {path:catalog+'/detect',body:{baseUrl:fields.baseUrl}},
+      {path:provider,body:fields},
+      {path:provider,body:undefined},
+    ]);
+  });
   it('forwards central Agent settings and scoped private reads through the authenticated bridge',async()=>{
     const admin=apiClient(app!.app,(await loginUser(app!.app,'admin','central-test-password')).cookie);
     const id='a'.repeat(36);

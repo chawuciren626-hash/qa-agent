@@ -605,7 +605,17 @@ export class AccountClient {
     const centralAgentAdmin=/^\/api\/control\/admin\/(agent-cards|agent-defaults|resources\/[a-f0-9-]{36}\/(storage|snapshot|kernel-update|versions\/[1-9]\d*\/resolved))$/.test(endpoint);
     const centralPrivate=/^\/api\/control\/private\/agents\/[a-f0-9-]{36}\/(memory|vault)$/.test(endpoint);
     const centralSkills=/^\/api\/control\/skills\/(catalog|admin(?:\/[a-f0-9-]{36}(?:\/export)?)?|categories(?:\/assign|\/assignment\/[a-z0-9_-]+|\/[a-z0-9_]+)?)$/.test(endpoint);
-    const valid=(centralSkills && ["GET","POST","PUT","DELETE"].includes(c.req.method)) ||
+    // In desktop mode the channel page manages the same catalogue as the central admin,
+    // not local project models. Forward only its four operations, never key/import APIs.
+    const channelRoot="/api/control/admin/model-config/central-model-catalog";
+    const channelProvider=endpoint.startsWith(`${channelRoot}/providers/`) &&
+      /^[a-zA-Z][a-zA-Z0-9_-]{0,99}$/.test(endpoint.slice(`${channelRoot}/providers/`.length));
+    const channelDetect=endpoint===`${channelRoot}/detect` && c.req.method==="POST";
+    const channelSave=channelProvider && c.req.method==="PUT";
+    const channelDelete=channelProvider && c.req.method==="DELETE";
+    const channelRead=endpoint===channelRoot && c.req.method==="GET";
+    const valid=channelRead || channelDetect || channelSave || channelDelete ||
+      (centralSkills && ["GET","POST","PUT","DELETE"].includes(c.req.method)) ||
       (c.req.method==="GET"&&/^\/api\/control\/(access|channels|catalog(?:\/roles(?:\/resolved)?|\/[a-z0-9-]+(?:\/resolved)?)?|admin\/(resources(?:\/[a-z0-9-]+\/history)?|agent-groups|permissions\/[a-z][a-z0-9_]*|roles|menus|audit))$/.test(endpoint)) ||
       (["POST","PUT"].includes(c.req.method)&&/^\/api\/control\/admin\/(resources(?:\/validate|\/[a-z0-9-]+(?:\/(publish|withdraw|rollback|validate|copy))?)?|agent-groups(?:\/assign|\/[a-z0-9_]+)?|permissions\/[a-z][a-z0-9_]*|roles(?:\/[a-f0-9-]{36})?|role-members\/[a-z][a-z0-9_]*|menus)$/.test(endpoint)) ||
       (c.req.method==="DELETE"&&/^\/api\/control\/admin\/(resources\/[a-z0-9-]+(?:\/copy)?|agent-groups\/[a-z0-9_]+|roles\/[a-f0-9-]{36})$/.test(endpoint)) ||
@@ -613,7 +623,14 @@ export class AccountClient {
       (centralPrivate && ["GET","PUT","DELETE"].includes(c.req.method));
     if(!valid)throw new HttpError(404,"not_found","未知管理接口。");
     const url=new URL(c.req.url);
-    let requestBody=c.req.method==="GET"?undefined:await c.req.json();
+    let requestBody=c.req.method==="GET" || channelDelete ? undefined : await c.req.json();
+    if(channelDetect || channelSave){
+      const fields=channelDetect ? ["baseUrl"] : ["displayName","baseUrl","clientType"];
+      if(!requestBody || typeof requestBody!=="object" || Array.isArray(requestBody) ||
+        Object.keys(requestBody).some(key=>!fields.includes(key))) {
+        throw new HttpError(400,"invalid_channel_fields","渠道只维护显示名、接入地址和协议，不接收模型密钥。");
+      }
+    }
     if(centralPrivate){
       if(c.req.method==="GET"&&url.searchParams.get("scope")==="project")url.searchParams.set("projectId",this.privateProjectScope(held.binding.localId,url.searchParams.get("projectId")??""));
       if(c.req.method!=="GET"&&requestBody?.scope==="project")requestBody={...requestBody,projectId:this.privateProjectScope(held.binding.localId,String(requestBody.projectId??""))};
