@@ -6,6 +6,7 @@ import { runDirectory } from './design-quality.mjs';
 import { extractCases } from './execution-plan.mjs';
 import { loadLatestExecution } from './execution-attempts.mjs';
 import { assertExecutionTargets, executionScriptFiles } from './execution-targets.mjs';
+import { bundleAssetStale, registerScriptAssetCandidates, scriptAssetStatus } from './execution-script-assets.mjs';
 
 const sha = data => createHash('sha256').update(data).digest('hex');
 const json = file => JSON.parse(readFileSync(file, 'utf8'));
@@ -70,6 +71,16 @@ function verifiedFiles(lib, bundle) {
   return base;
 }
 
+/** 候选资产登记是治理动作，失败不回滚已验证脚本的归档。 */
+function registerCandidates(root, { runId, plan, bundle }) {
+  try {
+    const result = registerScriptAssetCandidates(root, { runId, plan, bundleId: bundle.id, files: bundle.files, capturedAt: new Date().toISOString() });
+    return { status: 'registered', added: result.added, catalog: result.catalog };
+  } catch (error) {
+    return { status: 'registration_failed', reason: error.message };
+  }
+}
+
 export function archiveVerifiedWebScripts(root, runId) {
   const lib = libraryRoot(root);
   if (!lib) return { status: 'unavailable', reason: 'Project script library context unavailable' };
@@ -100,7 +111,10 @@ export function archiveVerifiedWebScripts(root, runId) {
   try {
     const index = readIndex(lib);
     const prior = index.bundles.find(row => row.id === id);
-    if (prior) { verifiedFiles(lib, prior); return { status: 'already_archived', bundle_id: id }; }
+    if (prior) {
+      verifiedFiles(lib, prior);
+      return { status: 'already_archived', bundle_id: id, script_assets: registerCandidates(root, { runId, plan, bundle: prior }) };
+    }
     const target = resolve(lib, 'bundles', id);
     if (existsSync(target)) throw new Error('Unindexed bundle exists; inspect before archiving');
     mkdirSync(target, { recursive: true });
@@ -112,7 +126,7 @@ export function archiveVerifiedWebScripts(root, runId) {
     const bundle = { id, status: 'verified', source_run_id: runId, source_invocation_id: results.invocation_id, verified_at: new Date().toISOString(), origin, cases: fingerprints, files };
     verifiedFiles(lib, bundle);
     atomicJson(resolve(lib, 'index.json'), { version: 1, bundles: [...index.bundles, bundle] });
-    return { status: 'archived', bundle_id: id, cases: Object.keys(fingerprints) };
+    return { status: 'archived', bundle_id: id, cases: Object.keys(fingerprints), script_assets: registerCandidates(root, { runId, plan, bundle }) };
   } finally { closeSync(fd); unlinkSync(lock); }
 }
 
@@ -128,6 +142,8 @@ export function reuseWebScripts(root, runId) {
   const pending = new Set(Object.keys(fingerprints)), selected = [];
   const bundles = readIndex(lib).bundles.filter(row => row.status === 'verified' && row.origin === origin).sort((a,b) => b.verified_at.localeCompare(a.verified_at));
   for (const bundle of bundles) {
+    // 环境版本漂移的 bundle 不再复用：只让受影响的用例进入增量再生。
+    if (bundleAssetStale(root, { plan, bundle }).stale) continue;
     const matches = Object.keys(bundle.cases ?? {}).filter(id => pending.has(id) && bundle.cases[id] === fingerprints[id]);
     if (!matches.length || Object.keys(bundle.cases).some(id => !pending.has(id) && fingerprints[id] || pending.has(id) && bundle.cases[id] !== fingerprints[id])) continue;
     const base = verifiedFiles(lib, bundle);
@@ -141,10 +157,12 @@ export function reuseWebScripts(root, runId) {
     mkdirSync(dirname(target), { recursive: true });
     copyFileSync(resolve(item.base, file.path), target);
   }
+  const assets = scriptAssetStatus(root, plan);
   if (selected.length) {
     assertExecutionTargets(root, plan, executionScriptFiles(scripts));
     plan.script_reuse = selected.map(item => ({ bundle_id: item.bundle.id, source_run_id: item.bundle.source_run_id, case_ids: item.matches, files: item.bundle.files }));
-    atomicJson(planPath, plan);
   }
-  return { status: 'prepared', reused: selected.flatMap(item => item.matches), remaining: [...pending], bundle_ids: selected.map(item => item.bundle.id) };
+  plan.script_assets = { reused: assets.reused, regenerate: assets.regenerate };
+  atomicJson(planPath, plan);
+  return { status: 'prepared', reused: selected.flatMap(item => item.matches), remaining: [...pending], bundle_ids: selected.map(item => item.bundle.id), script_assets: plan.script_assets };
 }

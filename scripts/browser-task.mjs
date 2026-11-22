@@ -24,6 +24,7 @@ import { operationPerformance, humanHandoffTiming } from './browser-performance.
 import { browserSecretReferences, validateSecretReference } from './browser-secret-references.mjs';
 import { isProtectedInput, protectedInputs } from './protected-inputs.mjs';
 import { nativeHumanDecision } from './browser-human-action.mjs';
+import { readBrowserPolicy, assertPlaywrightVersion, assertChromiumVersion, resolveLaunchHeadless, launchOptions, workerContextOptions, browserPolicyReceipt } from './browser-launch-policy.mjs';
 import { collectLoginDom, classifyLoginForm, classifyCaptcha, parseArithmetic, confidenceGate, strategyOrder, recordStrategyOutcome, validateLoginConfig, loginSessionFile, loginSessionMetaFile, loginSessionMeta, MAX_CAPTCHA_SUBMITS, MIN_SOLVE_CONFIDENCE, AGENT_VISION_STRATEGY, loginCaptchaPendingFile, loginCaptchaImageFile, resolveCaptchaType } from './login-captcha-chain.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -66,7 +67,7 @@ let sequenceCancelled=false;
 
 export const browserOperations = ['start', 'health', 'recover', 'sequence', 'snapshot', 'goto', 'fill', 'click', 'press', 'select', 'check', 'assert', 'pause', 'finish', 'data_prepare', 'api_check', 'login_probe', 'login', 'login_recognize'];
 export const browserOperationFields=Object.freeze({
-  sequence:['observed_request_id','steps'],start:['url','source_path','scope','headless'],health:[],recover:[],snapshot:['scope','if_sha256'],goto:['url','source_path'],
+  sequence:['observed_request_id','steps'],start:['url','source_path','scope','headless','mode'],health:[],recover:[],snapshot:['scope','if_sha256'],goto:['url','source_path'],
   fill:['target','value','value_ref','secret_ref','secret'],click:['target','assertion','preconditions','response_check','data_effect','fault','dialog_policy'],press:['target','key','assertion','preconditions','response_check','data_effect','fault','dialog_policy'],select:['target','value','value_ref'],
   check:['target','checked'],assert:['target','condition','value','value_ref','text_mode','case_id','title','expected','case_ref','recheck_of','ready','expected_basis'],
   pause:['kind','question'],finish:['summary','limitations','untested','case_reviews'],data_prepare:['key'],api_check:['check'],
@@ -105,7 +106,7 @@ export async function browserWorkerResponse(response, requestId) {
 export function browserErrorDiagnostic(error, phase) {
   const message=String(error?.message ?? error);
   const launch=phase==='browser_launch';
-  const category=/Browser already started/.test(message)?'browser_already_started':/Expected result already present before action/.test(message)?'stale_result':launch && /executable (?:doesn't|does not) exist|executable not found|no such file|ENOENT/i.test(message)?'browser_binary_missing':launch && /EACCES|EPERM|access (?:is )?denied/i.test(message)?'browser_start_denied':/closed|disconnected|crash/i.test(message)?'browser_unavailable':/timeout/i.test(message)?'timeout':/execution context|navigation/i.test(message)?'navigation_changed':/strict mode|uniquely visible/i.test(message)?'locator_mismatch':'browser_operation_error';
+  const category=/Browser policy version mismatch/.test(message)?'browser_policy_mismatch':/Browser already started/.test(message)?'browser_already_started':/Expected result already present before action/.test(message)?'stale_result':launch && /executable (?:doesn't|does not) exist|executable not found|no such file|ENOENT/i.test(message)?'browser_binary_missing':launch && /EACCES|EPERM|access (?:is )?denied/i.test(message)?'browser_start_denied':/closed|disconnected|crash/i.test(message)?'browser_unavailable':/timeout/i.test(message)?'timeout':/execution context|navigation/i.test(message)?'navigation_changed':/strict mode|uniquely visible/i.test(message)?'locator_mismatch':'browser_operation_error';
   // Never persist raw Playwright call logs: they can contain selectors and form secrets.
   return {phase,category,...(/net::ERR_[A-Z_]+/.test(message)?{network_code:message.match(/net::ERR_[A-Z_]+/)[0]}:{})};
 }
@@ -235,6 +236,7 @@ export function validateBrowserOperation(op) {
   assert(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(op.request_id ?? ''), 'operation.request_id is required: use 1-80 ASCII letters/digits/_/-, e.g. "case1-submit". No operation performed. Reuse the same ID after transport uncertainty; give a different intended operation a new ID.');
   const fields=browserOperationFields;
   assert(Object.keys(op).every(k => ['type','request_id',...fields[op.type]].includes(k)), 'Unknown browser operation field');
+  if(op.type==='start' && op.mode!==undefined) assert(['batch','login'].includes(op.mode),'start.mode must be batch or login');
   for(const key of ['url','target','assertion','preconditions','check','dialog_policy','value_ref','response_check','fault','config_path','quote']) assert(!JSON.stringify(op[key] ?? null).includes('qa-secret://'),'Protected inputs are supported only as an exact private fill value');
   if(typeof op.value==='string' && op.value.includes('qa-secret://')) assert(op.type==='fill' && op.secret!==false && isProtectedInput(op.value),'Protected inputs are supported only as an exact private fill value');
   if(op.type==='login') {
@@ -876,13 +878,22 @@ async function worker(root,runId) {
         assert(!browser && state.status==='starting','Browser already started');
         const source=readRunFile(dir,op.source_path), target=validateExplorationTarget(op.url,op.source_path,source.data.toString('utf8'));
         const bundled=existsSync(chromium.executablePath());
+        const policy=readBrowserPolicy(root);
+        let playwrightVersion=null;
+        try { playwrightVersion=JSON.parse(readFileSync(resolve(root,'node_modules/@playwright/test/package.json'),'utf8')).version; } catch { /* 版本回执记录为空，不猜测 */ }
+        assertPlaywrightVersion(policy,playwrightVersion);
+        const mode=op.mode ?? 'batch';
+        const headless=resolveLaunchHeadless(policy,{mode,requested:op.headless});
         Object.assign(state,{dispatch_id:dispatchId,scope:op.scope,source_path:op.source_path,source_sha256:source.sha256,origin:target.origin,
-          browser_runtime:{...browserExecutionContext(),worker_pid:process.pid,platform:process.platform,source:bundled?'playwright_chromium':'chrome_channel',headless:op.headless ?? false,launch_status:'launching'}});save();
+          browser_runtime:{...browserExecutionContext(),worker_pid:process.pid,platform:process.platform,source:bundled?'playwright_chromium':'chrome_channel',headless,mode,policy:browserPolicyReceipt(policy,{playwrightVersion,headless,mode}),launch_status:'launching'}});save();
         phase='browser_launch';
-        browser=await chromium.launch({headless:op.headless ?? false,...(!bundled?{channel:'chrome'}:{})});
-        state.browser_runtime.launch_status='ready';state.browser_runtime.version=browser.version();save();
+        browser=await chromium.launch(launchOptions(policy,{headless,bundled}));
+        const chromiumCheck=assertChromiumVersion(policy,browser.version());
+        state.browser_runtime.launch_status='ready';state.browser_runtime.version=browser.version();
+        state.browser_runtime.policy.actual.chromium=browser.version();state.browser_runtime.policy.chromium_enforced=chromiumCheck.enforced;save();
         phase='browser_setup';
-        context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block',acceptDownloads:false});
+        // 每个 worker 一个独立 context：不共享 cookie/storageState，登录态只在当前批次内。
+        context=await browser.newContext(workerContextOptions(policy,0));
         await context.routeWebSocket('**/*',socket=>socket.close());
         await context.route('**/*',async route=>{
           const req=route.request();

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "playwright": "1.63.0",
+  "chromium_major": null,
+  "channel": null,
+  "executable_path": null,
+  "batch_headless": true,
+  "login_headed": true,
+  "isolate_workers": true,
+  "enforce_playwright_version": true,
+  "viewport": {
+    "width": 1440,
+    "height": 1000
+  },
+  "service_workers": "block"
+}

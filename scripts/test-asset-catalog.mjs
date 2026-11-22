@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 export const assetKinds = new Set([
   "requirement_rule", "test_data_profile", "ui_locator_bundle",
-  "assertion_bundle", "api_contract", "defect_pattern"
+  "assertion_bundle", "api_contract", "defect_pattern", "execution_script"
 ]);
 export const assetStatuses = new Set(["candidate", "verified", "deprecated"]);
 
