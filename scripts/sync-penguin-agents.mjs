@@ -43,11 +43,12 @@ export function sharedInstructionsForRole(source, roleId) {
   return output.join('\n').replace(/\n{3,}/g,'\n\n').trimEnd()+'\n';
 }
 
-export function syncPenguinAgents(root, targetRoot, { apply = false, onlyFallback = false } = {}) {
+export function syncPenguinAgents(root, targetRoot, { apply = false, onlyFallback = false, agentIds, fillMissingOnly = false } = {}) {
   root = resolve(root); targetRoot = resolve(targetRoot);
   const manifest = JSON.parse(readFileSync(resolve(root, 'penguin/agents.json'), 'utf8'));
   if (manifest.shared_instructions) assertUnlinked(root, resolve(root, manifest.shared_instructions));
   const shared = manifest.shared_instructions ? readFileSync(resolve(root, manifest.shared_instructions), 'utf8') : '';
+  const selected = id => !agentIds || agentIds.includes(id);
   const changes = [];
   const writes = [];
   const retirements = [];
@@ -57,13 +58,14 @@ export function syncPenguinAgents(root, targetRoot, { apply = false, onlyFallbac
     if (destinations.has(target)) throw new Error(`Duplicate sync destination: ${target}`);
     destinations.add(target);
     const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
-    if (existsSync(target) && bytes.equals(readFileSync(target))) return;
+    if (existsSync(target) && (fillMissingOnly || bytes.equals(readFileSync(target)))) return;
     changes.push({ agent, source, target });
     writes.push({ target, bytes });
   }
   // Validate every source and target before writing any file. Fallback-only
   // synchronization leaves the shared professional-role references untouched.
   for (const agent of onlyFallback ? [] : manifest.agents ?? []) {
+    if (!selected(agent.id)) continue;
     if (!/^[a-z0-9_]+$/.test(agent.id)) throw new Error('Invalid agent id');
     const stateDir = resolve(targetRoot, agent.id, 'agent_state');
     assertUnlinked(targetRoot, stateDir);
@@ -76,7 +78,7 @@ export function syncPenguinAgents(root, targetRoot, { apply = false, onlyFallbac
         add(agent.id, file.source, resolve(stateDir, 'skills', skill, file.relative), readFileSync(file.source));
       }
     }
-    for(const skill of agent.retired_skills ?? []) {
+    for(const skill of fillMissingOnly ? [] : agent.retired_skills ?? []) {
       if((agent.skills ?? []).includes(skill)) throw new Error('A skill cannot be both active and retired');
       const expected=validateSkillResources(root,skill);
       const source=resolve(stateDir,'skills',skill);
@@ -93,13 +95,13 @@ export function syncPenguinAgents(root, targetRoot, { apply = false, onlyFallbac
     }
   }
   const fallback=manifest.fallback_entry;
-  if(fallback) {
+  if(fallback && selected(fallback.id)) {
     if(fallback.id!=='default_agent') throw new Error('Unsupported fallback agent');
     const stateDir=resolve(targetRoot,fallback.id,'agent_state');assertUnlinked(targetRoot,stateDir);
     if(existsSync(stateDir)) {
       const source=resolve(root,fallback.prompt),target=resolve(stateDir,'AGENTS.md');
       assertUnlinked(root,source);assertUnlinked(targetRoot,target);
-      add(fallback.id,source,target,mergeFallbackInstructions(existsSync(target)?readFileSync(target,'utf8'):'',readFileSync(source,'utf8')));
+      add(fallback.id,source,target,fillMissingOnly && existsSync(target) ? '' : mergeFallbackInstructions(existsSync(target)?readFileSync(target,'utf8'):'',readFileSync(source,'utf8')));
       for(const name of ['hooks.json','guard.mjs','project.json']) {
         const source=resolve(root,'penguin/hooks/qa-default-entry',name);
         if(name!=='project.json') assertUnlinked(root,source);
@@ -108,13 +110,13 @@ export function syncPenguinAgents(root, targetRoot, { apply = false, onlyFallbac
     }
   }
   const hookDir = resolve(targetRoot, 'test_agent/agent_state/hooks/qa-delegation-guard');
-  for (const name of onlyFallback ? [] : ['hooks.json', 'guard.mjs', 'finish.mjs', 'project.json']) {
+  for (const name of onlyFallback || !selected('test_agent') ? [] : ['hooks.json', 'guard.mjs', 'finish.mjs', 'project.json']) {
     const source = resolve(root, 'penguin/hooks/qa-delegation-guard', name);
     if (name !== 'project.json') assertUnlinked(root, source);
     const content = name === 'project.json' ? JSON.stringify({ root, agent_root: targetRoot }, null, 2) + '\n' : readFileSync(source);
     add('test_agent', name === 'project.json' ? 'generated-local-paths' : source, resolve(hookDir, name), content);
   }
-  for(const agent of onlyFallback ? [] : manifest.agents?.filter(agent=>agent.id!=='test_agent') ?? []) {
+  for(const agent of onlyFallback ? [] : manifest.agents?.filter(agent=>agent.id!=='test_agent' && selected(agent.id)) ?? []) {
     const childHookDir=resolve(targetRoot,agent.id,'agent_state/hooks/qa-stage-boundary');
     for(const name of ['hooks.json','guard.mjs','project.json']) {
       const source=resolve(root,'penguin/hooks/qa-stage-boundary',name);
@@ -131,7 +133,7 @@ export function syncPenguinAgents(root, targetRoot, { apply = false, onlyFallbac
   }
   if (apply) for (const { target, bytes } of writes) {
     mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, bytes);
+    writeFileSync(target, bytes, fillMissingOnly ? {flag:'wx'} : undefined);
   }
   // Only explicitly retired, byte-identical managed skills move; unrelated files stay.
   return { status: apply ? 'synchronized' : changes.length ? 'drift_detected' : 'in_sync', target_root: targetRoot, changes: apply || !changes.length ? changes.length : changes, archived_skills:apply?retirements.map(({source,target})=>({source,target})):[] };

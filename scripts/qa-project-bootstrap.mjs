@@ -10,6 +10,9 @@ export function qaRoles() {
 export function initializeQaRoles(agentRoot) {
   return syncPenguinAgents(root,agentRoot,{apply:true});
 }
+export function fillMissingQaAgentResources(agentRoot, agentIds) {
+  return syncPenguinAgents(root,agentRoot,{apply:true,agentIds,fillMissingOnly:true});
+}
 export function initializeQaDefaultEntry(agentRoot) {
   return syncPenguinAgents(root,agentRoot,{apply:true,onlyFallback:true});
 }
