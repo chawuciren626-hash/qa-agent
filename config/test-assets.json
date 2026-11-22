@@ -37,6 +37,178 @@
       "source": { "type": "environment_policy", "reference": "测试环境登记", "captured_at": "2026-09-28" },
       "validation": { "validated_at": "2026-09-28", "environment": "local-gov-bid", "evidence": "环境授权记录" },
       "data": { "fields": { "phone": { "classification": "sensitive", "strategy": "从已授权环境配置读取，不写入资产目录" }, "verification_code": { "classification": "secret", "strategy": "从已授权环境配置读取，不写入资产目录" } } }
+    },
+    {
+      "id": "ui-saucedemo-test-82492e87",
+      "kind": "ui_locator_bundle",
+      "name": "页面定位器：/inventory.html",
+      "version": "1.0.0",
+      "status": "verified",
+      "scope": {
+        "application": "saucedemo-test",
+        "modules": ["inventory"],
+        "environments": ["saucedemo-test"]
+      },
+      "tags": ["exploration", "saucedemo-test", "web"],
+      "source": {
+        "type": "observed_ui",
+        "reference": "探索自动派生并经 saucedemo.com 实页验证后人工晋升 verified",
+        "captured_at": "2026-11-22T06:46:46.503Z"
+      },
+      "validation": {
+        "validated_at": "2026-11-22T06:46:46.508Z",
+        "environment": "saucedemo-test",
+        "evidence": "saucedemo.com 探索产出 24 控件指纹来自实际 DOM，经 explore-authenticated 全链路验证"
+      },
+      "data": {
+        "route": "/inventory.html",
+        "controls": [
+          {
+            "control_type": "button",
+            "name": "react-burger-menu-btn",
+            "text": "Open Menu",
+            "fingerprints": { "testid": null, "role": null, "css": "#react-burger-menu-btn", "text": "Open Menu" }
+          },
+          {
+            "control_type": "link",
+            "name": null,
+            "text": "Cart, empty",
+            "fingerprints": { "testid": null, "role": "button", "css": null, "text": "Cart, empty" }
+          },
+          {
+            "control_type": "select",
+            "name": null,
+            "text": "Sort products",
+            "fingerprints": { "testid": null, "role": null, "css": null, "text": "Sort products" }
+          },
+          {
+            "control_type": "link",
+            "name": "item_4_img_link",
+            "text": "View details for Sauce Labs Backpack",
+            "fingerprints": { "testid": null, "role": "button", "css": "#item_4_img_link", "text": "View details for Sau" }
+          },
+          {
+            "control_type": "link",
+            "name": "item_4_title_link",
+            "text": "View details for Sauce Labs Backpack",
+            "fingerprints": { "testid": null, "role": "button", "css": "#item_4_title_link", "text": "View details for Sau" }
+          },
+          {
+            "control_type": "button",
+            "name": "add-to-cart-sauce-labs-backpack",
+            "text": "Add to cart",
+            "fingerprints": { "testid": null, "role": null, "css": "#add-to-cart-sauce-labs-backpack", "text": "Add to cart" }
+          },
+          {
+            "control_type": "link",
+            "name": "item_0_img_link",
+            "text": "View details for Sauce Labs Bike Light",
+            "fingerprints": { "testid": null, "role": "button", "css": "#item_0_img_link", "text": "View details for Sau" }
+          },
+          {
+            "control_type": "link",
+            "name": "item_0_title_link",
+            "text": "View details for Sauce Labs Bike Light",
+            "fingerprints": { "testid": null, "role": "button", "css": "#item_0_title_link", "text": "View details for Sau" }
+          },
+          {
+            "control_type": "button",
+            "name": "add-to-cart-sauce-labs-bike-light",
+            "text": "Add to cart",
+            "fingerprints": { "testid": null, "role": null, "css": "#add-to-cart-sauce-labs-bike-light", "text": "Add to cart" }
+          },
+          {
+            "control_type": "link",
+            "name": "item_1_img_link",
+            "text": "View details for Sauce Labs Bolt T-Shirt",
+            "fingerprints": { "testid": null, "role": "button", "css": "#item_1_img_link", "text": "View details for Sau" }
+          },
+          {
+            "control_type": "link",
+            "name": "item_1_title_link",
+            "text": "View details for Sauce Labs Bolt T-Shirt",
+            "fingerprints": { "testid": null, "role": "button", "css": "#item_1_title_link", "text": "View details for Sau" }
+          },
+          {
+            "control_type": "button",
+            "name": "add-to-cart-sauce-labs-bolt-t-shirt",
+            "text": "Add to cart",
+            "fingerprints": { "testid": null, "role": null, "css": "#add-to-cart-sauce-labs-bolt-t-shirt", "text": "Add to cart" }
+          },
+          {
+            "control_type": "link",
+            "name": "item_5_img_link",
+            "text": "View details for Sauce Labs Fleece Jacket",
+            "fingerprints": { "testid": null, "role": "button", "css": "#item_5_img_link", "text": "View details for Sau" }
+          },
+          {
+            "control_type": "link",
+            "name": "item_5_title_link",
+            "text": "View details for Sauce Labs Fleece Jacket",
+            "fingerprints": { "testid": null, "role": "button", "css": "#item_5_title_link", "text": "View details for Sau" }
+          },
+          {
+            "control_type": "button",
+            "name": "add-to-cart-sauce-labs-fleece-jacket",
+            "text": "Add to cart",
+            "fingerprints": { "testid": null, "role": null, "css": "#add-to-cart-sauce-labs-fleece-jacket", "text": "Add to cart" }
+          },
+          {
+            "control_type": "link",
+            "name": "item_2_img_link",
+            "text": "View details for Sauce Labs Onesie",
+            "fingerprints": { "testid": null, "role": "button", "css": "#item_2_img_link", "text": "View details for Sau" }
+          },
+          {
+            "control_type": "link",
+            "name": "item_2_title_link",
+            "text": "View details for Sauce Labs Onesie",
+            "fingerprints": { "testid": null, "role": "button", "css": "#item_2_title_link", "text": "View details for Sau" }
+          },
+          {
+            "control_type": "button",
+            "name": "add-to-cart-sauce-labs-onesie",
+            "text": "Add to cart",
+            "fingerprints": { "testid": null, "role": null, "css": "#add-to-cart-sauce-labs-onesie", "text": "Add to cart" }
+          },
+          {
+            "control_type": "link",
+            "name": "item_3_img_link",
+            "text": "View details for Test.allTheThings() T-Shirt (Red)",
+            "fingerprints": { "testid": null, "role": "button", "css": "#item_3_img_link", "text": "View details for Tes" }
+          },
+          {
+            "control_type": "link",
+            "name": "item_3_title_link",
+            "text": "View details for Test.allTheThings() T-Shirt (Red)",
+            "fingerprints": { "testid": null, "role": "button", "css": "#item_3_title_link", "text": "View details for Tes" }
+          },
+          {
+            "control_type": "button",
+            "name": "add-to-cart-test.allthethings()-t-shirt-(red)",
+            "text": "Add to cart",
+            "fingerprints": { "testid": null, "role": null, "css": "#add-to-cart-test.allthethings()-t-shirt-(red)", "text": "Add to cart" }
+          },
+          {
+            "control_type": "link",
+            "name": null,
+            "text": "X",
+            "fingerprints": { "testid": null, "role": null, "css": null, "text": "X" }
+          },
+          {
+            "control_type": "link",
+            "name": null,
+            "text": "Facebook",
+            "fingerprints": { "testid": null, "role": null, "css": null, "text": "Facebook" }
+          },
+          {
+            "control_type": "link",
+            "name": null,
+            "text": "LinkedIn",
+            "fingerprints": { "testid": null, "role": null, "css": null, "text": "LinkedIn" }
+          }
+        ]
+      }
     }
   ]
 }
