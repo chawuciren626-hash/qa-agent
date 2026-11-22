@@ -1605,10 +1605,11 @@ function createSectionsUI(deps) {
     const rows = list.data?.entries || [];
     R.useEffect(() => {setView(validView(section));}, [section]);
     const knowledgeViews = {
-      knowledge_documents: { tab: "documents", label: "项目参考资料", icon: "book" },
-      knowledge_candidates: { tab: "candidates", label: "待确认知识", icon: "clock" },
-      knowledge_rules: { tab: "rules", label: "正式规则", icon: "book" },
+      system_map: { tab: null, label: "系统地图", icon: "globe", navigate: "/qa/project/environments" },
+      knowledge_documents: { tab: "documents", label: "业务知识", icon: "book" },
       knowledge_assets: { tab: "assets", label: "测试资产", icon: "box" },
+      history: { tab: null, label: "历史档案", icon: "clock", navigate: "/qa/project" },
+      knowledge_candidates: { tab: "candidates", label: "草稿待确认", icon: "clock" },
     };
     const knowledgeView = deps.ProjectKnowledgePanel ? knowledgeViews[view] : null;
     async function open(row) {
@@ -1729,92 +1730,7 @@ function createSectionsUI(deps) {
           h("h1", null, "项目资料"),
           !knowledgeView && button("刷新", list.reload),
         ),
-        h(
-          "div",
-          { className: "qa-library-nav" },
-          ...(
-            deps.ProjectKnowledgePanel
-              ? []
-              : [["search", "搜索", "book"], ["recent", "最近", "clock"], ["artifacts", "本地产物", "folder"]]
-          ).map(([v, label, icon]) =>
-            h(
-              "button",
-              {
-                key: v,
-                className: view === v ? "is-active" : "",
-                onClick: () => nav(v),
-              },
-              h(Icon, { name: icon }),
-              label,
-            ),
-          ),
-        ),
-        deps.ProjectKnowledgePanel ? null : h(
-          "div",
-          { className: "qa-library-group" },
-          h("button", { onClick: () => nav("mine") }, "个人草稿"),
-          h(
-            "button",
-            {
-              "aria-label": "新建资料",
-              "aria-expanded": menu,
-              onClick: () => setMenu(!menu),
-            },
-            h(Icon, { name: "plus" }),
-          ),
-        ),
-        menu &&
-          h(
-            "div",
-            { className: "qa-library-create", role: "menu" },
-            ...[
-              ["文档 (.md)", "file", "未命名文档.md"],
-              ["表格 (.csv)", "file", "未命名表格.csv"],
-              ["文件夹", "folder", "新建文件夹"],
-              ["链接", "link", "新链接"],
-            ].map(([label, kind, name]) =>
-              h(
-                "button",
-                {
-                  role: "menuitem",
-                  key: label,
-                  onClick: () => {
-                    setEdit({
-                      kind,
-                      name,
-                      parentId: folder,
-                      content:
-                        kind === "file" && name.endsWith(".csv")
-                          ? "字段1,字段2\n"
-                          : "",
-                    });
-                    setMenu(false);
-                  },
-                },
-                `新建${label}`,
-              ),
-            ),
-            h(
-              "button",
-              {
-                role: "menuitem",
-                onClick: () => {
-                  setMenu(false);
-                  fileInput.current?.click();
-                },
-              },
-              "上传和导入",
-            ),
-          ),
-        h("input", {
-          type: "file",
-          multiple: true,
-          hidden: true,
-          ref: fileInput,
-          onChange: upload,
-          "aria-label": "导入资料文件",
-        }),
-        h(
+                h(
           "div",
           { className: "qa-library-tree" },
           ...rows
@@ -1851,20 +1767,9 @@ function createSectionsUI(deps) {
           deps.ProjectKnowledgePanel && h("nav", { className: "qa-library-nav", "aria-label": "项目知识分类" },
             ...Object.entries(knowledgeViews).map(([key, entry]) => h("button", {
               key, className: view === key ? "is-active" : "", "aria-current": view === key ? "page" : undefined,
-              onClick: () => nav(key),
+              onClick: () => { if (entry.navigate) { navigate(entry.navigate); onNavigate?.(); } else { nav(key); } },
             }, h(Icon, { name: entry.icon }), entry.label)),
           ),
-        ),
-        h(
-          "div",
-          { className: "qa-library-storage" },
-          "我的资料：本机保存 · 仅当前账号",
-          h(
-            "div",
-            null,
-            `已用 ${sizeText(list.data?.usedBytes || 0)} / 100 MB`,
-          ),
-          deps.ProjectKnowledgePanel && h("div", { className: "qa-library-storage-note" }, "项目参考资料按项目权限使用，纳入前确认"),
         ),
       ),
       h(
