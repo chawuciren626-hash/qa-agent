@@ -1249,7 +1249,7 @@ CREATE TABLE IF NOT EXISTS mcp_server_audit ( -- 目录审计：登记/修改/�
 -- fresh 库缺失导致 db-migrations / db-migration-steps 形态对比失败。
 -- SQL 原文取自 migrated 库 sqlite_master.sql（逐字回填，保证形态一致）。
 -- [table] qa_case_graph_links
-CREATE TABLE qa_case_graph_links (
+CREATE TABLE IF NOT EXISTS qa_case_graph_links (
   link_id     TEXT PRIMARY KEY,
   mission_id  TEXT NOT NULL REFERENCES qa_test_missions(mission_id) ON DELETE CASCADE,
   project_id  TEXT NOT NULL,
@@ -1262,7 +1262,7 @@ CREATE TABLE qa_case_graph_links (
   UNIQUE(mission_id, point_key, case_key, oracle_id, relation)
 );
 -- [table] qa_execution_envelopes
-CREATE TABLE qa_execution_envelopes (
+CREATE TABLE IF NOT EXISTS qa_execution_envelopes (
   envelope_id           TEXT PRIMARY KEY,
   mission_id            TEXT NOT NULL REFERENCES qa_test_missions(mission_id) ON DELETE CASCADE,
   project_id            TEXT NOT NULL,
@@ -1293,7 +1293,7 @@ CREATE TABLE qa_execution_envelopes (
   UNIQUE(mission_id, label)
 );
 -- [table] qa_oracle_entries
-CREATE TABLE qa_oracle_entries (
+CREATE TABLE IF NOT EXISTS qa_oracle_entries (
   oracle_id          TEXT PRIMARY KEY,
   mission_id         TEXT NOT NULL REFERENCES qa_test_missions(mission_id) ON DELETE CASCADE,
   project_id         TEXT NOT NULL,
@@ -1314,7 +1314,7 @@ CREATE TABLE qa_oracle_entries (
   UNIQUE(mission_id, oracle_key)
 );
 -- [table] qa_test_missions
-CREATE TABLE qa_test_missions (
+CREATE TABLE IF NOT EXISTS qa_test_missions (
   mission_id          TEXT PRIMARY KEY,
   project_id          TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
   title               TEXT NOT NULL,
@@ -1331,7 +1331,7 @@ CREATE TABLE qa_test_missions (
   updated_at          TEXT NOT NULL
 );
 -- [table] qa_u2_attempt_events
-CREATE TABLE qa_u2_attempt_events (
+CREATE TABLE IF NOT EXISTS qa_u2_attempt_events (
   event_id    TEXT PRIMARY KEY,
   attempt_id  TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
   kind        TEXT NOT NULL,
@@ -1340,7 +1340,7 @@ CREATE TABLE qa_u2_attempt_events (
   created_by  TEXT NOT NULL
 );
 -- [table] qa_u2_case_attempts
-CREATE TABLE qa_u2_case_attempts (
+CREATE TABLE IF NOT EXISTS qa_u2_case_attempts (
   attempt_case_id  TEXT PRIMARY KEY,
   attempt_id       TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
   mission_id       TEXT NOT NULL,
@@ -1362,7 +1362,7 @@ CREATE TABLE qa_u2_case_attempts (
   UNIQUE(attempt_id, case_key)
 );
 -- [table] qa_u2_execution_attempts
-CREATE TABLE qa_u2_execution_attempts (
+CREATE TABLE IF NOT EXISTS qa_u2_execution_attempts (
   attempt_id               TEXT PRIMARY KEY,
   mission_id               TEXT NOT NULL REFERENCES qa_test_missions(mission_id) ON DELETE CASCADE,
   envelope_id              TEXT NOT NULL REFERENCES qa_execution_envelopes(envelope_id) ON DELETE CASCADE,
@@ -1383,7 +1383,7 @@ CREATE TABLE qa_u2_execution_attempts (
   updated_at               TEXT NOT NULL
 );
 -- [table] qa_u3_cancellations
-CREATE TABLE qa_u3_cancellations (
+CREATE TABLE IF NOT EXISTS qa_u3_cancellations (
   cancellation_id  TEXT PRIMARY KEY,
   attempt_id       TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
   project_id       TEXT NOT NULL,
@@ -1405,7 +1405,7 @@ CREATE TABLE qa_u3_cancellations (
   updated_at       TEXT NOT NULL
 );
 -- [table] qa_u3_case_checkpoints
-CREATE TABLE qa_u3_case_checkpoints (
+CREATE TABLE IF NOT EXISTS qa_u3_case_checkpoints (
   checkpoint_id  TEXT PRIMARY KEY,
   attempt_id     TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
   case_attempt_id TEXT NOT NULL REFERENCES qa_u2_case_attempts(attempt_case_id) ON DELETE CASCADE,
@@ -1421,7 +1421,7 @@ CREATE TABLE qa_u3_case_checkpoints (
   UNIQUE(case_attempt_id, ordinal)
 );
 -- [table] qa_u3_cleanup_actions
-CREATE TABLE qa_u3_cleanup_actions (
+CREATE TABLE IF NOT EXISTS qa_u3_cleanup_actions (
   action_id       TEXT PRIMARY KEY,
   attempt_id      TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
   effect_id       TEXT REFERENCES qa_u3_side_effects(effect_id) ON DELETE CASCADE,
@@ -1440,7 +1440,7 @@ CREATE TABLE qa_u3_cleanup_actions (
   updated_at      TEXT NOT NULL
 );
 -- [table] qa_u3_fault_injections
-CREATE TABLE qa_u3_fault_injections (
+CREATE TABLE IF NOT EXISTS qa_u3_fault_injections (
   injection_id   TEXT PRIMARY KEY,
   attempt_id     TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
   project_id     TEXT NOT NULL,
@@ -1457,7 +1457,7 @@ CREATE TABLE qa_u3_fault_injections (
   updated_at     TEXT NOT NULL
 );
 -- [table] qa_u3_interface_coverage
-CREATE TABLE qa_u3_interface_coverage (
+CREATE TABLE IF NOT EXISTS qa_u3_interface_coverage (
   coverage_id       TEXT PRIMARY KEY,
   attempt_id        TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
   case_attempt_id   TEXT REFERENCES qa_u2_case_attempts(attempt_case_id) ON DELETE CASCADE,
@@ -1483,7 +1483,7 @@ CREATE TABLE qa_u3_interface_coverage (
   UNIQUE(attempt_id, route_key)
 );
 -- [table] qa_u3_process_verifications
-CREATE TABLE qa_u3_process_verifications (
+CREATE TABLE IF NOT EXISTS qa_u3_process_verifications (
   verification_id TEXT PRIMARY KEY,
   cancellation_id TEXT NOT NULL REFERENCES qa_u3_cancellations(cancellation_id) ON DELETE CASCADE,
   attempt_id      TEXT NOT NULL,
@@ -1502,7 +1502,7 @@ CREATE TABLE qa_u3_process_verifications (
   created_by      TEXT NOT NULL
 );
 -- [table] qa_u3_side_effects
-CREATE TABLE qa_u3_side_effects (
+CREATE TABLE IF NOT EXISTS qa_u3_side_effects (
   effect_id        TEXT PRIMARY KEY,
   attempt_id       TEXT NOT NULL REFERENCES qa_u2_execution_attempts(attempt_id) ON DELETE CASCADE,
   case_attempt_id  TEXT REFERENCES qa_u2_case_attempts(attempt_case_id) ON DELETE CASCADE,
@@ -1520,12 +1520,12 @@ CREATE TABLE qa_u3_side_effects (
   updated_at       TEXT NOT NULL
 );
 -- [table] schema_migrations
-CREATE TABLE schema_migrations (
+CREATE TABLE IF NOT EXISTS schema_migrations (
     name       TEXT PRIMARY KEY,
     applied_at TEXT NOT NULL
   );
 -- [table] task_platform_events
-CREATE TABLE task_platform_events (
+CREATE TABLE IF NOT EXISTS task_platform_events (
         event_id               TEXT PRIMARY KEY,
         event_type             TEXT NOT NULL,
         external_tenant_id     TEXT NOT NULL,
@@ -1538,13 +1538,13 @@ CREATE TABLE task_platform_events (
         product_line_ids_json  TEXT NOT NULL DEFAULT '[]'
       );
 -- [table] task_platform_ingest_cursor
-CREATE TABLE task_platform_ingest_cursor (
+CREATE TABLE IF NOT EXISTS task_platform_ingest_cursor (
         id         INTEGER PRIMARY KEY CHECK(id = 1),
         cursor     TEXT,
         updated_at TEXT NOT NULL
       );
 -- [table] task_platform_packages
-CREATE TABLE task_platform_packages (
+CREATE TABLE IF NOT EXISTS task_platform_packages (
         id              TEXT PRIMARY KEY,
         task_link_id    TEXT NOT NULL REFERENCES task_platform_task_links(link_id) ON DELETE CASCADE,
         package_version INTEGER NOT NULL,
@@ -1559,7 +1559,7 @@ CREATE TABLE task_platform_packages (
         UNIQUE(task_link_id, package_version)
       );
 -- [table] task_platform_project_links
-CREATE TABLE task_platform_project_links (
+CREATE TABLE IF NOT EXISTS task_platform_project_links (
         link_id                 TEXT PRIMARY KEY,
         project_id              TEXT NOT NULL,
         source_system           TEXT NOT NULL,
@@ -1573,7 +1573,7 @@ CREATE TABLE task_platform_project_links (
         UNIQUE(source_system, external_tenant_id, external_product_line_id)
       );
 -- [table] task_platform_result_outbox
-CREATE TABLE task_platform_result_outbox (
+CREATE TABLE IF NOT EXISTS task_platform_result_outbox (
         id              TEXT PRIMARY KEY,
         task_id         TEXT NOT NULL,
         result_id       TEXT NOT NULL,
@@ -1588,7 +1588,7 @@ CREATE TABLE task_platform_result_outbox (
         UNIQUE(result_id, result_version)
       );
 -- [table] task_platform_task_links
-CREATE TABLE task_platform_task_links (
+CREATE TABLE IF NOT EXISTS task_platform_task_links (
         link_id                 TEXT PRIMARY KEY,
         project_id              TEXT NOT NULL,
         source_system           TEXT NOT NULL,
@@ -1606,66 +1606,66 @@ CREATE TABLE task_platform_task_links (
         UNIQUE(source_system, external_tenant_id, external_task_id)
       );
 -- [index] idx_qa_case_graph_links_case
-CREATE INDEX idx_qa_case_graph_links_case
+CREATE INDEX IF NOT EXISTS idx_qa_case_graph_links_case
   ON qa_case_graph_links(project_id, case_key);
 -- [index] idx_qa_execution_envelopes_mission
-CREATE INDEX idx_qa_execution_envelopes_mission
+CREATE INDEX IF NOT EXISTS idx_qa_execution_envelopes_mission
   ON qa_execution_envelopes(mission_id, status);
 -- [index] idx_qa_oracle_entries_mission
-CREATE INDEX idx_qa_oracle_entries_mission
+CREATE INDEX IF NOT EXISTS idx_qa_oracle_entries_mission
   ON qa_oracle_entries(mission_id, status);
 -- [index] idx_qa_test_missions_project
-CREATE INDEX idx_qa_test_missions_project
+CREATE INDEX IF NOT EXISTS idx_qa_test_missions_project
   ON qa_test_missions(project_id, status, updated_at DESC);
 -- [index] idx_qa_test_points_uid
-CREATE INDEX idx_qa_test_points_uid ON qa_test_points(project_id, point_uid);
+CREATE INDEX IF NOT EXISTS idx_qa_test_points_uid ON qa_test_points(project_id, point_uid);
 -- [index] idx_qa_u2_attempt_events_attempt
-CREATE INDEX idx_qa_u2_attempt_events_attempt
+CREATE INDEX IF NOT EXISTS idx_qa_u2_attempt_events_attempt
   ON qa_u2_attempt_events(attempt_id, created_at);
 -- [index] idx_qa_u2_attempts_envelope
-CREATE INDEX idx_qa_u2_attempts_envelope
+CREATE INDEX IF NOT EXISTS idx_qa_u2_attempts_envelope
   ON qa_u2_execution_attempts(envelope_id, started_at DESC);
 -- [index] idx_qa_u2_attempts_mission
-CREATE INDEX idx_qa_u2_attempts_mission
+CREATE INDEX IF NOT EXISTS idx_qa_u2_attempts_mission
   ON qa_u2_execution_attempts(mission_id, attempt_status, started_at DESC);
 -- [index] idx_qa_u2_case_attempts_project_case
-CREATE INDEX idx_qa_u2_case_attempts_project_case
+CREATE INDEX IF NOT EXISTS idx_qa_u2_case_attempts_project_case
   ON qa_u2_case_attempts(project_id, case_key, updated_at DESC);
 -- [index] idx_qa_u3_cancellations_attempt
-CREATE INDEX idx_qa_u3_cancellations_attempt
+CREATE INDEX IF NOT EXISTS idx_qa_u3_cancellations_attempt
   ON qa_u3_cancellations(attempt_id, status, requested_at DESC);
 -- [index] idx_qa_u3_checkpoints_attempt
-CREATE INDEX idx_qa_u3_checkpoints_attempt
+CREATE INDEX IF NOT EXISTS idx_qa_u3_checkpoints_attempt
   ON qa_u3_case_checkpoints(attempt_id, ordinal);
 -- [index] idx_qa_u3_cleanup_actions_attempt
-CREATE INDEX idx_qa_u3_cleanup_actions_attempt
+CREATE INDEX IF NOT EXISTS idx_qa_u3_cleanup_actions_attempt
   ON qa_u3_cleanup_actions(attempt_id, state, updated_at DESC);
 -- [index] idx_qa_u3_fault_injections_attempt
-CREATE INDEX idx_qa_u3_fault_injections_attempt
+CREATE INDEX IF NOT EXISTS idx_qa_u3_fault_injections_attempt
   ON qa_u3_fault_injections(attempt_id, kind, state);
 -- [index] idx_qa_u3_interface_coverage_attempt
-CREATE INDEX idx_qa_u3_interface_coverage_attempt
+CREATE INDEX IF NOT EXISTS idx_qa_u3_interface_coverage_attempt
   ON qa_u3_interface_coverage(attempt_id, result);
 -- [index] idx_qa_u3_process_verifications_cancellation
-CREATE INDEX idx_qa_u3_process_verifications_cancellation
+CREATE INDEX IF NOT EXISTS idx_qa_u3_process_verifications_cancellation
   ON qa_u3_process_verifications(cancellation_id, target_kind);
 -- [index] idx_qa_u3_side_effects_attempt
-CREATE INDEX idx_qa_u3_side_effects_attempt
+CREATE INDEX IF NOT EXISTS idx_qa_u3_side_effects_attempt
   ON qa_u3_side_effects(attempt_id, cleanup_state, updated_at DESC);
 -- [index] idx_qa_u3_side_effects_idempotency
-CREATE INDEX idx_qa_u3_side_effects_idempotency
+CREATE INDEX IF NOT EXISTS idx_qa_u3_side_effects_idempotency
   ON qa_u3_side_effects(attempt_id, idempotency_key);
 -- [index] idx_tp_events_task
-CREATE INDEX idx_tp_events_task
+CREATE INDEX IF NOT EXISTS idx_tp_events_task
         ON task_platform_events(external_tenant_id, external_task_id, package_version);
 -- [index] idx_tp_outbox_due
-CREATE INDEX idx_tp_outbox_due
+CREATE INDEX IF NOT EXISTS idx_tp_outbox_due
         ON task_platform_result_outbox(delivered_at, next_retry_at);
 -- [index] idx_tp_packages_link
-CREATE INDEX idx_tp_packages_link ON task_platform_packages(task_link_id, package_version DESC);
+CREATE INDEX IF NOT EXISTS idx_tp_packages_link ON task_platform_packages(task_link_id, package_version DESC);
 -- [index] idx_tp_project_links_project
-CREATE INDEX idx_tp_project_links_project ON task_platform_project_links(project_id);
+CREATE INDEX IF NOT EXISTS idx_tp_project_links_project ON task_platform_project_links(project_id);
 -- [index] idx_tp_task_links_project_status
-CREATE INDEX idx_tp_task_links_project_status
+CREATE INDEX IF NOT EXISTS idx_tp_task_links_project_status
         ON task_platform_task_links(project_id, status, updated_at DESC);
 `;
