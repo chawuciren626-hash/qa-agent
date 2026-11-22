@@ -69,6 +69,17 @@ export function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
+/**
+ * 执行阶段入口（D4）：smoke 只跑 P0 冒烟，regression 跑非 P0 的全量回归；
+ * 不传 stage 时保持原计划全集。
+ */
+export function filterCasesByPhase(cases, stage) {
+  if (stage == null) return cases;
+  if (stage === 'smoke') return cases.filter(testCase => normalizePriority(testCase) === 'P0');
+  if (stage === 'regression') return cases.filter(testCase => normalizePriority(testCase) !== 'P0');
+  throw new Error(`未知执行阶段 ${stage}，可选 smoke|regression。`);
+}
+
 export function validateExecutionPlan(plan) {
   const errors = [];
   if (!plan || typeof plan !== 'object') return ['执行计划必须是对象。'];

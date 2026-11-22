@@ -2,7 +2,7 @@ import { resourcePath } from './directory-context.mjs';
 import { dataPath } from './directory-context.mjs';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createExecutionCases, extractCases, validateExecutionPlan } from "./execution-plan.mjs";
+import { createExecutionCases, extractCases, filterCasesByPhase, validateExecutionPlan } from "./execution-plan.mjs";
 import { applyAnchorBindings, loadCatalog } from "./locator-anchor-adapter.mjs";
 import { inspectDesign, designReceipt, readRunFile, runDirectory } from './design-quality.mjs';
 
@@ -12,6 +12,8 @@ const sourceArg = process.argv.find((arg) => arg.startsWith("--cases="))?.slice(
 const selectionArg = process.argv.find((arg) => arg.startsWith("--selection="))?.slice(12);
 const environmentConfig = process.argv.find(arg => arg.startsWith('--environment-config='))?.slice(21) ?? 'config/test-env.json';
 const testDir = process.argv.find(arg => arg.startsWith('--test-dir='))?.slice(11) ?? 'tests/generated';
+const phaseArg = process.argv.find((arg) => arg.startsWith('--phase='))?.slice(8) ?? null;
+if (phaseArg !== null && !['smoke', 'regression'].includes(phaseArg)) throw new Error('--phase 只支持 smoke 或 regression。');
 if (!runId || !sourceArg) throw new Error("用法: node scripts/create-execution-plan.mjs --run-id=<run_id> --cases=<test_cases.json>");
 const runDir = runDirectory(root, runId);
 const sourcePath = resourcePath(root, sourceArg);
@@ -35,7 +37,8 @@ if (checked.errors.length) throw new Error(checked.errors.join('\n'));
 // 没有资产目录时保持原计划契约，不阻断执行。
 const catalogSource = loadCatalog(root);
 const designCases = catalogSource.catalog ? applyAnchorBindings(checked.cases, catalogSource.catalog) : checked.cases;
-const cases = createExecutionCases(designCases);
+const cases = filterCasesByPhase(createExecutionCases(designCases), phaseArg);
+if (!cases.length) throw new Error(`--phase=${phaseArg} 过滤后没有可执行用例。`);
 const anchorBindings = catalogSource.catalog
   ? {
       catalog: catalogSource.path.replace(/\\/g, "/"),
@@ -60,6 +63,7 @@ const plan = {
   selection: selection ? { profile: selection.profile, source: selectionArg.replace(/\\/g, "/"), summary: selection.summary } : null,
   cases,
   phases,
+  phase: phaseArg,
   priority_summary: prioritySummary,
   anchor_bindings: anchorBindings,
   manual_pending: manualPending,
