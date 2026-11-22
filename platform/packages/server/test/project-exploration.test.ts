@@ -15,6 +15,7 @@ import {
   buildExplorationArgv,
   captchaImagePath,
   deriveKnowledge,
+  hasRunningExplorations,
   latestExploration,
   listExplorations,
   startExploration,
@@ -189,6 +190,33 @@ describe("exploration dispatch", () => {
     expect(body.knowledge.counts.wall).toBe(2);
     // flow 单页探索给不出：不写空层，免得把已有的链路资产擦掉。
     expect(body.knowledge.counts.flow).toBe(0);
+  });
+
+  it("keeps maintenance blocked until the asynchronous merge and writeback finish", async () => {
+    const projectId = await projectWithRegisteredEnv();
+    let releaseMerge!: () => void;
+    let markMergeEntered!: () => void;
+    const mergeEntered = new Promise<void>((resolve) => { markMergeEntered = resolve; });
+    const mergeGate = new Promise<void>((resolve) => { releaseMerge = resolve; });
+    const merge: ExplorationMerge = async (input) => {
+      markMergeEntered();
+      await mergeGate;
+      return mapsFixture(input);
+    };
+    const deps = depsOf(projectId, { run: runWritingReceipt({ ok: true }), merge });
+    const started = startExploration(deps, projectId, "test", {});
+
+    await mergeEntered;
+    expect(hasRunningExplorations()).toBe(true);
+    expect(() => abortExploration(deps, projectId, "test", started.explorationId)).toThrow(/正在合并回写/);
+
+    releaseMerge();
+    await waitForStatus(deps, projectId, (view) => view?.status === "succeeded");
+    const deadline = Date.now() + 3_000;
+    while (hasRunningExplorations() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(hasRunningExplorations()).toBe(false);
   });
 
   it("site mode: multi-page receipt drives per-page registration and honest failure counts", async () => {

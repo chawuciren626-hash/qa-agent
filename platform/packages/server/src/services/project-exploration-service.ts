@@ -187,11 +187,12 @@ export interface StartExplorationInput {
   loginConfig?: unknown;
 }
 
-/** 活着的探索进程：只有它存在时 waiting_human 才成立（重启后残留行按中断处理）。 */
+/** 活动探索任务：覆盖浏览器执行与合并回写；waiting_human 仅在进程存活时成立。 */
 interface LiveJob {
   handle: ExplorationRunHandle;
   captchaPath: string | null;
   strategies: string[];
+  finalizing?: boolean;
 }
 const jobs = new Map<string, LiveJob>();
 
@@ -357,7 +358,11 @@ export function abortExploration(
   if (row.status !== "running" && row.status !== "waiting_human") {
     throw new HttpError(409, "exploration_not_running", "这一轮已经结束，无需中止");
   }
-  jobs.get(explorationId)?.handle.abort();
+  const job = jobs.get(explorationId);
+  if (job?.finalizing) {
+    throw new HttpError(409, "exploration_finalizing", "本轮采集已结束，正在合并回写，当前无法中止");
+  }
+  job?.handle.abort();
   const now = new Date().toISOString();
   deps.db
     .prepare(
@@ -530,11 +535,16 @@ function finishExploration(
   result: { ok: boolean; error: string | null },
 ): void {
   const job = jobs.get(explorationId);
-  jobs.delete(explorationId);
   const row = deps.db.prepare(`${SELECT} WHERE exploration_id=?`).get(explorationId) as unknown as ExplorationRow | undefined;
-  if (!row) return;
+  if (!row) {
+    jobs.delete(explorationId);
+    return;
+  }
   // 中止已经落库的轮次：不再改状态（结论以操作员中止为准），只清掉活动进程。
-  if (row.status === "aborted") return;
+  if (row.status === "aborted") {
+    jobs.delete(explorationId);
+    return;
+  }
   const now = new Date().toISOString();
   if (!result.ok) {
     deps.db
@@ -545,9 +555,12 @@ function finishExploration(
       .run(result.error ?? "探索失败", now, now, explorationId);
     settleSteps(deps.db, explorationId, "failed", result.error ?? "探索失败");
     // 凭据临时文件必须删掉：失败也要删。
-    void removeCredentials(deps, row, job);
+    void removeCredentials(deps, row, job)
+      .catch(() => undefined)
+      .finally(() => jobs.delete(explorationId));
     return;
   }
+  if (job) job.finalizing = true;
   // 成功：先合并 maps 再写知识；任何一步失败都落 failed，不写半份知识冒充成功。
   void completeSuccess(deps, projectId, env, row).catch((error: unknown) => {
     try {
@@ -568,7 +581,9 @@ function finishExploration(
       // 库已关闭：同上，交给残留校验。
     }
   }).finally(() => {
-    void removeCredentials(deps, row, job);
+    void removeCredentials(deps, row, job)
+      .catch(() => undefined)
+      .finally(() => jobs.delete(explorationId));
   });
 }
 
