@@ -57,6 +57,7 @@ export function createExecutionCases(testCases) {
       priority: normalizePriority(testCase),
       resource_keys: caseResourceKeys(testCase),
       asset_refs: testCase.asset_refs ?? [],
+      anchors: Array.isArray(testCase.anchors) ? testCase.anchors : [],
       execution_contract: normalizeContract(testCase)
     };
   });
@@ -66,6 +67,17 @@ export function createExecutionCases(testCases) {
 
 export function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
+}
+
+/**
+ * 执行阶段入口（D4）：smoke 只跑 P0 冒烟，regression 跑非 P0 的全量回归；
+ * 不传 stage 时保持原计划全集。
+ */
+export function filterCasesByPhase(cases, stage) {
+  if (stage == null) return cases;
+  if (stage === 'smoke') return cases.filter(testCase => normalizePriority(testCase) === 'P0');
+  if (stage === 'regression') return cases.filter(testCase => normalizePriority(testCase) !== 'P0');
+  throw new Error(`未知执行阶段 ${stage}，可选 smoke|regression。`);
 }
 
 export function validateExecutionPlan(plan) {

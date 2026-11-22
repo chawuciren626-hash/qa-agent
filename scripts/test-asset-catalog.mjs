@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { directoryContext } from "./directory-context.mjs";
+
+const safePart = (value) => /^[A-Za-z0-9_-]+$/.test(value ?? "");
 
 export const assetKinds = new Set([
   "requirement_rule", "test_data_profile", "ui_locator_bundle",
@@ -36,8 +39,21 @@ export function validateCatalog(catalog) {
   return errors;
 }
 
+/**
+ * 资产目录唯一解析：隔离模式落项目自动化目录，其余落引擎 config。
+ * 探索候选、脚本资产、执行计划绑定共用这一处，避免同一项目出现两份资产目录。
+ */
+export function projectCatalogPath(root) {
+  const context = directoryContext(root);
+  const dataRoot = process.env.QA_APP_DATA_ROOT;
+  if (context.mode === "isolated" && dataRoot && safePart(context.project_id)) {
+    return resolve(dataRoot, "projects", context.project_id, "automation", "test-assets.json");
+  }
+  return resolve(root, "config/test-assets.json");
+}
+
 export function catalogPath(root, suppliedPath) {
-  return suppliedPath ? resolve(root, suppliedPath) : resolve(root, "config/test-assets.json");
+  return suppliedPath ? resolve(root, suppliedPath) : projectCatalogPath(root);
 }
 import { writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
