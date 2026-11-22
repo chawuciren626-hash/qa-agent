@@ -8,6 +8,7 @@ import type { Hono } from "hono";
 import type { AppEnv } from "../../auth/middleware.js";
 import type { AgentsRouteDeps } from "./agents.js";
 import { qaEnabled, qaEngineModule } from "../../services/qa-engine.js";
+import { inspectQaAgentStates, repairQaAgentStates } from "../../services/qa-agent-repair.js";
 import { userText } from "@prismshadow/penguin-core";
 import { QaTaskRunRegistry } from "../../services/qa-task-run-registry.js";
 import { loadPoolCapacity } from "../../services/pool-capacity.js";
@@ -19,33 +20,6 @@ import { registerQaPersonalResources } from "./qa-personal-resources.js";
 
 const initializing = new Set<string>();
 const execFileAsync = promisify(execFile);
-
-/**
- * 确保项目的 QA 智能体与 penguin/agents.json 声明一致（B4/B11-11 续）：
- * agents.json 新增了角色而存量项目尚未创建时，在此处自动补建——走 agentService.createAgent
- * 正规链路（filesystem + DB 记录 + 管理后台可见），不是只写 AGENTS.md 文件。
- * 已存在的智能体跳过（不覆盖名称/描述/技能绑定）。
- */
-async function ensureQaAgents(deps: AgentsRouteDeps, projectId: string): Promise<void> {
-  if (!qaEnabled) return;
-  try {
-    const engine = qaEngineModule("qa-project-bootstrap") as { qaRoles(): { id: string }[] };
-    const roles = engine.qaRoles();
-    const existing = new Set(
-      (await deps.agentService.listAgents(projectId)).map(a => a.agentId),
-    );
-    for (const role of roles) {
-      if (existing.has(role.id)) continue;
-      try {
-        await deps.agentService.createAgent(projectId, role.id, role.id, `AITestHarness QA 智能体：${role.id}`);
-      } catch {
-        // 创建失败（并发/已存在/权限）跳过，不阻断列表返回。
-      }
-    }
-  } catch {
-    // 引擎模块不可用时静默——agent 列表仍按现状返回。
-  }
-}
 
 export function registerQaProjectRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps): void {
   if (!qaEnabled || !deps.config) return;
@@ -322,6 +296,9 @@ export function registerQaProjectRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps
   });
   const engine = qaEngineModule("qa-project-bootstrap");
   const roles: { id: string; skills: string[] }[] = engine.qaRoles();
+  const repairIds = [...roles.map(role => role.id), "default_agent"];
+  const isBundled = (marker: { status?: string; source?: string } | null) =>
+    marker?.status === "ready" && (marker.source === "bundled-testing-template" || marker.source === undefined);
   const markerPath = (id: string) => path.join(root, id, "qa-project.json");
   const readMarker = async (id: string) => {
     try {
@@ -339,6 +316,8 @@ export function registerQaProjectRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps
       enabled: marker?.status === "ready",
       status: marker?.status ?? "not_initialized",
       canInitialize: access.role === "owner",
+      missingLocalAgents: access.role === "owner" && isBundled(marker)
+        ? await inspectQaAgentStates(root, id, repairIds) : [],
       roles,
     });
   });
@@ -351,7 +330,15 @@ export function registerQaProjectRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps
     initializing.add(key);
     try {
       const marker = await readMarker(id);
-      if (marker?.status === "ready") return c.json({ enabled: true, changed: false });
+      if (marker?.status === "ready") {
+        if (!isBundled(marker)) return c.json({ enabled: true, changed: false, repaired: [] });
+        const missing = await inspectQaAgentStates(root, id, repairIds);
+        if (missing.some(agentId => deps.manager.activeCountForAgent(id, agentId) > 0))
+          throw new HttpError(409, "qa_project_busy", "待修复角色有活动会话，请先结束会话。");
+        const repaired = await repairQaAgentStates(root, id, missing, engine, () =>
+          deps.agentService.listAgents(id));
+        return c.json({ enabled: true, changed: repaired.length > 0, repaired });
+      }
       const existing = new Set(
         (await deps.agentService.listAgents(id)).map((role) => role.agentId),
       );
