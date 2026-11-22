@@ -12,11 +12,13 @@ import { directoryContext } from './directory-context.mjs';
 import { executionChildEnv } from './execution-child-env.mjs';
 import { wslAutomationInvocation } from './wsl-automation.mjs';
 import { readPoolCapacity, runShardedPlaywright } from './execution-shards.mjs';
+import { acquireEnvironmentLock, releaseEnvironmentLock } from './environment-lock.mjs';
 
 export async function executeAttempt(root, runId, { headed = false, signal, runProcess = runManagedProcess, commandId = process.env.QA_EXECUTION_COMMAND_ID } = {}) {
   const context = beginAttempt(root, runId);
   let processesStopped = true;
   let authorization;
+  let envLock = null;
   const read = path => JSON.parse(readFileSync(path, 'utf8'));
   const block = (reason, kind = 'blocked') => {
     if (!processesStopped) {
@@ -66,6 +68,9 @@ export async function executeAttempt(root, runId, { headed = false, signal, runP
     const preflightArgs = ['scripts/preflight-test-environment.mjs', `--environment=${config.environment}`, `--run-id=${runId}`, `--attempt-id=${context.invocationId}`];
     if (config.environment_registry) preflightArgs.push(`--registry=${config.environment_registry}`);
     else if (directoryContext(root).mode === 'isolated') preflightArgs.push(`--environment-config=${plan.environment_config}`);
+    // 环境级互斥：同一环境（跨任务、跨端）串行，锁挂在环境上，attempt 结束即释放。
+    envLock = acquireEnvironmentLock(root, { environmentId: config.environment, runId, invocationId: context.invocationId, baseUrl: config.base_url, ttlMs: Math.max(60 * 60 * 1000, timeoutMs * 2) });
+    if (!envLock.acquired) return block(`Environment ${config.environment} is locked by run ${envLock.holder?.run_id ?? 'unknown'} on ${envLock.holder?.host ?? 'unknown host'}; environment locks are serial across tasks`);
     const preflight = await invoke('preflight', preflightArgs, executionChildEnv(), preflightTimeoutMs);
     if (preflight.code !== 0 || preflight.termination || preflight.error || !processesStopped) return block(`Environment preflight failed: ${preflight.termination ?? preflight.error ?? preflight.code}`, preflight.termination === 'interrupted' ? 'interrupted' : 'blocked');
     const preflightData = read(resolve(context.dir, 'environment/preflight.json'));
@@ -106,5 +111,8 @@ export async function executeAttempt(root, runId, { headed = false, signal, runP
   } catch (error) {
     if (existsSync(resolve(context.dir, 'attempt.json'))) throw error;
     return block(error.message, signal?.aborted ? 'interrupted' : 'blocked');
+  } finally {
+    // 终止不确定时也释放：环境锁只负责串行，不承担“占用恢复”状态；恢复语义仍由 attempt 锁与 recoverAttempt 承担。
+    releaseEnvironmentLock(envLock);
   }
 }
