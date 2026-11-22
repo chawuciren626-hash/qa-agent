@@ -1,25 +1,18 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { directoryContext, resourcePath } from './directory-context.mjs';
+import { resourcePath } from './directory-context.mjs';
 import { extractCases } from './execution-plan.mjs';
-import { readCatalog, validateCatalog } from './test-asset-catalog.mjs';
+import { catalogPath, readCatalog, validateCatalog } from './test-asset-catalog.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 const canonical = value => sha(Buffer.from(JSON.stringify(value ?? null)));
-const safePart = value => /^[A-Za-z0-9_-]+$/.test(value ?? '');
 
 /**
- * 脚本资产目录（D1）：优先落在项目自动化目录，避免把执行产物写进引擎级 config。
- * 与 test-asset-catalog 的候选登记同模式，但作用域是“项目 × 端 × 环境”。
+ * 脚本资产目录（D1）：与探索候选共用 catalogPath 的唯一解析规则
+ * （隔离模式落项目自动化目录，其余落引擎 config），避免同一项目出现两份资产目录。
  */
 export function scriptCatalogPath(root) {
-  const context = directoryContext(root);
-  const dataRoot = process.env.QA_APP_DATA_ROOT;
-  if (context.mode === 'isolated' && dataRoot && safePart(context.project_id)) {
-    return resolve(dataRoot, 'projects', context.project_id, 'automation', 'test-assets.json');
-  }
-  return resolve(root, 'config', 'test-assets.json');
+  return catalogPath(root);
 }
 
 export function emptyCatalog() {
@@ -35,11 +28,20 @@ export function caseVersion(designCase) {
   return canonical(designCase);
 }
 
-/** 锚点版本 = 用例引用锚点/资产的排序指纹；没有锚点也给出确定性空值。 */
-export function anchorVersion(designCase) {
+/**
+ * 锚点版本 = 用例引用的锚点内容指纹。
+ * 引用资产时按 {id, version, data} 真实内容哈希（资产内容变了必须再生），
+ * 显式 anchors 一并纳入；没有锚点也给出确定性空值。
+ */
+export function anchorVersion(designCase, { anchors = [], catalog = null } = {}) {
   const refs = [...(designCase?.asset_refs ?? []), ...(designCase?.anchor_refs ?? []), ...(designCase?.anchors ?? [])]
     .map(item => (typeof item === 'string' ? item : JSON.stringify(item)));
-  return canonical([...new Set(refs)].sort());
+  const resolved = (designCase?.asset_refs ?? []).flatMap(ref => {
+    const asset = (catalog?.assets ?? []).find(row => row.id === ref.id && row.version === ref.version);
+    return asset ? [canonical({ id: asset.id, version: asset.version, kind: asset.kind, data: asset.data })] : [];
+  });
+  const explicit = anchors.map(anchor => canonical(anchor));
+  return canonical([...new Set([...refs.sort(), ...resolved.sort(), ...explicit.sort()])].sort());
 }
 
 /** 环境版本 = 运行环境配置文件字节指纹（含 base_url、账号策略等）。 */
@@ -52,15 +54,21 @@ export function scriptAssetId(caseId, version) {
   return `script-${slug}-${sha(`${caseId}\n${version}`).slice(0, 8)}`;
 }
 
-export function scriptBinding(root, { plan, designCase }) {
+export function scriptBinding(root, { plan, designCase, planCase = null, catalog = null }) {
   const environment = JSON.parse(readFileSync(resourcePath(root, plan.environment_config), 'utf8'));
   return {
     case_version: caseVersion(designCase),
-    anchor_version: anchorVersion(designCase),
+    anchor_version: anchorVersion(designCase, { anchors: planCase?.anchors ?? designCase?.anchors ?? [], catalog }),
     environment_version: environmentVersion(root, plan),
     environment_id: environment.environment ?? null,
     origin: new URL(environment.base_url).origin,
   };
+}
+
+/** 读当前目录解析规则下的 catalog；不存在按空目录处理。 */
+function catalogForBinding(root) {
+  const path = scriptCatalogPath(root);
+  return { path, catalog: existsSync(path) ? readCatalog(path) : emptyCatalog() };
 }
 
 /**
@@ -70,10 +78,11 @@ export function scriptBinding(root, { plan, designCase }) {
 export function deriveScriptAssets(root, { runId, plan, bundleId, files, capturedAt }) {
   const designRows = new Map(extractCases(JSON.parse(readFileSync(resourcePath(root, plan.source), 'utf8'))).map(row => [row.case_id, row]));
   const environment = JSON.parse(readFileSync(resourcePath(root, plan.environment_config), 'utf8'));
+  const { catalog } = catalogForBinding(root);
   return plan.cases.map(testCase => {
     const designCase = designRows.get(testCase.case_id);
     if (!designCase) throw new Error(`Missing designed case ${testCase.case_id} for script asset binding`);
-    const binding = scriptBinding(root, { plan, designCase });
+    const binding = scriptBinding(root, { plan, designCase, planCase: testCase, catalog });
     return {
       id: scriptAssetId(testCase.case_id, binding.case_version),
       kind: 'execution_script',
@@ -135,8 +144,7 @@ function assetBindingMatches(asset, binding) {
  * candidate 尚未人审，不作为复用来源（复用仍走 web-script-library 的 verified bundle）。
  */
 export function scriptAssetStatus(root, plan) {
-  const path = scriptCatalogPath(root);
-  const catalog = loadCatalog(path);
+  const { path, catalog } = catalogForBinding(root);
   const designRows = new Map(extractCases(JSON.parse(readFileSync(resourcePath(root, plan.source), 'utf8'))).map(row => [row.case_id, row]));
   const byCase = new Map((catalog.assets ?? []).filter(asset => asset.kind === 'execution_script').map(asset => [asset.data?.case_id, asset]));
   const reused = [];
@@ -147,7 +155,7 @@ export function scriptAssetStatus(root, plan) {
     if (asset.status !== 'verified') { regenerate.push({ case_id: testCase.case_id, reason: `asset_${asset.status}` }); continue; }
     const designCase = designRows.get(testCase.case_id);
     if (!designCase) { regenerate.push({ case_id: testCase.case_id, reason: 'missing_design_case' }); continue; }
-    const binding = scriptBinding(root, { plan, designCase });
+    const binding = scriptBinding(root, { plan, designCase, planCase: testCase, catalog });
     if (!assetBindingMatches(asset, binding)) {
       const changed = ['case_version', 'anchor_version', 'environment_version'].filter(key => asset.data?.[key] !== binding[key]);
       regenerate.push({ case_id: testCase.case_id, reason: `stale_${changed.join('_')}` });
@@ -160,13 +168,14 @@ export function scriptAssetStatus(root, plan) {
 
 /** 某 bundle 的脚本资产是否因环境版本变化而失效（供复用路径剔除旧 bundle）。 */
 export function bundleAssetStale(root, { plan, bundle }) {
-  const catalog = loadCatalog(scriptCatalogPath(root));
+  const { catalog } = catalogForBinding(root);
   const designRows = new Map(extractCases(JSON.parse(readFileSync(resourcePath(root, plan.source), 'utf8'))).map(row => [row.case_id, row]));
+  const planCases = new Map((plan.cases ?? []).map(row => [row.case_id, row]));
   const assets = (catalog.assets ?? []).filter(asset => asset.kind === 'execution_script' && asset.data?.bundle_id === bundle.id);
   for (const asset of assets) {
     const designCase = designRows.get(asset.data.case_id);
     if (!designCase) continue;
-    if (!assetBindingMatches(asset, scriptBinding(root, { plan, designCase }))) return { stale: true, asset_id: asset.id };
+    if (!assetBindingMatches(asset, scriptBinding(root, { plan, designCase, planCase: planCases.get(asset.data.case_id) ?? null, catalog }))) return { stale: true, asset_id: asset.id };
   }
   return { stale: false };
 }
