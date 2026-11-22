@@ -17,6 +17,7 @@ import "./task-detail.css";
 import { qaRead, qaScope, qaProjectForSession, qaTaskStatus, qaWorkspaceGroups } from "../../../../../../penguin/ui/workspace-ui.mjs";
 import { listEnvironments } from "./project-management/api";
 import type { EnvironmentView } from "./project-management/types";
+import { listTasks, type TaskListItem } from "./platform-tasks/api";
 
 type CaseResult = { case_id: string; title: string; status: string; expected: string; actual_result: string; evidence_paths: string[] };
 type ProjectCase = { id: string; title: string; type: string; status: string; module?: string; priority?: string; expected?: string; results?: CaseResult[] };
@@ -105,8 +106,31 @@ export function QaProjectView() {
   useEffect(() => {
     let alive = true;
     setData(null); setError("");
-    if (id) apiFetch<{ projectId: string; tasks: Task[] }>(`/api/projects/${encodeURIComponent(id)}/agents/qa/overview`)
-      .then(value => { if (alive) setData(value); }).catch(e => { if (alive) setError(e instanceof Error ? e.message : "项目读取失败"); });
+    // B5-4：双源拉取——平台任务列表定"有哪些任务"，overview 定"每个任务跑到哪了"。
+    // 两者按 mainSessionId 匹配后合并，只显示有测试任务对应的条目。
+    if (id) {
+      Promise.all([
+        apiFetch<{ projectId: string; tasks: Task[] }>(`/api/projects/${encodeURIComponent(id)}/agents/qa/overview`),
+        listTasks(id, true).catch(() => ({ items: [] as TaskListItem[] })),
+      ]).then(([overview, platformTasks]) => {
+        if (!alive) return;
+        // 构建有测试任务对应的 sessionId 集合（含已开始测试和尚未开始测试的任务）
+        const taskSessionIds = new Set<string>();
+        const taskTitleBySession = new Map<string, string>();
+        for (const pt of platformTasks.items) {
+          if (pt.mainSessionId) taskSessionIds.add(pt.mainSessionId);
+          taskTitleBySession.set(pt.mainSessionId ?? `task:${pt.id}`, pt.title);
+        }
+        // overview 的 tasks 按 session 返回；只保留有测试任务对应的
+        const filteredTasks = overview.tasks.filter(t => taskSessionIds.has(t.session.sessionId));
+        // 用任务名称替换会话标题
+        for (const t of filteredTasks) {
+          const pt = platformTasks.items.find(p => p.mainSessionId === t.session.sessionId);
+          if (pt) t.session.title = pt.title;
+        }
+        setData({ ...overview, tasks: filteredTasks });
+      }).catch(e => { if (alive) setError(e instanceof Error ? e.message : "项目读取失败"); });
+    }
     return () => { alive = false; };
   }, [id, revision]);
   const tasks = data && data.projectId === id ? data.tasks : [];
