@@ -149,7 +149,7 @@ export function QaTaskDetail() {
     try {
       await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/agents/qa/tasks/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stage.id)}/revise`, { method: "POST", body: { confirmationId: stage.pendingConfirmationId, feedback: feedback.trim() } });
       setRefresh(value => value + 1); setShowFeedback(false); setFeedback("");
-      try { await postTask(sessionId, { input: [{ type: "text", text: `我在任务详情页对运行 ${runId} 的 ${names[stage.id] ?? stage.id} 阶段提出疑问或修改：\n${feedback.trim()}\n返修决定和原文已写入运行记录。请核对当前状态与旧版归档，重新分析并交付该阶段结果，等待我再次确认；不要自动推进后续阶段，也不要重复执行任何测试环境操作。` }], queueIfBusy: true }); setNotice("修改意见已登记，任务会话已开始重新分析。"); }
+      try { await postTask(sessionId, { input: [{ type: "text", text: `我在任务详情页对运行 ${runId} 的 ${names[stage.id] ?? stage.id} 阶段提出疑问或修改：\n${feedback.trim()}\n返修决定和原文已写入运行记录。\n请优先用 resolve_child_handle 找到该阶段子会话句柄，通过 input_subagent 将上述修改意见注入原子会话续接——队员在保留的上下文与台账上做增量修订并产出新版本；不要新开会话或重新派发。\n如果子会话句柄不可用（已中断/宿主重启），才走 revise_stage 重启路径重新派发原角色。\n修订完成后等待我再次确认；不要自动推进后续阶段，也不要重复执行任何测试环境操作。` }], queueIfBusy: true }); setNotice("修改意见已登记，已通知任务会话续接修订。"); }
       catch { setNotice("修改意见已登记。任务会话暂未自动继续，请打开任务会话处理返修。"); }
     } catch (cause) { setError(cause instanceof Error ? cause.message : "提交修改失败，请刷新后重试。"); }
     finally { setApproving(false); }

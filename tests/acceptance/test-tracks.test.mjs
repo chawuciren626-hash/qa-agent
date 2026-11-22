@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { executeAction } from '../../scripts/structured-actions.mjs';
 import { inspectIndependentArtifacts, taskResultPath } from '../../scripts/independent-task.mjs';
-import { trackPlan, assertTrackRows, assertSiblingResources, publishTrackDelivery, testTrackStatus, safeDeliveryScope } from '../../scripts/test-tracks.mjs';
+import { validateTrackRequest, trackPlan, assertTrackRows, assertSiblingResources, publishTrackDelivery, testTrackStatus, safeDeliveryScope } from '../../scripts/test-tracks.mjs';
 import { extendRunPlan } from '../../scripts/run-plan-extension.mjs';
 import { assertStageReady, assertDesignMutable } from '../../scripts/orchestration-state.mjs';
 import { assertConfirmedExecutionCases } from '../../scripts/design-quality.mjs';
@@ -40,6 +40,14 @@ function syntheticChildReturn(f,dispatch) {
     {type:'event_msg',payload:{type:'request_end',status:'completed'}}
   ].map(r=>JSON.stringify({timestamp:at,...r})).join('\n'));
 }
+
+test('track validation reports string inputs before checking for duplicate types', () => {
+  const request = { stages: ['analysis'], tracks: ['functional', 'api'] };
+  assert.throws(() => validateTrackRequest(request), /tracks\[0\] must be an object.*same run_id/);
+  const functional = { type: 'functional', source_paths: ['inputs/prd.html'], reason: 'Page behavior' };
+  assert.doesNotThrow(() => validateTrackRequest({ ...request, tracks: [functional] }));
+  assert.throws(() => validateTrackRequest({ ...request, tracks: [functional, functional] }), /Duplicate test track type/);
+});
 
 test('single material selects only its track; design-only never schedules either execution role',async()=>{
   for(const type of ['functional','api']){

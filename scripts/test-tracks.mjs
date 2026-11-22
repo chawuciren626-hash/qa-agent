@@ -22,12 +22,14 @@ const readManifest = (root, id) => {const value=JSON.parse(readRunFile(runDirect
 export function validateTrackRequest(request) {
   if(request.scope_name!==undefined)safeDeliveryScope(request.scope_name);
   check(Array.isArray(request.tracks) && request.tracks.length>0 && request.tracks.length<=2,'Provide one or two material-backed test tracks');
-  check(new Set(request.tracks.map(t=>t?.type)).size===request.tracks.length,'Duplicate test track');
-  for(const track of request.tracks) {
+  for (const [index, track] of request.tracks.entries()) {
+    check(track && typeof track === 'object' && !Array.isArray(track),
+      `tracks[${index}] must be an object with type, source_paths, and reason. Use an archived inputs/<filename> path and type functional or api. Correct tracks and retry with the same run_id.`);
     check(track && Object.keys(track).every(k=>['type','source_paths','reason'].includes(k)) && Object.hasOwn(trackLabels,track.type),'Track type must be functional or api');
     check(typeof track.reason==='string' && track.reason.trim(),'Explain material classification, not just its filename');
     check(Array.isArray(track.source_paths) && track.source_paths.length>0 && new Set(track.source_paths).size===track.source_paths.length && track.source_paths.every(p=>typeof p==='string' && /^inputs\/[^/\\]+$/.test(p) && !p.includes('..')),'Each track needs archived input source_paths');
   }
+  check(new Set(request.tracks.map(track => track.type)).size === request.tracks.length, 'Duplicate test track type');
   check(Array.isArray(request.stages) && request.stages.length>0 && new Set(request.stages).size===request.stages.length && request.stages.every(id=>Object.hasOwn(stageNames,id)),'Provide unique requested stages');
   check(['task','lifecycle'].includes(request.workflow_mode??'task'),'Invalid workflow mode');
   check(['auto','staged'].includes(request.review_mode??(request.workflow_mode==='lifecycle'?'staged':'auto')),'Invalid review mode');

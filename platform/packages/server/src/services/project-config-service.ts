@@ -125,6 +125,7 @@ import type {
 import { detectModelProtocol } from "./protocol-detect.js";
 import { migratePenguinGoRoutes } from "./project-config-migrations.js";
 import { presetProjectConfig } from "./project-config-seed.js";
+import { qaEnabled } from "./qa-engine.js";
 import {
   VISION_PROBE_IMAGE,
   VISION_PROBE_MAX_TOKENS,
@@ -1071,7 +1072,7 @@ export class ProjectConfigService implements ProjectConfigStore {
    * environment variable).
    */
   async writeInitialConfig(projectId: string, name: string, ownerUserId?: string): Promise<void> {
-    const preset = presetProjectConfig();
+    const preset = qaEnabled ? defaultProjectConfig() : presetProjectConfig();
     const shared = ownerUserId
       ? await this.readSharedModels(ownerUserId).catch(() => null)
       : null;
@@ -1114,6 +1115,7 @@ export class ProjectConfigService implements ProjectConfigStore {
    * are to be seeded too (seedPresetPromotions).
    */
   async ensurePresetModels(projectId: string): Promise<boolean> {
+    if (qaEnabled) return false;
     const raw = await this.readRaw(projectId);
     if (asArray(raw.models).length > 0) return false;
     const preset = presetProjectConfig();

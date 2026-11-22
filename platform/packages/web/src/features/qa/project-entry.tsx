@@ -10,6 +10,7 @@ type Status = {
   enabled: boolean;
   status: string;
   canInitialize: boolean;
+  missingLocalAgents?: string[];
   roles: { id: string; skills: string[] }[];
 };
 export function QaProjectEntry() {
@@ -78,6 +79,11 @@ export function QaProjectEntry() {
         </Button>
       ) : (
         <p className="text-sm">请项目所有者启用测试能力。</p>
+      )}
+      {status?.enabled && status.canInitialize && !!status.missingLocalAgents?.length && (
+        <Button disabled={busy} onClick={() => void initialize()}>
+          {busy ? "正在修复…" : `修复缺失的本地 Agent（${status.missingLocalAgents.length}）`}
+        </Button>
       )}
       {error && (
         <p role="alert" className="mt-2 text-sm text-red-600">

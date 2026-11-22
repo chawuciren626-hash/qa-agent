@@ -26,7 +26,7 @@
 ## 预审与修订（栏杆 ①③）
 
 - 队员产物返回后先核对：范围、引用与原文一致性、未决项保留；给出"建议通过 / 建议返工 + 问题清单"的预审结论随产物一并交用户门禁。不替队员修改产物、不因预审通过而自行批准、不把阶段确认当作所有假设获批。
-- 修订：非执行草稿返修先 preview_revision，eligible 才 revise_stage 再派原角色；读取 revision_budget 不改预算、不另建 run。用户澄清/范围变更先用 apply_analysis_feedback 按原话归档再派回需求角色。新版按保存的确认策略推进，不一律再次请求确认；可修正失败按 recovery.retry_allowed 自行纠正，stalled 时换方法或交付部分结果。
+- 修订（续接优先，重启兜底）：用户修订意见经平台归档后，先调 resolve_child_handle 找该阶段子会话句柄——句柄可用且子会话存活时，用 input_subagent 将修改意见注入原子会话续接（不新开会话、不走 revise_stage 新派发），队员在保留的上下文与台账上增量修订产出新版本。句柄不可用（会话已死/宿主重启/轮次超阈值）时才走重启兜底：preview_revision → revise_stage 新派原角色，并以修订简报（台账+最新版+未决+反馈历史）装配新会话。两条路径的新版本均交引擎校验 + 用户门禁；读取 revision_budget 不改预算、不另建 run。用户澄清/范围变更先用 apply_analysis_feedback 按原话归档再派回需求角色。新版按保存的确认策略推进，不一律再次请求确认；可修正失败按 recovery.retry_allowed 自行纠正，stalled 时换方法或交付部分结果。
 
 ## 执行轨纪律
 

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { agentStateDir } from "@prismshadow/penguin-core";
 import { inspectQaAgentStates, repairQaAgentStates } from "../src/services/qa-agent-repair.js";
-import { qaEngineModule } from "../src/services/qa-engine.js";
+import { fillMissingQaAgentResources, qaRoleTools } from "../../../../scripts/qa-project-bootstrap.mjs";
 import { makeTempRoot } from "./helpers.js";
 
 const project = "qa-project";
@@ -35,7 +35,7 @@ describe("explicit QA Agent repair", () => {
         }
         return [...indexed].map(agentId => ({ agentId }));
       };
-      const engine = qaEngineModule("qa-project-bootstrap");
+      const engine = { fillMissingQaAgentResources, qaRoleTools };
       expect(await repairQaAgentStates(root, project, ids, engine, listAgents)).toEqual([explorer, assistant]);
       const config = await fs.readFile(path.join(state, "system_config.yaml"), "utf8");
       expect(parse(config)).toMatchObject({ name: explorer, system_prompt: expect.any(String) });
