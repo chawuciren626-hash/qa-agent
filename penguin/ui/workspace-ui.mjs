@@ -1583,7 +1583,7 @@ function createSectionsUI(deps) {
       navigate = useNavigate();
     const location = deps.useLocation?.();
     const section = new URLSearchParams(location?.search || "").get("section") || "mine";
-    const validView = value => ["mine", "recent", "search", "artifacts", "knowledge_documents", "knowledge_candidates", "knowledge_rules"].includes(value) ? value : "mine";
+    const validView = value => ["mine", "recent", "search", "artifacts", "knowledge_documents", "knowledge_candidates", "knowledge_rules", "knowledge_assets"].includes(value) ? value : "mine";
     const agent =
       agents.find((a) => a.agentId === "test_agent")?.agentId ||
       agents[0]?.agentId ||
@@ -1608,6 +1608,7 @@ function createSectionsUI(deps) {
       knowledge_documents: { tab: "documents", label: "项目参考资料", icon: "book" },
       knowledge_candidates: { tab: "candidates", label: "待确认知识", icon: "clock" },
       knowledge_rules: { tab: "rules", label: "正式规则", icon: "book" },
+      knowledge_assets: { tab: "assets", label: "测试资产", icon: "box" },
     };
     const knowledgeView = deps.ProjectKnowledgePanel ? knowledgeViews[view] : null;
     async function open(row) {

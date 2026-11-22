@@ -774,8 +774,8 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {!embedded && <div className="flex rounded border border-[var(--border)]" role="tablist">
-            {/* 嵌入任务面板时页签由外壳固定为资料/候选/规则三种，条款与资产页只在独立的资料页出现。 */}
-            {TABS.filter(entry => !embedded || (entry.id !== "clauses" && entry.id !== "assets")).map((entry) => (
+            {/* 嵌入任务面板时页签由外壳固定为资料/候选/规则/资产四种（宿主库侧栏提供切换），条款页只在独立的资料页出现。 */}
+            {TABS.filter(entry => !embedded || entry.id !== "clauses").map((entry) => (
               <button
                 key={entry.id}
                 role="tab"

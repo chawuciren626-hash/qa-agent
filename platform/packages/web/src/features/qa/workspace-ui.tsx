@@ -71,7 +71,7 @@ const ui = createWorkspaceUI({
   FolderPicker: WorkspaceSelect, Modal, AccountMenu: UserMenu,
   useSessionActions: () => React.useContext(QaSessionActions),
   ProjectNavigation,
-  ProjectKnowledgePanel: ({ tab, documentId }: { tab: "documents" | "candidates" | "rules"; documentId?: string }) => <ProjectKnowledgePage embedded initialTab={tab} initialDocumentId={documentId} />,
+  ProjectKnowledgePanel: ({ tab, documentId }: { tab: "documents" | "candidates" | "rules" | "assets"; documentId?: string }) => <ProjectKnowledgePage embedded initialTab={tab} initialDocumentId={documentId} />,
   PersonalReferenceActions, ProjectReferenceSearch,
   request: apiFetch, notify: toastSuccess, reportError: toastError,
   Markdown: ({ text }: { text: string }) => <SiteMarkdown variant="doc">{text}</SiteMarkdown>,
