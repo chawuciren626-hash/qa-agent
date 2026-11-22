@@ -14,23 +14,23 @@
 
 export const MODEL_PROMOTIONS_SQL = `
 CREATE TABLE IF NOT EXISTS model_promotions ( -- NOT a cache rebuildable from files: the only record of a Project row's running promotion (.project_config.toml keeps the list price), written by preset seeding at Project creation, "sync presets" and Penguin Go authorization / sync, and read by cost; lost rows price usage at list until the next sync writes them back
-  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
-  provider   TEXT NOT NULL,
-  model_id   TEXT NOT NULL,
-  discount   REAL NOT NULL CHECK (discount > 0 AND discount < 1),  -- fraction off the row's list price: billed = list × (1 − discount)
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (project_id, provider, model_id)
-);`;
+        project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+        provider   TEXT NOT NULL,
+        model_id   TEXT NOT NULL,
+        discount   REAL NOT NULL CHECK (discount > 0 AND discount < 1),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, provider, model_id)
+      );;`;
 
 export const MODEL_PROVIDER_AUTH_TOKENS_SQL = `
 CREATE TABLE IF NOT EXISTS model_provider_auth_tokens ( -- Server-side OAuth refresh metadata for provider groups. The current request token remains in .project_config.toml as api_key; this table holds only the refresh material that must never be returned to the frontend or written into Project files.
-  project_id              TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
-  provider                TEXT NOT NULL,
-  refresh_token           TEXT NOT NULL,
-  access_token_expires_at TEXT,
-  updated_at              TEXT NOT NULL,
-  PRIMARY KEY (project_id, provider)
-);`;
+        project_id              TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+        provider                TEXT NOT NULL,
+        refresh_token           TEXT NOT NULL,
+        access_token_expires_at TEXT,
+        updated_at              TEXT NOT NULL,
+        PRIMARY KEY (project_id, provider)
+      );;`;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
@@ -38,10 +38,8 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash       TEXT NOT NULL,               -- scrypt$N$r$p$salt$hash(base64)
   is_admin            INTEGER NOT NULL DEFAULT 0,  -- 1 for the built-in admin (seeded at startup)
   password_is_initial INTEGER NOT NULL DEFAULT 0,  -- 1=initial password (seeded/admin-set); cleared once the user changes it
-  display_name        TEXT,                        -- nickname shown in place of user_id (1-32 characters); NULL = never set, surfaces show the id
-  avatar              TEXT,                        -- avatar as a data URL (image/png|jpeg|webp, <= 131072 characters); NULL = never set, surfaces draw the letter placeholder
   created_at          TEXT NOT NULL
-);
+, display_name TEXT, avatar TEXT);;
 -- Server-side sessions backing the HttpOnly cookie: the cookie carries a 32-byte random
 -- token, the row stores only its sha256. A session outlives a restart (it is on disk), which
 -- is why the model is a row and not a signed statement.
@@ -409,71 +407,64 @@ CREATE TABLE IF NOT EXISTS exchange_allowed_hosts ( -- the EXPLICIT intranet exc
   added_by  TEXT NOT NULL,
   added_at  TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS messaging_bindings ( -- Session ↔ messaging-channel bot bindings (runtime/messaging/ holds the long connections)
-  session_id       TEXT NOT NULL,              -- a Session keeps at most one saved config PER channel (composite PK below); at most ONE of them is enabled at a time (route-enforced, 409 another_channel_enabled), and enabling is what binds the account to this Session
-  channel          TEXT NOT NULL,              -- messaging channel discriminator ('feishu' | 'telegram' | 'qq' | 'wechat')
-  account_id       TEXT NOT NULL,              -- channel-scoped bot/app identity (feishu: app_id; telegram: the bot token's numeric id; qq: the bot's App ID; wechat: the scanned bot id); NOT unique — any number of Sessions may keep the same account saved side by side, each with its own config and last-chat memory; only ENABLING is exclusive (route-enforced, 409 account_enabled_elsewhere: one account has one event stream, two live connections on it would race)
-  config_json      TEXT NOT NULL,              -- channel-specific credentials/config JSON (feishu: appId/appSecret/baseDomain; telegram: botToken; qq: appId/appSecret; wechat: botId/botToken/baseUrl/userId); secrets plaintext at rest (same trade-off as the proxy address in server_settings), masked at every API surface; a cleared secret is stored as "" (the row and its account identity stay)
-  enabled          INTEGER NOT NULL DEFAULT 0, -- INTENT state (the connection's runtime status stays in memory): new bindings start disabled — saving credentials never opens a connection, the explicit state toggle does
-  line_per_message INTEGER NOT NULL DEFAULT 0, -- delivery preference: 1 = every non-blank line of a relayed assistant reply is sent as its own message (a reply written as spoken lines arrives as spoken lines), 0 = one message per reply. Channel-agnostic, so it lives here rather than in config_json, which each connector owns
-  final_reply_only INTEGER NOT NULL DEFAULT 0, -- delivery preference: 1 = a run's intermediate assistant messages are held and only its LAST completed one is sent, at the run's end, 0 = every completed assistant message mirrors the moment it completes. Channel-agnostic like the column above and independent of it: with both set, that one final text is the one split per line
-  render_markdown  INTEGER NOT NULL DEFAULT 1, -- delivery preference: 1 = a relayed reply's Markdown is rendered in the channel's own markup (Telegram HTML, a Feishu card, QQ markdown, the subset WeChat itself reads), 0 = the reply's characters are sent as written. DEFAULT 1 because the model writes Markdown and showing it raw was the defect; the per-channel subsets and the plain-text fallback live in the connectors
-  last_chat_id     TEXT,                       -- most recent inbound chat (NULL until the bot is messaged once; replies and test messages target it); CONNECTOR-OPAQUE, not necessarily a bare chat id — telegram appends the forum topic (see telegram-connector.ts chatRefOf), so only that channel's connector may interpret it
-  last_chat_is_direct INTEGER NOT NULL DEFAULT 1, -- 1 = direct chat (reply by chat id), 0 = group chat (prefer reply-to-message)
-  last_inbound_message_id TEXT,                 -- channel id of the most recently PROCESSED inbound message (NULL until one arrives); the durable half of the bridge's redelivery guard, so a channel replaying an event this server already turned into a Task after a restart does not run it twice
-  created_at       TEXT NOT NULL,
-  updated_at       TEXT NOT NULL,
-  PRIMARY KEY (session_id, channel)
-);
+CREATE TABLE IF NOT EXISTS messaging_bindings (
+        session_id       TEXT NOT NULL,
+        channel          TEXT NOT NULL,
+        account_id       TEXT NOT NULL,
+        config_json      TEXT NOT NULL,
+        enabled          INTEGER NOT NULL DEFAULT 0,
+        line_per_message INTEGER NOT NULL DEFAULT 0,
+        last_chat_id     TEXT,
+        last_chat_is_direct INTEGER NOT NULL DEFAULT 1,
+        last_inbound_message_id TEXT,
+        created_at       TEXT NOT NULL,
+        updated_at       TEXT NOT NULL, final_reply_only INTEGER NOT NULL DEFAULT 0, render_markdown INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (session_id, channel)
+      );;
 CREATE INDEX IF NOT EXISTS idx_messaging_by_account ON messaging_bindings(channel, account_id);  -- serves the enable guard's by-account lookup; deliberately NOT unique, unlike its predecessor idx_messaging_account (dropped on open) which made an account exclusive to one Session forever
 CREATE TABLE IF NOT EXISTS messaging_conversations ( -- per-(bot, chat) delivery state a connector must keep across reconnects and restarts (WeChat: the context token, its send count, held replies); deleted once no messaging_bindings row references (channel, account_id) — see MessagingBindingsRepo
-  channel    TEXT NOT NULL,                     -- messaging channel discriminator (only 'wechat' writes rows today)
-  account_id TEXT NOT NULL,                     -- the bot, as messaging_bindings.account_id names it
-  chat_id    TEXT NOT NULL,                     -- the connector's own chat id (wechat: the user's ilink_user_id)
-  state_json TEXT NOT NULL,                     -- connector-owned JSON (wechat: {contextToken, tokenAt, spent, held, heldSince}); the token is a conversation handle at rest, same trade-off as config_json's credentials
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (channel, account_id, chat_id)
-);
+        channel    TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        chat_id    TEXT NOT NULL,
+        state_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (channel, account_id, chat_id)
+      );;
 CREATE TABLE IF NOT EXISTS ui_prefs (
   user_id    TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
   prefs_json TEXT NOT NULL                    -- {theme?, lastProjectId?, ...} free-form JSON
 );
 CREATE TABLE IF NOT EXISTS browser_extensions ( -- one row per Chrome paired to a user (builtin-browser/extension-pairing.ts): the PenguinHarness Browser extension's long-lived credential, stored only hashed; NOT rebuildable — a lost row means pairing that Chrome again
-  extension_id TEXT PRIMARY KEY,              -- random id shown in the Web App's list
-  user_id      TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-  token_hash   TEXT NOT NULL UNIQUE,          -- sha256(token) hex; the extension alone holds the token
-  name         TEXT NOT NULL,                 -- how the extension names this Chrome ("Chrome 130 on macOS")
-  version      TEXT NOT NULL,                 -- the extension's version, as of its last hello
-  created_at   TEXT NOT NULL,
-  last_seen_at TEXT,                          -- last connect or disconnect; NULL = never connected
-  revoked_at   TEXT                           -- set by Revoke; a revoked token's socket is closed 4003
-);
+        extension_id TEXT PRIMARY KEY,
+        user_id      TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        token_hash   TEXT NOT NULL UNIQUE,
+        name         TEXT NOT NULL,
+        version      TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        last_seen_at TEXT,
+        revoked_at   TEXT
+      );;
 CREATE INDEX IF NOT EXISTS idx_browser_extensions_user ON browser_extensions(user_id);
 CREATE TABLE IF NOT EXISTS agent_api (          -- per-Agent public API settings (amsp/routes.ts); NOT rebuildable from files
-  project_id    TEXT NOT NULL,
-  agent_id      TEXT NOT NULL,
-  enabled       INTEGER NOT NULL DEFAULT 0,     -- the API tab's switch; off = every /api/amsp request for it is 404 agent_not_found
-  open          INTEGER NOT NULL DEFAULT 0,     -- keyless access: a request without Authorization is accepted; off = 401 unauthorized
-  approval_mode TEXT NOT NULL DEFAULT 'allow-all', -- copied onto each new API Session
-  provider      TEXT,                         -- NULL pair follows the Project default model
-  model_id      TEXT,
-  thinking_level TEXT,                        -- NULL follows Agent/Project configuration
-  workspace     TEXT,                         -- NULL creates a temporary Workspace
-  max_concurrent_runs INTEGER NOT NULL DEFAULT 4,
-  updated_at    TEXT NOT NULL,
-  PRIMARY KEY (project_id, agent_id)
-);
+          project_id    TEXT NOT NULL,
+          agent_id      TEXT NOT NULL,
+          enabled       INTEGER NOT NULL DEFAULT 0,
+          open          INTEGER NOT NULL DEFAULT 0,
+          approval_mode TEXT NOT NULL DEFAULT 'allow-all',
+          updated_at    TEXT NOT NULL, provider TEXT, model_id TEXT, thinking_level TEXT, workspace TEXT, max_concurrent_runs INTEGER NOT NULL DEFAULT 4,
+          PRIMARY KEY (project_id, agent_id)
+        );;
 CREATE TABLE IF NOT EXISTS agent_api_keys (     -- one row per key the API tab or the CLI minted; the caller alone holds the key
-  key_id       TEXT PRIMARY KEY,                -- 16 base64url chars, shown in the list
-  project_id   TEXT NOT NULL,
-  agent_id     TEXT NOT NULL,
-  token_hash   TEXT NOT NULL UNIQUE,            -- sha256(key) hex
-  prefix       TEXT NOT NULL,                   -- the key's first 16 characters ("penguin_" + 8), shown in the list
-  name         TEXT NOT NULL,                   -- 1-64 characters
-  created_by   TEXT NOT NULL REFERENCES users(user_id),
-  created_at   TEXT NOT NULL,
-  last_used_at TEXT                             -- stamped once per run request that authenticated with it; NULL = never
-);
+          key_id       TEXT PRIMARY KEY,
+          project_id   TEXT NOT NULL,
+          agent_id     TEXT NOT NULL,
+          token_hash   TEXT NOT NULL UNIQUE,
+          prefix       TEXT NOT NULL,
+          name         TEXT NOT NULL,
+          created_by   TEXT NOT NULL REFERENCES users(user_id),
+          created_at   TEXT NOT NULL,
+          last_used_at TEXT
+        );;
 CREATE INDEX IF NOT EXISTS idx_agent_api_keys_agent ON agent_api_keys(project_id, agent_id);
 CREATE TABLE IF NOT EXISTS server_settings (   -- admin-level server-global settings (GET/PUT /api/admin/settings)
   key   TEXT PRIMARY KEY,                     -- setting name, e.g. 'proxy_for_app'
@@ -522,84 +513,84 @@ CREATE TABLE IF NOT EXISTS trace_sessions (    -- per-session facts read ONCE at
   meta_read  INTEGER NOT NULL DEFAULT 0      -- 1 once the head parsed; 0 = facts unknown, retried by the next reconcile that touches the session
 );
 CREATE INDEX IF NOT EXISTS idx_trace_sessions_agent ON trace_sessions(project_id, agent_id);
-CREATE TABLE IF NOT EXISTS org_sessions (      -- DERIVED CACHE (company mode): desk sessions, rebuilt from each organization's desks.toml (current + previous); trigger_hop is mention-chain accounting and reads 0 after a rebuild
-  session_id  TEXT PRIMARY KEY,
-  project_id  TEXT NOT NULL,
-  org_id      TEXT NOT NULL,
-  agent_id    TEXT NOT NULL,
-  current     INTEGER NOT NULL DEFAULT 1,
-  trigger_hop INTEGER NOT NULL DEFAULT 0
-);
+CREATE TABLE IF NOT EXISTS org_sessions (      -- DERIVED CACHE (company mode): desk sessions, rebuilt from each organization's desks.toml (current + previous); trigger_hop is chat-chain accounting and reads 0 after a rebuild
+        session_id  TEXT PRIMARY KEY,
+        project_id  TEXT NOT NULL,
+        org_id      TEXT NOT NULL,
+        agent_id    TEXT NOT NULL,
+        current     INTEGER NOT NULL DEFAULT 1,
+        trigger_hop INTEGER NOT NULL DEFAULT 0
+      );;
 CREATE INDEX IF NOT EXISTS idx_org_sessions_org ON org_sessions(project_id, org_id);
 CREATE TABLE IF NOT EXISTS org_ticket_sessions ( -- DERIVED CACHE (company mode): ticket <-> contributing session, rebuilt from each ticket's Sessions header
-  project_id  TEXT NOT NULL,
-  org_id      TEXT NOT NULL,
-  ticket_id   TEXT NOT NULL,
-  session_id  TEXT NOT NULL,
-  agent_id    TEXT NOT NULL,
-  trigger_hop INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (project_id, org_id, ticket_id, session_id)
-);
+        project_id  TEXT NOT NULL,
+        org_id      TEXT NOT NULL,
+        ticket_id   TEXT NOT NULL,
+        session_id  TEXT NOT NULL,
+        agent_id    TEXT NOT NULL,
+        trigger_hop INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (project_id, org_id, ticket_id, session_id)
+      );;
 CREATE INDEX IF NOT EXISTS idx_org_ticket_sessions_session ON org_ticket_sessions(session_id);
 CREATE TABLE IF NOT EXISTS org_calendar_state ( -- calendar run state (company mode; the files are declarative intent), same rules as schedule_state
-  project_id     TEXT NOT NULL,
-  org_id         TEXT NOT NULL,
-  agent_id       TEXT NOT NULL,
-  name           TEXT NOT NULL,
-  start_at_ms    INTEGER NOT NULL,
-  def_hash       TEXT NOT NULL,
-  last_slot_ms   INTEGER,
-  last_fired_at  TEXT,
-  fired_once     INTEGER NOT NULL DEFAULT 0,
-  missed         INTEGER NOT NULL DEFAULT 0,
-  invalid_reason TEXT,
-  last_outcome   TEXT,
-  PRIMARY KEY (project_id, org_id, agent_id, name)
-);
+        project_id     TEXT NOT NULL,
+        org_id         TEXT NOT NULL,
+        agent_id       TEXT NOT NULL,
+        name           TEXT NOT NULL,
+        start_at_ms    INTEGER NOT NULL,
+        def_hash       TEXT NOT NULL,
+        last_slot_ms   INTEGER,
+        last_fired_at  TEXT,
+        fired_once     INTEGER NOT NULL DEFAULT 0,
+        missed         INTEGER NOT NULL DEFAULT 0,
+        invalid_reason TEXT,
+        last_outcome   TEXT,
+        PRIMARY KEY (project_id, org_id, agent_id, name)
+      );;
 CREATE TABLE IF NOT EXISTS org_ticket_state (   -- DERIVED CACHE (company mode): the last (status, owner, blocked) seen per ticket, so a change is notified once; rebuilt silently from the ticket files
-  project_id  TEXT NOT NULL,
-  org_id      TEXT NOT NULL,
-  ticket_id   TEXT NOT NULL,
-  status      TEXT NOT NULL,
-  owner       TEXT NOT NULL DEFAULT '',
-  blocked     TEXT NOT NULL DEFAULT '',
-  blocked_by  TEXT NOT NULL DEFAULT '',
-  PRIMARY KEY (project_id, org_id, ticket_id)
-);
+        project_id  TEXT NOT NULL,
+        org_id      TEXT NOT NULL,
+        ticket_id   TEXT NOT NULL,
+        status      TEXT NOT NULL,
+        owner       TEXT NOT NULL DEFAULT '',
+        blocked     TEXT NOT NULL DEFAULT '',
+        blocked_by  TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (project_id, org_id, ticket_id)
+      );;
 CREATE TABLE IF NOT EXISTS org_channel_state ( -- DERIVED CACHE (company mode): tail-scan byte cursor per channel and day file
-  project_id   TEXT NOT NULL,
-  org_id       TEXT NOT NULL,
-  channel_id   TEXT NOT NULL,
-  date         TEXT NOT NULL,
-  offset_bytes INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (project_id, org_id, channel_id, date)
-);
+        project_id   TEXT NOT NULL,
+        org_id       TEXT NOT NULL,
+        channel_id   TEXT NOT NULL,
+        date         TEXT NOT NULL,
+        offset_bytes INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (project_id, org_id, channel_id, date)
+      );;
 CREATE TABLE IF NOT EXISTS org_channel_reads ( -- user data (company mode): each user's read cursor in one channel
-  project_id   TEXT NOT NULL,
-  org_id       TEXT NOT NULL,
-  channel_id   TEXT NOT NULL,
-  user_id      TEXT NOT NULL,
-  last_read_id TEXT NOT NULL,
-  PRIMARY KEY (project_id, org_id, channel_id, user_id)
-);
+        project_id   TEXT NOT NULL,
+        org_id       TEXT NOT NULL,
+        channel_id   TEXT NOT NULL,
+        user_id      TEXT NOT NULL,
+        last_read_id TEXT NOT NULL,
+        PRIMARY KEY (project_id, org_id, channel_id, user_id)
+      );;
 CREATE TABLE IF NOT EXISTS org_budget_state (   -- DERIVED CACHE (company mode): warn / pause marks per employee and period, recomputed from usage and the chart's budgets
-  project_id TEXT NOT NULL,
-  org_id     TEXT NOT NULL,
-  agent_id   TEXT NOT NULL,
-  period     TEXT NOT NULL,
-  warned_at  TEXT,
-  paused_at  TEXT,
-  PRIMARY KEY (project_id, org_id, agent_id, period)
-);
+        project_id TEXT NOT NULL,
+        org_id     TEXT NOT NULL,
+        agent_id   TEXT NOT NULL,
+        period     TEXT NOT NULL,
+        warned_at  TEXT,
+        paused_at  TEXT,
+        PRIMARY KEY (project_id, org_id, agent_id, period)
+      );;
 CREATE TABLE IF NOT EXISTS org_desk_notices (   -- DERIVED CACHE (company mode): ticket changes waiting for an employee's next calendar sweep; dropping it loses only the digests not delivered yet
-  seq        INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_id TEXT NOT NULL,
-  org_id     TEXT NOT NULL,
-  agent_id   TEXT NOT NULL,
-  ticket_id  TEXT NOT NULL,
-  change     TEXT NOT NULL,
-  at         TEXT NOT NULL
-);
+        seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id TEXT NOT NULL,
+        org_id     TEXT NOT NULL,
+        agent_id   TEXT NOT NULL,
+        ticket_id  TEXT NOT NULL,
+        change     TEXT NOT NULL,
+        at         TEXT NOT NULL
+      );;
 CREATE INDEX IF NOT EXISTS idx_org_desk_notices_agent ON org_desk_notices(project_id, org_id, agent_id);
 CREATE TABLE IF NOT EXISTS qa_documents (       -- project-scoped source documents; current content is the latest immutable revision
   document_id         TEXT PRIMARY KEY,
@@ -1165,9 +1156,9 @@ CREATE TABLE IF NOT EXISTS platform_task_links ( -- 平台任务映射：任务�
   last_synced_at         TEXT,
   last_action_json       TEXT NOT NULL DEFAULT '{}',     -- 最近一次状态变更审计 {action,user_id,at,detail}
   created_at             TEXT NOT NULL,
-  updated_at             TEXT NOT NULL,
+  updated_at             TEXT NOT NULL, ends_json TEXT, change_source TEXT,
   UNIQUE(source_system, external_tenant_id, external_task_id)
-);
+);;
 CREATE INDEX IF NOT EXISTS idx_ptask_links_project ON platform_task_links(project_id, status, updated_at DESC);
 CREATE TABLE IF NOT EXISTS qa_local_tasks ( -- 本地新建任务（T5）：不走平台拉取、不建平台映射，AI 分析可选
   task_id           TEXT PRIMARY KEY,
@@ -1190,7 +1181,7 @@ CREATE TABLE IF NOT EXISTS qa_local_tasks ( -- 本地新建任务（T5）：不�
   created_by        TEXT NOT NULL DEFAULT '',
   created_at        TEXT NOT NULL,
   updated_at        TEXT NOT NULL
-);
+, ends_json TEXT, change_source TEXT);;
 CREATE INDEX IF NOT EXISTS idx_local_tasks_project ON qa_local_tasks(project_id, status, updated_at DESC);
 CREATE TABLE IF NOT EXISTS qa_task_attachments ( -- 任务附件（B1-3b）：AI 分析的文本型补充输入；内容内联存储，仅限文本类文件
   attachment_id  TEXT PRIMARY KEY,
