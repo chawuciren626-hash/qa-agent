@@ -53,8 +53,11 @@ import {
   type RuleView,
   type RuleVersionView,
 } from "./project-knowledge-model";
+import { SystemMapView } from "./system-map-view";
+import { RunArchiveView } from "./run-archive-view";
+import "./knowledge-views.css";
 
-type Tab = "documents" | "candidates" | "rules" | "clauses" | "assets";
+type Tab = "documents" | "candidates" | "rules" | "clauses" | "assets" | "system_map" | "run_archive";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "documents", label: "资料" },
@@ -62,7 +65,12 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "rules", label: "正式规则" },
   { id: "clauses", label: "知识条款" },
   { id: "assets", label: "测试资产" },
+  { id: "system_map", label: "系统地图" },
+  { id: "run_archive", label: "历史档案" },
 ];
+
+/** 嵌入任务面板的外壳只固定四种页签；系统地图/历史档案只在独立资料页出现（A4/A5）。 */
+const EMBEDDED_TAB_IDS = new Set<Tab>(["documents", "candidates", "rules", "assets"]);
 
 const FORMATS: DocumentFormat[] = ["markdown", "text", "json", "csv", "html"];
 
@@ -305,6 +313,8 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
         .catch((failure: unknown) => {
           if (alive) fail(failure);
         });
+    } else if (tab === "system_map" || tab === "run_archive") {
+      // A4/A5：系统地图与历史档案是独立内嵌视图，各自拉取环境/运行端点，这里不做共享取数。
     } else {
       setBuilds(null);
       apiFetch<{ builds: KnowledgeBuildSummary[] }>(`${base}/knowledge/builds`)
@@ -759,14 +769,16 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
   return (
     <main className={`flex h-full flex-col gap-4 overflow-hidden p-6 ${embedded ? "qa-knowledge-embedded" : ""}`}>
       <header className="shrink-0">
-        <h1 className="text-xl font-semibold">{embedded ? { documents: "项目参考资料", candidates: "待确认知识", rules: "正式规则", clauses: "知识条款", assets: "测试资产" }[tab] : "项目资料与知识"}</h1>
+        <h1 className="text-xl font-semibold">{embedded ? { documents: "项目参考资料", candidates: "待确认知识", rules: "正式规则", clauses: "知识条款", assets: "测试资产", system_map: "系统地图", run_archive: "历史档案" }[tab] : "项目资料与知识"}</h1>
         <p className="mt-1 text-sm opacity-70">
-          {projectDisplayName(currentProject!)} · {embedded ? {
+          {projectDisplayName(currentProject!)} ·           {embedded ? {
             documents: "管理当前项目的参考文本及历史版本。可在我的资料中选择“用于项目任务”，确认后纳入。",
             candidates: "查看候选结论及来源依据，由项目所有者确认后生成正式规则。",
             rules: "查看已确认的业务规则，支持版本追溯、修订和停用。",
             clauses: "资料切成的条款与由条款构建的知识版本。",
             assets: "引擎测试资产目录的只读投影；治理动作走引擎登记与评审入口。",
+            system_map: "环境建档与探索产出的只读投影：页面/接口计数、覆盖率与探索知识清单。",
+            run_archive: "历次测试运行的产物档案（run_id/报告/用例/缺陷），只读。",
           }[tab] : "资料按修订保存；候选必须由项目所有者明确确认才会成为正式规则；知识版本按条款构建，带原文位置。"}
         </p>
         <p className="mt-2 text-xs opacity-70" role="status">
@@ -775,7 +787,7 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {!embedded && <div className="flex rounded border border-[var(--border)]" role="tablist">
             {/* 嵌入任务面板时页签由外壳固定为资料/候选/规则/资产四种（宿主库侧栏提供切换），条款页只在独立的资料页出现。 */}
-            {TABS.filter(entry => !embedded || entry.id !== "clauses").map((entry) => (
+            {TABS.filter(entry => !embedded || EMBEDDED_TAB_IDS.has(entry.id)).map((entry) => (
               <button
                 key={entry.id}
                 role="tab"
@@ -798,6 +810,8 @@ function ProjectKnowledgePageContent({ initialTab, embedded, initialDocumentId }
       </header>
 
       {tab === "assets" && <TestAssetsSection base={base} />}
+      {tab === "system_map" && <SystemMapView projectId={projectId} />}
+      {tab === "run_archive" && <RunArchiveView projectId={projectId} />}
 
       {error && (
         <p role="alert" className="shrink-0 rounded border border-red-300 p-2 text-sm text-red-600">
