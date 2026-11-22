@@ -100,7 +100,7 @@ test('all current role packages install with their optional skills and readable 
   const engine = resolve(import.meta.dirname, '../..');
   const manifest = JSON.parse(readFileSync(resolve(engine, 'penguin/agents.json')));
   const workflow = JSON.parse(readFileSync(resolve(engine, 'config/orchestration-workflow.json')));
-  assert.equal(manifest.agents.length, 11);
+  assert.equal(manifest.agents.length, 12);
   for (const agent of manifest.agents) mkdirSync(resolve(f.target, agent.id, 'agent_state'), { recursive: true });
   syncPenguinAgents(engine, f.target, { apply: true });
   for (const agent of manifest.agents) for (const skill of agent.skills) {
@@ -142,7 +142,7 @@ test('installed instructions separate task and lifecycle without legacy mandator
     assert.match(installed, /相同有效执行批准不重复索取/);
     assert.match(installed, /未知副作用/);
     for (const phrase of obsolete) assert.ok(!installed.includes(phrase), `${agent.id}: obsolete ${phrase}`);
-    if (!['test_agent','android_test_agent','miniprogram_test_agent','desktop_test_agent'].includes(agent.id)) {
+    if (!['test_agent','android_test_agent','miniprogram_test_agent','desktop_test_agent','env_explorer_agent'].includes(agent.id)) {
       assert.ok(installed.indexOf('## 独立任务（task）') < installed.indexOf('## 生命周期模式（lifecycle）'));
       assert.ok(installed.includes('## 独立任务（task）'));
     }
@@ -201,10 +201,10 @@ test('execution task stops at controlled execution artifacts despite multi-deliv
 
 test('controller instructions bind role and task while allowing localized display descriptions', () => {
   const prompt=readFileSync(resolve(import.meta.dirname,'../../penguin/agents/test_agent/AGENTS.md'),'utf8');
-  assert.match(prompt,/只有回显缺失或截断时才read_file读取`delegation_path`恢复同一对象/);
-  assert.match(prompt,/直接将返回的`delegation`对象传给run_subagent，目标角色必填/);
-  assert.match(prompt,/`description`仅为中文展示说明，不改变授权/);
-  assert.match(prompt,/不改写prompt或追加业务目标/);
+  assert.match(prompt,/把返回的 delegation 对象传给 run_subagent，目标角色必填/);
+  assert.match(prompt,/不改写 prompt 或追加业务目标/);
+  assert.match(prompt,/delegation 中短 prompt 已登记绑定，合同由子 Agent 自读/);
+  assert.match(prompt,/child_started=false 必须实际调用 run_subagent/);
 });
 
 test('shared runtime commands do not infer PowerShell from Windows',()=>{
@@ -242,7 +242,7 @@ test('all packaged Skills expose a host-readable version and referenced shared d
     assert.ok(frontmatter,`${name}: frontmatter`);
     // 版本只需存在且是评审基线格式（2026.11.02.N，N≥1）：精确到 N 的钉死在历次
     // 评审晋升后必然漂移（seed 提交改版本不改测试的教训），可读性才是本断言的目的。
-    assert.match(frontmatter[1],/^version: 2026\.11\.02\.[1-9]\d*$/m,`${name}: version`);
+    assert.match(frontmatter[1],/^version: \d{4}\.\d{2}\.\d{2}\.[1-9]\d*$/m,`${name}: version`);
   }
   const docs=new Set();
   for(const name of skillNames){
@@ -286,9 +286,9 @@ test('shared policy is compact, model-neutral and keeps task memory separate fro
   ]) assert.match(runtime, rule);
   assert.doesNotMatch(runtime, /step-3\.7-flash|tokendance|宿主子Agent没有工具hook|限次修正|预算耗尽/);
   const controller = readFileSync(resolve(engine, 'penguin/agents/test_agent/AGENTS.md'), 'utf8');
-  assert.match(controller, /不要把合同文件正文展开后替换prompt/);
-  assert.match(controller, /不为派发而先读专业Skill全文/);
-  assert.match(controller, /具体方法与数据结构由专业角色/);
+  assert.match(controller, /合同由子 Agent 自读，不展开转抄/);
+  assert.match(controller, /不先读专业 Skill 全文或产物 Schema 替队员工作/);
+  assert.match(controller, /最终报告由报告 Agent 产出/);
 });
 
 test('functional/API scope applies to every business role without disabling runtime protection', () => {
@@ -296,7 +296,7 @@ test('functional/API scope applies to every business role without disabling runt
   const manifest = JSON.parse(readFileSync(resolve(engine, 'penguin/agents.json')));
   const runtime = readFileSync(resolve(engine, manifest.shared_instructions), 'utf8');
   for (const phrase of ['需求分析、测试点、用例、Web/接口执行、缺陷分析和报告', 'scope=out_of_scope', '不列为必答澄清', '不规划空生命周期', '业务权限', '凭据脱敏', '不直接执行或覆盖历史结果']) assert.ok(runtime.includes(phrase), phrase);
-  assert.equal(manifest.agents.length, 11); // desktop_test_agent 是已落地的 computer-use 轨道；仍未注册任何性能/安全角色。
+  assert.equal(manifest.agents.length, 12); // Includes the exploration role; no performance/security role is registered.
   for (const path of ['skills/requirement-analysis/SKILL.md', 'skills/test-point-design/SKILL.md', 'penguin/agents/test_point_agent/AGENTS.md']) {
     const text = readFileSync(resolve(engine, path), 'utf8');
     assert.match(text, /性能\/安全测试/);

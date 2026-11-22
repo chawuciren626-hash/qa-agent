@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { agentStateDir } from "@prismshadow/penguin-core";
 import { inspectQaAgentStates, repairQaAgentStates } from "../src/services/qa-agent-repair.js";
+// @ts-expect-error The engine bootstrap is a JavaScript runtime module without TypeScript declarations.
 import { fillMissingQaAgentResources, qaRoleTools } from "../../../../scripts/qa-project-bootstrap.mjs";
 import { makeTempRoot } from "./helpers.js";
 

@@ -109,7 +109,7 @@ function renderPage(page: PageEntry): React.ReactNode {
 }
 function AuthorizedPage({ page }: { page: PageEntry }) {
   const { user } = useAuth();
-  if (page.admin && !(user?.isAdmin || (user?.modulePermissions !== undefined && allowedModule(user,page.key==="agent-settings"?"agents":page.key)))) return <div className="p-8"><h1 className="text-xl font-semibold">仅管理员可访问</h1><p className="mt-3">你可以使用测试任务、项目资料、模型库和个人插件能力。</p></div>;
+  if (page.admin && !(user?.isAdmin || (user?.modulePermissions !== undefined && allowedModule(user,page.key==="agent-settings"?"agents":page.key)))) return <div className="p-6"><h1 className="text-xl font-semibold">仅管理员可访问</h1><p className="mt-3">你可以使用测试任务、项目资料、模型库和个人插件能力。</p></div>;
   if ("iframe" in page.renderer) {
     return (
       <iframe title={page.key} src={page.renderer.iframe.src} className="h-full w-full border-0" />
@@ -131,8 +131,8 @@ function RequireAuth({ admin = false }: { admin?: boolean }) {
   if (user === undefined) return null; // GET /api/me is still initializing
   if (user === null) return <Navigate to="/login" replace />;
   if (!admin && module === "plugins") return <Navigate to="/qa/projects" replace />;
-  if(module && !allowedModule(user,module)) return <div className="p-8"><h1>没有此模块的访问权限</h1><p>请联系管理员调整授权。</p><a href="/user/chat">返回工作台</a></div>;
-  if(admin && !user.isAdmin) return <div className="p-8"><h1>仅管理员可访问管理后台</h1><a href="/user/">返回用户端</a></div>;
+  if(module && !allowedModule(user,module)) return <div className="p-6"><h1>没有此模块的访问权限</h1><p>请联系管理员调整授权。</p><a href="/user/chat">返回工作台</a></div>;
+  if(admin && !user.isAdmin) return <div className="p-6"><h1>仅管理员可访问管理后台</h1><a href="/user/">返回用户端</a></div>;
   const workspace = (
     <ProjectProvider scope={admin ? "admin" : "user"}>
       <MachinesProvider>
@@ -156,7 +156,7 @@ function RequireAuthBare({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   if (user === undefined) return null;
   if (user === null) return <Navigate to="/login" replace />;
-  if(window.location.pathname.startsWith("/admin") && !user.isAdmin) return <p className="p-8">仅管理员可访问。</p>;
+  if(window.location.pathname.startsWith("/admin") && !user.isAdmin) return <p className="p-6">仅管理员可访问。</p>;
   return <>{children}</>;
 }
 
