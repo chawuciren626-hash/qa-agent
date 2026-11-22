@@ -14,6 +14,10 @@ describe("administrator menu compatibility", () => {
     expect(items.find(item => item.key === "mcp")).toMatchObject({ group: "main", name: "MCP 服务", visible: true });
     expect(items).toHaveLength(12);
   });
+  it("replaces the retired model page in old server menus without resetting visibility", () => {
+    const items = normalizeAdminMenus([{ key: "models", name: "模型配置", path: "/models", visible: false }]);
+    expect(items[0]).toMatchObject({ key: "models", name: "渠道管理", path: "/channels", visible: false });
+  });
   it("uses complete defaults when the service returns an empty list", () => {
     expect(normalizeAdminMenus([]).filter(item => item.group === "main")).toHaveLength(8);
     expect(normalizeAdminMenus(null).filter(item => item.group === "sys")).toHaveLength(4);

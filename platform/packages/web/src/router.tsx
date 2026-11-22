@@ -58,7 +58,7 @@ import { PersonalSkillsPage } from "./features/qa/personal-skills-page";
 import { AgentsPage } from "./features/agents/agents-page";
 import { AgentSettingsPage } from "./features/agents/agent-settings-page";
 import { PluginsPage } from "./features/plugins/plugins-page";
-import { ModelsPage } from "./features/models/models-page";
+import { AdminChannelsPage } from "./features/admin/admin-channels-page";
 import { requestSettings } from "./features/settings/settings-request";
 import { UsagePage } from "./features/usage/usage-page";
 import { BenchmarkPage } from "./features/benchmark/benchmark-page";
@@ -86,7 +86,6 @@ const BUILTIN_PAGES: Record<string, React.ComponentType> = {
   AgentsPage,
   AgentSettingsPage,
   PluginsPage,
-  ModelsPage,
   MachinesPage,
   UsagePage,
   BenchmarkPage,
@@ -195,7 +194,7 @@ function RootFrame() {
  * 登录默认进项目管理页（/qa/projects），点「进入」切到项目工作区（/qa/project）；
  * admin 以用户身份进入同一棵树（allowedModule 对 isAdmin 直接放行），管理后台保留在 /admin。
  */
-function appRoutes(admin = false) {
+export function appRoutes(admin = false) {
   return createRoutesFromElements(
     <Route element={<RootFrame />}>
       <Route path="/login" element={admin ? <AdminLogin /> : <LoginRoute />} />
@@ -238,14 +237,17 @@ function appRoutes(admin = false) {
           <Route path="/tools" element={<AdminToolsPage />} />
           <Route path="/mcp" element={<AdminMcpPage />} />
           <Route path="/publications/agents" element={<Navigate to="/agents" replace />} />
-          <Route path="/publications/:kind" element={<PublicationsPage />} />
+          <Route path="/publications/plugins" element={<PublicationsPage resourceKind="plugins" />} />
+          <Route path="/publications/skills" element={<PublicationsPage resourceKind="skills" />} />
+          <Route path="/channels" element={<AdminChannelsPage />} />
         </>}
         <Route path="/resources" element={<Navigate to="/plugins" replace />} />
         {/* Every page is a module.json entry (lib/pages.ts). Admin-only ones are refused
             server-side (403); the sidebar hides their row, so a member only ever reaches
             one by typing the URL. */}
-        {PAGES.filter(page => !admin || page.key !== "chat").map((page) => (
-          <Route key={page.id} path={page.path} element={!admin && page.key === "models" ? <ModelsSettingsRedirect /> : renderPage(page)} />
+        {!admin && <Route path="/models" element={<ModelsSettingsRedirect />} />}
+        {PAGES.filter(page => page.key !== "models" && (!admin || page.key !== "chat")).map((page) => (
+          <Route key={page.id} path={page.path} element={renderPage(page)} />
         ))}
         {/* Company mode: /org resolves to an organization (or the empty landing), and an
             organization opens on its overview — the page that says what the whole

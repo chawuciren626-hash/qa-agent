@@ -328,7 +328,7 @@ export function UserPreferencesCard() {
           ))}
         </ul>
       )}
-      <p className="text-[11px] text-gray-400 dark:text-gray-500">
+      <p className="text-xs text-gray-400 dark:text-gray-500">
         {S.memory.preferencesSnapshotHint}
       </p>
 

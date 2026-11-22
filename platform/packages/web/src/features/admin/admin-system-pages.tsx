@@ -14,7 +14,7 @@ export const ADMIN_MENU_LABELS: Record<AdminMenuKey, string> = {
 };
 const palette = ["#5a8dea", "#8a7ff0", "#2866a4", "#36ae83", "#dea52e", "#d85ca5", "#98a3b3"];
 export const defaultAdminMenus = (): AdminMenuItem[] => ADMIN_MENU_KEYS.map((key, index) => ({
-  key, name: ADMIN_MENU_LABELS[key], path: key === "chat" ? "/chat/new" : `/${key}`,
+  key, name: ADMIN_MENU_LABELS[key], path: key === "chat" ? "/chat/new" : key === "models" ? "/channels" : `/${key}`,
   group: SYSTEM_MENU_KEYS.has(key) ? "sys" : "main", icon: key,
   color: palette[index % palette.length]!, visible: true, builtin: true,
 }));
@@ -36,8 +36,8 @@ export function normalizeAdminMenus(value: unknown): AdminMenuItem[] {
     items.push({
       ...(original ?? item as AdminMenuItem),
       ...item,
-      name: typeof item.name === "string" ? item.name : original!.name,
-      path: typeof item.path === "string" ? item.path : original!.path,
+      name: item.key === "models" ? ADMIN_MENU_LABELS.models : typeof item.name === "string" ? item.name : original!.name,
+      path: item.key === "models" ? "/channels" : typeof item.path === "string" ? item.path : original!.path,
       group: item.group === "main" || item.group === "sys" ? item.group : original!.group,
       icon: typeof item.icon === "string" ? item.icon : original!.icon,
       color: typeof item.color === "string" ? item.color : original!.color,

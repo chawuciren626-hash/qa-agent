@@ -16,8 +16,6 @@ import { useNewChat } from "../chat/use-new-chat";
 import { controlRequest } from "../../api/control";
 import * as api from "../../api/endpoints";
 import { AccountCenter } from "../../pages/account-center";
-import { PublicationsPage, RESOURCE_NAMES } from "./publications-page";
-import { CentralResourcesPage } from "./central-resources-page";
 import { CentralAgentsPage } from "./central-agents-page";
 import { CentralAgentSettingsPage } from "./central-agent-settings-page";
 import { CentralPluginsPage } from "./central-plugins-page";
@@ -244,13 +242,13 @@ export function AdminHostGate({ children }: { children: ReactNode }) {
     }
   }).catch(cause => setError(cause.message)); }, []);
   if (error) return <p role="alert">{error}</p>;
-  if (central === null) return <p className="p-8">正在连接管理服务…</p>;
+  if (central === null) return <p className="p-6">正在连接管理服务…</p>;
   if (!central && sessionVia === "desktop") return <div className="admin-web-only"><h1>管理后台仅在 Web 端开放</h1><p>请在浏览器访问管理后台。</p>{adminOrigin && <a href={new URL("/admin/overview", adminOrigin).href} target="_blank" rel="noopener noreferrer">打开 Web 管理后台 ↗</a>}</div>;
   if (!central) return <>{children}</>;
   const section = location.pathname.split("/")[1] || "agents";
   if (section === "chat") return <CentralAssistantContext.Provider value>{children}</CentralAssistantContext.Provider>;
   const kind = (section === "publications" ? location.pathname.split("/")[2] : section) as ManagedKind;
-  return <AdminChrome>{section === "overview" ? <AdminOverviewPage /> : section === "users" ? <AdminAccountsPage /> : section === "roles" ? <AdminRolesPage /> : section === "menus" ? <AdminMenusPage /> : section === "permissions" ? <AdminPermissionsPage /> : section === "audit" ? <AdminAuditPage /> : section === "mcp" ? <AdminMcpPage /> : kind === "agents" ? (location.pathname.startsWith("/agents/") ? <CentralAgentSettingsPage /> : <CentralAgentsPage />) : kind === "plugins" ? <CentralPluginsPage /> : kind === "skills" ? <AdminSkillsPage central /> : section === "tools" ? <AdminToolsPage /> : kind === "models" ? <AdminChannelsPage /> : kind in RESOURCE_NAMES ? <CentralResourcesPage key={kind} kind={kind} /> : <PageFrame>未知管理模块。</PageFrame>}</AdminChrome>;
+  return <AdminChrome>{section === "overview" ? <AdminOverviewPage /> : section === "users" ? <AdminAccountsPage /> : section === "roles" ? <AdminRolesPage /> : section === "menus" ? <AdminMenusPage /> : section === "permissions" ? <AdminPermissionsPage /> : section === "audit" ? <AdminAuditPage /> : section === "mcp" ? <AdminMcpPage /> : kind === "agents" ? (location.pathname.startsWith("/agents/") ? <CentralAgentSettingsPage /> : <CentralAgentsPage />) : kind === "plugins" ? <CentralPluginsPage /> : kind === "skills" ? <AdminSkillsPage central /> : section === "tools" ? <AdminToolsPage /> : /^\/channels\/?$/.test(location.pathname) ? <AdminChannelsPage /> : <PageFrame>未知管理模块。</PageFrame>}</AdminChrome>;
 }
 
 export function AdminLayout() {
@@ -302,7 +300,7 @@ export function AdminPermissionsPage() {
   }, [selected]);
   return <PageFrame><PageHeader title="功能权限" description="管理员保留全部模块；普通用户按授权显示和使用功能。" />
     <select aria-label="授权账号" className="mb-6 rounded border bg-transparent p-2" value={selected} onChange={event => setSelected(event.target.value)}><option value="">选择普通用户</option>{users.filter(user => !user.isAdmin).map(user => <option key={user.userId}>{user.userId}</option>)}</select>
-    <div className="mb-6 flex flex-wrap gap-5">{Object.entries(modules).map(([key, title]) => <label key={key} className="flex gap-2"><input type="checkbox" disabled={!selected || busy || key==="models"} checked={key==="models" || grants.includes(key)} onChange={event => setGrants(event.target.checked ? [...grants, key] : grants.filter(grant => grant !== key))} />{title}{key==="models" && <span className="text-xs opacity-60">个人模型始终开放</span>}</label>)}</div>
+    <div className="mb-6 flex flex-wrap gap-4">{Object.entries(modules).map(([key, title]) => <label key={key} className="flex gap-2"><input type="checkbox" disabled={!selected || busy || key==="models"} checked={key==="models" || grants.includes(key)} onChange={event => setGrants(event.target.checked ? [...grants, key] : grants.filter(grant => grant !== key))} />{title}{key==="models" && <span className="text-xs opacity-60">个人模型始终开放</span>}</label>)}</div>
     {error && <p role="alert" className="mb-4 text-red-600">{error}</p>}{notice && <p role="status">{notice}</p>}
     <Button disabled={!selected || busy} onClick={async () => { setBusy(true); setError(""); try { await controlRequest("/api/control/admin/permissions/" + selected, "PUT", { modules: grants }); setNotice("权限已保存，用户后续操作会重新校验。"); } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); } finally { setBusy(false); } }}>保存权限</Button>
   </PageFrame>;

@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { controlRequest } from "../../api/control";
+import { CENTRAL_MODEL_CATALOG_ID, getModels } from "../../api/endpoints";
 import { useAuth } from "../../state/auth";
 import type { Publication } from "./publications-page";
 
 type AuditEvent = { id: number; actor: string; action: string; resource_id: string; created_at: string };
 const kinds = [
   { key: "agents", title: "智能体数量", path: "/agents" },
-  { key: "models", title: "模型配置", path: "/models" },
   { key: "plugins", title: "插件数量", path: "/plugins" },
   { key: "skills", title: "技能数量", path: "/skills" },
 ] as const;
@@ -18,6 +18,7 @@ const actionNames: Record<string, string> = {
 
 export function AdminOverviewPage() {
   const { accountClient } = useAuth();
+  const [channelCount, setChannelCount] = useState(0);
   const [resources, setResources] = useState<Publication[]>([]);
   const [users, setUsers] = useState<{ userId: string }[]>([]);
   const [events, setEvents] = useState<AuditEvent[]>([]);
@@ -26,12 +27,14 @@ export function AdminOverviewPage() {
   const load = async () => {
     setLoading(true); setError("");
     try {
-      const [catalog, accounts, audit] = await Promise.all([
+      const [catalog, accounts, audit, channels] = await Promise.all([
         controlRequest("/api/control/admin/resources"),
         controlRequest((accountClient ? "/api/account-client" : "") + "/api/admin/users"),
         controlRequest("/api/control/admin/audit"),
+        getModels(CENTRAL_MODEL_CATALOG_ID, null),
       ]);
       setResources(catalog.resources ?? []);
+      setChannelCount(Object.keys(channels.providers ?? {}).length);
       setUsers(accounts.users ?? []);
       setEvents(audit.events ?? []);
     } catch (cause) {
@@ -50,6 +53,7 @@ export function AdminOverviewPage() {
     {error && <p role="alert" className="admin-error">{error}</p>}
     <div className="admin-stat-grid">
       <Link className="admin-stat-card" to="/users"><span>用户数量</span><strong>{loading ? "…" : users.length}</strong><small>内置账号</small></Link>
+      <Link className="admin-stat-card" to="/channels"><span>渠道管理</span><strong>{loading ? "…" : channelCount}</strong><small>平台渠道</small></Link>
       {summary.map(item => <Link className="admin-stat-card" to={item.path} key={item.key}><span>{item.title}</span><strong>{loading ? "…" : item.total}</strong><small>已发布 {item.published}</small></Link>)}
       <Link className="admin-stat-card" to="/audit"><span>操作日志</span><strong>{loading ? "…" : events.length}</strong><small>最近 100 条操作</small></Link>
     </div>

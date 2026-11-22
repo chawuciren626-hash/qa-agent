@@ -42,10 +42,19 @@ const WEB = SCAN.files.filter((file) => file.root === "web");
  * launcher fan's with the launcher (W7).
  */
 const POLICY: DeslopPolicy = {
-  transformMotion: [],
+  transformMotion: [
+    "features/admin/admin-skill-versions-page.css",
+    "features/admin/admin-skills-page.css",
+    "features/admin/admin-tools-page.css",
+  ],
+  layoutMotion: ["features/qa/project-management/project-management.css"],
   entranceMotion: [],
-  pulseHomes: ["dot.tsx"],
-  spinnerHomes: [],
+  pulseHomes: [
+    "dot.tsx",
+    "features/qa/project-management/project-management.css",
+    "features/qa/workspace-layout.css",
+  ],
+  spinnerHomes: ["features/models/user-models-settings.tsx"],
   tokensOnly: false,
   hexHomes: [],
 };

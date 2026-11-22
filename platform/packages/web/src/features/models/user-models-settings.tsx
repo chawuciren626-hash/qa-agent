@@ -384,7 +384,7 @@ export function UserModelsSettings() {
                   <span className="truncate text-sm font-medium">{model.displayName?.trim() || model.modelId}</span>
                   <span className="shrink-0 text-xs text-muted-foreground">{providerNames.get(model.provider) ?? model.provider}</span>
                 </div>
-                <div className="flex shrink-0 items-center gap-0.5">
+                <div className="flex shrink-0 items-center gap-1">
                 <IconButton variant="ghost" size="sm" label={`编辑 ${rowLabel(model)}`} disabled={busy} onClick={() => openEdit(model)}>
                   <GlyphIcon d={ICONS.pencil} size={ICON_SIZE.iconButton} />
                 </IconButton>

@@ -173,7 +173,7 @@ function KnowledgeItemRow({
             条款切分里找不到这一行，原文位置待核；这条结论先按"未核实"看待。
           </p>
         ) : (
-          <div className="mt-2 rounded border border-[var(--border)] p-2 font-mono text-[11px] leading-5">
+          <div className="mt-2 rounded border border-[var(--border)] p-2 font-mono text-xs leading-5">
             {located.lines.map((line, index) => (
               <div
                 key={index}
@@ -1788,7 +1788,7 @@ function TestAssetsSection({ base }: { base: string }) {
   }
 
   return (
-    <div className="mt-4 space-y-5">
+    <div className="mt-4 space-y-4">
       {errors.length > 0 && (
         <p role="alert" className="rounded border border-amber-300 p-2 text-xs text-amber-700">
           目录校验问题：{errors.join("；")}

@@ -186,8 +186,7 @@ export function SettingsDialog({
       {current === "appearance" && <AppearanceSection />}
       {/* 模型页：所有形态统一为 WorkBuddy 式「自定义模型 + 辅助任务模型」。
           原完整平台用 ModelPage（全表渠道商视图，项目维度）；现在同样走 UserModelsSettings，
-          它写入用户名下项目并自动发布为按用户的全局模型配置，普通用户与管理员一致。
-          旧的 ModelsPage 仍可通过 /qa/models 页（项目管理内的模型库）进入，不丢能力。 */}
+          它写入用户名下项目并自动发布为按用户的全局模型配置，普通用户与管理员一致。 */}
       {current === "models" && <UserModelsSettings />}
       {current === "shortcuts" && <ShortcutsSection />}
       {current === "archived" && <ArchivedSessionsSection />}

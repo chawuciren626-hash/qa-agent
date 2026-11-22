@@ -146,7 +146,7 @@ export function QaProjectView() {
     return () => { alive = false; };
   }, [id, revision]);
   if (!projectsLoading && currentProject === null) return <Navigate to="/qa/projects" replace />;
-  return <main className="qa-project-view h-full min-h-0 min-w-0 overflow-hidden p-5 md:p-8" aria-label="项目视图">
+  return <main className="qa-project-view h-full min-h-0 min-w-0 overflow-hidden p-4 md:p-6" aria-label="项目视图">
     <div className="qp-layout mx-auto">
       <div className="qp-fixed space-y-6">
       <header className="qp-head">
