@@ -9,6 +9,8 @@ vi.mock("../src/state/auth", () => ({ useAuth: () => ({ user: { userId: "tester"
 vi.mock("../src/state/project", () => ({ useProject: () => ({ currentProject: { projectId: "demo" }, agents: [{ agentId: "test_agent" }], setCurrentAgentId: vi.fn() }), projectDisplayName: () => "测试项目" }));
 vi.mock("react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("../src/api/client", () => ({ apiFetch: async () => ({ projectId: "demo", tasks: state.tasks }) }));
+// B5-4 双源拉取后 project-view 会调 listTasks；main 上此文件缺该 mock 导致视图渲染不出任务（存量失败），这里补齐。
+vi.mock("../src/features/qa/platform-tasks/api", () => ({ listTasks: async () => ({ items: (state.tasks as any[]).map(t => ({ id: t.session.sessionId, title: t.session.title, mainSessionId: t.session.sessionId })) }) }));
 
 afterEach(async () => { await unmountAll(); localStorage.clear(); });
 
@@ -46,4 +48,28 @@ it("labels the defect table and detail with the same severity vocabulary", async
   expect(document.querySelector(".qp-record-table tbody")?.textContent).toContain("未记录");
   await click([...document.querySelectorAll(".qp-record-table tbody button")][1] as HTMLButtonElement);
   expect(document.querySelector('[aria-label="缺陷详情"]')?.textContent).toContain("未记录");
+});
+
+it("shows the defect ledger lifecycle status and related cases per defect (A2)", async () => {
+  state.tasks = [{
+    session: { sessionId: "task-1", title: "缺陷任务", agentId: "test_agent", status: "idle", workspace: "/demo", lastActiveAt: "2026-10-27T00:00:00Z" },
+    runs: [{
+      id: "run-1", status: "completed", stages: [{ id: "defects", status: "completed" }], artifacts: [],
+      caseCount: 0, defectCount: 2, executed: 0, passed: 0,
+      defects: [
+        { id: "BUG-1", title: "登录失败", severity: "Critical", source: "defects", detail: { lifecycle_status: "confirmed", related_cases: ["case-1", "case-2"] } },
+        { id: "BUG-2", title: "提示错位", severity: "Minor", source: "defects" },
+      ],
+    }],
+    unavailable: 0, truncated: false,
+  }];
+  await mount(h(QaProjectView));
+  await click([...document.querySelectorAll('[role="tab"]')].find(tab => tab.textContent?.includes("缺陷清单")) as HTMLButtonElement);
+  const header = document.querySelector(".qp-record-table thead")?.textContent ?? "";
+  expect(header).toContain("生命周期状态");
+  expect(header).toContain("关联用例");
+  const body = document.querySelector(".qp-record-table tbody")?.textContent ?? "";
+  expect(body).toContain("已确认");
+  expect(body).toContain("case-1、case-2");
+  expect(body).toContain("未登记");
 });

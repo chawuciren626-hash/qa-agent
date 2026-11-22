@@ -109,3 +109,21 @@
 .qpt-run-env{background:light-dark(#eaf2fb,#0f2740);color:light-dark(#12457d,#a8c8ea)}
 .qpt-channel{margin-bottom:10px}
 .qpt-channel-head{font-size:11.5px;font-weight:700;color:light-dark(#4b5563,#d1d5db);margin:0 0 5px;letter-spacing:.3px}
+
+/* A6：复测范围选择抽屉（RetestScopeDrawer），遮罩/弹窗复用 qtd-mask/qtd-modal */
+.qrs-modal{display:flex;flex-direction:column;max-height:min(82vh,720px);width:min(560px,92vw)}
+.qrs-modal header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid light-dark(#e6eaf0,#374151)}
+.qrs-body{flex:1;overflow:auto;padding:12px 16px;display:flex;flex-direction:column;gap:12px}
+.qrs-hint{margin:0;font-size:12.5px;color:light-dark(#4b5563,#d1d5db)}
+.qrs-layer{border:1px solid light-dark(#e6eaf0,#374151);border-radius:10px;padding:10px 12px;margin:0}
+.qrs-layer legend{font-weight:600;font-size:13px;padding:0 4px}
+.qrs-layer legend small{margin-left:6px;font-weight:400;font-size:11.5px;color:light-dark(#64748b,#94a3b8)}
+.qrs-layer ul{list-style:none;margin:6px 0 0;padding:0;max-height:180px;overflow:auto}
+.qrs-layer li{padding:3px 0;font-size:13px}
+.qrs-empty{margin:6px 0 0;font-size:12.5px;color:light-dark(#64748b,#94a3b8)}
+.qrs-error{margin:0;border:1px solid light-dark(#f3b6b6,#7f1d1d);color:light-dark(#b91c1c,#f87171);border-radius:8px;padding:8px 10px;font-size:12.5px}
+.qrs-ok{margin:0;border:1px solid light-dark(#b6e2c8,#14532d);color:light-dark(#15803d,#86efac);border-radius:8px;padding:8px 10px;font-size:12.5px}
+.qrs-modal footer{display:flex;align-items:center;gap:10px;padding:12px 16px;border-top:1px solid light-dark(#e6eaf0,#374151)}
+.qrs-count{flex:1;font-size:12.5px;color:light-dark(#4b5563,#d1d5db)}
+.qrs-modal footer button{border:1px solid light-dark(#dfe5ee,#475569);border-radius:8px;padding:7px 12px;font-size:13px;background:light-dark(#fff,#1b2432);color:inherit}
+.qrs-modal footer button:disabled{opacity:.5}

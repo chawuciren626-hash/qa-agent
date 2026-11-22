@@ -17,6 +17,7 @@ import { toastError, toastSuccess } from "@prismshadow/penguin-ui";
 import { apiFetch } from "../../../api/client";
 import { useProject, projectDisplayName } from "../../../state/project";
 import { ENV_END_LABELS } from "../project-management/types";
+import { RetestScopeDrawer } from "../retest-scope-drawer";
 import {
   analyzeTask,
   deleteTaskAttachment,
@@ -85,6 +86,7 @@ export function PlatformTasksPage() {
   const [drawerId, setDrawerId] = useState<string | null>(null);
   const [drawerDetail, setDrawerDetail] = useState<TaskDetail | null>(null);
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
+  const [retestTarget, setRetestTarget] = useState<TaskListItem | null>(null);
 
   const reload = useCallback(async () => {
     if (!projectId) return;
@@ -377,6 +379,9 @@ export function PlatformTasksPage() {
                         {task.status === "pending_analysis" && (
                           <button type="button" className="qpt-op" disabled title="AI 分析未完成，开始测试不可用（TLQ-1）">开始测试</button>
                         )}
+                        {task.status === "result_returned" && (
+                          <button type="button" className="qpt-op qpt-op-accent" onClick={() => setRetestTarget(task)}>发起复测</button>
+                        )}
                         {task.status === "impact_pending" && (
                           <button type="button" className="qpt-op qpt-op-main" onClick={() => void openDrawer(task.id)}>确认影响</button>
                         )}
@@ -410,6 +415,15 @@ export function PlatformTasksPage() {
           projectId={projectId}
           onClose={() => setEditTarget(null)}
           onSave={saveEdit}
+        />
+      )}
+
+      {retestTarget && projectId && (
+        <RetestScopeDrawer
+          projectId={projectId}
+          taskId={retestTarget.id}
+          taskTitle={retestTarget.title}
+          onClose={() => setRetestTarget(null)}
         />
       )}
     </main>
