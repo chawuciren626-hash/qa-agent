@@ -19,6 +19,34 @@ import { registerQaPersonalResources } from "./qa-personal-resources.js";
 
 const initializing = new Set<string>();
 const execFileAsync = promisify(execFile);
+
+/**
+ * 确保项目的 QA 智能体与 penguin/agents.json 声明一致（B4/B11-11 续）：
+ * agents.json 新增了角色而存量项目尚未创建时，在此处自动补建——走 agentService.createAgent
+ * 正规链路（filesystem + DB 记录 + 管理后台可见），不是只写 AGENTS.md 文件。
+ * 已存在的智能体跳过（不覆盖名称/描述/技能绑定）。
+ */
+async function ensureQaAgents(deps: AgentsRouteDeps, projectId: string): Promise<void> {
+  if (!qaEnabled) return;
+  try {
+    const engine = qaEngineModule("qa-project-bootstrap") as { qaRoles(): { id: string }[] };
+    const roles = engine.qaRoles();
+    const existing = new Set(
+      (await deps.agentService.listAgents(projectId)).map(a => a.agentId),
+    );
+    for (const role of roles) {
+      if (existing.has(role.id)) continue;
+      try {
+        await deps.agentService.createAgent(projectId, role.id, role.id, `AITestHarness QA 智能体：${role.id}`);
+      } catch {
+        // 创建失败（并发/已存在/权限）跳过，不阻断列表返回。
+      }
+    }
+  } catch {
+    // 引擎模块不可用时静默——agent 列表仍按现状返回。
+  }
+}
+
 export function registerQaProjectRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps): void {
   if (!qaEnabled || !deps.config) return;
   registerQaPersonalResources(app, deps);
