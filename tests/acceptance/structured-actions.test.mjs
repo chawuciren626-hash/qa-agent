@@ -1461,7 +1461,7 @@ test('dispatch catalog explains optional mode and normal analysis dispatch succe
   assert.ok(result.completion_template.artifacts.includes('analysis/requirement-ledger.json'));
   assert.equal(result.data.event.agent,'requirement_analysis_agent');
   assert.equal(result.delegation.agent_id,'requirement_analysis_agent');
-  assert.deepEqual(result.skill_files,[{skill:'requirement-analysis',read_file_path:resolve(root,'skills/requirement-analysis/SKILL.md')}]);
+  assert.deepEqual(result.skill_files,['requirement-analysis','api-contract-analysis'].map(skill=>({skill,read_file_path:resolve(root,'skills',skill,'SKILL.md')})));
   assert.ok(contractText(result).includes(JSON.stringify(result.skill_files)));
   assert.notEqual(result.delegation.agent_id,'test_agent');
   assert.equal(JSON.parse(readFileSync(result.delegation_path,'utf8')).prompt,result.delegation.prompt);

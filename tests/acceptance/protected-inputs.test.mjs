@@ -57,6 +57,7 @@ test('short credentials do not corrupt action identifiers or nested case drafts'
   assert.equal(protectedDraft.test_data.password,ref);
   assert.equal(protectedDraft.note,`credential ${ref}; test_cases and tester remain identifiers`);
   assert.deepEqual(f.store.protect(owner,protectedDraft),protectedDraft);
+  assert.equal(f.store.protect(owner,'test_data.username; test.username; TP-003'), 'test_data.username; test.username; TP-003');
   const one=f.store.put(owner,'x');
   assert.equal(f.store.protect(owner,{password:'x',note:'value x, export'}).note,`value ${one}, export`);
   const long=f.store.put(owner,'Synthetic-only-secret-7362');

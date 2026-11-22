@@ -278,3 +278,15 @@ E:\AItestHarness\
 
 D:\AItestHarness\app\engine\                 运行副本（33 个文件待同步）
 ```
+
+
+## 八、合并前复核（Codex，2026-11-22）
+
+- 原始改造已集中提交为 `3b1c0b4`，位于主仓库 `main`，基于 `713a583`，无需额外分支合并。
+- Git 实际范围为 45 个文件：40 个原有文件变更，加 `.gitignore` 与 4 份新增文档。13 份角色提示词、11 份 Skill 正文、相关参考资料、配置与引擎脚本均已跟踪。
+- 复核修复：队长提示词改写后，资源测试仍匹配旧句子；需求分析派发测试遗漏新增 `api-contract-analysis`。现对齐新文本和配置，保留派发绑定与合同读取要求。
+- 复核发现并修复真实回归：脱敏模块跳过了不足 4 位的已登记凭据，导致单字符凭据出现在普通文本中。恢复短字母数字凭据的完整词匹配，保留点分字段路径与测试编号的保护，并补充相应回归断言。
+- `check-skills` 通过（18 skills / 40 resources / 12 agents）；发布资源白名单通过（468 files；这不表示安装包已构建）。
+- 本轮仅做源码合并、核验与远端同步；不把提交推送等同于安装环境已更新。第五节列出的其他引擎待办仍未解决。
+- 串行复核已通过：child-tool-guard 8/8、skill-resources 18/18、stage-registry 6/6、mobile-stage 4/4、mobile-execution-evidence 4/4、credential-protection 5 通过 / 1 跳过、protected-inputs 8/8、test-tracks 15/15、local-browser-executor 6/6、api-automation 16/16、structured-actions 85/85。完整 core 套件未重跑；本轮未验证真实业务任务或安装副本。
+- browser-task 最终汇总为 31/31 通过（包含子用例），进程正常退出。上述 12 套定向回归共 207 个测试：206 通过、1 跳过、0 失败。

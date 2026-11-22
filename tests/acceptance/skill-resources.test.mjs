@@ -200,9 +200,9 @@ test('execution task stops at controlled execution artifacts despite multi-deliv
 
 test('controller instructions bind role and task while allowing localized display descriptions', () => {
   const prompt=readFileSync(resolve(import.meta.dirname,'../../penguin/agents/test_agent/AGENTS.md'),'utf8');
-  assert.match(prompt,/派发对象原样交给队员/);
+  assert.match(prompt,/派发对象由引擎生成，你原样转交/);
   assert.match(prompt,/不改写、不追加业务目标/);
-  assert.match(prompt,/短指令已经登记过绑定，合同由队员自己读/);
+  assert.match(prompt,/短指令已登记过绑定，合同由队员自己读/);
   assert.match(prompt,/没起来[\s\S]{0,12}必须真的再派一次/);
 });
 
@@ -285,7 +285,7 @@ test('shared policy is compact, model-neutral and keeps task memory separate fro
   ]) assert.match(runtime, rule);
   assert.doesNotMatch(runtime, /step-3\.7-flash|tokendance|宿主子Agent没有工具hook|限次修正|预算耗尽/);
   const controller = readFileSync(resolve(engine, 'penguin/agents/test_agent/AGENTS.md'), 'utf8');
-  assert.match(controller, /合同由队员自己读，你不要展开转抄/);
+  assert.match(controller, /合同由队员自己读，你不展开转抄/);
   assert.match(controller, /不先读专业 Skill 全文或产物 Schema 替他想/);
   assert.match(controller, /最终报告由报告角色产出/);
 });

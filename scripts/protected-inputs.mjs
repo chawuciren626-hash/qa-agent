@@ -121,7 +121,7 @@ export function createProtectedInputs(base,{wrap=platformWrap,unwrap=platformUnw
         }
         let result=text;
         for(const [secret,ref] of known.get(owner) ?? []) {
-          if(typeof secret!=='string' || secret.length<4) continue;
+          if(typeof secret!=='string' || (secret.length<4 && !/^[A-Za-z0-9_]+$/.test(secret))) continue;
           // Word-like credentials must match a whole token: substring replacement turned
           // "test_data.username" into "<ref>.username" and broke every step that cited it.
           // The trailing lookahead also refuses to split a dotted field path.
