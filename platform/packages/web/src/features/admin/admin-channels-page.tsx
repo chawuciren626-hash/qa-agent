@@ -24,6 +24,7 @@ import {
   Select,
   toastError,
   toastSuccess,
+  RequiredMark,
 } from "@prismshadow/penguin-ui";
 import * as api from "../../api/endpoints";
 import type { ModelInfo, ModelsResponse } from "@prismshadow/penguin-server/api";
@@ -443,7 +444,7 @@ export function AdminChannelsPage() {
           </p>
           <div className="mt-3 flex flex-col gap-4">
             <label className="flex flex-col gap-1.5 text-sm">
-              <span className="font-medium">渠道标识 <em className="not-italic text-red-600">*</em></span>
+              <span className="font-medium">渠道标识 <RequiredMark /></span>
               <input
                 type="text"
                 className={`w-full rounded-md border bg-transparent px-3 py-2 text-sm ${dialog.editId === null && dialog.id.trim() !== "" && !slugOk ? "border-red-500" : "border-line-muted"}`}
@@ -461,7 +462,7 @@ export function AdminChannelsPage() {
               {slugDuplicate && <span className="text-xs text-red-600">✗ 标识已存在，请更换。</span>}
             </label>
             <label className="flex flex-col gap-1.5 text-sm">
-              <span className="font-medium">显示名称 <em className="not-italic text-red-600">*</em></span>
+              <span className="font-medium">显示名称 <RequiredMark /></span>
               <input
                 type="text"
                 className="w-full rounded-md border border-line-muted bg-transparent px-3 py-2 text-sm"
