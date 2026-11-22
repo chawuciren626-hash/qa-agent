@@ -2,8 +2,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { atomicJson } from './execution-attempts.mjs';
-
-const PRIORITY_ORDER = { P0: 0, P1: 1, P2: 2 };
+import { caseModule, caseResourceKeys, PRIORITY_RANK } from './execution-plan.mjs';
 
 export const DEFAULT_POOL_CAPACITY = Object.freeze({
   schema_version: 1,
@@ -30,17 +29,6 @@ export function readPoolCapacity(root) {
   return { schema_version: 1, pools, max_shard_workers: Math.min(maxShardWorkers, Math.max(...Object.values(pools))), source_path: path };
 }
 
-export function caseModule(testCase) {
-  if (testCase?.module) return String(testCase.module);
-  const segments = String(testCase?.case_id ?? '').split(/[-_]/);
-  return segments.length >= 3 ? segments[1].toUpperCase() : 'default';
-}
-
-export function caseResourceKeys(testCase) {
-  const keys = testCase?.resource_keys ?? testCase?.execution_contract?.resource_keys ?? [];
-  return Array.isArray(keys) ? [...new Set(keys.map(String))].sort() : [];
-}
-
 /**
  * 按 模块 × 数据画像 分片；分片内按优先级排序，片间靠资源键串行约束。
  * 数据画像来自 execution_contract.data_isolation（只读/隔离/共享），
@@ -59,7 +47,7 @@ export function buildShards(plan) {
   }
   const end = plan.execution_policy?.end ?? plan.execution_policy?.target_end ?? 'web';
   return [...groups.entries()].map(([key, group]) => {
-    const ordered = [...group.cases].sort((left, right) => (PRIORITY_ORDER[left.priority] ?? 9) - (PRIORITY_ORDER[right.priority] ?? 9));
+    const ordered = [...group.cases].sort((left, right) => (PRIORITY_RANK[left.priority] ?? 9) - (PRIORITY_RANK[right.priority] ?? 9));
     return {
       shard_id: `${group.module}-${group.data_profile}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-'),
       module: group.module,

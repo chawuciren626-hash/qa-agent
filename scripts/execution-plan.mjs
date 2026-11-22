@@ -2,6 +2,26 @@ import { readFileSync } from "node:fs";
 
 const isolationLevels = new Set(["read_only", "isolated", "shared"]);
 const assertionModes = new Set(["dynamic_ui", "dom_state", "navigation", "api_response", "storage_state"]);
+const priorities = new Set(["P0", "P1", "P2"]);
+export const PRIORITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2 });
+
+export function normalizePriority(testCase) {
+  const value = testCase?.priority ?? "P2";
+  if (!priorities.has(value)) throw new Error(`${testCase?.case_id}: priority 必须是 P0 / P1 / P2。`);
+  return value;
+}
+
+/** 模块推定：显式 module 优先，否则用 TC-<模块>-<序号> 的中间段。 */
+export function caseModule(testCase) {
+  if (testCase?.module) return String(testCase.module);
+  const segments = String(testCase?.case_id ?? "").split(/[-_]/);
+  return segments.length >= 3 ? segments[1].toUpperCase() : "default";
+}
+
+export function caseResourceKeys(testCase) {
+  const keys = testCase?.resource_keys ?? testCase?.execution_contract?.resource_keys ?? [];
+  return Array.isArray(keys) ? [...new Set(keys.map(String))].sort() : [];
+}
 
 export function extractCases(source) {
   if (Array.isArray(source)) return source;
@@ -26,17 +46,22 @@ export function normalizeContract(testCase) {
 
 export function createExecutionCases(testCases) {
   const ids = new Set();
-  return testCases.filter((testCase) => testCase.automation_feasible === true).map((testCase) => {
+  const cases = testCases.filter((testCase) => testCase.automation_feasible === true).map((testCase) => {
     if (!testCase.case_id || !testCase.title) throw new Error("自动化用例必须包含 case_id 和 title。");
     if (ids.has(testCase.case_id)) throw new Error(`测试用例 ID 重复: ${testCase.case_id}`);
     ids.add(testCase.case_id);
     return {
       case_id: testCase.case_id,
       title: testCase.title,
+      module: caseModule(testCase),
+      priority: normalizePriority(testCase),
+      resource_keys: caseResourceKeys(testCase),
       asset_refs: testCase.asset_refs ?? [],
       execution_contract: normalizeContract(testCase)
     };
   });
+  // 优先级分层：P0 冒烟先执行，同一优先级保持设计顺序。
+  return cases.sort((left, right) => PRIORITY_RANK[left.priority] - PRIORITY_RANK[right.priority]);
 }
 
 export function readJson(path) {
@@ -53,6 +78,9 @@ export function validateExecutionPlan(plan) {
   for (const testCase of Array.isArray(plan.cases) ? plan.cases : []) {
     if (!testCase || typeof testCase !== 'object') { errors.push('执行用例必须是对象。'); continue; }
     if (!testCase.case_id || !testCase.title) errors.push("执行用例缺少 case_id 或 title。");
+    if (testCase.priority !== undefined && !priorities.has(testCase.priority)) errors.push(`${testCase.case_id}: priority 必须是 P0 / P1 / P2。`);
+    if (testCase.module !== undefined && (typeof testCase.module !== 'string' || !testCase.module.trim())) errors.push(`${testCase.case_id}: module 必须是非空字符串。`);
+    if (testCase.resource_keys !== undefined && (!Array.isArray(testCase.resource_keys) || testCase.resource_keys.some(key => typeof key !== 'string' || !key))) errors.push(`${testCase.case_id}: resource_keys 必须是字符串数组。`);
     if (ids.has(testCase.case_id)) errors.push(`执行用例 ID 重复: ${testCase.case_id}`);
     ids.add(testCase.case_id);
     try { normalizeContract(testCase); } catch (error) { errors.push(error.message); }
@@ -73,6 +101,18 @@ export function validateExecutionPlan(plan) {
   if (sharding !== undefined) {
     if (!sharding || typeof sharding !== 'object' || typeof sharding.enabled !== 'boolean') errors.push('execution_policy.sharding 必须是包含布尔 enabled 的对象。');
     if (sharding?.enabled === true && (plan.execution_policy?.sandbox_backend ?? 'host') !== 'host') errors.push('分片并行目前只支持 host 后端。');
+  }
+  if (plan.phases !== undefined) {
+    const assigned = new Set();
+    for (const phase of Array.isArray(plan.phases) ? plan.phases : []) {
+      if (!phase?.id || !Array.isArray(phase.case_ids)) { errors.push('phases 每项必须包含 id 与 case_ids 数组。'); continue; }
+      for (const caseId of phase.case_ids) {
+        if (!ids.has(caseId)) errors.push(`阶段 ${phase.id} 引用了不存在的用例 ${caseId}。`);
+        if (assigned.has(caseId)) errors.push(`用例 ${caseId} 在 phases 中重复。`);
+        assigned.add(caseId);
+      }
+    }
+    for (const caseId of ids) if (!assigned.has(caseId)) errors.push(`用例 ${caseId} 未归入任何执行阶段。`);
   }
   return errors;
 }

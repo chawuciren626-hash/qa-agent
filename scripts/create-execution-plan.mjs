@@ -31,6 +31,13 @@ if (!selectedIds.length) throw new Error('Selection contains only manual cases; 
 const checked = inspectDesign({ root, runId, source: sourceArg, selectedIds });
 if (checked.errors.length) throw new Error(checked.errors.join('\n'));
 const cases = createExecutionCases(checked.cases);
+const smokeCases = cases.filter(testCase => testCase.priority === 'P0').map(testCase => testCase.case_id);
+const regressionCases = cases.filter(testCase => testCase.priority !== 'P0').map(testCase => testCase.case_id);
+const phases = [
+  ...(smokeCases.length ? [{ id: 'smoke', label: '冒烟快速反馈', fast_feedback: true, batch_window: false, case_ids: smokeCases }] : []),
+  ...(regressionCases.length ? [{ id: 'regression', label: '全量回归批量窗口', fast_feedback: false, batch_window: true, case_ids: regressionCases }] : []),
+];
+const prioritySummary = Object.fromEntries(['P0', 'P1', 'P2'].map(level => [level, cases.filter(testCase => testCase.priority === level).length]));
 const allParallelSafe = cases.every((testCase) => ["read_only", "isolated"].includes(testCase.execution_contract.data_isolation));
 const configuredWorkers = Math.max(1, Number(environment.execution?.max_workers ?? 1));
 const plan = {
@@ -40,6 +47,8 @@ const plan = {
   environment_config: environmentConfig,
   selection: selection ? { profile: selection.profile, source: selectionArg.replace(/\\/g, "/"), summary: selection.summary } : null,
   cases,
+  phases,
+  priority_summary: prioritySummary,
   manual_pending: manualPending,
   design_gate: designReceipt(checked),
   execution_policy: {
