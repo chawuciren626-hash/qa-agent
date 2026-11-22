@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { toastError, toastSuccess } from "@prismshadow/penguin-ui";
+import { apiFetch } from "../../../api/client";
 import { useProject, projectDisplayName } from "../../../state/project";
 import { ENV_END_LABELS } from "../project-management/types";
 import {
@@ -106,6 +107,11 @@ export function PlatformTasksPage() {
 
   const visible = items.filter((i) => (seg === "all" ? true : i.status === seg));
   const countOf = (key: string) => (key === "all" ? items.length : counts[key] ?? 0);
+
+  const reloadDrawer = async () => {
+    if (!projectId || !drawerId) return;
+    try { setDrawerDetail(await getTaskDetail(projectId, drawerId)); } catch { /* 保留原详情 */ }
+  };
 
   const openDrawer = async (id: string) => {
     if (!projectId) return;
@@ -390,6 +396,7 @@ export function PlatformTasksPage() {
           <TaskDrawer
             detail={drawerDetail}
             projectId={projectId}
+            onRetestCreated={() => { void reloadDrawer(); void reload(); }}
             onClose={() => setDrawerId(null)}
             onAnalyze={(t) => void doAnalyze(t)}
             analyzing={drawerId ? analyzing.has(drawerId) : false}
@@ -500,12 +507,13 @@ function TaskAttachments({ projectId, taskId }: { projectId: string; taskId: str
   );
 }
 
-function TaskDrawer({ detail, projectId, onClose, onAnalyze, analyzing }: {
+function TaskDrawer({ detail, projectId, onClose, onAnalyze, analyzing, onRetestCreated }: {
   detail: TaskDetail | null;
   projectId: string;
   onClose: () => void;
   onAnalyze: (task: TaskListItem) => void;
   analyzing: boolean;
+  onRetestCreated: () => void;
 }) {
   if (!detail) {
     return (
@@ -522,12 +530,25 @@ function TaskDrawer({ detail, projectId, onClose, onAnalyze, analyzing }: {
   const s = detail.summary;
   // 执行通道分组（B5-2）：类型 × 环境 相同的运行归入同一通道。
   const channelGroups: Array<[string, typeof detail.progress.runs]> = [];
+  const [retestBusy, setRetestBusy] = useState(false);
   for (const run of detail.progress.runs) {
     const channel = `${RUN_KIND_LABEL[run.kind] ?? run.kind} · ${run.env || "未绑定环境"}`;
     const group = channelGroups.find(([label]) => label === channel);
     if (group) group[1].push(run);
     else channelGroups.push([channel, [run]]);
   }
+  const latestRun = detail.progress.runs[0] ?? null;
+  const startRetest = async () => {
+    if (!latestRun || !detail.progress.mainSessionId || retestBusy) return;
+    setRetestBusy(true);
+    try {
+      const result = await apiFetch<{ runId: string }>(`/api/projects/${encodeURIComponent(projectId)}/agents/qa/tasks/${encodeURIComponent(detail.progress.mainSessionId)}/runs/${encodeURIComponent(latestRun.runId)}/retest`, { method: "POST", body: {} });
+      toastSuccess(`复测轮次已创建：${result.runId}（预登记，范围与授权后执行）`);
+      onRetestCreated();
+    } catch (cause) {
+      toastError(cause instanceof Error ? cause.message : "复测轮次创建失败");
+    } finally { setRetestBusy(false); }
+  };
   return (
     <aside className="qpt-drawer" aria-label="任务详情">
       <header className="qpt-dw-head">
@@ -622,7 +643,11 @@ function TaskDrawer({ detail, projectId, onClose, onAnalyze, analyzing }: {
         </section>
 
         <section className="qpt-dw-sec">
-          <h3>测试进展 <small className="qpt-att-hint">按执行通道（类型 × 环境）分组</small></h3>
+          <h3>测试进展 <small className="qpt-att-hint">按执行通道（类型 × 环境）分组</small>
+            <button type="button" className="qpt-op qpt-op-accent" disabled={retestBusy || !latestRun} onClick={() => void startRetest()} style={{ marginLeft: 10 }}>
+              {retestBusy ? "创建中…" : "发起复测轮次"}
+            </button>
+          </h3>
           {detail.progress.runs.length > 0 ? (
             channelGroups.map(([channel, channelRuns]) => (
               <div key={channel} className="qpt-channel">
