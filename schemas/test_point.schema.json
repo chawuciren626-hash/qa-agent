@@ -51,6 +51,19 @@
         "minLength": 1
       }
     },
+    "end": {
+      "type": "string",
+      "enum": [
+        "web",
+        "web_admin",
+        "app",
+        "miniprogram",
+        "desktop",
+        "api",
+        ""
+      ],
+      "description": "所属端。空串=未指定（兼容旧产物）；来源未说明时不推断。"
+    },
     "execution_layer": {
       "enum": [
         "ui",

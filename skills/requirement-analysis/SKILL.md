@@ -1,9 +1,11 @@
 ---
 name: requirement-analysis
-version: 2026.11.02.3
+version: 2026.11.02.4
 description: 分析需求中的功能、业务规则、风险和待澄清问题。
 task: requirement_extract
 stage: analysis
+# tools 是阶段收口校验清单：stage_finalize 一次合并调用必须全部通过的工具，
+# 不是逐个调用的清单（见正文「阶段工具执行协议」）。
 tools: ["requirement.testability", "requirement.acceptance", "irval.check"]
 sections:
   criteria: ["阶段工具执行协议（强制）", "质量标准", "禁止事项"]

@@ -26,6 +26,12 @@ design_contract.assumptions 只放影响业务预期或授权的真实假设。�
 
 仅在当前派发明确为lifecycle时，读取test-case-writing Skill的生命周期参考：catalog.runtime_context.shared_skills_root下的test-case-writing/references/lifecycle.md。该参考保留台账、追溯、设计与执行合同要求；task只执行上面的独立分支，不加载此参考或生命周期Schema。
 
+## 锚点与资产引用
+
+用例带 `end` 字段，与关联测试点的端一致；无关联测试点时按来源材料标注，未说明保持未指定（空串）。
+
+用例步骤只引用 verified 锚点与资产 ID：定位引用来自系统地图/探索产出中已人工确认（verified）的页面锚点，数据与断言资产来自 `config/test-assets.json` 的 verified 条目，asset_refs 记录资产 id 与版本。禁止自造选择器（CSS/XPath/坐标、凭经验猜测的框架类名都算自造）；缺少 verified 锚点或资产时，在用例中注明缺口并报告总控安排探索或锚点验证，不用猜测的定位补齐，也不为可执行而降低预期。
+
 ## 接口用例
 接口用例执行前交付 JSON/Excel，保留 case_id 和来源。每条标 execution_layer=api，以 api_scenario 表达可执行步骤/断言，文件包装 api_plan 表达 scope、并发和引用的写授权；格式见共享 skills/api-test-execution/references/protocol.md。保留现有文字 steps、expected 和设计合同以供 Excel 展示。参数、预期和 source_refs 必须来自当前资料；不臆造状态码。只有设计任务时不发业务请求。
 
