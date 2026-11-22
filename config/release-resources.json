@@ -133,6 +133,7 @@
     "penguin/agents/default_agent/AGENTS.md",
     "penguin/agents/defect_analysis_agent/AGENTS.md",
     "penguin/agents/desktop_test_agent/AGENTS.md",
+    "penguin/agents/env_explorer_agent/AGENTS.md",
     "penguin/agents/miniprogram_test_agent/AGENTS.md",
     "penguin/agents/requirement_analysis_agent/AGENTS.md",
     "penguin/agents/test_agent/AGENTS.md",
