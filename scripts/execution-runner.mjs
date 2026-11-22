@@ -11,6 +11,7 @@ import { parsePlaywrightResults } from './playwright-results.mjs';
 import { directoryContext } from './directory-context.mjs';
 import { executionChildEnv } from './execution-child-env.mjs';
 import { wslAutomationInvocation } from './wsl-automation.mjs';
+import { readPoolCapacity, runShardedPlaywright } from './execution-shards.mjs';
 
 export async function executeAttempt(root, runId, { headed = false, signal, runProcess = runManagedProcess, commandId = process.env.QA_EXECUTION_COMMAND_ID } = {}) {
   const context = beginAttempt(root, runId);
@@ -82,9 +83,17 @@ export async function executeAttempt(root, runId, { headed = false, signal, runP
       workers: plan.execution_policy.workers,
     }) : null;
     let test;
-    try {
-      test = await invoke('playwright', args, executionChildEnv(process.env, { QA_BASE_URL: config.base_url, QA_TEST_DIR: resourcePath(root, plan.execution_policy.test_dir), QA_RUN_DIR: context.dir.replaceAll('\\', '/'), QA_HEADED: headed ? 'true' : 'false', QA_TIMEOUT_MS: String(config.execution.timeout_ms ?? 30000), QA_WORKERS: String(plan.execution_policy.workers) }), timeoutMs + 10000, launch);
-    } finally { await launch?.close?.(); }
+    if (plan.execution_policy.sharding?.enabled === true && backend === 'host') {
+      // 分片并行：波内按池容量并行、跨波串行；allSettled 由分片模块内部保证资源键互斥。
+      const sharded = await runShardedPlaywright({ root, plan, attemptDir: context.dir, timeoutMs, capacity: readPoolCapacity(root), invoke, childEnv: executionChildEnv, headed, baseUrl: config.base_url });
+      if (sharded.stop) return block(sharded.stop, sharded.kind);
+      atomicJson(resolve(context.dir, 'shards', 'summary.json'), { run_id: runId, invocation_id: context.invocationId, waves: sharded.waves, shards: sharded.shards, generated_at: new Date().toISOString() });
+      test = sharded.test;
+    } else {
+      try {
+        test = await invoke('playwright', args, executionChildEnv(process.env, { QA_BASE_URL: config.base_url, QA_TEST_DIR: resourcePath(root, plan.execution_policy.test_dir), QA_RUN_DIR: context.dir.replaceAll('\\', '/'), QA_HEADED: headed ? 'true' : 'false', QA_TIMEOUT_MS: String(config.execution.timeout_ms ?? 30000), QA_WORKERS: String(plan.execution_policy.workers) }), timeoutMs + 10000, launch);
+      } finally { await launch?.close?.(); }
+    }
     if (test.termination || test.error || !processesStopped || test.code === null) return block(`Execution stopped: ${test.termination ?? test.error ?? 'unknown termination'}`, test.termination === 'interrupted' ? 'interrupted' : 'blocked');
     const rawPath = resolve(context.dir, 'playwright/playwright-results.json');
     if (!existsSync(rawPath)) return block('Playwright produced no raw result in current attempt');

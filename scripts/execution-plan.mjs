@@ -69,5 +69,10 @@ export function validateExecutionPlan(plan) {
   if (deadline !== undefined && (!Number.isSafeInteger(deadline) || deadline < 1000 || deadline > 86400000)) errors.push("execution_policy.replay_deadline_ms 必须是 1000..86400000 的整数。");
   const tier = plan.execution_policy?.target_tier;
   if (tier !== undefined && !['source', 'isolated', 'installed'].includes(tier)) errors.push("execution_policy.target_tier 必须是 source / isolated / installed 之一。");
+  const sharding = plan.execution_policy?.sharding;
+  if (sharding !== undefined) {
+    if (!sharding || typeof sharding !== 'object' || typeof sharding.enabled !== 'boolean') errors.push('execution_policy.sharding 必须是包含布尔 enabled 的对象。');
+    if (sharding?.enabled === true && (plan.execution_policy?.sandbox_backend ?? 'host') !== 'host') errors.push('分片并行目前只支持 host 后端。');
+  }
   return errors;
 }

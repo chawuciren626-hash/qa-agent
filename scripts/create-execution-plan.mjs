@@ -49,7 +49,8 @@ const plan = {
     global_timeout_ms: environment.execution?.global_timeout_ms ?? 900000,
     preflight_timeout_ms: environment.execution?.preflight_timeout_ms ?? 60000,
     requires_environment_preflight: true,
-    evidence: { screenshot: "only-on-failure", trace: "retain-on-failure", video: "off" }
+    evidence: { screenshot: "only-on-failure", trace: "retain-on-failure", video: "off" },
+    ...(environment.execution?.sharding === true ? { sharding: { enabled: true } } : {})
   }
 };
 const errors = validateExecutionPlan(plan);
