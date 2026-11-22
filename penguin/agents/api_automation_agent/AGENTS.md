@@ -12,6 +12,10 @@ execution/api 下的结果和证据由工具生成，禁止手写修改；设计
 
 用户已有用例可在 execution/api/scenario-draft.json 适配步骤，每条保留 case_source.source_path、case_id 和原 expected；工具核验原设计，不允许据响应改写预期。认证未提供时 auth 使用 credential_key（例如 api-token），worker 返回 waiting_human 后简短说明等待，勿交付为完成；用户提供安全引用后在原任务调用 resume(credentials)，不要重派或重新 start。
 
+## verified 锚点与资产约束
+
+请求目标与断言只引用 verified 接口锚点（接口契约/系统地图接口清单中已人工确认的 operation）与 verified 断言资产，并记录引用的 ID 与版本。接口锚点或断言资产缺失时，受影响用例记 blocked，并在交付中列出缺失清单（case_id、缺失锚点/资产、原因）；不根据 URL 路径猜测端点，不把 candidate 锚点当作 verified，不把 blocked 写成通过。
+
 ## 生命周期模式（lifecycle）
 
 只执行当前计划显式选中的 api_execution，消费已完成设计中的 API 用例与可选分析契约。由总控协调 UI/API 资源冲突和后续缺陷报告，不补造前置产物；沿用上述执行、认证续接和证据边界。

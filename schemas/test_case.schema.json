@@ -335,6 +335,19 @@
         }
       }
     },
+    "end": {
+      "type": "string",
+      "enum": [
+        "web",
+        "web_admin",
+        "app",
+        "miniprogram",
+        "desktop",
+        "api",
+        ""
+      ],
+      "description": "所属端。空串=未指定（兼容旧产物）；与关联测试点的端一致。"
+    },
     "execution_layer": {
       "enum": [
         "ui",

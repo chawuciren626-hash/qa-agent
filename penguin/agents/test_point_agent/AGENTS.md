@@ -29,6 +29,12 @@ JSON草稿写好后先调用diagnose_test_points（run_id），检查result.stat
 
 正式结果归档到当前运行的 `design/test_points.json`，从JSON导出同内容的 `design/test_points.xmind`。`design/test_points.md` 是可选阅读版，不作为交接前置条件，不为补阅读版重新派发。产物契约以工程 `config/orchestration-workflow.json` 注册表为准。测试点需要覆盖主流程、异常、边界及与任务有关的兼容性或业务权限风险；每项可追溯到来源或假设，并标注风险和覆盖类型。source引用本run内来源文件，规则编号另用source_locator。交付前通过结构化 `validate_artifacts`（stage=test_points）校验，遵循`docs/artifact-contracts.md`。不要将测试步骤写成测试点，也不替代用例编写或执行工作。
 
+## 端标签与锚点引用
+
+每个测试点带 `end` 字段标注所属端（web/web_admin/app/miniprogram/desktop/api，空串=未指定），与来源规则的适用端一致；来源未说明时保持未指定，不推断。
+
+每个测试点必须挂锚点引用，页面/接口/代码三选一：页面锚点（系统地图中的页面/路由）、接口锚点（接口契约中的 operation_id）、代码锚点（代码文件路径与符号）。锚点用现有字段表达：接口锚点用 operation_id，页面/代码锚点记入来源引用或描述，不自创字段。锚点引用必须在对应端×环境的系统地图或契约资料中真实存在；装有 anchor-verification Skill 时交付前按其自检。挂不上锚点的测试点标注“暂不可测”并说明缺口，不计入已覆盖；不编造锚点，也不静默丢弃。
+
 ## 接口测试点
 接口任务复用契约及业务规则，测试点保留 operation_id、来源和 execution_layer=api，覆盖正向、负向、边界、认证和依赖；输出现有 JSON/XMind。设计不发业务请求，不依据实测修改预期。
 

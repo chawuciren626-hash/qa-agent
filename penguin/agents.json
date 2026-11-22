@@ -31,7 +31,8 @@
       "skills": [
         "requirement-analysis",
         "test-design-methods",
-        "api-contract-analysis"
+        "api-contract-analysis",
+        "change-analysis"
       ]
     },
     {
@@ -40,7 +41,8 @@
       "skills": [
         "test-point-design",
         "test-design-methods",
-        "api-testing"
+        "api-testing",
+        "anchor-verification"
       ]
     },
     {

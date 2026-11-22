@@ -26,6 +26,9 @@ ENUMS: dict[str, list[str]] = {
         "performance", "security", "data_consistency", "usability",
     ],
     "driver_kind": ["web", "api", "native", "miniprogram", "db"],
+    # 所属端（重构方案 §4：设计产物带端标签，end 向后兼容扩展）。
+    # 空串=未指定：v1.0 产物没有该字段，旧数据不得因缺省被拒。
+    "end": ["web", "web_admin", "app", "miniprogram", "desktop", "api", ""],
     "control_type": [
         "input_text", "input_number", "input_date", "select", "radio", "checkbox",
         "button", "link", "table", "upload", "rich_text", "iframe", "canvas", "map",
@@ -124,6 +127,8 @@ def enum_for_path(path: str) -> str | None:
         return "requirement_kind"
     if path == "dimension":
         return "dimension"
+    if path == "end":
+        return "end"
     if path == "lifecycle":
         return "lifecycle"
     if path == "severity":
