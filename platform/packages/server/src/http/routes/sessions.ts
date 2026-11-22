@@ -1551,7 +1551,7 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
 
   // In-session model switch (see SessionSwitchModelRequest): the complete (provider, modelId)
   // pair, nothing inferred — one half alone is a 400 like everywhere else a model is named.
-  // 202 when the switch streams as a compaction; 200 with the fresh DTO when a Session that
+  // 202 when the switch streams in the background; 200 with the fresh DTO when a Session that
   // never ran switched inside the call (the manager tells the two apart).
   app.post("/:sessionId/switch-model", async (c) => {
     const row = resolveSession(c);
@@ -1560,7 +1560,13 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
       provider: requireString(body, "provider", { minLen: 1 }),
       modelId: requireString(body, "modelId", { minLen: 1 }),
     };
-    const outcome = await deps.manager.startSwitch(row.sessionId, ref);
+    // `mode: "in-place"` keeps the running context and only swaps the model (no compaction);
+    // default stays the compaction-based switch for older clients.
+    const mode = body?.mode;
+    if (mode !== undefined && mode !== "compact" && mode !== "in-place") {
+      throw new HttpError(400, "invalid_request", 'mode must be "compact" or "in-place".');
+    }
+    const outcome = await deps.manager.startSwitch(row.sessionId, ref, mode);
     if (!outcome.switched) {
       return c.json({ sessionId: outcome.sessionId } satisfies TaskCreateResponse, 202);
     }

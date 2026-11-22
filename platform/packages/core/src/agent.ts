@@ -1683,6 +1683,7 @@ export class Agent {
     const openNextContext = async ({
       emit,
       modelRef,
+      inPlace,
     }: SessionOpenContextOptions): Promise<SessionOpenedContext> => {
       const entry = modelRef ? await switchTargetEntry(modelRef) : current.modelEntry;
       const next = await this.assembleContext(spec, entry);
@@ -1690,6 +1691,18 @@ export class Agent {
       let llm: GenerativeModel;
       try {
         ({ llm } = await openAssembled(next, emit));
+        if (inPlace) {
+          // An in-place switch keeps the conversation, but a fresh LLM object starts empty:
+          // the running context's file is its record, so seed the new object from the history
+          // a resume would read. Pending carry-over (a summary just opened with, a failed
+          // turn's flatten) is not on that file and rides the next request instead.
+          const dir = tracesDir(this.state.root, this.state.projectId, this.state.agentId);
+          const located = await findLatestTraceFile(dir, sessionId);
+          if (located) {
+            const resumed = resumeTrace(await readTraceTolerant(located.path));
+            if (resumed.history.length > 0) llm.setHistory(resumed.history);
+          }
+        }
       } catch (err) {
         equip(current);
         throw err;

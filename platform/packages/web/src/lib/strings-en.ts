@@ -3244,6 +3244,8 @@ export const en: Strings = {
       `The context is compacted on the current model "${from}" first, and this conversation then continues on "${to}". If the compaction fails, it stays on "${from}".`,
     modelSwitchInSessionDirectBody: (to: string): string =>
       `This conversation has no context yet, so it switches to "${to}" right away.`,
+    modelSwitchInSessionInPlaceBody: (to: string): string =>
+      `This conversation continues on "${to}" with the running context and history kept — nothing is compacted first; length-based compaction still applies later.`,
     modelSwitchInSessionCompactedBody: (to: string): string =>
       `The context was compacted or switched a moment ago and nothing has been said since, so nothing is compacted again: this conversation continues on "${to}" from there.`,
     modelSwitchInSessionStarted: (from: string, to: string): string =>

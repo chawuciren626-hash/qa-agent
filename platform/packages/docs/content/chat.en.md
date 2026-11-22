@@ -171,14 +171,12 @@ There are two ways to change the model, and they do different things.
 
 ### In this conversation
 
-Select the model name in the composer's toolbar and pick another model. The picker is disabled while a Task runs or a compaction is under way, and picking the current model does nothing. A dialog asks first, because the switch compacts the context on the current model before moving on:
+Select the model name in the composer's toolbar and pick another model. The picker is disabled while a Task runs or a switch is under way, and picking the current model does nothing. The switch asks once and does **not** compact first: the conversation's history and Trace stay as they are, and this conversation continues on the new model from the next reply. When the context reaches its length limit it is still compacted automatically, on the new model's threshold.
 
-- **Compact and switch**: the context is compacted on the current model (always a summary, even when the agent is configured to discard), and the conversation then continues on the new model. If the compaction fails or is aborted, the conversation stays on the current model.
+- **Switch**: keeps the context and history and continues on the new model.
 - **Cancel**: keeps the current model.
 
-Right after a compaction or another switch there is nothing to compact, so the dialog says nothing is compacted again and the button reads **Switch**; a conversation with no messages yet switches at once.
-
-The switch shows in the conversation as a compaction row followed by a "Model switched · A → B" marker (the marker alone when there was nothing to compact: right after a compaction or another switch, or when the last request never completed). A failed compaction shows as a failed compaction row with no marker. Once switched, the model badge, the context window and the cost estimate follow the new model.
+Once switched, the conversation shows a "Model switched · A → B" marker, and the model badge, the context window and the cost estimate follow the new model. A conversation with no messages yet switches without a marker.
 
 ### In a new conversation
 
@@ -446,7 +444,7 @@ On a Mac, ⌘ takes the place of Ctrl in Ctrl+S, Ctrl+F, Ctrl+Shift+F and in the
 
 Some of what you do in the chat travels as structured text in the conversation, which you may notice in the Trace:
 
-- `/model` starts the new Session with a `[model_switch_from]` block naming the source Session, its title, its Trace file, its Workspace and the previous provider and model, followed by your message. The new conversation shows the block as the "New conversation on another model" banner. A switch inside a conversation writes no block: it is recorded as an ordinary compaction, and the new context's `session_meta` names the new model.
+- `/model` starts the new Session with a `[model_switch_from]` block naming the source Session, its title, its Trace file, its Workspace and the previous provider and model, followed by your message. The new conversation shows the block as the "New conversation on another model" banner. A switch inside a conversation writes no block: it appends a new `session_meta` to the current Trace file naming the new model, and a resume reads the latest one.
 - A steering message is sent as a `[user_steering]` user message with the agent's next turn.
 - Selected Skills travel with the message in a `[use_skills]` block.
 - Each attached file adds an `[attached file: <path>]` line to the message.

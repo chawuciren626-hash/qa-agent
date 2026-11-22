@@ -379,6 +379,36 @@ describe("resumeTrace", () => {
     expect(resumeTrace([meta(), userText("hello")]).openingSummary).toBeUndefined();
   });
 
+  it("an in-place switch appends a session_meta: the latest names the model and the history before it replays", () => {
+    const switched = sessionMeta({
+      session_id: "session-2026-07-06-10-00-00-abcdef01",
+      provider: "openai",
+      model_id: "gpt-5.3",
+      model_context_window: 1000000,
+      system_prompt: "SP",
+      agent_state: "/agent/state",
+      workspace: "/ws",
+      source: "user",
+    });
+    const result = resumeTrace([
+      meta(),
+      userText("hello"),
+      requestBegin(),
+      assistantText("hi"),
+      requestEnd("completed"),
+      tokenUsage(usage(10), usage(10)),
+      switched,
+      userText("and now?"),
+      requestBegin(),
+      assistantText("still here"),
+      requestEnd("completed"),
+      tokenUsage(usage(12), usage(22)),
+    ]);
+    expect((result.meta!.payload as { model_id: string }).model_id).toBe("gpt-5.3");
+    expect(textsOf(result.history)).toEqual(["hello", "hi", "and now?", "still here"]);
+    expect(result.carryOver).toEqual([]);
+  });
+
   it("drops failed compaction rounds via the generic rule (prompt not in history)", () => {
     const result = resumeTrace([
       meta(),

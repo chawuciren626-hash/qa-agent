@@ -3406,6 +3406,9 @@ export const zh = {
     /** Body when the transcript is empty: there is no context to compact, so the switch is immediate. */
     modelSwitchInSessionDirectBody: (to: string): string =>
       `当前上下文没有内容，将直接切换到「${to}」。`,
+    /** Body for the in-place switch: the running context is kept, only the model changes; length-based compaction still applies later. */
+    modelSwitchInSessionInPlaceBody: (to: string): string =>
+      `切换后本对话会在「${to}」上继续，当前上下文与历史都保留，不会先压缩；上下文达到长度上限时仍会自动压缩。`,
     /** Body when the transcript ends in a completed compaction or a model switch with nothing since: the switch runs no compaction and continues from what that context opened with (a summary, or nothing). */
     modelSwitchInSessionCompactedBody: (to: string): string =>
       `上下文刚压缩或切换过、此后没有新的对话，不会再次压缩：本对话将直接以「${to}」继续。`,

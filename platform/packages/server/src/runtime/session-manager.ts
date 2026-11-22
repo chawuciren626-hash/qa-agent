@@ -203,16 +203,20 @@ export interface RuntimeSession {
   readonly provider?: string;
   readonly modelId?: string;
   /**
-   * Switches the Session's model in place (core `Session.switchModel`): closes the running
+   * Switches the Session's model in place (core `Session.switchModel`). With `mode: "in-place"`
+   * the running context is kept and only the model changes, so the stream carries the target
+   * context's `session_meta` alone (no compaction pair); the default `"compact"` closes the
    * context on the model it ran on, then opens the next one on the target. A completed switch
-   * streams the new context's main-session `session_meta` last, and the getters above answer
-   * the target by then; a refusal is thrown before the first event; a Session that never ran
-   * switches without streaming anything. Optional: test fakes may omit it, reading as
-   * "switching is not available".
+   * streams that `session_meta` last, and the getters above answer the target by then; a
+   * refusal is thrown before the first event; a Session that never ran switches without
+   * streaming anything. Optional: test fakes may omit it, reading as "switching is not
+   * available".
    */
   switchModel?(opts: {
     provider: string;
     modelId: string;
+    /** `in-place` keeps the running context and only changes the model (no compaction). */
+    mode?: "compact" | "in-place";
     signal: AbortSignal;
   }): AsyncGenerator<AmspRecord, StopReason>;
   /**
@@ -1516,24 +1520,26 @@ export class SessionManager {
    * - it is already done — a Session that never ran has no context to close: core re-assembled
    *   its first context on the target, nothing streams, and the row carries the new pair by
    *   the time this returns (`switched: true`; the route answers with the fresh DTO);
-   * - it yields — a driven run like a compaction (`switched: false`): status `compacting`,
-   *   idle when it ends. The head is a compaction's begin, the first record of a bootstrap (a
-   *   Session loaded from its Trace opens its context first), or — for a context with no
-   *   completed turn, which streams no pair — the opener's first record.
+   * - it yields — a driven run like a compaction (`switched: false`): status `compacting`
+   *   (`running` for an in-place switch, which streams no compaction pair), idle when it ends.
+   *   The head is a compaction's begin, the first record of a bootstrap (a Session loaded from
+   *   its Trace opens its context first), or — for an in-place switch or a context with no
+   *   completed turn — the opener's first record.
    *
    * The switch is the entry's run from that pull on — it can be stopped, and a deletion or a
-   * shutdown waits for it — while the entry only reads `compacting` once there is something
+   * shutdown waits for it — while the entry only reads a busy state once there is something
    * to stream, so a refusal never flickers a state.
    *
    * The entry and the row follow the runtime as the new context's `session_meta` passes
    * through the drive (see `drive`); a switch that does not complete streams no meta and
    * leaves them where they were. Usage: a drive bills to the model it started on, so the
-   * switch's compaction request goes to the model that served it and the next run to the new
-   * one.
+   * switch's compaction request (compact mode) goes to the model that served it and the next
+   * run to the new one.
    */
   async startSwitch(
     sessionId: string,
     ref: ModelRefDto,
+    mode?: "compact" | "in-place",
   ): Promise<{ sessionId: string; switched: boolean }> {
     return this.withLock(sessionId, async () => {
       this.assertOpen();
@@ -1556,7 +1562,7 @@ export class SessionManager {
         );
       }
       const ac = new AbortController();
-      const gen = entry.session.switchModel({ ...ref, signal: ac.signal });
+      const gen = entry.session.switchModel({ ...ref, mode, signal: ac.signal });
       const head = gen.next();
       const settled = (): void => {
         entry.abort = null;
@@ -1567,8 +1573,10 @@ export class SessionManager {
       entry.abort = ac;
       entry.running = head.then((first) => {
         if (first.done) return settled();
-        entry.status = "compacting";
-        this.publishState(entry, "compacting");
+        // `compacting` is the busy state that promises a compaction pair; an in-place switch only
+        // streams the new context's session_meta, so it reports `running` instead.
+        entry.status = mode === "in-place" ? "running" : "compacting";
+        this.publishState(entry, entry.status);
         return this.drive(entry, resumeFrom(first.value, gen));
       }, settled);
       let first: IteratorResult<AmspRecord, StopReason>;

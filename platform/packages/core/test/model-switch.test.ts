@@ -69,10 +69,16 @@ interface ScriptedResponse {
 /** Fake LLM that responds according to a script, recording each input it receives. */
 class ScriptedLLM implements LLMInterface {
   calls: AmspRecord[][] = [];
+  /** What an in-place open seeded this object with (the real opener's `setHistory`). */
+  seeded: AmspRecord[] = [];
   constructor(
     private readonly responses: ScriptedResponse[],
     readonly label = "llm",
   ) {}
+
+  setHistory(history: AmspRecord[]): void {
+    this.seeded = history;
+  }
 
   async *streamGenerate(params: GenerativeModelParameters): AsyncGenerator<AmspRecord, LLMOutcome> {
     this.calls.push(params.newMessages);
@@ -227,6 +233,10 @@ function harness(
     /** LLM objects for contexts opened on each model id, taken in order. */
     llms: Record<string, LLMInterface[]>;
     compaction?: CompactionSettings;
+    /** Leaves the Session without compaction configuration (an Agent that cannot compact). */
+    noCompaction?: boolean;
+    /** Engine settings each opened context brings back (what the target's context runs with). */
+    opened?: Record<string, { maxTurns?: number; compaction?: CompactionSettings }>;
     vision?: Record<string, boolean>;
     modelHasVision?: boolean;
     /** Runs the Session without a Trace sink (an embedder that records nothing). */
@@ -271,18 +281,27 @@ function harness(
     bootstrap: async () => ({ llm: args.llmA }),
     environment: fakeEnvironment,
     ...(args.sinkless ? {} : { trace: sink }),
-    compaction: args.compaction ?? settings(),
-    openNextContext: ({ modelRef, emit }: SessionOpenContextOptions) => {
+    ...(args.noCompaction ? {} : { compaction: args.compaction ?? settings() }),
+    openNextContext: async ({ modelRef, emit, inPlace }: SessionOpenContextOptions) => {
       opens.push(modelRef);
       const model = modelRef ?? current;
       const llm = args.llms[model.model_id]?.shift();
       if (!llm) throw new Error(`no LLM prepared for a context on ${model.model_id}`);
+      if (inPlace) {
+        // The real opener seeds the fresh LLM with the running context's committed history,
+        // read back from its file (pending carry-over rides the next request instead).
+        const resumed = resumeTrace(await readTrace(trace.currentPath()));
+        if (resumed.history.length > 0 && "setHistory" in llm) {
+          (llm as ScriptedLLM).setHistory(resumed.history);
+        }
+      }
       // Like the real opener, the running model moves only once the context is open.
       current = model;
       emit(toolListReady([]));
       return {
         llm,
         sessionMeta: sessionMeta(metaFor(model)),
+        ...args.opened?.[model.model_id],
         ...(args.vision?.[model.model_id] !== undefined
           ? { modelHasVision: args.vision[model.model_id]! }
           : {}),
@@ -298,11 +317,17 @@ function harness(
   return { opens, validated, reassembled, written, trace, session, files };
 }
 
-const switchTo = (session: Session, model: ModelRef, signal?: AbortSignal) =>
+const switchTo = (
+  session: Session,
+  model: ModelRef,
+  signal?: AbortSignal,
+  mode?: "compact" | "in-place",
+) =>
   session.switchModel({
     provider: model.provider,
     modelId: model.model_id,
     ...(signal ? { signal } : {}),
+    ...(mode ? { mode } : {}),
   });
 
 // ---------------------------------------------------------------------------
@@ -416,6 +441,96 @@ describe("in-session model switch", () => {
     expect(fresh.filter((m) => m.type === "model_msg" && textOf(m) === SUMMARY_TEXT)).toHaveLength(
       1,
     );
+  });
+
+  it("in place: no compaction, no rotation, the same history on the target, and the target's settings take over", async () => {
+    const llmA = new ScriptedLLM(
+      [{ messages: [assistantText("answer one"), usage(50, 50)] }],
+      "A",
+    );
+    const llmB = new ScriptedLLM(
+      [
+        { messages: [assistantText("answer two"), usage(20, 90)] },
+        { messages: [assistantText(SUMMARY_REPLY), usage(30, 120)] },
+      ],
+      "B",
+    );
+    const h = harness(traces, {
+      llmA,
+      // The second is the context the final compaction opens on the target.
+      llms: { [MODEL_B.model_id]: [llmB, new ScriptedLLM([], "B2")] },
+      // The target's context brings its own compaction settings; the switch adopts them.
+      opened: { [MODEL_B.model_id]: { compaction: settings({ prompt: "TARGET COMPACT" }) } },
+    });
+    sessions.push(h.session);
+    const path = h.trace.currentPath();
+    await collect(h.session.run([userText("task one")], { approve: allowAll }));
+
+    const { all, result } = await collectWithReturn(
+      switchTo(h.session, MODEL_B, undefined, "in-place"),
+    );
+    expect(result).toBe("completed");
+    expect(h.validated).toEqual([MODEL_B]);
+    expect(h.opens).toEqual([MODEL_B]);
+    // Nothing compacted: no pair, no request on the old model, no new file, and only the meta.
+    expect(compactionEvents(all)).toEqual([]);
+    expect(llmA.calls).toHaveLength(1);
+    expect(payloadTypes(all)).toEqual(["session_meta"]);
+    expectEndsWithMetaOn(all, MODEL_B);
+    expect(h.trace.currentPath()).toBe(path);
+    expect(await h.files()).toEqual([`${SESSION_ID}_001.jsonl`]);
+
+    // Durability: the file keeps its first meta, ends with the target's, and a resume reads the
+    // last one — the conversation itself is untouched.
+    const onDisk = await readTrace(path);
+    expect(modelOf(onDisk[0]!)).toEqual(MODEL_A);
+    expect(modelOf(onDisk.at(-1)!)).toEqual(MODEL_B);
+    const resumed = resumeTrace(onDisk);
+    expect(modelOf(resumed.meta!)).toEqual(MODEL_B);
+    expect(userTexts(resumed.history)).toEqual(["task one"]);
+    expect(resumed.carryOver).toEqual([]);
+    expect(resumed.contextClosed).toBe(false);
+    expect(h.session.modelId).toBe(MODEL_B.model_id);
+    expect(h.session.compactability()).toBe("ok");
+
+    // The freshly built target object was seeded with the committed history, and the next Task
+    // sends only what is new.
+    expect(userTexts(llmB.seeded)).toEqual(["task one"]);
+    await collect(h.session.run([userText("task two")], { approve: allowAll }));
+    expect(llmB.calls[0]!.map(textOf)).toEqual(["task two"]);
+
+    // The target's compaction settings are the engine's now: its Prompt goes to the new model.
+    await collect(h.session.compact());
+    expect(llmB.calls[1]!.map(textOf)).toEqual(["TARGET COMPACT"]);
+  });
+
+  it("in place needs no compaction configured, while the compacting mode is still refused", async () => {
+    const llmA = new ScriptedLLM(
+      [{ messages: [assistantText("answer one"), usage(50, 50)] }],
+      "A",
+    );
+    const llmB = new ScriptedLLM([], "B");
+    const h = harness(traces, {
+      llmA,
+      llms: { [MODEL_B.model_id]: [llmB] },
+      noCompaction: true,
+    });
+    sessions.push(h.session);
+    await collect(h.session.run([userText("task one")], { approve: allowAll }));
+    expect(h.session.compactability()).toBe("unsupported");
+
+    const refusal = await collect(switchTo(h.session, MODEL_B)).catch((e: unknown) => e);
+    expect(refusal).toBeInstanceOf(ModelSwitchRefusedError);
+    expect(refusal).toMatchObject({ reason: "compaction_not_configured" });
+    expect(h.session.modelId).toBe(MODEL_A.model_id);
+
+    const { all, result } = await collectWithReturn(
+      switchTo(h.session, MODEL_B, undefined, "in-place"),
+    );
+    expect(result).toBe("completed");
+    expect(compactionEvents(all)).toEqual([]);
+    expectEndsWithMetaOn(all, MODEL_B);
+    expect(h.session.modelId).toBe(MODEL_B.model_id);
   });
 
   it("right after a compaction: no request and no pair; the rotation is performed on the target and the held summary heads the new file", async () => {

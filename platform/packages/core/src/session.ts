@@ -239,10 +239,18 @@ export interface ModelSwitchSupport {
   reassembleInitialContext(ref: ModelRef): Promise<Omit<SessionOpenedContext, "llm">>;
 }
 
-/** `Session.switchModel` options: the target's paired reference, and the abort signal for the compaction request. */
+/** `Session.switchModel` options: the target's paired reference, how the switch treats the
+ * context, and the abort signal for the request/assembly it may run. */
 export interface ModelSwitchOptions {
   provider: string;
   modelId: string;
+  /**
+   * `"compact"` (default) closes the running context by summarizing it on the current model and
+   * opens the next one on the target. `"in-place"` keeps the running context — Trace file,
+   * history and length-based compaction — and only swaps the model for subsequent turns, so a
+   * switch never has to compact first.
+   */
+  mode?: "compact" | "in-place";
   signal?: AbortSignal;
 }
 
@@ -985,15 +993,20 @@ export class Session {
   }
 
   /**
-   * Switches the model this Session runs on, in place: the running context is closed on the
-   * model it ran on, and the next one opens on the target. A context with completed turns is
-   * closed by a compaction — always **summarize**, whatever the Agent's `compaction.mode`
-   * says, because the summary is what the new model continues from. That compaction is an
-   * ordinary `manual` one: an ordinary request on the old model, extending the prefix the
-   * provider has cached. The model is recorded by the new context's `session_meta` alone; its
-   * Trace file opens at once, headed by that record — what a resume reads the model from —
-   * and the record is yielded last, so the stream names the model too. Only callable at a Task
-   * boundary, like `compact()`. Not the `/model` handoff, which opens a NEW Session.
+   * Switches the model this Session runs on. `mode` decides how the running context is treated:
+   *
+   * - `"in-place"` (what the Web App sends) keeps the context — its Trace file, history and
+   *   length-based compaction — and only swaps the model subsequent turns run on. The new
+   *   `session_meta` is appended to the current Trace file (a resume reads the latest one, not
+   *   the file's first), so nothing is compacted and the conversation carries on.
+   * - `"compact"` (the default, kept for older clients) closes the context by summarizing it on
+   *   the current model and opens the next one on the target: an ordinary `manual` compaction,
+   *   always **summarize** whatever the Agent's `compaction.mode` says. The new context's Trace
+   *   file opens at once, headed by its `session_meta` — what a resume reads the model from.
+   *
+   * In both modes the `session_meta` is yielded last, so the stream names the model too. Only
+   * callable at a Task boundary, like `compact()`. Not the `/model` handoff, which opens a NEW
+   * Session.
    *
    * Before any event: the model the Session is already on is a no-op, and a target that
    * cannot be switched to is refused with a {@link ModelSwitchRefusedError} naming why
@@ -1029,7 +1042,7 @@ export class Session {
       if (first.maxTurns !== undefined) this.engineDeps.maxTurns = first.maxTurns;
       return "completed";
     }
-    if (this.compactability() === "unsupported") {
+    if (this.compactability() === "unsupported" && opts.mode !== "in-place") {
       throw new ModelSwitchRefusedError(
         "compaction_not_configured",
         "Context compaction is not configured for this Session, so its model cannot be switched.",
@@ -1038,7 +1051,10 @@ export class Session {
     if (!(yield* this.ensureEngine(opts.signal))) return "aborted";
     this.switchTarget = target;
     try {
-      const status = yield* this.engine!.switchContext(opts.signal);
+      const status =
+        opts.mode === "in-place"
+          ? yield* this.engine!.switchModelInPlace(opts.signal)
+          : yield* this.engine!.switchContext(opts.signal);
       // Input an aborted bootstrap left with the Session rides on like the engine's pending
       // input: its text alone, in memory (the original stays where the abort wrote it).
       if (status === "completed") {

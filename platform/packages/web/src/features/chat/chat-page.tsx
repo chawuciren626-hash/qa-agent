@@ -135,8 +135,7 @@ import { goalPluginGate } from "./goal-plugin-gate";
 import { discardUnstartedSession } from "./unstarted-session";
 import { handoffMessage, modelSwitchMessage } from "./agent-handoff";
 import { modelLabel } from "./model-select";
-import { sessionModelPickerDisabled, sessionRowStale, switchContextShape } from "./model-switch";
-import type { SwitchContextShape } from "./model-switch";
+import { sessionModelPickerDisabled, sessionRowStale } from "./model-switch";
 import { hasConfiguredKey, sameModelRef, turnPricing } from "../models/model-grouping";
 import { providerInfo } from "@prismshadow/penguin-server/model-catalog";
 import { useMemoryListing } from "./use-memory-listing";
@@ -331,12 +330,10 @@ export function ChatPage({ fixedAgentId }: { fixedAgentId?: string } = {}) {
   // (needsThinkingSwitchConfirm / thinkingSwitchAfterCompaction).
   const [thinkingSwitch, setThinkingSwitch] = useState<StagedThinkingSwitch | null>(null);
   // A pick in the session toolbar's model picker, waiting on its confirm dialog (null = no
-  // dialog). `shape` is what the switch will do to the context — compact it first, switch an
-  // empty conversation at once, or continue from a summary already held — so the dialog and
-  // the toast promise only that. See onPickSessionModel / confirmModelSwitch.
+  // dialog). The switch keeps the running context and only swaps the model, so the dialog is a
+  // plain confirm — no compaction is promised. See onPickSessionModel / confirmModelSwitch.
   const [modelSwitchAsk, setModelSwitchAsk] = useState<{
     to: ModelRefDto;
-    shape: SwitchContextShape;
   } | null>(null);
   // The dialog stays open (its buttons busy) until the switch request answers, so a double
   // click cannot post the switch twice.
@@ -1921,38 +1918,33 @@ export function ChatPage({ fixedAgentId }: { fixedAgentId?: string } = {}) {
   // Session toolbar model picker: switches THIS conversation's model (the `/model` handoff opens
   // a new conversation instead). Re-picking the current model does nothing, and neither does a
   // pick that raced a Task starting (the picker is disabled then, and the server would refuse
-  // it anyway); any other pick asks first, worded for what the switch will do: compact the
-  // context on the current model before moving on, or — right after a compaction or a switch,
-  // when there is nothing to compact — continue on the picked model from what is already held.
+  // it anyway). The switch keeps the running context and only swaps the model — no compaction —
+  // so any other pick asks a plain confirm; context length still triggers compaction later.
   const onPickSessionModel = useCallback(
     (ref: ModelRefDto) => {
       if (!selected || sameModelRef(ref, selected)) return;
       if (sessionModelPickerDisabled(stream.taskState)) return;
-      // Read at pick time: the model's items mutate in place. The live tail decides, behind
-      // whatever window was backfilled above it.
-      const shape = switchContextShape([...stream.prefixItems, ...stream.model.items]);
-      setModelSwitchAsk({ to: ref, shape });
+      setModelSwitchAsk({ to: ref });
     },
-    [selected, stream.taskState, stream.prefixItems, stream.model],
+    [selected, stream.taskState],
   );
 
-  // The dialog's confirm. 202 = the switch is streaming: the compaction row (or, right after a
-  // compaction, the model-change marker alone) carries it from here, and the effect below moves
-  // the Session row once the new context's session_meta names the new model. 200 = the Session
-  // never ran and switched inside the request: the row comes back with the response — under a
-  // new id when the server had to rebuild a Session that left no Trace, which the page follows.
-  // A refusal (409 busy / same model / not configured / unavailable / compaction not configured)
-  // is a toast.
+  // The dialog's confirm. 202 = the switch is streaming: it carries nothing but the target
+  // context's model-change marker, and the effect below moves the Session row once that
+  // `session_meta` names the new model. 200 = the Session never ran and switched inside the
+  // request: the row comes back with the response — under a new id when the server had to
+  // rebuild a Session that left no Trace, which the page follows. A refusal (409 busy / same
+  // model / not configured / unavailable) is a toast.
   const confirmModelSwitch = useCallback(async () => {
     const ask = modelSwitchAsk;
     if (!selected || ask === null || modelSwitchPosting) return;
     setModelSwitchPosting(true);
-    const from = modelDisplay({ provider: selected.provider, modelId: selected.modelId });
     const to = modelDisplay(ask.to);
     try {
       const res = await api.switchSessionModel(selected.sessionId, {
         provider: ask.to.provider,
         modelId: ask.to.modelId,
+        mode: "in-place",
       });
       if ("session" in res) {
         applySessionRow(res.session);
@@ -1960,13 +1952,8 @@ export function ChatPage({ fixedAgentId }: { fixedAgentId?: string } = {}) {
         await syncHealedSessionId(selected.sessionId, res.session.sessionId);
         return;
       }
-      // Only a switch that compacts may say so; one that continues from a held summary runs
-      // no compaction and must not promise one.
-      toastInfo(
-        ask.shape === "compact"
-          ? S.chat.modelSwitchInSessionStarted(from, to)
-          : S.chat.modelSwitchInSessionSwitching(to),
-      );
+      // No compaction runs: the stream only carries the new model's `session_meta`.
+      toastInfo(S.chat.modelSwitchInSessionSwitching(to));
     } catch (e) {
       // The codes that take a model name are about the model the Session is on (its loader's
       // missing credential); a refusal of the target names it in its own message.
@@ -2960,11 +2947,7 @@ export function ChatPage({ fixedAgentId }: { fixedAgentId?: string } = {}) {
         open={modelSwitchAsk !== null}
         title={S.chat.modelSwitchInSessionTitle}
         tone="primary"
-        confirmLabel={
-          modelSwitchAsk?.shape === "compact"
-            ? S.chat.modelSwitchInSessionConfirm
-            : S.chat.modelSwitchInSessionDirectConfirm
-        }
+        confirmLabel={S.chat.modelSwitchInSessionDirectConfirm}
         cancelLabel={S.common.cancel}
         confirmDisabled={stream.taskState !== "idle"}
         busy={modelSwitchPosting}
@@ -2976,14 +2959,7 @@ export function ChatPage({ fixedAgentId }: { fixedAgentId?: string } = {}) {
         <p className="text-sm text-gray-600 dark:text-gray-300">
           {modelSwitchAsk === null || selected === null
             ? null
-            : modelSwitchAsk.shape === "empty"
-              ? S.chat.modelSwitchInSessionDirectBody(modelDisplay(modelSwitchAsk.to))
-              : modelSwitchAsk.shape === "compacted"
-                ? S.chat.modelSwitchInSessionCompactedBody(modelDisplay(modelSwitchAsk.to))
-                : S.chat.modelSwitchInSessionBody(
-                    modelDisplay({ provider: selected.provider, modelId: selected.modelId }),
-                    modelDisplay(modelSwitchAsk.to),
-                  )}
+            : S.chat.modelSwitchInSessionInPlaceBody(modelDisplay(modelSwitchAsk.to))}
         </p>
         {stream.taskState !== "idle" && (
           <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">

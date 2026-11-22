@@ -141,6 +141,13 @@ export interface OpenContextOptions {
    * record in place there.
    */
   emit: (msg: AmspRecord) => void;
+  /**
+   * Set when the context follows an **in-place model switch** (see `switchModelInPlace`): the
+   * same conversation continues on another model, so the opener seeds the fresh LLM object with
+   * the running context's committed history (a new LLM object starts empty). Absent on every
+   * ordinary rotation, which opens a context whose history starts at its summary.
+   */
+  inPlace?: boolean;
 }
 
 /** Result of one compaction run: a StopReason terminal state (completed / aborted / retryable — abandoned, made up at the next trigger / fatal — needs a config change first); carries the summary message when summarize succeeds. */
@@ -1267,6 +1274,64 @@ export class ContextEngine {
     // without a Trace sink too: the switch's own stream says where the Session moved).
     const meta = opened ?? this.contextMeta;
     if (meta) yield meta;
+    return "completed";
+  }
+
+  /**
+   * In-session model switch **without compaction**: keeps the running context — its Trace file
+   * and the whole conversation — and swaps in the LLM the opener assembles for the target
+   * model. No compaction request and no carry-over: the next run continues from the same
+   * records on the new model, and the target's engine settings take over.
+   *
+   * The fresh LLM object starts empty, so the opener is told this is an in-place switch
+   * (`inPlace`) and seeds it with the running context's committed history. A rotation a
+   * completion just before the switch left pending is finished first, and the summary the
+   * running context opened with leads that file (a resume reads it back), so the opener reads
+   * the file of the context being switched rather than the one it left.
+   *
+   * The new `session_meta` is appended to the current file (a resume reads the model from the
+   * latest meta, not the file's first) and yielded so the stream announces the change. Context
+   * length compaction keeps working unchanged, now against the target's threshold.
+   */
+  async *switchModelInPlace(signal?: AbortSignal): AsyncGenerator<AmspRecord, StopReason> {
+    if (signal?.aborted) return "aborted";
+    if (!this.deps.openNextContext) return "fatal";
+    // Open the file a compaction left pending for the context being left, and put the summary
+    // that context opened with on that file (a resumed context already has it there — the
+    // rotation is what writes it), so the opener seeds from the right file and a resume reads
+    // the summary back.
+    const rotated = await this.rotateIfPending();
+    if (rotated && this.openingSummary) await this.write(this.openingSummary);
+    else if (!rotated && this.pendingSummary) await this.write(this.pendingSummary);
+    if (this.pendingSummary) {
+      // On the file now: from here it is pending input, which a run sends without writing.
+      this.pendingCarryOver = [this.pendingSummary, ...this.pendingCarryOver];
+      this.pendingSummary = null;
+    }
+    const { queue, result: opening } = pumpOpener((emit) =>
+      this.deps.openNextContext!({ emit, inPlace: true }),
+    );
+    const records: AmspRecord[] = [];
+    for (;;) {
+      const msg = await queue.next();
+      if (msg === null) break;
+      records.push(msg);
+    }
+    const opened = await opening;
+    if (signal?.aborted) return "aborted";
+    this.llm = opened.llm;
+    if (opened.sessionMeta) this.contextMeta = opened.sessionMeta;
+    if (records.length > 0) this.contextRecords = records;
+    if (opened.maxTurns !== undefined) this.maxTurns = opened.maxTurns;
+    if (opened.compaction) this.compaction = opened.compaction;
+    // This context's first-run records still describe the model it was opened on; the target's
+    // own opener records replace them if it rotates later.
+    this.pendingBootstrapRecords = null;
+    const meta = opened.sessionMeta ?? this.contextMeta;
+    if (meta) {
+      await this.write(meta);
+      yield meta;
+    }
     return "completed";
   }
 

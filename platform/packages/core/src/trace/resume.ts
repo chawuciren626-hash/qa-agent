@@ -299,7 +299,11 @@ function toolCallOutputId(msg: AmspRecord): string | null {
  * Input is the message sequence parsed by `readTraceTolerant`.
  */
 export function resumeTrace(messages: AmspRecord[]): ResumeResult {
-  const meta = (messages.find(isSessionMeta) as SessionMetaMessage | undefined) ?? null;
+  // The model/prompt in effect for the open context: normally this file's first record; an
+  // in-place model switch appends a newer `session_meta`, and the latest one is authoritative.
+  let latestMeta: SessionMetaMessage | undefined;
+  for (const message of messages) if (isSessionMeta(message)) latestMeta = message as SessionMetaMessage;
+  const meta = latestMeta ?? null;
   const sessionTokens = lastSessionTokens(messages);
   const lastRequestTotal = lastRequestTotalOf(messages);
 

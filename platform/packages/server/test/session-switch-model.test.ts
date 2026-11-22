@@ -68,13 +68,17 @@ type SwitchBehaviour =
    */
   | { kind: "held" }
   /** The compaction pair streams; `status` is how it ends. `gate` parks the compaction until it settles (or the signal fires). */
-  | { kind: "stream"; status: StopReason; gate?: Promise<void> };
+  | { kind: "stream"; status: StopReason; gate?: Promise<void> }
+  /** An in-place switch: nothing compacted, only the target context's `session_meta` streams. */
+  | { kind: "in-place" };
 
 interface SwitchFake extends RuntimeSession {
   provider: string;
   modelId: string;
   /** The signals `switchModel` was handed, so a test can see the abort reach it. */
   signals: AbortSignal[];
+  /** The `mode` each `switchModel` call carried (undefined when the client sent none). */
+  modes: Array<"compact" | "in-place" | undefined>;
   /** Whether a `switchModel` call has run to its end. */
   ended: boolean;
 }
@@ -99,6 +103,7 @@ function switchFake(model: ModelRefDto, behaviour: SwitchBehaviour): SwitchFake 
     provider: model.provider,
     modelId: model.modelId,
     signals: [],
+    modes: [],
     ended: false,
     toolPermission: () => "rw",
     generateTitle: async () => ({ title: null, usage: null }),
@@ -114,10 +119,28 @@ function switchFake(model: ModelRefDto, behaviour: SwitchBehaviour): SwitchFake 
     async *compact(): AsyncGenerator<AmspRecord> {},
     async *switchModel(opts): AsyncGenerator<AmspRecord, StopReason> {
       fake.signals.push(opts.signal);
+      fake.modes.push(opts.mode);
       if (behaviour.kind === "throw") throw behaviour.error;
       if (behaviour.kind === "inline") {
         fake.provider = opts.provider;
         fake.modelId = opts.modelId;
+        return "completed";
+      }
+      if (behaviour.kind === "in-place") {
+        // No compaction, no opener records: the target context's meta alone announces the move,
+        // adopted before it is yielded, exactly as core does.
+        fake.provider = opts.provider;
+        fake.modelId = opts.modelId;
+        yield sessionMeta({
+          session_id: SID,
+          provider: opts.provider,
+          model_id: opts.modelId,
+          model_context_window: WINDOW_B,
+          system_prompt: "sp",
+          agent_state: "/tmp/agents/default_agent/agent_state",
+          workspace: "/tmp/w",
+          source: "user",
+        });
         return "completed";
       }
       if (behaviour.kind === "held") {
@@ -237,6 +260,10 @@ describe("POST /switch-model", () => {
     t = await createTestApp();
     const { cookie } = await provisionUser(t.app, "switcher");
     api = apiClient(t.app, cookie);
+    // The suite's own Project: provisioning a user does not create one here.
+    expect((await api.post("/api/projects", { projectId: PROJECT, name: "Switcher" })).status).toBe(
+      201,
+    );
     // Two configured models with different windows (the compaction threshold must follow the
     // switch); the third one a test names is deliberately absent.
     const put = await api.put(`/api/projects/${PROJECT}/models`, {
@@ -468,6 +495,44 @@ describe("POST /switch-model", () => {
     ).compactionThreshold;
     expect(thresholdAfter).toBe(compactionThresholdFor(agentMax, WINDOW_B));
     expect(thresholdAfter).not.toBe(thresholdBefore);
+  });
+
+  it("400 invalid_request for a mode other than compact / in-place — core is never asked", async () => {
+    const fake = switchFake(A, { kind: "inline" });
+    adopt(fake);
+    for (const mode of ["bogus", "", 1, null]) {
+      const res = await api.post(url, { ...B, mode });
+      expect(res.status).toBe(400);
+      expect(await errorCode(res)).toBe("invalid_request");
+    }
+    expect(fake.signals).toHaveLength(0);
+    expect(row().modelId).toBe(A.modelId);
+  });
+
+  it("202: mode in-place streams the target's session_meta alone, with the status running until it ends", async () => {
+    const fake = switchFake(A, { kind: "in-place" });
+    adopt(fake);
+    const feed = listen();
+
+    const res = await api.post(url, { ...B, mode: "in-place" });
+    expect(res.status).toBe(202);
+    await waitFor(() => feed.states().includes("idle"));
+
+    expect(fake.modes).toEqual(["in-place"]);
+    // The busy state promises no compaction pair: it reads as a run, never `compacting`.
+    expect(feed.states()).toEqual(["running", "idle"]);
+    expect(feed.kinds()).toEqual(["session_meta"]);
+    expect(feed.messages[0]!.payload).toMatchObject({ provider: B.provider, model_id: B.modelId });
+    expect(row()).toMatchObject(B);
+    expect(t.deps.manager.statusOf(SID)).toBe("idle");
+  });
+
+  it("omitting mode keeps the compaction switch: core sees no mode and the pair streams", async () => {
+    const fake = switchFake(A, { kind: "stream", status: "completed" });
+    adopt(fake);
+    expect((await api.post(url, B)).status).toBe(202);
+    await waitFor(() => t.deps.manager.statusOf(SID) === "idle");
+    expect(fake.modes).toEqual([undefined]);
   });
 
   it("usage: the switch's compaction request bills to the previous model, the next Task to the new one", async () => {

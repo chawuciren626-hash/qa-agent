@@ -2598,6 +2598,13 @@ export interface SessionSwitchModelRequest {
   provider: string;
   /** Upstream model_id of the target model. */
   modelId: string;
+  /**
+   * How the switch treats the running context. `"compact"` (default) summarizes the current
+   * context on the old model before the target takes over. `"in-place"` keeps the context —
+   * Trace file, history and length-based compaction — and only swaps the model for later turns,
+   * so switching never compacts first.
+   */
+  mode?: "compact" | "in-place";
 }
 
 export interface TaskCreateResponse {
