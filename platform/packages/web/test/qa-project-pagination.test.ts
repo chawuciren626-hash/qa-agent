@@ -9,6 +9,8 @@ vi.mock("../src/state/auth", () => ({ useAuth: () => ({ user: { userId: "tester"
 vi.mock("../src/state/project", () => ({ useProject: () => ({ currentProject: { projectId: state.projectId }, agents: [{agentId: "test_agent"}], setCurrentAgentId: vi.fn() }), projectDisplayName: () => "测试项目" }));
 vi.mock("react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("../src/api/client", () => ({ apiFetch: async () => ({projectId: state.projectId, tasks: state.tasks}) }));
+// B5-4 双源拉取后 project-view 会调 listTasks；main 上此文件缺该 mock 导致视图渲染不出任务（存量失败），这里补齐。
+vi.mock("../src/features/qa/platform-tasks/api", () => ({ listTasks: async () => ({ items: state.tasks.map(t => ({ id: t.session.sessionId, title: t.session.title, mainSessionId: t.session.sessionId })) }) }));
 vi.mock("../src/features/qa/project-entry", () => ({ QaProjectEntry: () => null }));
 
 afterEach(async () => { await unmountAll(); localStorage.clear(); state.projectId = "demo"; });

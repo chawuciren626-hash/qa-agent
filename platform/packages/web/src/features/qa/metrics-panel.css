@@ -1,0 +1,8 @@
+/* A3：项目维度指标面板（QaMetricsPanel），风格与 qp-stat 一致 */
+.qp-metrics { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; }
+.qp-metric { padding:14px 16px; border:1px solid var(--qa-border); border-radius:10px; min-width:0; }
+.qp-metric strong { display:block; font-size:22px; line-height:1.1; }
+.qp-metric strong.qp-metric-high-value { color:light-dark(#b91c1c,#f87171); }
+.qp-metric small { display:block; font-size:11.5px; color:var(--qa-muted); margin-top:4px; }
+.qp-metric-wide { grid-column:span 2; }
+@media(max-width:960px) { .qp-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } .qp-metric-wide { grid-column:span 2; } }
