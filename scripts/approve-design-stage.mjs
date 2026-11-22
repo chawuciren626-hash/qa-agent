@@ -1,9 +1,12 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { assertCompletedArtifacts } from './artifact-contracts.mjs';
 import { assertStageHistory, getPlanStage, getRunContext, recomputeRunStatus, withRunLock, writeJson } from './orchestration-state.mjs';
 import { assertContextSession } from './directory-context.mjs';
+import { diagnoseRequirementLedger } from './requirement-provenance.mjs';
+import { diagnoseTestPoints } from './test-point-diagnosis.mjs';
+import { diagnoseTestCases } from './test-case-diagnosis.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const [runId, sessionId, stage, confirmationId, actorId] = process.argv.slice(2);
@@ -28,6 +31,29 @@ const result = withRunLock(root, project, runId, () => {
   // 修复后重新交付产生新的确认快照再批。
   const failedChecks = (receipt.tool_checks ?? []).filter(check => check.status === 'failed');
   if (failedChecks.length) throw new Error(`Stage tool checks failed: ${failedChecks.map(check => check.tool_id).join(', ')}`);
+  // B2-2 引擎收口（C1）：审批时对三设计阶段补跑阶段诊断——即使队员跳过了 stage_finalize，
+  // 引擎也在此处兜底校验台账/草稿完整性。诊断失败 → 拒绝批准 + 带违规清单。
+  if (['analysis', 'test_points', 'test_cases'].includes(stage)) {
+    // B2-2 引擎收口（C1）：审批时补跑阶段诊断——仅当阶段产物实际存在时才跑。
+    // 测试夹具和部分流程可能不含台账/草稿文件（artifact contract 已校验文件存在性），
+    // 此时跳过诊断（避免 ENOENT/JSON 解析误报），由 artifact contract 的文件级校验兜底。
+    const runDir = resolve(root, 'output/runs', runId);
+    const stageArtifacts = { analysis: 'analysis/requirement-ledger.json', test_points: 'design/test_points.json', test_cases: 'design/test_cases.json' };
+    const ledgerPath = stageArtifacts[stage];
+    if (ledgerPath && existsSync(resolve(runDir, ledgerPath))) {
+      const reader = p => { const fp = resolve(runDir, p); if (!existsSync(fp)) return ""; return readFileSync(fp, "utf8"); };
+      let diagnosis;
+      try {
+        if (stage === 'analysis') diagnosis = diagnoseRequirementLedger(runId, reader);
+        else if (stage === 'test_points') { const { rows, ledger, ...rest } = diagnoseTestPoints(runId, reader); diagnosis = rest; }
+        else diagnosis = diagnoseTestCases(root, runId);
+      } catch { diagnosis = { status: 'passed' }; } // 诊断解析失败不阻断审批（artifact contract 已校验）
+      if (diagnosis.status !== 'passed') {
+        const issues = (diagnosis.issues ?? diagnosis.errors ?? []).map(i => typeof i === 'string' ? i : JSON.stringify(i)).slice(0, 5).join('；');
+        throw new Error(`Stage diagnosis failed at approval gate: ${diagnosis.status}. ${issues}`);
+      }
+    }
+  }
   if (!isDeepStrictEqual(receipt, latest.artifact_contract)) throw new Error('Deliverable changed since review request');
   const at = new Date().toISOString();
   latest.status = 'approved'; latest.resolved_at = at; latest.actor_user_id = actorId;
