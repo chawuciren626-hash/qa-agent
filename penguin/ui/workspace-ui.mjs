@@ -525,7 +525,7 @@ export function createWorkspaceUI(deps) {
     // 正式测试任务从「测试任务」页发起（服务端创建 test_agent 工作会话）。
     const agentId =
       project.agents.find((a) => a.agentId === "default_agent")?.agentId ||
-      project.currentAgent?.agentId;
+      "default_agent";
     function go(path, state) {
       navigate(path, state ? { state } : undefined);
       onNavigate?.();
@@ -1732,11 +1732,11 @@ function createSectionsUI(deps) {
         h(
           "div",
           { className: "qa-library-nav" },
-          ...[
-            ["search", "搜索", "book"],
-            ["recent", "最近", "clock"],
-            ["artifacts", "本地产物", "folder"],
-          ].map(([v, label, icon]) =>
+          ...(
+            deps.ProjectKnowledgePanel
+              ? []
+              : [["search", "搜索", "book"], ["recent", "最近", "clock"], ["artifacts", "本地产物", "folder"]]
+          ).map(([v, label, icon]) =>
             h(
               "button",
               {
@@ -1749,10 +1749,10 @@ function createSectionsUI(deps) {
             ),
           ),
         ),
-        h(
+        deps.ProjectKnowledgePanel ? null : h(
           "div",
           { className: "qa-library-group" },
-          h("button", { onClick: () => nav("mine") }, "我的资料"),
+          h("button", { onClick: () => nav("mine") }, "个人草稿"),
           h(
             "button",
             {
