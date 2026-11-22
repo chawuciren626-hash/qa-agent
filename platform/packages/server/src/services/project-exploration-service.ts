@@ -195,6 +195,15 @@ interface LiveJob {
 }
 const jobs = new Map<string, LiveJob>();
 
+/**
+ * Whether an environment exploration is live (a browser process is running, or one is waiting
+ * for a captcha answer). Maintenance must not restart the server under it: the process would
+ * die and the round is then settled as interrupted (see `rowToView`).
+ */
+export function hasRunningExplorations(): boolean {
+  return jobs.size > 0;
+}
+
 const SELECT = "SELECT * FROM qa_environment_explorations";
 
 export function listExplorations(db: Db, projectId: string, env: string): ExplorationView[] {

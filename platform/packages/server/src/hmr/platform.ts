@@ -97,6 +97,7 @@ import type { UnsatisfiedPlugin } from "../api/types.js";
 import { migrate } from "../db/migrations/index.js";
 import { MachinesRepo } from "../db/repos/machines.js";
 import type { Auth } from "../mechanisms/identity.js";
+import { hasRunningExplorations } from "../services/project-exploration-service.js";
 
 /**
  * This server's hot host: the mechanism (@prismshadow/penguin-hmr) with the api ITS platforms
@@ -676,7 +677,14 @@ async function createInner(
     },
     business: () => business,
     prepareIdleMaintenance: () => {
-      if (terminals.hasLiveTerminals() || manager === null || !manager.prepareIdleMaintenance()) return false;
+      if (
+        hasRunningExplorations() ||
+        terminals.hasLiveTerminals() ||
+        manager === null ||
+        !manager.prepareIdleMaintenance()
+      ) {
+        return false;
+      }
       terminals.prepareIdleMaintenance();
       return true;
     },
