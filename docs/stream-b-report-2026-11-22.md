@@ -88,6 +88,7 @@
 3. **锚点字段承载**：测试点/用例 schema 本次只加 `end`；锚点引用按提示词用现有字段（operation_id/来源引用/描述）表达，未新增结构化 anchor 字段。若后续要程序化校验锚点存在性（anchor-verification 工具化），需要 schema 增加锚点字段与对应校验器——留待后续批次。
 4. **分支插曲**：本分支工作期间出现非本流提交 `f3adecb`（C1 approve 门禁补跑阶段诊断）与 `e558e16`（C4 修订简报装配器）——ZCode 的流 C 内容落在当前检出分支上。本流提交仅包含上表文件，未触碰这些提交；合并时请 ZCode 留意归属。另：docs/ 为白名单制（.gitignore `/docs/*`），本报告以 `git add -f` 纳入版本控制，未改 .gitignore；如需长期收录请 ZCode 补白名单条目。
 5. 新 skill 未绑定确定性工具（tools:[]），锚点核对与 diff 解析目前由 Agent 按 Skill 纪律执行；工具化（如 anchor.verify / change.extract）需中央工具台账登记，属后续批次。
+
 ## 七、main 构建修复（2026-11-22 追加，非流 B 内容）
 
 ZCode 反馈 server 构建失败。根因**不是分支切换**：main 已提交的 `qa-project.ts:11` 引用 `../../services/qa-agent-repair.js`，但该文件从未入库（9af26c6「stash/checkout 丢失后重提」时遗漏），干净检出 main 即 tsc TS2307。已按完整功能单元补提交为 `abb859f`（fix/qa-agent-repair-missing-file → main ff-only）：
