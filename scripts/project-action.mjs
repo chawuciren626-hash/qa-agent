@@ -11,8 +11,8 @@ try {
   bindProductCommandPaths(root);
   let result;
   if ([undefined,'catalog','help','--help'].includes(action)) {
-    parseOptions(args,['controller-session']);
-    result=actionCatalog(root);
+    const options=parseOptions(args,['controller-session','action','stage']);
+    result=actionCatalog(root, Object.hasOwn(options,'action') || Object.hasOwn(options,'stage') ? options : null);
   }
   else {
     const options=parseOptions(args,action === 'execute' ? ['controller-session','request'] : ['controller-session']);

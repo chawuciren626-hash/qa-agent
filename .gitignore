@@ -167,6 +167,9 @@ Thumbs.db
 !/docs/prompt-review-20261122.md
 !/docs/change-summary-20261122.md
 
+# Follow-up on the 2026-11-22 rewrite backlog (2026-11-23)
+!/docs/legacy-backlog-followup-20261123.md
+
 # Local backups and tool state (never commit)
 .backup-prompts-*/
 .tmp-review/

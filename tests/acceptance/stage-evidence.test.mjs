@@ -370,6 +370,26 @@ test('native pre-execution write rejection does not poison a corrected draft han
   assert.throws(()=>assertChildCommands([call,decision,output],{...options,allowRecovery:false}),/stage ownership/);
 });
 
+test('any qa-stage-boundary hook denial reason is treated as denied before execution',()=>{
+  const workspace=resolve(tmpdir(),'qa-write-reason-variants');
+  const options={allowRecovery:true,stageWriteBoundary:{stage:'test_points',workspace,runDirectory:resolve(workspace,'output/runs/run-a'),actionRequestDirectory:resolve(workspace,'output/action-requests')}};
+  const call={payload:{type:'tool_call',name:'write_file',tool_call_id:'denied-write',arguments:JSON.stringify({file_path:'output/runs/run-a/report/test_report.md',content:'not written'})}};
+  const decision={type:'event_msg',payload:{type:'approval_decision',tool_call_id:'denied-write',decision:'deny'}};
+  // The hook may reword the reason after the bare prefix; all variants must still
+  // count as "denied before execution", not as a failed business write.
+  for(const reason of [
+    'Tool call denied by the qa-stage-boundary hook: QA shell redirect: pipe blocked',
+    'Tool call denied by the qa-stage-boundary hook: QA stage boundary: outside role',
+    'Tool call denied by the qa-stage-boundary hook: write target outside stage ownership',
+  ]) {
+    const output={payload:{type:'tool_call_output',tool_call_id:'denied-write',stop_reason:'aborted',output:reason}};
+    assert.doesNotThrow(()=>assertChildCommands([call,decision,output],options),reason);
+  }
+  // A different hook or a plain user message is not a stage-boundary denial.
+  const foreign={payload:{type:'tool_call_output',tool_call_id:'denied-write',stop_reason:'aborted',output:'Tool call denied by the qa-delegation-guard hook'}};
+  assert.throws(()=>assertChildCommands([call,decision,foreign],options),/stage ownership/);
+});
+
 test('malformed streamed write requires native evidence of rejection before execution',()=>{
   const workspace=resolve(tmpdir(),'qa-write-malformed');
   const options={allowRecovery:true,stageWriteBoundary:{stage:'test_cases',workspace,runDirectory:resolve(workspace,'output/runs/run-a'),actionRequestDirectory:resolve(workspace,'output/action-requests')}};

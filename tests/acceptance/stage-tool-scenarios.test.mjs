@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { TOOL_SCENARIOS, stageScenarioPrompt } from '../../scripts/stage-tool-scenarios.mjs';
+import { TOOL_SCENARIOS, stageScenarioPrompt, stageToolProtocol } from '../../scripts/stage-tool-scenarios.mjs';
 import { STAGE_TOOLS } from '../../scripts/stage-tool-runtime.mjs';
 
 test('every central tool has a concrete scenario and input/outcome contract', () => {
@@ -21,4 +21,14 @@ test('every central tool has a concrete scenario and input/outcome contract', ()
       assert.ok(TOOL_SCENARIOS.some(row => row.stage === stage && row.tools.includes(id)), `${stage}: ${id} has no trigger scenario`);
     }
   }
+});
+
+test('stage tool protocol marks required tool IDs as indirect run_stage_tool calls', () => {
+  const protocol = stageToolProtocol('test_points');
+  assert.match(protocol, /由引擎执行/);
+  assert.match(protocol, /不是可直接调用的动作名/);
+  assert.match(protocol, /run_stage_tool/);
+  assert.match(protocol, /不要在 qa_request\.action 里直接写这些工具名/);
+  // The named tools are still present so the agent knows which checks apply.
+  assert.match(protocol, /testpoint\.coverage/);
 });

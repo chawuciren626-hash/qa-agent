@@ -66,9 +66,10 @@ export function stageToolProtocol(stage) {
   if (!protocol) return `本阶段没有已登记的确定性工具协议；仍须使用可用结构化动作并保留真实回执。`;
   const required = protocol.required.filter(tool => tool !== 'irval.check');
   return [
-    `阶段工具硬协议：按适用场景调用 ${required.join('、')}；阶段动作使用 ${protocol.actions.join('、')}。`,
+    `阶段工具硬协议：按适用场景由引擎执行 ${required.join('、')}；阶段动作使用 ${protocol.actions.join('、')}。`,
+    `${required.join('、')} 是确定性工具 ID，不是可直接调用的动作名：通过 run_stage_tool 按工具 ID 调用；不要在 qa_request.action 里直接写这些工具名，否则会被阶段白名单拒绝。`,
     protocol.rule,
-    '有适用的完整 IR 时调用 irval.check。缺少适用 IR 时标记 not_applicable，继续其他检查；需要 IR 但缺失时记录 partial 和原因。阶段交付汇总实际回执，适用的必需检查失败、停用或缺少回执时按契约交付 blocked/partial。',
+    '有适用的完整 IR 时调用 irval.check（同样通过 run_stage_tool）。缺少适用 IR 时标记 not_applicable，继续其他检查；需要 IR 但缺失时记录 partial 和原因。阶段交付汇总实际回执，适用的必需检查失败、停用或缺少回执时按契约交付 blocked/partial。',
   ].join('\n');
 }
 

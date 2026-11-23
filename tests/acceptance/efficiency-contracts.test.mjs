@@ -18,6 +18,25 @@ test('catalog consistently prefers a single qa_request call and keeps the legacy
   assert.match(catalog.invocation_steps.join(' '),/仅旧宿主/);
 });
 
+test('catalog --action returns a small filtered view without changing the full catalog',()=>{
+  const full=actionCatalog();
+  assert.ok(Object.keys(full.actions).length>40);
+  const filtered=actionCatalog(null,{action:'api_task'});
+  assert.equal(filtered.status,'help');
+  assert.equal(filtered.action,'api_task');
+  assert.deepEqual(filtered.allowed_fields,full.actions.api_task);
+  assert.deepEqual(filtered.field_rules,full.field_rules.api_task);
+  assert.equal(filtered.request_format.action,'api_task');
+  assert.ok(!('dispatch_templates' in filtered),'filtered view must stay small');
+  const byStage=actionCatalog(null,{stage:'test_points'});
+  assert.equal(byStage.status,'help');
+  assert.equal(byStage.stage,'test_points');
+  assert.ok(byStage.dispatch_template);
+  const unknown=actionCatalog(null,{action:'__unknown__'});
+  assert.equal(unknown.error,'Unknown action');
+  assert.equal(full.actions.__unknown__,undefined);
+});
+
 function fixture(t) {
   const dir=mkdtempSync(resolve(tmpdir(),'qa-efficiency-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
   mkdirSync(resolve(dir,'output/action-requests'),{recursive:true});mkdirSync(resolve(dir,'execution/browser-evidence'),{recursive:true});return dir;

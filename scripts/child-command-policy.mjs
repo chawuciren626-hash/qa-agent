@@ -76,8 +76,14 @@ export function isPermittedChildShell(command) {
   return isControlledCommand(command);
 }
 
+// The qa-stage-boundary hook owns the deny reason text. Match only its stable
+// bare prefix so a reworded reason (QA shell redirect, write target, catalog
+// detour, ...) still counts as "denied before execution" and is not mistaken
+// for a failed business command during handoff.
+const STAGE_BOUNDARY_DENIAL = 'Tool call denied by the qa-stage-boundary hook:';
+
 function wasRedirectedBeforeExecution(rows,index,response,callId) {
-  if(toolOutcome(response.payload)!=='aborted' || !String(response.payload.output).startsWith('Tool call denied by the qa-stage-boundary hook: QA shell redirect:')) return false;
+  if(toolOutcome(response.payload)!=='aborted' || !String(response.payload.output).startsWith(STAGE_BOUNDARY_DENIAL)) return false;
   const decisions=rows.slice(index+1,rows.indexOf(response)).filter(row=>row.type==='event_msg' && row.payload?.type==='approval_decision' && row.payload.tool_call_id===callId);
   return decisions.length===1 && decisions[0].payload.decision==='deny';
 }
@@ -139,7 +145,7 @@ export function toolWasNotExecuted(rows,index) {
     const output=outputs[0];
     const decisions=rows.slice(index+1,rows.indexOf(output)).filter(row=>row.type==='event_msg' && row.payload?.type==='approval_decision' && row.payload.tool_call_id===call.tool_call_id);
     return toolOutcome(output.payload)==='aborted' &&
-      String(output.payload.output).startsWith('Tool call denied by the qa-stage-boundary hook: QA stage boundary:') &&
+      String(output.payload.output).startsWith(STAGE_BOUNDARY_DENIAL) &&
       decisions.length===1 && decisions[0].payload.decision==='deny';
   }
   if(outputs.length) return false;
@@ -173,7 +179,7 @@ function isSingleFileRead(command) {
 }
 
 function isCatalogLookup(command) {
-  return /^\s*node(?:\.exe)?\s+(?:"[^"]*project-action\.mjs"|'[^']*project-action\.mjs'|\S*project-action\.mjs)\s+catalog\s*$/i.test(String(command));
+  return /^\s*node(?:\.exe)?\s+(?:"[^"]*project-action\.mjs"|'[^']*project-action\.mjs'|\S*project-action\.mjs)\s+catalog(?:\s+--(?:action|stage)=[^\s;&|><`\r\n]+)?\s*$/i.test(String(command));
 }
 
 function isHarmlessShellProbe(command, output) {

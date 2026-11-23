@@ -87,10 +87,10 @@ const definitions = {
 };
 const hash = data => createHash('sha256').update(data).digest('hex');
 const requireInput = (ok, message) => { if (!ok) throw new CommandUsageError(message); };
-export function actionCatalog(root) {
+export function actionCatalog(root, filter = null) {
   const context = root ? directoryContext(root) : null;
   const session = context?.session_id ?? '<parent_session>';
-  return { status: 'help',
+  const catalog = { status: 'help',
     runtime_context: context ? {
       engine_root: context.engine_root,
       session_root: context.session_root,
@@ -117,7 +117,7 @@ export function actionCatalog(root) {
       create_api_snapshot_report:{required:['run_id'],optional:['snapshot_path'],note:'Only when a user requests a report before API execution finishes: freezes current API evidence, or reuses the immutable snapshot_path returned by api_task collect(partial:true). Creates/reuses a report-only derived run; dispatch its returned report template. Never finishes, cancels or restarts the source API task. Later final reporting continues in the original run. Snapshot report outcome must be partial and show snapshot_at.'},
       configure_delivery:{required:['run_id','scope_name'],note:'Before dispatch, set the actual feature/module name used in user-facing filenames. Stable after the first completed stage. For typed groups prefer plan_test_tracks.scope_name.'},
       plan_test_tracks:{required:['run_id','tracks','stages'],optional:['review_mode','workflow_mode','source_mode','scope_name'],note:'Set scope_name to the actual feature/module name (e.g. 登录模块). For new material-driven work classify content into tracks:[{type:functional|api,source_paths:[archived inputs/...],reason:classification evidence}]. Include only supported/requested types, both when both materials are supplied. A mixed document can support both. Creates linked typed runs with separate analysis/design/execution/defects/report files using existing roles. stages contains requested capabilities; execution/api_execution maps to the appropriate role per track. Design-only never selects execution. Independent tasks default task/auto; explicit full lifecycle uses staged review. Use returned track dispatch_templates and run IDs thereafter; run_status on the group summarizes both. Never manually create replacement runs. Planning grants no business execution authorization.'},
-      api_task:{note:'Pure HTTP worker; operation types inspect_contract(source_path,operations?), prepare(cases_path,contract_path?), start, status, resume, cancel, collect(partial?). prepare consumes existing declared API design; start returns immediately; poll status without restarting. Inspect docs/api-execution.md for scenario contract. Never use browser_task for API-only execution.'},
+      api_task:{note:'Pure HTTP worker; operation types inspect_contract(source_path,operations?), prepare(cases_path,contract_path?), start, status, resume, cancel, collect(partial?). prepare consumes existing declared API design; start returns immediately; poll status without restarting. For the scenario contract read the packaged reference at <shared_skills_root>/api-test-execution/references/protocol.md (the copy in docs/ is not shipped). Never use browser_task for API-only execution.'},
       browser_result_scope:{note:'断言checked_condition记录实际目标、条件和比较值，expected是预期文字，不能直接当通过结论。finish(summary,limitations,untested?)支持untested字符串数组，列出未验证范围和原因，有未测项交付partial，不增加审批。coverage.status=not_established表示未证明业务全覆盖，即使执行正常结束。错误提示检查通过不代表创建成功；HTTP错误本身不确认产品缺陷。缺陷/报告保留源partial、未测范围和实际断言边界，继续交付而不是技术解锁。'},
       efficiency:{note:'browser_task sequence accepts 2-4 steps and observed_request_id from a completed snapshot in this dispatch. Use only visible CSS selectors returned there. Allowed steps: fill/select/check/assert; at most one final click/press with assertion. Each step retains authorization, cancellation and receipts. Any mismatch/unknown stops remaining steps. Same batch ID reads results only, never resumes/replays a failed batch. For snapshot, optional if_sha256 from a prior version=1 snapshot returns unchanged plus requires_base_sha256 when identical; keep that base, otherwise omit if_sha256 for a full snapshot. This does not cache readiness or permissions.'},
       source_message_key:{note:'For browser dispatch or execution confirmation, source_message_key from input_context.user_messages[].key replaces source_text. The program resolves exact native user text; not a grant by itself. Existing scope, later cancellation and design checks still apply. Do not invent keys or ask the user to repeat authorization.'},
@@ -180,6 +180,33 @@ export function actionCatalog(root) {
       archive_text:{action:'archive_input',run_id:'run-example',name:'requirement.md',text:'User requirement text'}
     },
     notes: ['actions lists allowed fields, NOT required fields. Optional fields must be omitted when unused.', 'stages/skills/artifacts are arrays; archive_input requires exactly one of source/text', 'Default: draft stages continue after verified handoff; ask the user for unresolved business decisions and before real execution. review_mode=staged preserves the former per-stage confirmation flow.'] };
+  if (filter?.action) {
+    const name = String(filter.action);
+    const fields = Object.hasOwn(definitions, name) ? definitions[name] : null;
+    const rules = catalog.field_rules[name] ?? null;
+    if (!fields && !rules) {
+      return { status: 'help', action: name, error: 'Unknown action', note: 'Use catalog without --action to list every action name, or correct --action to a known name. No action was launched.' };
+    }
+    return {
+      status: 'help', action: name,
+      allowed_fields: fields,
+      field_rules: rules,
+      invocation: catalog.invocation,
+      request_format: { action: name, ...(fields ?? []).filter(key => key !== 'action').reduce((acc, key) => (acc[key] = '', acc), {}) },
+      note: 'Filtered catalog view: only this action is shown. Use catalog without --action for the full contract, stage_tools and dispatch templates.'
+    };
+  }
+  if (filter?.stage) {
+    const stage = String(filter.stage);
+    return {
+      status: 'help', stage,
+      stage_tool: catalog.stage_tools[stage] ?? null,
+      dispatch_template: catalog.dispatch_templates.find(item => item.stage === stage) ?? null,
+      required_artifacts: catalog.required_artifacts[stage] ?? null,
+      note: 'Filtered catalog view: only this stage is shown. Use catalog without --action for the full contract.'
+    };
+  }
+  return catalog;
 }
 function validate(request) {
   requireInput(request && !Array.isArray(request) && typeof request === 'object', 'Request must be an object');
