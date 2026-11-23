@@ -15,6 +15,7 @@ import { DEFECT_SEVERITY_ORDER, defectStatusLabel, severityLabel, severitySummar
 import { QaMetricsPanel } from "./metrics-panel";
 import { breakNumberedItems } from "./structured-text";
 import "./task-detail.css";
+import { QaProjectBreadcrumb } from "./project-breadcrumb";
 import { qaRead, qaScope, qaProjectForSession, qaTaskStatus, qaWorkspaceGroups } from "../../../../../../penguin/ui/workspace-ui.mjs";
 import { listEnvironments } from "./project-management/api";
 import type { EnvironmentView } from "./project-management/types";
@@ -174,6 +175,7 @@ export function QaProjectView() {
   return <main className="qa-project-view h-full min-h-0 min-w-0 overflow-hidden p-4 md:p-6" aria-label="项目视图">
     <div className="qp-layout mx-auto">
       <div className="qp-fixed space-y-6">
+      <QaProjectBreadcrumb current="视图" />
       <header className="qp-head">
         <div><h1>项目视图</h1><p>{currentProject ? projectDisplayName(currentProject) : "未选择项目"} · 跨工作空间汇总测试任务及已有产物</p></div>
         <div className="qp-head-actions">

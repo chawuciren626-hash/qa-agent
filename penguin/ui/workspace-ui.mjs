@@ -200,6 +200,7 @@ export function createWorkspaceUI(deps) {
     Modal,
     AccountMenu,
     ProjectNavigation,
+    ProjectBreadcrumb,
     useSessionActions = () => null,
     notify,
     reportError,
@@ -595,11 +596,11 @@ export function createWorkspaceUI(deps) {
       );
     };
     const allowed = key => key === "models" || user?.isAdmin || !user?.modulePermissions || user.modulePermissions.includes(key);
-    const nav = (label, icon, path, moduleKey = path.includes("library")?"library":path.includes("schedules")?"schedules":path.includes("qa/project")?"projects":path.split("/")[1]) =>
+    const nav = (label, icon, path, moduleKey = path.includes("library")?"library":path.includes("schedules")?"schedules":path.includes("qa/project")?"projects":path.split("/")[1], alsoActive = null) =>
       (!allowed(moduleKey) ? null : h(
         "button",
         {
-          className: `qa-nav ${(path === "/qa/library" ? location.pathname === "/qa/library" || (location.pathname === "/chat" && new URLSearchParams(location.search).get("view") === "library") : location.pathname + location.search === path) ? "is-active" : ""}`,
+          className: `qa-nav ${(location.pathname + location.search === path || (alsoActive && alsoActive(location))) ? "is-active" : ""}`,
           onClick: () => go(path),
           key: label,
         },
@@ -635,16 +636,19 @@ export function createWorkspaceUI(deps) {
       h(
         "nav",
         { className: "qa-nav-list", "aria-label": "功能导航" },
-        /* 测试任务：平台同步 + 本地新建合并列表（原「平台任务」提为正式任务入口，
-           与上游任务 id 1:1，回归轮次也在同一任务下）。 */
-        nav("测试任务", "list", "/qa/project/platform-tasks"),
-        nav("项目管理", "box", "/qa/projects"),
+        /* 菜单收敛（2026-11-23）：项目视图/项目环境/项目资料是同一项目的三类资产页，
+           收进项目管理列表行内穿透（视图·环境·资料字段直达），不再占一级菜单；
+           侧栏「项目管理」在三个子页（/qa/project、/qa/project/environments、/qa/library）
+           上保持高亮，路由全部保留。测试助手是顶部新建会话按钮，不进 nav。 */
+        nav("项目管理", "box", "/qa/projects", "projects", (loc) =>
+          loc.pathname === "/qa/project" ||
+          loc.pathname === "/qa/project/environments" ||
+          loc.pathname === "/qa/project/confirm" ||
+          loc.pathname === "/qa/library" ||
+          (loc.pathname === "/chat" && new URLSearchParams(loc.search).get("view") === "library")),
+        nav("测试任务", "list", "/qa/project/platform-tasks", "projects", (loc) =>
+          loc.pathname.startsWith("/qa/project/platform-tasks")),
         nav("定时任务", "clock", "/chat?view=schedules"),
-        nav("项目视图", "folder", "/qa/project"),
-        /* 项目环境是项目内的一级页，不并进项目资料、也不挂在「项目视图」那排 tab 下：
-           建档/探索/假设都是环境级事实，混进项目视图会让人以为它们跟着某次 run 走。 */
-        nav("项目环境", "server", "/qa/project/environments"),
-        nav("项目资料", "book", "/qa/library", "library"),
       ),
       h(
         "div",
@@ -1093,6 +1097,9 @@ function createSectionsUI(deps) {
   }
   const errorBox = (error) =>
     error && h("p", { role: "alert", className: "qa-page-error" }, error);
+  /* 项目资产面包屑由宿主注入（deps.ProjectBreadcrumb，见 web 的 project-breadcrumb.tsx）：
+     项目资料页（SectionPage view=library）页头用它指回项目管理并在兄弟页横跳；
+     引擎独立 UI 未注入时不渲染，行为与从前一致。 */
   function SectionPage({ view }) {
     const { currentProject } = useProject(),
       { user } = useAuth();
@@ -1101,10 +1108,15 @@ function createSectionsUI(deps) {
     }, [view]);
     if (!currentProject)
       return h("div", { className: "qa-page-empty" }, "正在加载工作空间…");
-    return h(view === "schedules" ? Schedules : Library, {
+    const page = h(view === "schedules" ? Schedules : Library, {
       key: `${currentProject.projectId}:${user?.userId}:${view}`,
       projectId: currentProject.projectId,
     });
+    if (view !== "library") return page;
+    return ProjectBreadcrumb ? h("div", { className: "qa-section-with-crumbs" },
+      h(ProjectBreadcrumb, { current: "资料" }),
+      page,
+    ) : page;
   }
   const templates = [
     [

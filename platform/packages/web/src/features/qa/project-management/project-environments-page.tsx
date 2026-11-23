@@ -42,6 +42,7 @@ import {
 import { fullTimeText } from "./format";
 import { StepBar, StepRows, stepProgress } from "./bootstrap-steps";
 import { toastError, toastSuccess } from "@prismshadow/penguin-ui";
+import { QaProjectBreadcrumb } from "../project-breadcrumb";
 import "./project-management.css";
 
 const POLL_MS = 1200;
@@ -288,6 +289,7 @@ export function ProjectEnvironmentsPage() {
   return (
     <main className="qpm-page qpm-env-page" aria-label="项目环境">
       <div className="qpm-scroll">
+        <QaProjectBreadcrumb current="环境" />
         <header className="qpm-head">
           <div>
             <h1>项目环境</h1>

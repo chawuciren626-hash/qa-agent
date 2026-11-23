@@ -5,9 +5,10 @@
  * §5（新建手动项目）、§6（详情侧栏/编辑）、§7（置顶/归档/恢复）、§10（页面状态全集）
  * 与《应用外壳两态布局设计规格》§3.2 实现。数据全部经 ./api.ts 适配层（mock 实现）。
  *
- * 点击语义严格分离（§4.4）：点名称 → 详情侧栏；点「进入 →」→ 校验后复用现有项目
- * 上下文（setCurrentProjectId）切换到 /qa/project；置顶与 ⋯ 菜单不触发跳转。
- * 返回本页时在会话内保留筛选/页码/滚动位置（内存级）。
+ * 点击语义严格分离（§4.4）：点名称 → 详情侧栏；点「视图」→ 校验后复用现有项目
+ * 上下文（setCurrentProjectId）切换到 /qa/project；行内「资料」直达 /qa/library；
+ * 环境列点击直达 /qa/project/environments（建档抽屉已移除，进度与环境详情都在环境页）。
+ * 置顶与 ⋯ 菜单不触发跳转。返回本页时在会话内保留筛选/页码/滚动位置（内存级）。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -26,11 +27,12 @@ import {
 import { STATUS_LABEL, sourceText, timeText } from "./format";
 import { CreateProjectDialog } from "./create-project-dialog";
 import { EnvironmentCell } from "./environment-cell";
-import { BootstrapDrawer } from "./bootstrap-drawer";
 import { ProjectDetailPanel } from "./project-detail-panel";
 import { ProjectSettingsDialog } from "../../../components/layout/project-dialogs";
 import { ConfirmModal, toastError, toastSuccess } from "@prismshadow/penguin-ui";
 import { useProject } from "../../../state/project";
+import { useAuth } from "../../../state/auth";
+import { allowedModule } from "../../../lib/module-permissions";
 import "./project-management.css";
 
 /** 会话内保留的列表状态（B→A 返回时恢复；内存级，不做跨会话持久化）。 */
@@ -81,6 +83,9 @@ export function ProjectManagementPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const { setCurrentProjectId, reloadProjects } = useProject();
+  const { user } = useAuth();
+  /** 「资料」入口与侧栏同口径：library 模块权限过滤。 */
+  const libraryAllowed = allowedModule(user, "library");
 
   const initial = useMemo(() => readUrlState(location.search), []); // eslint-disable-line react-hooks/exhaustive-deps
   const [keyword, setKeyword] = useState(initial?.keyword ?? savedState?.keyword ?? "");
@@ -102,8 +107,6 @@ export function ProjectManagementPage() {
   const [enteringId, setEnteringId] = useState<string | null>(null);
   /** 正在发起建档的项目（按钮 loading；与环境的 probing 状态不是一回事）。 */
   const [bootstrappingId, setBootstrappingId] = useState<string | null>(null);
-  /** 打开的是哪个项目的建档抽屉（抽屉自己轮询环境状态，列表只负责把它叫出来）。 */
-  const [envDrawer, setEnvDrawer] = useState<ManagedProject | null>(null);
   /** ⋯ 行内菜单。 */
   const [rowMenuId, setRowMenuId] = useState<string | null>(null);
   /** 详情侧栏（detail=<projectId> 可经 URL 恢复）。 */
@@ -224,15 +227,13 @@ export function ProjectManagementPage() {
 
   /**
    * 从列表直接建档：服务端立刻返回 probing，真实抓取在后台跑。
-   * 这里只负责发起 + 打开抽屉 + 刷新，不等待结果——等会卡住 UI 两分钟。
+   * 这里只负责发起 + 刷新，不等待结果——等会卡住 UI 两分钟。
+   * 建档进度看两处：环境列的「建档中…」状态与项目环境页（抽屉已移除）。
    */
   const bootstrap = useCallback(async (project: ManagedProject) => {
     const env = project.environment;
     if (!env) return;
     setBootstrappingId(project.projectId);
-    // 先把抽屉打开：建档两分钟里用户最想看的是"现在跑到第几步"，而不是列表里
-    // 一个转圈的六个字。
-    setEnvDrawer(project);
     try {
       await bootstrapEnvironment(project.projectId, env.env);
       refresh();
@@ -258,13 +259,13 @@ export function ProjectManagementPage() {
     }
   }, [navigate, setCurrentProjectId]);
 
-  /** 去项目环境页：环境页在项目内，所以先按同一套校验进入项目，再切路由。 */
-  const openEnvironments = useCallback(async (project: ManagedProject) => {
+  /** 去项目内资产页（视图/环境/资料）：先按同一套校验进入项目，再切路由。 */
+  const openProjectRoute = useCallback(async (project: ManagedProject, path: string) => {
     setEnteringId(project.projectId);
     try {
       await enterProject(project.projectId);
       setCurrentProjectId(project.projectId);
-      navigate("/qa/project/environments");
+      navigate(path);
     } catch (e) {
       toastError(e instanceof Error ? e.message : "进入项目失败，请重试");
     } finally {
@@ -353,7 +354,7 @@ export function ProjectManagementPage() {
         <header className="qpm-head">
           <div>
             <h1>项目管理</h1>
-            <p>选择或新建一个项目作为当前工作上下文；任务、视图、环境、资料等页面随顶部项目切换器联动。</p>
+            <p>选择或新建一个项目作为当前工作上下文；行内「视图 · 环境 · 资料」直达项目资产页，页面随进入的项目联动。</p>
           </div>
           <div className="qpm-head-actions">
             <button type="button" className="qpm-icon-btn" aria-label="刷新项目列表" onClick={refresh} disabled={loading && !result}>
@@ -501,7 +502,7 @@ export function ProjectManagementPage() {
                         project={project}
                         busy={bootstrappingId === project.projectId}
                         onBootstrap={(target) => void bootstrap(target)}
-                        onOpen={(target) => setEnvDrawer(target)}
+                        onOpen={(target) => void openProjectRoute(target, "/qa/project/environments")}
                       />
                     </td>
                     <td>
@@ -518,10 +519,21 @@ export function ProjectManagementPage() {
                             disabled={enteringId === project.projectId}
                             onClick={() => void enter(project.projectId)}
                           >
-                            {enteringId === project.projectId ? "进入中…" : "进入 →"}
+                            {enteringId === project.projectId ? "进入中…" : "视图"}
                           </button>
                         ) : (
                           <span className="qpm-muted" aria-label={`不可进入：${project.capabilities.cannotEnterReason ?? "当前状态不允许进入"}`}>不可进入</span>
+                        )}
+                        {libraryAllowed && (
+                          <button
+                            type="button"
+                            className="qpm-enter"
+                            disabled={enteringId === project.projectId || !project.capabilities.canEnter}
+                            aria-label={`打开 ${project.name} 的项目资料`}
+                            onClick={() => void openProjectRoute(project, "/qa/library")}
+                          >
+                            资料
+                          </button>
                         )}
                         <RowMenu
                           project={project}
@@ -560,14 +572,6 @@ export function ProjectManagementPage() {
         )}
       </div>
 
-      {envDrawer && (
-        <BootstrapDrawer
-          project={envDrawer}
-          onClose={() => setEnvDrawer(null)}
-          onChanged={refresh}
-        />
-      )}
-
       {detailId && (
         <ProjectDetailPanel
           projectId={detailId}
@@ -575,7 +579,7 @@ export function ProjectManagementPage() {
           editOnOpen={editOnOpen}
           onClose={() => setDetailId(null)}
           onSaveEdits={saveEdits}
-          onOpenEnvironments={(project) => void openEnvironments(project)}
+          onOpenEnvironments={(project) => void openProjectRoute(project, "/qa/project/environments")}
         />
       )}
 

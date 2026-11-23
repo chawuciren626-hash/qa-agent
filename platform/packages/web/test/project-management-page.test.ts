@@ -5,7 +5,7 @@
  * - 列表渲染与分页：mock 的 134 条记录按 20/页分页，页脚给出完整结果集的总数与页码；
  * - 筛选：状态默认「进行中」，切到全部状态后总数变化；搜索关键词防抖后过滤完整结果集并回到第一页；
  * - 点击语义严格分离（PM-04）：点项目名称 → 打开详情侧栏、不切项目上下文；
- *   点「进入 →」→ 先经适配层校验再复用现有项目上下文（setCurrentProjectId）并切换路由；
+ *   点「视图」→ 先经适配层校验再复用现有项目上下文（setCurrentProjectId）并切换路由；
  *   Esc 关闭侧栏，焦点回到触发元素。
  *
  * 数据经真实适配层（src/features/qa/project-management/api.ts → mock.ts），测试里不绕过它，
@@ -302,11 +302,11 @@ describe("项目管理页", () => {
     expect(document.querySelector('textarea[aria-label="项目简介"]')).toBeNull();
   });
 
-  it("点「进入 →」先校验再复用现有项目上下文切换到 /qa/project（PM-04/PM-05）", async () => {
+  it("点「视图」先校验再复用现有项目上下文切换到 /qa/project（PM-04/PM-05）", async () => {
     await mountPage();
     await waitForList();
     const enter = document.querySelector<HTMLButtonElement>("button.qpm-enter")!;
-    expect(enter.textContent).toContain("进入");
+    expect(enter.textContent).toContain("视图");
     await click(enter);
     await waitFor(() => state.setCurrentProjectId.mock.calls.length > 0, 100);
     expect(state.setCurrentProjectId).toHaveBeenCalledWith("PRJ-0002");
