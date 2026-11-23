@@ -125,6 +125,22 @@ describe("an unanswered read and HTTP", () => {
     expect(await caught).toBeInstanceOf(TypeError);
     expect(fetches).toEqual([]);
   });
+
+  it("a long write that opts out of the socket is not cancelled by its 20s deadline", async () => {
+    const path = "/api/projects/p/agents/qa/platform-tasks/t/analyze";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ summary: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })),
+    );
+    await expect(
+      apiFetch(path, { method: "POST", body: {}, transport: "http" })
+    ).resolves.toEqual({ summary: null });
+    expect(hub.calls).toEqual([]);
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual([path]);
+  });
 });
 
 /**

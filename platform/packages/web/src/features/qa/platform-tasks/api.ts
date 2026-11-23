@@ -137,8 +137,9 @@ export function editTask(
 }
 
 /**
- * 发起 AI 分析：项目默认模型同步分析任务填写内容，直接返回结构化结论（需求整理/
- * 测试环境/测试账号/建议范围等）并落库。
+ * 发起 AI 分析：账号级默认模型同步分析任务填写内容，直接返回结构化结论（需求整理/
+ * 测试环境/测试账号/建议范围等）并落库。模型最长可等 90s，超过 socket 的 20s
+ * 应答期限；socket 超时既不会重试写请求，还会取消服务端正在跑的分析，故固定走 HTTP。
  */
 export function analyzeTask(
   projectId: string,
@@ -146,7 +147,7 @@ export function analyzeTask(
 ): Promise<{ updated: TaskListItem | null; summary: AiSummary | null; degraded?: { reason: string } }> {
   return apiFetch<{ updated: TaskListItem | null; summary: AiSummary | null; degraded?: { reason: string } }>(
     `${base(projectId)}/${encodeURIComponent(taskId)}/analyze`,
-    { method: "POST", body: {} }
+    { method: "POST", body: {}, transport: "http" }
   );
 }
 

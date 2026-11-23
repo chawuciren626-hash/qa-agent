@@ -88,6 +88,13 @@ export interface ApiFetchOptions {
   /** Query parameters (undefined values are skipped). */
   query?: Record<string, string | number | undefined>;
   /**
+   * Force a plain HTTP call even when the page socket is open. For synchronous endpoints
+   * whose server work can outlast the socket's ANSWER_TIMEOUT_MS: a timed-out write is not
+   * retried over HTTP, and the timeout's cancel frame aborts the server request (and with it
+   * the work the caller is waiting for).
+   */
+  transport?: "socket" | "http";
+  /**
    * Which machine answers this call, when the caller knows and the path does not say.
    *
    * Omitted, a Session-scoped path routes itself to the machine that Session lives on (see
@@ -225,7 +232,8 @@ export async function apiFetchWithMeta<T>(
   // Over the socket when it is open, except what stays on HTTP by design: the auth routes
   // and `/api/me` are the runtime's (the socket answers them 421), and `/api/me` is also
   // where the cookie's own session facts come from — the socket knows only the user.
-  const wantsSocket = target !== null || !httpOnly(path);
+  // A caller whose work can outlast the socket deadline opts out with transport: "http".
+  const wantsSocket = options.transport !== "http" && (target !== null || !httpOnly(path));
   // Only a socket that is ALREADY open carries a call. Deciding synchronously keeps the
   // request on the tick it was made — a caller that stubs fetch reads it there — and a socket
   // still coming is not waited on: the call goes out over HTTP at once, as it did before the
