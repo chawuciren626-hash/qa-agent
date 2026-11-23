@@ -18,6 +18,12 @@ describe("agentOf — the current Agent is always one of this server's", () => {
     expect(agentOf(agents, null)?.agentId).toBe("default_agent");
   });
 
+  it("prefers default_agent over a testing project's controller as the fallback", () => {
+    const qa = [agent("test_agent"), agent("default_agent"), agent("test_point_agent")];
+    expect(agentOf(qa, "ema")?.agentId).toBe("default_agent");
+    expect(agentOf(qa, null)?.agentId).toBe("default_agent");
+  });
+
   it("falls back to the first Agent when there is no default_agent, and to null when there are none", () => {
     expect(agentOf([agent("writer"), agent("reviewer")], "ema")?.agentId).toBe("writer");
     expect(agentOf([], "ema")).toBeNull();

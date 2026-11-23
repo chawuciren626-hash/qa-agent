@@ -5,10 +5,10 @@
  *
  * Where a draft field comes from, highest first: what the entry point names in route state (an
  * Agent group's or card's Agent, a Workspace group's path), then the Project's new-chat defaults
- * (`[default_chat]`), then the built-in fallback. A generic "New chat" names nothing, so it
- * starts on the defaults. A selection an abandoned, text-less draft left in the active slot is
- * not a source: prepareNewChatDraft releases it first, or the leftover of one "+" click would
- * stand in for the Project's defaults on every later "New chat".
+ * (`[default_chat]`), then the built-in `default_agent` fallback. A generic "New chat" names
+ * nothing, so it starts on the defaults. A selection an abandoned, text-less draft left in the
+ * active slot is not a source: prepareNewChatDraft releases it first, or the leftover of one
+ * "+" click would stand in for the Project's defaults on every later "New chat".
  */
 import type { AgentSummary, ChatDefaultsDto } from "@prismshadow/penguin-server/api";
 import { pickDefaultAgent } from "../ai-create/default-agent";
@@ -27,7 +27,6 @@ export function newChatAgentId(
 ): string | null {
   const preferred = defaults.agentId;
   if (preferred !== undefined && agents.some((a) => a.agentId === preferred)) return preferred;
-  if (agents.some((a) => a.agentId === "test_agent")) return "test_agent";
   return pickDefaultAgent(agents)?.agentId ?? null;
 }
 

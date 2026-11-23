@@ -3,7 +3,7 @@
  * in-memory mirror keyed by storage key, so every test uses its own user id.
  *
  * - The new chat starts on the Project's default Agent while it names a listed Agent, else
- *   default_agent wherever it sits, else the first Agent, else none.
+ *   default_agent wherever it sits (also in a testing project), else the first Agent, else none.
  * - Preparing the draft parks typed text with its selections, then leaves only the model
  *   carry-over and staged skills in the active slot: a text-less draft's other selections are
  *   released, a slot holding nothing it keeps is emptied, and an empty slot is left alone.
@@ -18,10 +18,10 @@ import { memoryStorage } from "./helpers/storage";
 const agent = (agentId: string) => ({ agentId }) as AgentSummary;
 
 describe("newChatAgentId", () => {
-  it("uses the testing controller by default while preserving an explicit project default", () => {
+  it("uses the general assistant in a testing project while preserving an explicit project default", () => {
     const qa = [agent("default_agent"), agent("test_agent"), agent("test_point_agent")];
-    expect(newChatAgentId(qa, {})).toBe("test_agent");
-    expect(newChatAgentId(qa, { agentId: "default_agent" })).toBe("default_agent");
+    expect(newChatAgentId(qa, {})).toBe("default_agent");
+    expect(newChatAgentId(qa, { agentId: "test_agent" })).toBe("test_agent");
   });
   const agents = [agent("coder"), agent("default_agent"), agent("writer")];
 

@@ -171,7 +171,9 @@ function createProjectStore(scope: "user" | "admin" = "user") {
 
 /**
  * The Agent an id names among THIS server's, else the one a conversation defaults to
- * (`default_agent`, then the first). The id may name an Agent only a machine has — a draft or
+ * (`default_agent`, then the first). A testing project's controller (`test_agent`) is NOT a
+ * general fallback: a generic new conversation starts on the general assistant. The id may name
+ * an Agent only a machine has — a draft or
  * a Session on that machine follows its pick through to the current Agent — and the current
  * Agent is never one of those: the chat page renders nothing until there is a current Agent,
  * so resolving such an id to null left every chat route on its placeholder until a reload.
@@ -182,7 +184,6 @@ export function agentOf(
 ): AgentSummary | null {
   return (
     agents.find((a) => a.agentId === agentId) ??
-    agents.find((a) => a.agentId === "test_agent") ??
     agents.find((a) => a.agentId === "default_agent") ??
     agents[0] ??
     null
