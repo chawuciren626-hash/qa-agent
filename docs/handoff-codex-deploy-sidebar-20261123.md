@@ -5,6 +5,8 @@
 
 ## 1. 本批次提交内容（菜单收敛 + 项目资产归位）
 
+> 热修 `4b5f5e5`（含在本批次内）：`ProjectBreadcrumb` 解构补进 `createSectionsUI`——修复部署验证时发现的资料页 `ReferenceError: ProjectBreadcrumb is not defined` 白屏。部署必须取到该提交之后的 main。
+
 | 改动 | 文件 | 说明 |
 | --- | --- | --- |
 | 侧栏菜单收敛 | `penguin/ui/workspace-ui.mjs` | 一级菜单改为：测试助手（顶部按钮）、项目管理、测试任务、定时任务；删除「项目视图/项目环境/项目资料」三项；「项目管理」在三个子页（/qa/project、/qa/project/environments、/qa/library、/chat?view=library、/qa/project/confirm）保持高亮 |
