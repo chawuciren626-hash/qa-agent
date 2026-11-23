@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { getRunContext, recomputeRunStatus, writeJson, withRunLock } from "./orchestration-state.mjs";
 import { workflowDefinition } from './stage-registry.mjs';
-import { assertTrackStage } from './test-tracks.mjs';
+import { assertTrackStage, safeDeliveryScope } from './test-tracks.mjs';
 
 const root = resolve(import.meta.dirname, "..");
 const project = JSON.parse(readFileSync(resolve(root, "config/project.json"), "utf8"));
@@ -15,6 +15,9 @@ const reviewMode = process.argv.find((arg) => arg.startsWith('--review-mode='))?
 const workflowMode = process.argv.find(arg=>arg.startsWith('--workflow-mode='))?.slice(16) ?? 'lifecycle';
 const sourceMode = process.argv.find(arg=>arg.startsWith('--source-mode='))?.slice(14) ?? 'provided_materials';
 const executionPlatform = process.argv.find(arg=>arg.startsWith('--execution-platform='))?.slice(21) ?? 'web';
+// 平台预建 run：服务端已知功能范围名，直接落盘，省去总控一次 LLM 往返。
+const scopeName = process.argv.find(arg=>arg.startsWith('--scope-name='))?.slice(13);
+const platformBootstrap = process.argv.includes('--platform-bootstrap');
 if (!['web','android','miniprogram','desktop'].includes(executionPlatform)) throw new Error('execution-platform must be web, android, miniprogram or desktop');
 if (!['provided_materials','live_product'].includes(sourceMode) || (sourceMode==='live_product' && workflowMode!=='task')) throw new Error('Invalid source mode for this workflow');
 if (!['task','lifecycle'].includes(workflowMode)) throw new Error('workflow-mode must be task or lifecycle');
@@ -53,6 +56,8 @@ if (sourceMode==='live_product') {
   planStages.sort((a,b)=>Number(branches.includes(b.id))-Number(branches.includes(a.id)));
 }
 manifest.manifest_version = 3;
+if (scopeName) manifest.delivery = { scope_name: safeDeliveryScope(scopeName) };
+if (platformBootstrap) manifest.platform_bootstrap = true;
 manifest.orchestration ??= { events: [] };
 manifest.orchestration.plan = {
   workflow_id: workflow.workflow_id,

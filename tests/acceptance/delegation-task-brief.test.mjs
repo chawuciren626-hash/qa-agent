@@ -23,8 +23,13 @@ test('every professional stage receives an assignment with source lineage and it
     assert.deepEqual(brief.upstream_artifacts,[{path:'analysis/requirement-ledger.json',sha256:'upstream-hash'}]);
     assert.deepEqual(brief.deliverables,stage.task_artifacts);
     assert.ok(brief.acceptance.length>=2);
-    for(const field of ['【任务】','【目标】','【本次输入】','【有效上游】','【工作】','【交付】','【验收】']) {
+    // 可见简报只回答四件事：谁（由派发正文给出）/干什么/材料在哪/交什么。
+    for(const field of ['【任务】','【文档来源】','【交付】']) {
       assert.ok(visible.includes(field),`${stage.id}: ${field}`);
+    }
+    for(const field of ['【目标】','【工作】','【验收】','【未决与异常】','【交接】']) {
+      assert.doesNotMatch(visible,new RegExp(field),`${stage.id}: ${field} must stay in the managed contract`);
+      assert.ok(full.includes(field),`${stage.id}: ${field}`);
     }
     assert.ok(full.startsWith(visible));
     assert.match(full,/upstream-hash/);

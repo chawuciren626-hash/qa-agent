@@ -405,6 +405,16 @@ function captureUserInputs(root,runId,session,agentRoot,rows) {
       }
     }
   }
+  // 平台预建的 run 没走过 create_run，不会写 task-bindings。首次派发时按已归档原文补写，
+  // 否则后续同会话消息会被 captureUserInputs 当成同一任务的追加输入。
+  if(context.user_messages[0] && JSON.parse(readRunFile(run,'manifest.json').data).platform_bootstrap) {
+    const key=context.user_messages[0].key;
+    const binding=resolve(auditDir(root,session),'task-bindings',`${key}.json`);
+    if(!existsSync(binding)) {
+      mkdirSync(resolve(binding,'..'),{recursive:true});
+      writeJson(binding,{session_id:session,run_id:runId,created_at:new Date().toISOString(),source:'platform_bootstrap'});
+    }
+  }
   // Re-check immutable source bytes before handing their paths to another role.
   for(const entry of [...context.user_messages,...context.attachments]) requireInput(readRunFile(run,entry.path).sha256===entry.sha256,'Archived task input changed; original source must be preserved');
   mkdirSync(resolve(contextPath,'..'),{recursive:true});
@@ -1134,11 +1144,11 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
             +'阶段 Agent 执行适用检查，父级交接时复核回执。run_stage_tool 只传 payload 或契约中的 source_path。irval.check 只接受 payload={document:<完整IR>}。工具运行环境由宿主提供，专业角色不探测或修改运行时二进制。可调用工具及输入：'+JSON.stringify(stageToolCatalog(parsed.stage))+'。\n'
             +deliveryInstructions+'\n','utf8');
           output.delegation.prompt=[
-            'Caller agent: test_agent',
-            `任务：${label}。使用中文答复，仅处理stage=${parsed.stage}。`,
+            `你是 ${event.agent}，由 test_agent 派发。使用中文答复。`,
+            `任务：${label}。仅处理stage=${parsed.stage}。`,
             renderDelegationTaskBrief(taskBrief,{compact:true}),
             `run_id=${parsed.run_id}；dispatch_id=${event.dispatch_id}；controller-session=${session}。`,
-            `用read_file读取受管任务契约：output/delegations/${event.dispatch_id}.prompt.txt。按该文件执行，不展开或转抄合同。`,
+            `用read_file读取受管任务契约：output/delegations/${event.dispatch_id}.prompt.txt。角色约定与阶段细则见你的 AGENTS.md / Skill，按契约执行，不在这里重复。`,
             ...(event.resumes_dispatch_id?['这是旧协议人工操作完成后的续接：保留原浏览器，先snapshot，不重新start或重放操作。']:[]),
             ...(usesTaskArtifacts(root,parsed.run_id,parsed.stage)?[browserLifecycle(JSON.parse(readRunFile(runDirectory(root,parsed.run_id),'manifest.json').data))?'契约类型：LIFECYCLE BROWSER CONTRACT。沿用已有全流程计划。':'契约类型：INDEPENDENT TASK CONTRACT。独立完成所分配任务，不补造前序阶段。']:[]),
             event.child_command_policy

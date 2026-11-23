@@ -10,6 +10,9 @@
  * 开始测试把 env 带进会话任务档案（qa_tasks.env），run 执行由此拿到被测地址。
  */
 import type { Context, Hono } from "hono";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { userText } from "@prismshadow/penguin-core";
 import type { AppEnv } from "../../auth/middleware.js";
 import { HttpError } from "../errors.js";
@@ -85,6 +88,46 @@ function deriveEnvName(db: AgentsRouteDeps["db"], projectId: string, baseUrl: st
     if (!taken) return candidate;
     const suffix = `-${n}`;
     candidate = `${base.slice(0, 32 - suffix.length)}${suffix}`;
+  }
+}
+
+/**
+ * 平台预建 run：建 manifest + 六阶段计划 + 交付范围名全是确定性文件写入，
+ * 不该占用总控的 LLM 往返。run_id 来自预登记；会话工作区的目录上下文通过
+ * .qa-session.json 传给引擎脚本，与子 agent 后续工具调用看到的是同一个上下文。
+ * 任何一步失败都回退旧路径（开工指令仍要求队长 create_run/plan_run），不阻断开始测试。
+ */
+const PLATFORM_STAGES = ["analysis", "test_points", "test_cases", "execution", "defects", "report"];
+
+function precreatePlatformRun(deps: AgentsRouteDeps, sessionId: string, runId: string, scopeName: string): boolean {
+  if (!qaEnabled || !/^run-[A-Za-z0-9-]+$/.test(runId)) return false;
+  const engineRoot = process.env.AITEST_ENGINE_ROOT;
+  if (!engineRoot) return false;
+  const workspace = deps.sessionsRepo.findById(sessionId)?.workspace;
+  if (!workspace) return false;
+  try {
+    const marker = JSON.parse(readFileSync(resolve(workspace, ".qa-session.json"), "utf8")) as Record<string, unknown>;
+    if (marker.session_id !== sessionId || resolve(String(marker.session_root)) !== resolve(workspace)) return false;
+    if (marker.engine_root !== resolve(engineRoot)) return false;
+    const manifestPath = resolve(String(marker.run_root), runId, "manifest.json");
+    if (existsSync(manifestPath)) {
+      const existing = JSON.parse(readFileSync(manifestPath, "utf8")) as { orchestration?: { plan?: { stages?: unknown[] } } };
+      if (existing.orchestration?.plan?.stages?.length) return true;
+    }
+    const env = { ...process.env, QA_DIRECTORY_CONTEXT: JSON.stringify(marker) };
+    const runScript = (name: string, args: string[]) =>
+      execFileSync(process.execPath, [resolve(engineRoot, "scripts", name), ...args], {
+        cwd: engineRoot, env, windowsHide: true, timeout: 15_000, maxBuffer: 256 * 1024,
+      });
+    runScript("create-run.mjs", [`--run-id=${runId}`]);
+    runScript("plan-run.mjs", [
+      `--run-id=${runId}`, `--stages=${PLATFORM_STAGES.join(",")}`,
+      "--review-mode=staged", "--workflow-mode=lifecycle", "--source-mode=provided_materials",
+      "--execution-platform=web", `--scope-name=${scopeName}`, "--platform-bootstrap",
+    ]);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -295,9 +338,9 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
       }
     }
     // B1-5 登记前移：先建任务档案并预登记 run（status='planned'）。run_id 平台分配、随开工
-    // 指令下发，队长 create_run 以同一 id 采纳；manifest 落盘后 observeRun 升级为事实行，
-    // startRun 把发起升级为 running。预登记失败不拦开始测试——登记是判据通道不是闸
-    // （对齐 run-registration 纪律），失败退回旧路径由引擎侧 startRun 兜底登记。
+    // 指令下发；随后服务端用同一 id 预建 manifest/计划，队长直接进入派发。manifest 落盘后
+    // observeRun 升级为事实行，startRun 把发起升级为 running。预登记/预建失败都不拦开始
+    // 测试——登记是判据通道不是闸，失败退回旧路径由队长 create_run/引擎 startRun 兜底。
     let plannedRunId: string | null = null;
     try {
       const planned = new QaTaskRunRegistry(deps.db as unknown as KnowledgeDb, undefined, undefined, undefined, loadPoolCapacity(deps.config?.root)).createPlannedRun({
@@ -317,8 +360,13 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
     // 拆成两条会让预登记元数据挤掉任务原文，导致需求分析首轮因缺材料停工、再返修重派。
     const workStart = svc.workStartBriefing(projectId, taskId);
     if (!workStart) throw notFound();
+    const runPrepared = plannedRunId
+      ? precreatePlatformRun(deps, sessionId, plannedRunId, found.row.title ?? "")
+      : false;
     const briefing = plannedRunId
-      ? `${workStart}\n\n【运行预登记】本次运行已由平台预登记，run_id=${plannedRunId}。create_run 必须复用该 id（请求体带 "run_id":"${plannedRunId}"），不得自行生成新 id；plan/extend 均沿用此 run。manifest 将以此 id 落盘并与预登记行对账。`
+      ? runPrepared
+        ? `${workStart}\n\n【运行已就绪】run_id=${plannedRunId} 的 manifest、六阶段计划（需求分析→测试点→用例→执行→缺陷→报告）与交付范围名已由平台预建，输入材料在本条消息中、派发时由引擎归档。直接进入需求分析派发，禁止再调用 create_run/plan_run/configure_delivery/extend_plan；逐阶段人工审阅保持不变。`
+        : `${workStart}\n\n【运行预登记】本次运行已由平台预登记，run_id=${plannedRunId}。create_run 必须复用该 id（请求体带 "run_id":"${plannedRunId}"），不得自行生成新 id；plan/extend 均沿用此 run。manifest 将以此 id 落盘并与预登记行对账。`
       : workStart;
     const startMessages = [userText(briefing, "server")];
     try {
