@@ -109,7 +109,7 @@
 未知副作用、真实执行中断、超时、进程状态不明、锁所有权不明不自动重放；不删锁、不改状态、不伪造执行/批准。正常结束且execution_outcome为failed表示测出失败用例，继续缺陷分析；blocked/report_only只交付该批次受阻证据及报告，不冒充通过。termination_confirmed未知或归档损坏不能据此收口。
 
 <!-- qa-roles: test_agent -->
-子任务尚在工作时自行修正自有草稿；已返回的非执行草稿由总控preview_revision，eligible后revise_stage再派原角色，保留归档。不可借返修越过真实业务决定。analysis收到用户澄清/范围改变时由总控apply_analysis_feedback归档原话并修订，不把resolve_confirmation.reason当补充原文；其它task沿用本阶段修订契约。
+子任务尚在工作时自行修正自有草稿；已返回的非执行草稿由总控preview_revision，eligible后revise_stage归档并保留原子任务的原生句柄（QA工作区在子任务正常结束后也保留），总控用resolve_child_handle取句柄、input_subagent把问题清单/返修说明送回同一子任务做增量修订，不在新会话重新派发；仅当句柄确实不可用（宿主重启等）才重新run_subagent，并在派发正文用revision_context说清改什么。不可借返修越过真实业务决定。analysis收到用户澄清/范围改变时由总控apply_analysis_feedback归档原话，同样续接原分析子任务修订，不把resolve_confirmation.reason当补充原文；其它task沿用本阶段修订契约。
 
 execution的prepare派发也可由总控preview_revision/revise_stage处理，但仅限已返回、工具及命令证据能确认未操作产品的准备工作。恢复保留脚本和环境草稿，不授权产品测试；必须以mode=prepare修正，不借此重跑实际执行。资格不足由工程排查，不向用户索要技术解锁文档。
 <!-- /qa-roles -->

@@ -200,10 +200,11 @@ export function createSubagentTool(
         };
       }
 
-      // QA keeps the child Session after a parent stop so the parent can continue the
-      // same conversation and dispatch on its next turn. The current child run stops.
-      const qaRetainOnAbort = qaIsWorkspace(ctx.workspaceDir);
-      const onAbort = (): void => { if (qaRetainOnAbort) session.abortRun(); else session.kill(); };
+      // QA keeps the child Session so the controller can continue this SAME stage on a
+      // later revision / user supplement via input_subagent, instead of re-dispatching a
+      // fresh child. Non-QA sessions keep the upstream release behaviour untouched.
+      const qaWorkspace = qaIsWorkspace(ctx.workspaceDir);
+      const onAbort = (): void => { if (qaWorkspace) session.abortRun(); else session.kill(); };
       let registered = false;
       signal?.addEventListener("abort", onAbort, { once: true });
       const windowSignal = collectUntil(signal, detachSignal);
@@ -217,7 +218,7 @@ export function createSubagentTool(
         });
 
         if (signal?.aborted) {
-          if (qaRetainOnAbort) {
+          if (qaWorkspace) {
             const id = manager.register(session);
             registered = true;
             yield partialToolCallOutput({ eventType: "delta", output: `[subagent retained with subagent_id ${id}; parent stopped; continue this child with input_subagent after the user resumes]`, toolCallId });
@@ -262,8 +263,24 @@ export function createSubagentTool(
               approvalHint(session),
           };
         }
-        // Finished within the window: report the terminal state; releasing the child session is
-        // handled uniformly in `finally` (never registered, so no subagent_id).
+        // Finished within the window. A QA child is retained (not killed) so the controller
+        // can continue this SAME stage on revision / user supplement through input_subagent
+        // instead of re-dispatching a fresh child that starts from zero. The completion is
+        // still reported normally; the retained handle is for follow-up only. Non-QA
+        // sessions keep releasing the child in `finally` as before.
+        if (qaWorkspace) {
+          const id = manager.register(session);
+          registered = true;
+          const base = resultForSubagentExit(session.exit);
+          return {
+            ...base,
+            note:
+              `[subagent retained with subagent_id ${id}; stage finished; ` +
+              `continue this same child with input_subagent on revision or user supplement, ` +
+              `do not re-dispatch a new subagent]` +
+              (base.note ? ` ${base.note}` : ""),
+          };
+        }
         return resultForSubagentExit(session.exit);
       } finally {
         signal?.removeEventListener("abort", onAbort);

@@ -115,6 +115,20 @@ test('handle lookup distinguishes interrupted, returned and pending; denied redi
   assert.equal(result.completion_verified,false);
 });
 
+test('QA retained handle is available on a normal completed finish so revision continues the same child',()=>{
+  const dispatch={agent:request.agent,at:request.dispatchedAt,dispatch_id:'dispatch-a',child_command_policy:'policy-a'};
+  const rows=trace();rows[0].payload.arguments={agent_id:request.agent,prompt:`${request.runId} dispatch-a policy-a`};
+  // A QA child that finished normally keeps its native handle in the tool receipt.
+  assert.equal(recordedChildHandle(rows,dispatch,request.runId).status,'returned');
+  rows[2].payload.output='[subagent retained with subagent_id subagent-finished; stage finished; continue this same child with input_subagent on revision or user supplement, do not re-dispatch a new subagent]';
+  const retained=recordedChildHandle(rows,dispatch,request.runId);
+  assert.equal(retained.status,'recorded');
+  assert.equal(retained.subagent_id,'subagent-finished');
+  assert.equal(retained.call_state,'returned');
+  assert.equal(retained.completion_verified,false);
+  assert.match(retained.next_action,/input_subagent|补充任务信息/);
+});
+
 test('fatal child binding is opt-in, identity-bound and never a successful return',()=>{
   const rows=trace();
   rows[2].payload.stop_reason='fatal';
