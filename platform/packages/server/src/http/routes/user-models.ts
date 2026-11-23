@@ -131,6 +131,30 @@ export function userModelRoutes(deps: UserModelRoutesDeps): Hono<AppEnv> {
     return c.json(await deps.projectConfigService.modelViewOfRaw(block));
   });
 
+  /**
+   * 启用/停用全局默认模型：只改用户级记录的 default_model（null = 清除），不动模型表与
+   * 凭据，由服务层同步到所有项目镜像。与全表 PUT 分离，因为省略 defaultModel 在 updateModels
+   * 里表示「保留旧值」，无法表达「停用」。
+   */
+  app.put("/default", async (c) => {
+    const userId = c.var.user.userId;
+    const body = await readJson(c);
+    const raw = body.defaultModel;
+    let ref: { provider: string; modelId: string } | null = null;
+    if (raw !== null && raw !== undefined) {
+      const r = raw as Record<string, unknown>;
+      const provider = typeof r === "object" && r !== null ? r.provider : undefined;
+      const modelId = typeof r === "object" && r !== null ? r.modelId : undefined;
+      if (typeof provider !== "string" || typeof modelId !== "string") {
+        throw badRequest("defaultModel must be { provider, modelId } or null.");
+      }
+      ref = { provider, modelId };
+    }
+    await deps.projectConfigService.setUserDefaultModel(userId, ref);
+    const record = await readRecord(userId);
+    return c.json(await deps.projectConfigService.modelViewOfRaw(record?.models ?? { models: [] }));
+  });
+
   return app;
 }
 

@@ -438,6 +438,9 @@ export const userModels = {
   get: () => apiFetch<ModelsResponse>("/api/user-models"),
   put: (body: ModelsUpdateRequest) =>
     apiFetch<ModelsResponse>("/api/user-models", { method: "PUT", body }),
+  /** 启用/停用全局模型：只改默认指针，不动模型表与凭据。传 null 清除。 */
+  setDefault: (defaultModel: { provider: string; modelId: string } | null) =>
+    apiFetch<ModelsResponse>("/api/user-models/default", { method: "PUT", body: { defaultModel } }),
 };
 
 export const CENTRAL_MODEL_CATALOG_ID = "central-model-catalog";

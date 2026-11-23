@@ -32,4 +32,36 @@ describe("account shared models", () => {
     expect((await readFile(path.join(t.root, "sharedalice-c", ".project_config.toml"), "utf8"))).toContain("shared-v2");
     expect(JSON.stringify(await (await alice.get(`${models("sharedalice-a")}/shared`)).json())).not.toContain("sk-shared-next");
   });
+
+  it("toggles the account-global default model and mirrors the pointer to every project", async () => {
+    // 两个模型共存的全局配置：默认先指向 shared-v1。
+    const setup = await alice.put("/api/user-models", {
+      defaultModel: { provider: "custom", modelId: "shared-v2" },
+      models: [
+        { provider: "custom", modelId: "shared-v1", apiKey: "sk-a", baseUrl: "https://example.org/v1", clientType: "openai" },
+        { provider: "custom", modelId: "shared-v2", apiKey: "sk-b", baseUrl: "https://example.org/v1", clientType: "openai" },
+      ],
+    });
+    expect(setup.status).toBe(200);
+    expect(((await (await alice.get("/api/user-models")).json()) as { defaultModel?: { modelId: string } }).defaultModel?.modelId).toBe("shared-v2");
+
+    // 切换到 v1：用户级 default 与两个项目镜像同步变化，模型表/凭据不动。
+    const toggled = await alice.put("/api/user-models/default", { defaultModel: { provider: "custom", modelId: "shared-v1" } });
+    expect(toggled.status).toBe(200);
+    expect(((await (await alice.get("/api/user-models")).json()) as { defaultModel?: { modelId: string } }).defaultModel?.modelId).toBe("shared-v1");
+    expect(await readFile(path.join(t.root, "sharedalice-a", ".project_config.toml"), "utf8")).toContain('model_id = "shared-v1"');
+    expect(await readFile(path.join(t.root, "sharedalice-b", ".project_config.toml"), "utf8")).toContain('model_id = "shared-v1"');
+    const afterToggle = (await (await alice.get("/api/user-models")).json()) as { models: Array<{ modelId: string }> };
+    expect(afterToggle.models.map((m) => m.modelId).sort()).toEqual(["shared-v1", "shared-v2"]);
+
+    // 清除：用户级 default 消失（消费点回退第一条），两个模型都保留。
+    const cleared = await alice.put("/api/user-models/default", { defaultModel: null });
+    expect(cleared.status).toBe(200);
+    expect(((await (await alice.get("/api/user-models")).json()) as { defaultModel?: unknown }).defaultModel).toBeUndefined();
+    const afterClear = (await (await alice.get("/api/user-models")).json()) as { models: Array<{ modelId: string }> };
+    expect(afterClear.models).toHaveLength(2);
+
+    // 指向不存在的模型必须 400。
+    expect((await alice.put("/api/user-models/default", { defaultModel: { provider: "custom", modelId: "nope" } })).status).toBe(400);
+  });
 });

@@ -181,6 +181,17 @@ function asTable(v: unknown): RawTable {
   return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as RawTable) : {};
 }
 
+/** 全局配置的默认指针：default_model 优先，未设时回退 models 的第一条（与 readUserModelRef 一致）。 */
+function firstModelRef(block: RawTable): ModelRef | undefined {
+  const fromDefault = optRef(block.default_model);
+  if (fromDefault !== undefined) return fromDefault;
+  const first = asArray(block.models)[0];
+  if (first === undefined) return undefined;
+  const provider = optStr(first.provider);
+  const modelId = optStr(first.model_id);
+  return provider !== undefined && modelId !== undefined ? { provider, model_id: modelId } : undefined;
+}
+
 function asArray(v: unknown): RawTable[] {
   return Array.isArray(v) ? v.map(asTable) : [];
 }
@@ -831,6 +842,25 @@ export class ProjectConfigService implements ProjectConfigStore {
     return record;
   }
 
+  /**
+   * 全局单一真相源：按 Project 的 owner 读账号级模型块（.account-models/<hash>.json）。
+   *
+   * 设置页保存的模型配置是「用户全局」的，不与某个项目绑定（user-models.ts 的注释契约）。
+   * 因此所有「选哪个模型」的消费点——会话默认模型、一次性补全、语义 ID、探索分析等——
+   * 都应先读这份全局记录，而不是各项目自己的 TOML 副本。项目 TOML 仍是 core 的
+   * `resolveModelRef` 二次校验与按 projectId 凭证解析所依赖的镜像，由 publishSharedModels
+   * 在每次配置变更后同步保持对齐；这里只在「读取默认指针/模型条目」时以用户级为准。
+   *
+   * 没有 Projects 依赖（窄服务测试）或项目无 owner 时返回 undefined，调用方回退读项目
+   * TOML——保留旧的独立 SDK / 测试行为。
+   */
+  private async globalModelBlock(projectId: string): Promise<RawTable | undefined> {
+    const owner = this.projects?.findById(projectId)?.ownerUserId;
+    if (!owner) return undefined;
+    const shared = await this.readSharedModels(owner).catch(() => null);
+    return shared?.models;
+  }
+
   async sharedModelInfo(projectId: string): Promise<{enabled:boolean;sourceProjectId?:string;projectIds:string[]}> {
     const owner=this.projects?.findById(projectId)?.ownerUserId;
     if(!owner) return {enabled:false,projectIds:[projectId]};
@@ -1156,8 +1186,20 @@ export class ProjectConfigService implements ProjectConfigStore {
     await this.writeRaw(projectId, { ...raw, name });
   }
 
-  /** Paired reference of the default Model; returns undefined if unconfigured (or in the old string format). */
+  /**
+   * Paired reference of the default Model — the account-global setting wins.
+   *
+   * 单一真相源是用户级模型配置：只要该用户配置过模型，默认指针（或第一条模型）就对所有
+   * 项目/会话生效，与各项目 TOML 里可能陈旧的副本无关。没有全局记录时回退项目 TOML。
+   * 返回的是引用（provider + model_id）；调用方（core 的 createSession）仍会用这对引用
+   * 在项目镜像里做条目/凭证校验，所以同步写入必须保持用户级与项目镜像一致。
+   */
   async getDefaultModelRef(projectId: string): Promise<ModelRef | undefined> {
+    const global = await this.globalModelBlock(projectId);
+    if (global !== undefined && asArray(global.models).length > 0) {
+      const ref = firstModelRef(global);
+      if (ref !== undefined) return ref;
+    }
     const raw = await this.readRaw(projectId);
     return optRef(raw.default_model);
   }
@@ -1441,8 +1483,13 @@ export class ProjectConfigService implements ProjectConfigStore {
     prompt: string,
     opts?: { maxTokens?: number; requestTimeoutMs?: number },
   ): Promise<UtilityCompletion> {
-    const raw = await this.readRaw(projectId);
-    const ref = optRef(raw.default_model);
+    // 模型（默认指针 + 条目 + 供应商连接）以账号级全局配置为真相源；项目 TOML 是它的
+    // 同步镜像，只在用户从未配置过模型时作为回退。凭证的动态部分（ModelScope token 刷新）
+    // 仍按 projectId 由 resolver 提供，与会话链路一致。
+    const global = await this.globalModelBlock(projectId);
+    const useGlobal = global !== undefined && asArray(global.models).length > 0;
+    const raw = useGlobal ? global! : await this.readRaw(projectId);
+    const ref = useGlobal ? firstModelRef(raw) : optRef(raw.default_model);
     if (ref === undefined) {
       return { ok: false, cause: "no_model", error: "the Project names no default model" };
     }
@@ -1758,6 +1805,23 @@ export class ProjectConfigService implements ProjectConfigStore {
     } finally {
       release();
     }
+  }
+
+  async setUserDefaultModel(
+    ownerUserId: string,
+    ref: { provider: string; modelId: string } | null,
+  ): Promise<void> {
+    const shared = await this.readSharedModels(ownerUserId);
+    if (shared === null) throw badRequest("还没有配置任何模型，请先在「自定义模型」里添加一个。");
+    if (ref !== null && !asArray(shared.models.models).some((m) => entryMatches(m, ref.provider, ref.modelId))) {
+      throw badRequest(`defaultModel must be included in models: ${showRef(ref.provider, ref.modelId)}.`);
+    }
+    const block: RawTable = { ...shared.models };
+    if (ref === null) delete block.default_model;
+    else block.default_model = { provider: ref.provider, model_id: ref.modelId };
+    // publishUserModelBlock 保留既有的 promotions / ModelScope token 并把整块模型配置
+    // 同步到该用户名下所有项目镜像；这里只改了 default_model 一个键，其余保持不变。
+    await this.publishUserModelBlock(ownerUserId, block);
   }
 
   async modelViewOfRaw(raw: RawTable): Promise<ModelsResponse> {

@@ -175,6 +175,11 @@ export abstract class ProjectConfigStore {
   abstract userModelBlockOf(req: ModelsUpdateRequest): Record<string, unknown>;
   /** 把用户级模型块写成该用户的共享模型记录，并同步到名下所有项目（含新建项目继承）。 */
   abstract publishUserModelBlock(ownerUserId: string, block: Record<string, unknown>): Promise<void>;
+  /**
+   * 设置/清除用户级全局默认模型指针：只改 .account-models/<hash>.json 的 default_model，
+   * 不动模型表与凭据，再同步到名下所有项目镜像。传 null 表示清除（消费点回退到第一条）。
+   */
+  abstract setUserDefaultModel(ownerUserId: string, ref: { provider: string; modelId: string } | null): Promise<void>;
   abstract updateModels(projectId: string, req: ModelsUpdateRequest): Promise<ModelsResponse>;
   /** One group's `[providers.<id>]` connection, merged per field; rows are never touched. */
   abstract setProviderConnection(

@@ -764,7 +764,7 @@ export class QaPlatformTaskService {
       }
       return {
         summary: demoSummary(info.title, info.description, info.notes, priority),
-        degraded: { reason: res.cause === "no_model" ? "项目未配置默认模型" : `模型调用失败：${res.error}` },
+        degraded: { reason: res.cause === "no_model" ? "未配置全局模型（请在设置 → 模型配置中启用一个模型）" : `模型调用失败：${res.error}` },
       };
     }
     return {

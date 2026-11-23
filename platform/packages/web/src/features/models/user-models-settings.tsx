@@ -163,6 +163,11 @@ export function UserModelsSettings() {
   useEffect(() => { void reload(); }, [reload]);
 
   const models = useMemo(() => response?.models ?? [], [response]);
+  /** 全局启用的模型：显式 defaultModel 优先，未设时与服务端一致回退到列表第一条。 */
+  const enabledKey = useMemo(() => {
+    const ref = response?.defaultModel ?? (models.length > 0 ? { provider: models[0]!.provider, modelId: models[0]!.modelId } : null);
+    return ref === null ? null : `${ref.provider}\u0000${ref.modelId}`;
+  }, [response, models]);
   const providerNames = useMemo(() => {
     const names = new Map<string, string>();
     for (const option of providerOptions) names.set(option.id, option.name);
@@ -296,6 +301,25 @@ export function UserModelsSettings() {
     }
   };
 
+  /**
+   * 行级「启用/停用」：启用即把该模型设为全局默认（同一时刻只有一个生效）。
+   * 通过全表 PUT 带上 defaultModel 落盘——凭据字段省略由服务端保留原值。
+   * 取消启用则清掉 defaultModel，回退到列表第一条（与服务端 firstModelRef 一致）。
+   */
+  const setDefault = async (target: { provider: string; modelId: string }, enable: boolean) => {
+    if (busy || response === null) return;
+    setBusy(true);
+    try {
+      await api.userModels.setDefault(enable ? { provider: target.provider, modelId: target.modelId } : null);
+      toastSuccess(enable ? `已启用「${target.modelId}」为全局模型。` : "已取消全局模型；将使用列表中的第一个模型。");
+      await reload();
+    } catch (error) {
+      toastError(error instanceof Error ? error.message : "模型启用状态保存失败。");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   /** 行级「测试连通性」：用该行已保存的凭据（owner 项目里存的那份）发起一次真实探测，
       结果用 toast 告知；密钥明文不经过前端。 */
   const testRow = async (model: ModelInfo) => {
@@ -377,14 +401,27 @@ export function UserModelsSettings() {
             {models.length === 0 && (
               <p className="py-6 text-center text-sm text-muted-foreground">还没有模型。点击「添加模型」接入你的第一个模型。</p>
             )}
-            {models.map((model) => (
-              <div key={`${model.provider}\u0000${model.modelId}`} className="flex items-center justify-between gap-3 px-2.5 py-2.5">
+            {models.map((model) => {
+              const key = `${model.provider}\u0000${model.modelId}`;
+              const enabled = key === enabledKey;
+              return (
+              <div key={key} className="flex items-center justify-between gap-3 px-2.5 py-2.5">
                 <div className="flex min-w-0 items-center gap-2">
                   <GlyphIcon d={ICONS.chip} size={ICON_SIZE.iconButton} className="shrink-0 text-muted-foreground" />
                   <span className="truncate text-sm font-medium">{model.displayName?.trim() || model.modelId}</span>
                   <span className="shrink-0 text-xs text-muted-foreground">{providerNames.get(model.provider) ?? model.provider}</span>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
+                <IconButton
+                  variant="ghost"
+                  size="sm"
+                  label={`${enabled ? "停用" : "启用"}全局模型 ${rowLabel(model)}`}
+                  title={enabled ? "当前全局生效，点击停用" : "点击设为全局生效模型"}
+                  disabled={busy}
+                  onClick={() => void setDefault({ provider: model.provider, modelId: model.modelId }, !enabled)}
+                >
+                  <GlyphIcon d={ICONS.star} size={ICON_SIZE.iconButton} className={enabled ? "text-amber-500" : "text-muted-foreground"} filled={enabled} />
+                </IconButton>
                 <IconButton variant="ghost" size="sm" label={`编辑 ${rowLabel(model)}`} disabled={busy} onClick={() => openEdit(model)}>
                   <GlyphIcon d={ICONS.pencil} size={ICON_SIZE.iconButton} />
                 </IconButton>
@@ -408,7 +445,8 @@ export function UserModelsSettings() {
                 </IconButton>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </section>
