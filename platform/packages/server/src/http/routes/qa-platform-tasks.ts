@@ -313,17 +313,14 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
       // 环境绑定与预登记都是增强，不是闸：失败留给会话内补选/引擎侧兜底。
     }
     // 开工指令先于状态绑定发送（忙时排队）：失败任务保持可开始、可重试，不留半启动状态。
+    // 业务材料与运行预登记合并为同一条 server 消息：引擎按「最后一条用户消息」归档 run 输入，
+    // 拆成两条会让预登记元数据挤掉任务原文，导致需求分析首轮因缺材料停工、再返修重派。
     const workStart = svc.workStartBriefing(projectId, taskId);
     if (!workStart) throw notFound();
-    const startMessages = plannedRunId
-      ? [
-          userText(workStart, "server"),
-          userText(
-            `【运行预登记】本次运行已由平台预登记，run_id=${plannedRunId}。create_run 必须复用该 id（请求体带 "run_id":"${plannedRunId}"），不得自行生成新 id；plan/extend 均沿用此 run。manifest 将以此 id 落盘并与预登记行对账。`,
-            "server",
-          ),
-        ]
-      : [userText(workStart, "server")];
+    const briefing = plannedRunId
+      ? `${workStart}\n\n【运行预登记】本次运行已由平台预登记，run_id=${plannedRunId}。create_run 必须复用该 id（请求体带 "run_id":"${plannedRunId}"），不得自行生成新 id；plan/extend 均沿用此 run。manifest 将以此 id 落盘并与预登记行对账。`
+      : workStart;
+    const startMessages = [userText(briefing, "server")];
     try {
       await deps.manager.startTask(sessionId, startMessages, { queueIfBusy: true });
     } catch (e) {

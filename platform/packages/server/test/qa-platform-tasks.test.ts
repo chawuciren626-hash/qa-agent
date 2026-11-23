@@ -164,12 +164,16 @@ describe.skipIf(!process.env.AITEST_ENGINE_ROOT)("平台任务列表", () => {
     expect(startBody.task.status).toBe("in_progress");
     expect(startBody.task.mainSessionId).toBe("session-pt-1");
     expect(spySession).toHaveBeenCalledTimes(1);
-    const dispatchText = JSON.stringify(vi.mocked(app.deps.manager.startTask).mock.calls[0]?.[1]);
+    const startMessages = vi.mocked(app.deps.manager.startTask).mock.calls[0]?.[1];
+    // 任务原文与运行预登记必须同一条：引擎只归档最后一条用户消息，拆两条会漏掉需求材料。
+    expect(startMessages).toHaveLength(1);
+    const dispatchText = JSON.stringify(startMessages);
     expect(dispatchText).toContain("平台任务开工");
     expect(dispatchText).toContain("同步测试任务 pending");
     // B1-5 登记前移：开工指令带【运行预登记】，指明平台分配的 run_id
     expect(dispatchText).toContain("运行预登记");
     expect(dispatchText).toContain("run_id=run-");
+    expect((startMessages?.[0]?.payload as { text?: string } | undefined)?.text).toContain("运行预登记");
 
     // 详情测试进展段带出会话绑定与预登记 run（planned = 预约已建、事实未发生）
     const d = (await (await detail(pending.id)).json()) as Json;
