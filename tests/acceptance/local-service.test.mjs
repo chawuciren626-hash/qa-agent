@@ -33,6 +33,23 @@ test('server lock rejects a recycled PID with a closed port and respects a live 
     write(file,'invalid json');assert.equal(await serverLockAlive(file),false);
   } finally { if(server.listening)await new Promise(ok=>server.close(ok));rmSync(root,{recursive:true,force:true}); }
 });
+test('server lock probes the port when Windows denies the PID existence check',async()=>{
+  const root=mkdtempSync(resolve(tmpdir(),'aith-lock-permission-')),file=resolve(root,'server.lock');
+  const server=createServer(socket=>socket.end());
+  const originalKill=process.kill;
+  try {
+    await new Promise(ok=>server.listen(0,'127.0.0.1',ok));
+    write(file,JSON.stringify({pid:123456789,port:server.address().port}));
+    process.kill=()=>{throw Object.assign(new Error('kill EPERM'),{code:'EPERM'});};
+    assert.equal(await serverLockAlive(file),true);
+    await new Promise(ok=>server.close(ok));
+    assert.equal(await serverLockAlive(file),false);
+  } finally {
+    process.kill=originalKill;
+    if(server.listening)await new Promise(ok=>server.close(ok));
+    rmSync(root,{recursive:true,force:true});
+  }
+});
 test('independent runtime: one server, private relay, UI detach survival, busy protection, restart and pause', {timeout:120000}, async t=>{
   const root=mkdtempSync(resolve(tmpdir(),'aith-service-'));
   const config=resolve(root,'installation.json');

@@ -9,7 +9,7 @@ import {pathToFileURL} from 'node:url';
 import {loadProductLayout,productEnvironment} from './product-layout.mjs';
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-const alive=pid=>{try{process.kill(pid,0);return true;}catch(e){if(e.code==='ESRCH')return false;throw e;}};
+const alive=pid=>{try{process.kill(pid,0);return true;}catch(e){if(e.code==='ESRCH')return false;if(e.code==='EPERM')return true;throw e;}};
 const read=file=>JSON.parse(readFileSync(file,'utf8'));
 // Match the server's lock protocol: a recycled PID alone is not a live server.
 export async function serverLockAlive(file) {
