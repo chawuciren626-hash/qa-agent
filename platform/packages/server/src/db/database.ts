@@ -57,6 +57,17 @@ export function openDatabase(dbPath: string): DatabaseSync {
   // lock rather than failing SQLITE_BUSY at once.
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA foreign_keys = ON;");
+  // SCHEMA_SQL declares the retry index. Existing task-platform tables need the
+  // new columns before that index can be created on this open.
+  const taskPlatformEventsExist = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_platform_events'",
+  ).get() !== undefined;
+  if (taskPlatformEventsExist) {
+    ensureColumn(db, "task_platform_events", "process_status", "TEXT NOT NULL DEFAULT 'pending'");
+    ensureColumn(db, "task_platform_events", "process_attempts", "INTEGER NOT NULL DEFAULT 0");
+    ensureColumn(db, "task_platform_events", "process_next_retry_at", "TEXT");
+    ensureColumn(db, "task_platform_events", "process_last_error", "TEXT");
+  }
   db.exec(SCHEMA_SQL);
   // Columns added to the schema after a web.db was formed: CREATE TABLE IF NOT EXISTS never
   // touches an existing table, so they are ALTERed in here. Keep the list in sync with

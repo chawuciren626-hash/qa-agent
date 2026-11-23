@@ -30,14 +30,29 @@ import {
   ResultOutboxScheduler,
 } from "../src/integrations/task-platform/result-outbox.js";
 import { taskPlatformIntegration } from "../src/db/migrations/steps/2026-11-20-task-platform-integration.js";
+import { taskPlatformEventRetry } from "../src/db/migrations/steps/2026-11-23-task-platform-event-retry.js";
+import { migrate as migrateSteps } from "../src/db/migrations/runner.js";
 
 // ---------- 测试基建 ----------
 
 function makeDb(): DatabaseSync {
   const db = new DatabaseSync(":memory:");
   taskPlatformIntegration.up(db);
+  taskPlatformEventRetry.up(db);
   return db;
 }
+
+describe("task-platform event retry migration", () => {
+  it("upgrades a database whose original migration is already recorded", () => {
+    const db = new DatabaseSync(":memory:");
+    migrateSteps(db, [taskPlatformIntegration]);
+    expect(db.prepare("PRAGMA table_info(task_platform_events)").all().some(row => (row as { name: string }).name === "process_status")).toBe(false);
+    expect(migrateSteps(db, [taskPlatformIntegration, taskPlatformEventRetry]).applied).toEqual([taskPlatformEventRetry.name]);
+    expect(db.prepare("PRAGMA table_info(task_platform_events)").all().some(row => (row as { name: string }).name === "process_status")).toBe(true);
+    expect(migrateSteps(db, [taskPlatformIntegration, taskPlatformEventRetry]).applied).toEqual([]);
+    db.close();
+  });
+});
 
 interface RouteMock {
   match: (url: URL, init: RequestInit) => boolean;
@@ -481,8 +496,33 @@ describe("IngestionService", () => {
     const summary = await harness.service.runOnce();
     expect(summary.packages_failed).toBe(1);
     expect(summary.packages_activated).toBe(1);
-    expect(harness.store.hasEvent("evt-bad")).toBe(true); // 事件已记录，下轮补拉重试
+    expect(harness.store.hasEvent("evt-bad")).toBe(true);
     expect(harness.store.hasEvent("evt-good")).toBe(true);
+  });
+
+  it("failed event is retried on a later run until it succeeds (no missed delivery)", async () => {
+    // 第一轮：task-bad 拉包 404 → 事件标 failed + 退避
+    const events = [sampleEvent({ event_id: "evt-1", task_id: "task-1" })];
+    const packages = new Map<string, HandoffPackage>();
+    const harness = makeHarness(events, packages);
+    const first = await harness.service.runOnce();
+    expect(first.packages_failed).toBe(1);
+    // 第二轮：包已可用（平台侧补齐）；时钟推进 30s 后到期
+    packages.set("task-1:v1", samplePackage());
+    // 把事件的重试时间拨到过去（模拟到期）
+    const dbRow = (harness as unknown as { store: SqliteTaskPlatformStore }).store;
+    void dbRow;
+    await harness.service.runOnce(); // 未到期不重试
+    // 直接把 next_retry_at 清到过去
+    (harness.store as unknown as { db: DatabaseSync }).db
+      .prepare("UPDATE task_platform_events SET process_next_retry_at = '2020-01-01T00:00:00Z' WHERE event_id = 'evt-1'")
+      .run();
+    const third = await harness.service.runOnce();
+    expect(third.packages_activated).toBe(1); // 重试成功
+    // 第四轮：已 succeeded 不再重复激活
+    const fourth = await harness.service.runOnce();
+    expect(fourth.packages_activated).toBe(0);
+    expect(fourth.new_events).toBe(0);
   });
 });
 

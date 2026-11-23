@@ -1526,7 +1526,11 @@ CREATE TABLE IF NOT EXISTS task_platform_events (
         parent_package_version INTEGER,
         pm_round_id            TEXT,
         occurred_at            TEXT NOT NULL,
-        product_line_ids_json  TEXT NOT NULL DEFAULT '[]'
+        product_line_ids_json  TEXT NOT NULL DEFAULT '[]',
+        process_status         TEXT NOT NULL DEFAULT 'pending',
+        process_attempts       INTEGER NOT NULL DEFAULT 0,
+        process_next_retry_at  TEXT,
+        process_last_error     TEXT
       );
 -- [table] task_platform_ingest_cursor
 CREATE TABLE IF NOT EXISTS task_platform_ingest_cursor (
@@ -1649,6 +1653,9 @@ CREATE INDEX IF NOT EXISTS idx_qa_u3_side_effects_idempotency
 -- [index] idx_tp_events_task
 CREATE INDEX IF NOT EXISTS idx_tp_events_task
         ON task_platform_events(external_tenant_id, external_task_id, package_version);
+-- [index] idx_tp_events_retry
+CREATE INDEX IF NOT EXISTS idx_tp_events_retry
+        ON task_platform_events(process_status, process_next_retry_at);
 -- [index] idx_tp_outbox_due
 CREATE INDEX IF NOT EXISTS idx_tp_outbox_due
         ON task_platform_result_outbox(delivered_at, next_retry_at);

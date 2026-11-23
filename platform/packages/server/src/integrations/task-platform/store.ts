@@ -88,9 +88,18 @@ export interface TaskPlatformStore {
   getIngestCursor(): string | null;
   setIngestCursor(cursor: string): void;
 
-  /** ---- 事件去重 ---- */
+  /** ---- 事件去重 + 处理状态（审阅意见 2：失败事件可重试，不漏单） ---- */
   hasEvent(eventId: string): boolean;
-  recordEvent(event: HandoffEventDto): void;
+  /** 新事件登记为 pending；已存在时返回 false 不覆盖原状态。 */
+  recordEvent(event: HandoffEventDto): boolean;
+  /** 取出到期的待处理/待重试事件（按重试时间升序）。 */
+  dueEvents(nowIso: string, limit: number): HandoffEventDto[];
+  /** 标记事件处理成功。 */
+  markEventSucceeded(eventId: string): void;
+  /** 标记事件处理失败并安排下次重试时间（指数退避由调用方计算）。 */
+  markEventFailed(eventId: string, attempts: number, nextRetryAt: string, lastError: string): void;
+  /** 事件已重试次数（无记录返回 0）。 */
+  eventAttempts(eventId: string): number;
 
   /** ---- 项目同步映射 ---- */
   findProjectLink(tenantId: string, productLineId: string): ProjectSyncLinkRow | null;
@@ -125,7 +134,9 @@ export class SqliteTaskPlatformStore implements TaskPlatformStore {
     const row = this.db.prepare("SELECT cursor FROM task_platform_ingest_cursor WHERE id = 1").get() as
       | { cursor: string | null }
       | undefined;
-    return row?.cursor ?? null;
+    const value = row?.cursor ?? null;
+    // 空串 = 已被 resetCursor 清空，语义等同"无游标，从最早事件开始"
+    return value === "" ? null : value;
   }
 
   setIngestCursor(cursor: string): void {
@@ -140,8 +151,8 @@ export class SqliteTaskPlatformStore implements TaskPlatformStore {
     return row !== undefined;
   }
 
-  recordEvent(event: HandoffEventDto): void {
-    this.db.prepare(
+  recordEvent(event: HandoffEventDto): boolean {
+    const run = this.db.prepare(
       `INSERT OR IGNORE INTO task_platform_events
         (event_id, event_type, external_tenant_id, external_task_id, task_no,
          package_version, parent_package_version, pm_round_id, occurred_at, product_line_ids_json)
@@ -157,7 +168,59 @@ export class SqliteTaskPlatformStore implements TaskPlatformStore {
       event.pm_round_id,
       event.occurred_at,
       JSON.stringify(event.product_line_ids ?? []),
-    );
+    ) as unknown;
+    return Number((run as { changes?: number | bigint } | null)?.changes ?? 0) > 0;
+  }
+
+  dueEvents(nowIso: string, limit: number): HandoffEventDto[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM task_platform_events
+         WHERE process_status IN ('pending','failed')
+           AND (process_next_retry_at IS NULL OR process_next_retry_at <= ?)
+         ORDER BY COALESCE(process_next_retry_at, occurred_at) ASC
+         LIMIT ?`,
+      )
+      .all(nowIso, limit) as unknown as Array<Record<string, unknown>>;
+    return rows.map(row => ({
+      event_id: String(row.event_id),
+      event_type: String(row.event_type) as HandoffEventDto["event_type"],
+      tenant_id: String(row.external_tenant_id),
+      task_id: String(row.external_task_id),
+      task_no: String(row.task_no),
+      package_version: Number(row.package_version),
+      parent_package_version: row.parent_package_version === null ? null : Number(row.parent_package_version),
+      pm_round_id: row.pm_round_id === null ? null : String(row.pm_round_id),
+      product_line_ids: JSON.parse(String(row.product_line_ids_json ?? "[]")) as string[],
+      occurred_at: String(row.occurred_at),
+    }));
+  }
+
+  markEventSucceeded(eventId: string): void {
+    this.db
+      .prepare(
+        `UPDATE task_platform_events
+         SET process_status = 'succeeded', process_next_retry_at = NULL, process_last_error = NULL
+         WHERE event_id = ?`,
+      )
+      .run(eventId);
+  }
+
+  markEventFailed(eventId: string, attempts: number, nextRetryAt: string, lastError: string): void {
+    this.db
+      .prepare(
+        `UPDATE task_platform_events
+         SET process_status = 'failed', process_attempts = ?, process_next_retry_at = ?, process_last_error = ?
+         WHERE event_id = ?`,
+      )
+      .run(attempts, nextRetryAt, lastError.slice(0, 500), eventId);
+  }
+
+  eventAttempts(eventId: string): number {
+    const row = this.db
+      .prepare("SELECT process_attempts FROM task_platform_events WHERE event_id = ?")
+      .get(eventId) as { process_attempts: number } | undefined;
+    return Number(row?.process_attempts ?? 0);
   }
 
   findProjectLink(tenantId: string, productLineId: string): ProjectSyncLinkRow | null {

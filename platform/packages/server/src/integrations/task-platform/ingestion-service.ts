@@ -24,7 +24,7 @@ export interface PackageActivationHook {
   /** 后续版本（变更/新轮次）：登记待确认影响，不动运行中的旧快照。 */
   onPackageUpdate(taskLinkRowId: string, pkg: HandoffPackage): Promise<void>;
   /** 产品线首次同步建项目；返回项目 ID。实现必须幂等（同 ID 返回既有项目）。 */
-  ensureSyncProject(line: { product_line_id: string; line_code: string; line_name: string }): Promise<string>;
+  ensureSyncProject(line: { product_line_id: string; line_code: string; line_name: string }, tenantId: string): Promise<string>;
 }
 
 export interface IngestionRunSummary {
@@ -36,6 +36,10 @@ export interface IngestionRunSummary {
   cursor_advanced: boolean;
   cursor_reset: boolean;
 }
+
+/** 失败事件重试退避：30s 起翻倍，封顶 1h（审阅意见 2 的漏单兜底）。 */
+export const EVENT_RETRY_BASE_MS = 30_000;
+export const EVENT_RETRY_MAX_MS = 3_600_000;
 
 export interface IngestionServiceOptions {
   client: TaskPlatformClient;
@@ -69,8 +73,10 @@ export class IngestionService {
   }
 
   /**
-   * 执行一轮拉取。游标过期时自动清空游标从最早处重建（对接方案 §15.3），
-   * 已入库的事件/包由幂等键保护不重复。
+   * 执行一轮拉取。两阶段保证不漏单（审阅意见 2）：
+   * 1. 重试队列：上轮失败（failed 且到期）与登记未处理（pending）的事件优先处理；
+   * 2. 游标增量：拉新事件 → 登记 pending → 立即处理 → 标记 succeeded/failed。
+   * 登记先于处理：处理失败事件留在队列按指数退避重试，游标推进不会丢事件。
    */
   async runOnce(): Promise<IngestionRunSummary> {
     const summary: IngestionRunSummary = {
@@ -82,34 +88,40 @@ export class IngestionService {
       cursor_advanced: false,
       cursor_reset: false,
     };
+    const nowIso = this.now().toISOString();
+
+    // 阶段 1：重试队列（失败到期 + 超时 pending）
+    const due = this.store.dueEvents(nowIso, this.batchSize);
+    for (const event of due) {
+      await this.processEvent(event, summary);
+    }
+
+    // 阶段 2：游标增量拉取
     let cursor = this.store.getIngestCursor();
     if (cursor === null) {
       summary.cursor_reset = true; // 首次或重建后从最早开始
     }
-
-    let page = await this.client.fetchHandoffEvents({
-      cursor: cursor ?? undefined,
-      limit: this.batchSize,
-      eventTypes: this.eventTypes,
-    });
+    let page;
+    try {
+      page = await this.client.fetchHandoffEvents({
+        cursor: cursor ?? undefined,
+        limit: this.batchSize,
+        eventTypes: this.eventTypes,
+      });
+    } catch (error) {
+      if (!(error instanceof CursorExpiredError)) throw error;
+      this.resetCursor();
+      summary.cursor_reset = true;
+      cursor = null;
+      page = await this.client.fetchHandoffEvents({ limit: this.batchSize, eventTypes: this.eventTypes });
+    }
     summary.polled_events = page.items.length;
 
     for (const event of page.items) {
-      if (this.store.hasEvent(event.event_id)) continue; // 幂等：事件已处理
-      this.store.recordEvent(event);
+      const inserted = this.store.recordEvent(event); // 幂等登记：INSERT OR IGNORE
+      if (!inserted) continue; // 已登记过（成功或待重试），游标重复推进安全
       summary.new_events++;
-      try {
-        const result = await this.ingestPackage(event);
-        if (result === "received") summary.packages_received++;
-        if (result === "activated") summary.packages_activated++;
-      } catch (error) {
-        summary.packages_failed++;
-        // 单包失败不阻断后续事件；该事件已记录，下轮通过补拉接口重试（§15.3）
-        console.error(
-          `[task-platform] package ingest failed: event=${event.event_id} task=${event.task_id} v${event.package_version}`,
-          error,
-        );
-      }
+      await this.processEvent(event, summary);
     }
 
     if (page.next_cursor) {
@@ -123,6 +135,31 @@ export class IngestionService {
   resetCursor(): void {
     this.store.setIngestCursor("");
     this.onCursorExpired?.();
+  }
+
+  /** 单事件处理状态机：pending → (成功 succeeded | 失败 failed+退避)。 */
+  private async processEvent(event: HandoffEventDto, summary: IngestionRunSummary): Promise<void> {
+    try {
+      const result = await this.ingestPackage(event);
+      if (result === "received") summary.packages_received++;
+      if (result === "activated") summary.packages_activated++;
+      this.store.markEventSucceeded(event.event_id);
+    } catch (error) {
+      summary.packages_failed++;
+      const attempts = this.store.eventAttempts(event.event_id) + 1;
+      const message = error instanceof Error ? error.message : String(error);
+      // 指数退避：30s 起翻倍封顶 1h（与 result-outbox 同节奏）
+      const backoffMs = Math.min(EVENT_RETRY_BASE_MS * 2 ** (attempts - 1), EVENT_RETRY_MAX_MS);
+      this.store.markEventFailed(
+        event.event_id,
+        attempts,
+        new Date(this.now().getTime() + backoffMs).toISOString(),
+        message,
+      );
+      console.error(
+        `[task-platform] event processing failed (attempt ${attempts}, retry in ${Math.round(backoffMs / 1000)}s): event=${event.event_id} task=${event.task_id} v${event.package_version}: ${message}`,
+      );
+    }
   }
 
   /** 单事件 → 拉包 → 校验 → 落库 → 激活。返回处理结果分类。 */
@@ -146,7 +183,7 @@ export class IngestionService {
     const projectLink = this.store.findProjectLink(pkg.tenant_id, primaryLine.product_line_id);
     if (!projectLink) {
       // 项目映射缺失：同步一个再继续（幂等）
-      const projectId = await this.activation.ensureSyncProject(primaryLine);
+      const projectId = await this.activation.ensureSyncProject(primaryLine, pkg.tenant_id);
       this.store.upsertProjectLink({
         project_id: projectId,
         source_system: "sbkj-taskassignment",

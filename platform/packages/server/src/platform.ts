@@ -139,6 +139,7 @@ import { TaskExchangeRepo } from "./db/repos/task-exchange.js";
 import { ExchangeService } from "./taskexchange/service.js";
 import { OutboxDispatcher } from "./taskexchange/outbox.js";
 import { TaskExchangeRoutes } from "./http/routes/task-exchange.js";
+import { TaskPlatformIntegrationModule } from "./integrations/task-platform/module.js";
 import {
   ExchangeOutboxScheduler,
   TaskExchangeStore,
@@ -581,6 +582,7 @@ export class TaskExchangeModule {}
     BuiltinBrowserModule,
     AgentApiModule,
     TaskExchangeModule,
+    TaskPlatformIntegrationModule,
     Startup,
   ],
 })
