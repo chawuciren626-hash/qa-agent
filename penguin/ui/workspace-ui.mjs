@@ -200,7 +200,6 @@ export function createWorkspaceUI(deps) {
     Modal,
     AccountMenu,
     ProjectNavigation,
-    ProjectBreadcrumb,
     useSessionActions = () => null,
     notify,
     reportError,
@@ -1050,6 +1049,7 @@ function createSectionsUI(deps) {
     FolderPicker,
     Markdown,
     notify,
+    ProjectBreadcrumb,
   } = deps;
   const enc = encodeURIComponent;
   const localTime = (value) => {
