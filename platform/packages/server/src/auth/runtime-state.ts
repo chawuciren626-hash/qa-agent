@@ -29,6 +29,12 @@ export interface AccountClientGate {
   listSharedRoleIds(userId: string): Promise<string[]>;
   pinPublishedSession(userId: string, projectId: string, agentId: string, sessionId: string): Promise<boolean>;
   resolvePinnedDefinition(projectId: string, agentId: string, sessionId: string, parentSessionId?: string): Promise<import("./published-bundle-cache.js").CachedSharedAgentDefinition | null>;
+  /**
+   * B3 状态登记（客户端开始测试前置闸）：平台镜像任务开工前经本地 sync worker 登记服务端；
+   * 返回 null = 未配置同步（不拦截，单机模式直接开工）。抛错 = 登记
+   * 失败（离线/冲突），调用方转 409 拦截提示。
+   */
+  registerPlatformTaskState(userId: string, serverLinkId: string, status: string): Promise<{ applied: boolean; status: string; revision: number; reason: string | null } | null>;
 }
 export interface AuthRuntimeState {
   centralAssistant?: Pick<import("../http/central-assistant.js").CentralAssistant, "definition">;

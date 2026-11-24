@@ -13,7 +13,9 @@ import { IngestionService } from "./ingestion-service.js";
 import { TaskPlatformClient } from "./client.js";
 import { PlatformTaskBridge } from "./platform-task-bridge.js";
 import { PlatformTaskSyncService } from "./client-sync-service.js";
+import { ResultOutboxDispatcher, ResultOutboxScheduler } from "./result-outbox.js";
 import { SqliteTaskPlatformStore, type TaskPlatformStore } from "./store.js";
+import { buildIdempotencyKey } from "./contracts.js";
 
 export interface TaskPlatformSettings {
   enabled: boolean;
@@ -124,6 +126,8 @@ export class IngestionScheduler {
   private readonly store: TaskPlatformStore;
   private readonly bridge: PlatformTaskBridge;
   private readonly configStore: TaskPlatformConfigStore;
+  /** 结果回传 outbox 调度器（C2）：接收端点入队 → 周期投递任务平台。enabled 时与拉取同启停。 */
+  private outboxScheduler: ResultOutboxScheduler | null = null;
   /** 接收人候选提供者（接线层注入 Users 机制）；未注入时只返回 admin。 */
   listRecipientsImpl: (() => Array<{ userId: string; displayName: string; isAdmin: boolean }>) | null = null;
   /** 运行观测（admin 页展示）。 */
@@ -141,8 +145,59 @@ export class IngestionScheduler {
     this.settings = loadSettings(args.configStore);
     if (this.settings.enabled && this.settings.baseUrl && this.settings.apiKey) {
       this.service = buildIngestionService(this.settings, this.store, this.bridge);
+      const pair = this.buildOutboxScheduler(this.settings);
+      this.outboxScheduler = pair.scheduler;
+      this.outboxDispatcher = pair.dispatcher;
+      pair.scheduler.start();
     }
   }
+
+  /**
+   * 组装结果回传 outbox（C2 闭环）：客户端结果经 /api/sync/v1/test-results 入队
+   * （幂等键 + 载荷），enabled 时按 15s 心跳投递任务平台（POST /tasks/{task_id}/test-results，
+   * 指数退避，见 result-outbox.ts）。dispatcher 与 scheduler 一起持有：入队要 dispatcher。
+   */
+  private buildOutboxScheduler(settings: TaskPlatformSettings): { scheduler: ResultOutboxScheduler; dispatcher: ResultOutboxDispatcher } {
+    const client = new TaskPlatformClient({
+      baseUrl: settings.baseUrl,
+      apiKey: settings.apiKey,
+      maxAttempts: 3,
+    });
+    const dispatcher = new ResultOutboxDispatcher({
+      client,
+      store: this.store,
+      tenantId: "sbkj-taskassignment",
+    });
+    dispatcher.onAbandoned = (resultId, message) => {
+      console.error(`[task-platform] result outbox abandoned: ${resultId}: ${message}`);
+    };
+    dispatcher.onConflict = (resultId, message) => {
+      console.error(`[task-platform] result idempotency conflict（发新 result_version 而非重发）: ${resultId}: ${message}`);
+    };
+    return { scheduler: new ResultOutboxScheduler(dispatcher), dispatcher };
+  }
+
+  /**
+   * 结果入队（C1 接收面调用）。对接未启用时也允许入队——结果先落库不丢，
+   * 配置补齐后下一轮自动投递。直接走 store.enqueueResult（幂等 result_id+version）：
+   * 不经 dispatcher（未启用时无 baseUrl/apiKey，client 无法构造，也不需要投递通道）。
+   */
+  enqueueTestResult(payload: import("./contracts.js").TestResultPayload): { created: boolean } {
+    return this.store.enqueueResult({
+      task_id: payload.task_id,
+      result_id: payload.result_id,
+      result_version: payload.result_version,
+      idempotency_key: buildIdempotencyKey(
+        payload.tenant_id || "sbkj-taskassignment",
+        payload.task_id,
+        payload.pm_round_id,
+        payload.result_id,
+      ),
+      payload_json: JSON.stringify(payload),
+    });
+  }
+
+  private outboxDispatcher: ResultOutboxDispatcher | null = null;
 
   /** 推送接收人候选（启用账号；管理页下拉）。 */
   listRecipients(): Array<{ userId: string; displayName: string; isAdmin: boolean }> {
@@ -156,9 +211,15 @@ export class IngestionScheduler {
     this.settings = next;
     this.stop();
     this.service = null;
+    // outbox 投递目标（baseUrl/apiKey）可能变化：停旧的心跳，配置齐时换新通道重启。
+    if (this.outboxScheduler) { this.outboxScheduler.stop(); this.outboxScheduler = null; this.outboxDispatcher = null; }
     if (next.enabled && next.baseUrl && next.apiKey) {
       this.service = buildIngestionService(next, this.store, this.bridge);
       this.start();
+      const pair = this.buildOutboxScheduler(next);
+      this.outboxScheduler = pair.scheduler;
+      this.outboxDispatcher = pair.dispatcher;
+      pair.scheduler.start();
     }
     return this.describe();
   }
@@ -191,6 +252,8 @@ export class IngestionScheduler {
     if (this.timer === null) return;
     clearInterval(this.timer);
     this.timer = null;
+    // 拉取停止时结果投递心跳一并停止（组件卸载 effect 走这里；applySettings 单独停 outbox）。
+    if (this.outboxScheduler) { this.outboxScheduler.stop(); this.outboxScheduler = null; this.outboxDispatcher = null; }
   }
 
   /** 手动触发一轮（与自动轮询共用服务实例 + 防重入锁）。 */

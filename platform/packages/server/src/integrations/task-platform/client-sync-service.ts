@@ -17,6 +17,8 @@
  */
 import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
+import type { TestResultPayload } from "./contracts.js";
+import { looksLikeValidTestResultPayload, testResultPayloadHash } from "./contracts.js";
 
 export interface SyncTaskItem {
   server_link_id: string;
@@ -212,6 +214,56 @@ export class PlatformTaskSyncService {
       )
       .get(linkId) as { payload_json: string } | undefined;
     return row ? (parseJsonSafe(row.payload_json) as Record<string, unknown> | null) : null;
+  }
+
+  /**
+   * C1 测试结果接收（同步层方案 阶段 C）：
+   * - 形态校验（looksLikeValidTestResultPayload）→ 结构性缺标识 400；
+   * - 幂等三层：result_id+version 唯一（outbox UNIQUE）→ 重收返回 duplicate；
+   *   payload 哈希不同（同键不同内容）→ 409 配置错误（应发新 result_version）；
+   * - 入 task_platform_result_outbox（结果不丢，任务平台回传由 outbox 心跳负责）；
+   * - 展示行状态推进 result_returned（客户端状态机对齐）。
+   */
+  receiveTestResult(
+    payload: TestResultPayload,
+    deps: { enqueue: (payload: TestResultPayload) => { created: boolean } },
+  ): { accepted: boolean; duplicate: boolean; resultId: string; resultVersion: number; reason: string | null } {
+    if (!looksLikeValidTestResultPayload(payload)) {
+      return { accepted: false, duplicate: false, resultId: String((payload as Record<string, unknown>)?.result_id ?? ""), resultVersion: 0, reason: "载荷缺少关键标识字段（task_id/result_id/result_version 等）" };
+    }
+    // 幂等第一层：同 result_id+version 已存在 → duplicate（至少一次语义收敛）。
+    const existing = this.db
+      .prepare("SELECT payload_json FROM task_platform_result_outbox WHERE result_id = ? AND result_version = ?")
+      .get(payload.result_id, payload.result_version) as { payload_json: string } | undefined;
+    if (existing) {
+      const sameContent = testResultPayloadHash(JSON.parse(existing.payload_json) as TestResultPayload) === testResultPayloadHash(payload);
+      if (!sameContent) {
+        return { accepted: false, duplicate: false, resultId: payload.result_id, resultVersion: payload.result_version, reason: "幂等冲突：同 result_id/version 载荷不同（应发新 result_version）" };
+      }
+      return { accepted: true, duplicate: true, resultId: payload.result_id, resultVersion: payload.result_version, reason: null };
+    }
+    const enqueued = deps.enqueue(payload);
+    // 展示行推进：result_returned（仅平台任务；本地任务/未知 link 静默跳过——载荷以任务平台契约为准）
+    const taskLink = this.db
+      .prepare("SELECT link_id FROM platform_task_links WHERE source_system = 'sbkj-taskassignment' AND external_tenant_id || ':' || external_task_id = ?")
+      .get(`${payload.tenant_id || "sbkj-taskassignment"}:${payload.task_id}`) as { link_id: string } | undefined;
+    if (taskLink) {
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          `UPDATE platform_task_links
+              SET status = 'result_returned',
+                  last_action_json = ?,
+                  updated_at = ?
+            WHERE link_id = ?`,
+        )
+        .run(
+          JSON.stringify({ action: "test_result_received", result_id: payload.result_id, result_version: payload.result_version, verdict: payload.test_verdict, at: now }),
+          now,
+          taskLink.link_id,
+        );
+    }
+    return { accepted: true, duplicate: !enqueued.created, resultId: payload.result_id, resultVersion: payload.result_version, reason: null };
   }
 
   /** 服务凭据派生（管理路由签发；客户端本地服务持久持有）。 */

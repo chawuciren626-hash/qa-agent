@@ -123,6 +123,46 @@ export class ClientTaskSyncWorker {
     return row?.max ?? null;
   }
 
+  /**
+   * A3 状态登记（B3 开始测试前置闸）：镜像任务开工前先登记服务端——
+   * 成功（applied=true）才允许本地置 in_progress；失败抛错由调用方转
+   * "离线/服务端不可达，不能开工" 提示（方案 §2 K5：开始测试必须在线登记）。
+   * linkId 用镜像行的 server_link_id（服务端事实源 ID）。
+   */
+  async registerState(serverLinkId: string, status: string): Promise<{ applied: boolean; status: string; revision: number; reason: string | null }> {
+    const response = await this.fetchImpl(`${this.config.serverBaseUrl}/api/sync/v1/platform-tasks/${encodeURIComponent(serverLinkId)}/state`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.config.serviceKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ status, user: this.config.userId }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (response.status === 409) {
+      const body = await response.json().catch(() => null) as { message?: string } | null;
+      throw new Error(body?.message || "状态已被服务端更新（乐观锁冲突），请刷新后重试。");
+    }
+    if (!response.ok) throw new Error(`服务端状态登记失败（${response.status}）`);
+    return await response.json() as { applied: boolean; status: string; revision: number; reason: string | null };
+  }
+
+  /**
+   * C1 测试结果回传（阶段 C）：测试完成 → 服务端接收端点（幂等键由服务端按
+   * result_id+version 建）→ 服务端 outbox → 任务平台。失败抛错由调用方
+   * 留本地重试（结果不丢，恢复后重发）。
+   */
+  async submitTestResult(payload: Record<string, unknown>): Promise<{ result_id: string; result_version: number; receive_status: string }> {
+    const response = await this.fetchImpl(`${this.config.serverBaseUrl}/api/sync/v1/test-results`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.config.serviceKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ ...payload, user: this.config.userId }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as { message?: string } | null;
+      throw new Error(body?.message || `服务端结果接收失败（${response.status}）`);
+    }
+    return await response.json() as { result_id: string; result_version: number; receive_status: string };
+  }
+
   private async fetchPage(cursor: string | null): Promise<{ items: SyncItem[]; next_cursor: string | null; has_more: boolean }> {
     const url = new URL(`${this.config.serverBaseUrl}/api/sync/v1/platform-tasks`);
     url.searchParams.set("user", this.config.userId);

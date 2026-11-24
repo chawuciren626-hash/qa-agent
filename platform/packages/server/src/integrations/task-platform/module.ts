@@ -232,6 +232,9 @@ export class TaskPlatformAdminRoutes {
     this.syncRoutes = taskPlatformSyncRoutes({
       sync: scheduler.getSyncService(db),
       verifyKey: provided => scheduler.verifySyncKey(provided),
+      // C1 结果接收：入 task_platform_result_outbox（幂等 result_id+version）；
+      // 任务平台回传由 ResultOutboxScheduler 心跳负责（IngestionScheduler 内装配）。
+      receiveTestResult: payload => scheduler.enqueueTestResult(payload),
     });
   }
 }

@@ -308,6 +308,26 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
       asHttp(e);
     }
     const found = svc.findAny(projectId, taskId) ?? notFound();
+    // B3 状态登记闸（同步层方案 K5）：平台镜像任务（server_link_id 非空）开工前先经
+    // 本地 sync worker 登记服务端（A3）——成功才继续建会话；离线/冲突 409 拦截提示
+    // （"开始测试必须在线登记"，本地缓存照常可看）。服务端直写行（server_link_id NULL）
+    // 与本地任务跳过；未配置同步（registerPlatformTaskState 返回 null）= 单机模式放行。
+    if (found.source === "platform") {
+      const serverLinkId = (deps.db
+        .prepare("SELECT server_link_id FROM platform_task_links WHERE link_id = ?")
+        .get(taskId) as { server_link_id: string | null } | undefined)?.server_link_id ?? null;
+      if (serverLinkId) {
+        try {
+          const applied = await deps.authState?.accountClient?.registerPlatformTaskState(userId, serverLinkId, "in_progress");
+          if (applied !== null && applied !== undefined && !applied.applied) {
+            throw new HttpError(409, "sync_state_rejected", applied.reason || "服务端状态登记未生效，请刷新后重试。");
+          }
+        } catch (e) {
+          if (e instanceof HttpError) throw e;
+          throw new HttpError(409, "sync_offline", `服务端不可达，开始测试被拦截（开始测试需在线登记）：${e instanceof Error ? e.message : "未知错误"}`);
+        }
+      }
+    }
     let sessionId: string;
     if (typeof body.sessionId === "string" && body.sessionId.trim()) {
       const existing = deps.sessionsRepo.findById(body.sessionId.trim());

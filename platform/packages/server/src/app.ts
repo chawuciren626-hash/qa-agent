@@ -556,6 +556,13 @@ export function createApp(boot: ServerBoot): Hono<AppEnv> {
         const worker = clientSyncWorkers.get(localId);
         if (worker) { worker.stop(); clientSyncWorkers.delete(localId); }
       },
+      // B3 状态登记经手人：开始测试闸（qa-platform-tasks start 路由）按登录用户找 worker
+      // 调服务端 A3；worker 不在（未配置同步/未登录绑定）返回 null = 单机模式放行。
+      registerPlatformTaskState: (localId, serverLinkId, status) => {
+        const worker = clientSyncWorkers.get(localId);
+        if (!worker) return Promise.resolve(null);
+        return worker.registerState(serverLinkId, status);
+      },
     });
     boot.tree.api<AuthState>("RuntimeModule", "AuthState").accountClient = bridge;
     app.use("*", bridge.middleware(token => deps.desktop?.redeemLoginToken(token) === true));

@@ -46,7 +46,9 @@ type Deps = { config: ServerConfig; db: DatabaseSync; auth: () => Auth; sessions
   /** 登录绑定成功后的回调（客户端扩展挂载点，如任务平台同步 worker 按 binding.localId 启动）。 */
   onLoginBinding?: (localId: string, remoteUserId: string) => void;
   /** 会话注销/失效后的回调（对应扩展停止）。 */
-  onLogoutBinding?: (localId: string) => void; };
+  onLogoutBinding?: (localId: string) => void;
+  /** B3 状态登记经手人（app.ts 注入：按 localId 找 sync worker 调 A3；返回 null=未配置同步）。 */
+  registerPlatformTaskState?: (localId: string, serverLinkId: string, status: string) => Promise<{ applied: boolean; status: string; revision: number; reason: string | null } | null>; };
 export class AccountClient {
   private readonly sessions = new Map<string, Binding>();
   private readonly checks = new Map<Binding, Promise<void>>();
@@ -306,6 +308,14 @@ export class AccountClient {
   /** Per-invocation authorization used by sessions, connectors and plugin tools. */
   async authorizeInvocation(identity: InvocationIdentity, resource: InvocationResource, operation: InvocationOperation, constraints: InvocationConstraints = {}): Promise<AuthorizationDecision> {
     return this.guard.authorizeInvocation(identity, resource, operation, constraints);
+  }
+  /**
+   * B3 状态登记闸（AccountClientGate）：路由层对平台镜像任务开工前调用。
+   * 未配置同步（app.ts 未注入经手人）返回 null = 单机模式放行；其余透传。
+   */
+  registerPlatformTaskState(userId: string, serverLinkId: string, status: string): Promise<{ applied: boolean; status: string; revision: number; reason: string | null } | null> {
+    if (!this.deps.registerPlatformTaskState) return Promise.resolve(null);
+    return this.deps.registerPlatformTaskState(userId, serverLinkId, status);
   }
   async beginInvocation(identity: InvocationIdentity, resource: InvocationResource, operation: InvocationOperation, constraints: InvocationConstraints = {}): Promise<InvocationLease> {
     return this.guard.beginInvocation(identity, resource, operation, constraints);

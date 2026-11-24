@@ -6,6 +6,7 @@
  *
  *snake_case 与任务平台外部契约一致；本模块不做命名适配，适配只发生在消费侧。
  */
+import { createHash } from "node:crypto";
 
 export const SOURCE_SYSTEM = "sbkj-taskassignment" as const;
 export const HANDOFF_SCHEMA_VERSION = "1.0" as const;
@@ -440,4 +441,29 @@ export function buildIdempotencyKey(
   resultId: string,
 ): string {
   return `aitest:${tenantId}:${taskId}:${pmRoundId}:${resultId}`;
+}
+
+/**
+ * 测试结果载荷形态校验（C1 服务端接收面）：关键标识与统计块齐全即接受；
+ * 全量业务字段（statistics/issues/evidence_index）形态由任务平台侧 422 把关——
+ * 服务端接收面只拦"结构性不可投递"的载荷（缺标识 = 无法构建幂等键）。
+ */
+export function looksLikeValidTestResultPayload(value: unknown): value is TestResultPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const p = value as Record<string, unknown>;
+  return (
+    typeof p.task_id === "string" && p.task_id.length > 0 &&
+    typeof p.pm_round_id === "string" &&
+    typeof p.result_id === "string" && p.result_id.length > 0 &&
+    typeof p.result_version === "number" && Number.isInteger(p.result_version) && p.result_version >= 1 &&
+    typeof p.package_version === "number" &&
+    typeof p.test_verdict === "string" &&
+    typeof p.execution_status === "string" &&
+    typeof p.summary === "string"
+  );
+}
+
+/** 结果载荷哈希（C1 幂等防线第二层）：同 result_id+version 但内容不同 = 配置错误（409 拒绝）。 */
+export function testResultPayloadHash(payload: TestResultPayload): string {
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
