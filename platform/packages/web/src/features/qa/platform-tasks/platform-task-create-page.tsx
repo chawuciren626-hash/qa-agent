@@ -35,8 +35,14 @@ function isTextFile(file: File): boolean {
 
 export function PlatformTaskCreatePage() {
   const navigate = useNavigate();
-  const { currentProject } = useProject();
+  const { projects, currentProject } = useProject();
   const projectId = currentProject?.projectId ?? null;
+  /** 所属项目：非必填，默认当前项目；任务落库必带项目，所以下拉总有值。 */
+  const [targetProjectId, setTargetProjectId] = useState(projectId ?? "");
+
+  useEffect(() => {
+    if (!targetProjectId && projectId) setTargetProjectId(projectId);
+  }, [projectId, targetProjectId]);
 
   const [busy, setBusy] = useState(false);
   const [title, setTitle] = useState("");
@@ -76,31 +82,31 @@ export function PlatformTaskCreatePage() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  // 新建时预填项目默认环境的地址（选填，可改可清空）
+  // 新建时预填**所选项目**的默认环境地址（选填，可改可清空；切项目会重新取）
   useEffect(() => {
-    if (!projectId) return;
+    if (!targetProjectId) return;
     let cancelled = false;
-    void listEnvironments(projectId)
+    void listEnvironments(targetProjectId)
       .then((r) => {
         if (cancelled) return;
         const def =
           r.environments.find((e) => e.isDefault) ??
           (r.defaultEnv ? r.environments.find((e) => e.env === r.defaultEnv) : undefined);
-        if (def?.baseUrl) setEnvBaseUrl((prev) => prev || def.baseUrl);
+        setEnvBaseUrl(def?.baseUrl ?? "");
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [targetProjectId]);
 
-  if (!projectId) {
+  if (!targetProjectId) {
     return (
       <main className="qpm-page">
         <div className="qpm-scroll">
           <div className="qpm-empty-card">
-            <p className="qpm-empty-title">还没有选择项目</p>
-            <p className="qpm-empty-sub">任务按项目隔离，先在顶部项目切换器中选择项目，或去项目管理新建。</p>
+            <p className="qpm-empty-title">还没有项目</p>
+            <p className="qpm-empty-sub">任务必须属于一个项目，先在项目管理里建一个项目。</p>
             <button type="button" className="qpm-btn-main" onClick={() => navigate("/qa/projects")}>去项目管理</button>
           </div>
         </div>
@@ -123,7 +129,7 @@ export function PlatformTaskCreatePage() {
     }
     setBusy(true);
     try {
-      const created = await createLocalTask(projectId, {
+      const created = await createLocalTask(targetProjectId, {
         title: title.trim(),
         description: composedDescription,
         envBaseUrl: envBaseUrl.trim(),
@@ -135,7 +141,7 @@ export function PlatformTaskCreatePage() {
       let attachFailures = 0;
       for (const item of attachments) {
         try {
-          await uploadTaskAttachment(projectId, created.task.id, {
+          await uploadTaskAttachment(targetProjectId, created.task.id, {
             filename: item.filename,
             mime: item.mime,
             dataBase64: utf8Base64(item.contentText),
@@ -147,7 +153,7 @@ export function PlatformTaskCreatePage() {
       // 分析是同步模型通道：失败/降级不阻断——任务已落库（可开始），结论可稍后重试补。
       let analysisNote = "";
       try {
-        const analysis = await analyzeTask(projectId, created.task.id);
+        const analysis = await analyzeTask(targetProjectId, created.task.id);
         if (analysis.degraded) {
           analysisNote = `，但 AI 分析未走模型（${analysis.degraded.reason}），已回填演示结论；可稍后点「AI 分析」重试`;
         }
@@ -173,9 +179,7 @@ export function PlatformTaskCreatePage() {
         <header className="qpm-head">
           <div>
             <h1>新建测试任务</h1>
-            <p>
-              {currentProject ? projectDisplayName(currentProject) : "—"} · 保存后立即进入「可开始」，并由总控 AI 基于需求描述自动产出结构化测试建议
-            </p>
+            <p>保存后自动进入「可开始」，并由 AI 产出结构化测试建议</p>
           </div>
           <div className="qpm-head-actions">
             <button type="button" className="qpm-btn-ghost" onClick={() => navigate("/qa/project/platform-tasks")} disabled={busy}>
@@ -184,6 +188,15 @@ export function PlatformTaskCreatePage() {
           </div>
         </header>
         <div className="qpt-create-form">
+          <label className="qpt-field">
+            <span>所属项目 <small>选填；默认当前项目，可改选其他项目。选项来自项目管理的项目名称</small></span>
+            <select value={targetProjectId} onChange={(e) => setTargetProjectId(e.target.value)} disabled={busy}>
+              {projects.length === 0 && <option value={targetProjectId}>{targetProjectId || "—"}</option>}
+              {projects.map((p) => (
+                <option key={p.projectId} value={p.projectId}>{projectDisplayName(p)}</option>
+              ))}
+            </select>
+          </label>
           <label className="qpt-field">
             <span>任务名称 *</span>
             <input

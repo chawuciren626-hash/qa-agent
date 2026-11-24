@@ -122,3 +122,8 @@
 .qtr-tip{display:inline-block;width:13px;height:13px;line-height:13px;text-align:center;border-radius:50%;background:light-dark(#f2f3f5,#2b3648);color:light-dark(#646a73,#a9b2bf);font-size:9px;margin-left:4px;cursor:help;font-family:inherit}
 .qtr-why{margin:0;border:1px dashed light-dark(#dbe2ec,#3b4d66);border-radius:10px;padding:12px 14px;font-size:12px;line-height:1.8;color:light-dark(#57606a,#cbd5e1)}
 @media(max-width:720px){.qtr{margin:0 12px 12px}}
+
+/* 2026-11-24：顶部证据区（装配账目 + 运行/时间线/事实）移除后，运行切换收进标题栏小下拉。 */
+.qtd-run-switch{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:light-dark(#8b95a1,#9ca3af);white-space:nowrap}
+.qtd-run-switch select{max-width:220px;border:1px solid light-dark(#dfe5ee,#475569);border-radius:8px;padding:5px 8px;background:light-dark(#fff,#1b2432);color:inherit;font-size:11.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.qtd-run-switch select:focus{outline:none;border-color:light-dark(#185fa5,#3b82f6)}

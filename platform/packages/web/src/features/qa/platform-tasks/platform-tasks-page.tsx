@@ -1,30 +1,37 @@
 /**
- * 平台任务列表页（项目内一级页，T3 口径）。
+ * 平台任务列表页（跨项目，2026-11-24 改版）。
  *
- * 四件套行操作（2026-11-20 确认；2026-11-24 查看改全页路由）：
- *   编辑   平台任务=补充性字段（T4）；本地任务=全量字段
- *   查看   详情全页 /qa/project/platform-tasks/:taskId（基本信息→内容整理→原始反馈→
- *          研发判断→AI 分析→测试进展；替代原侧边抽屉）
- *   AI分析 平台任务=失败重试/重新分析（T2）；本地任务=可选增强（T5）
- *   开始测试 创建真实测试工作会话并打开既有全流程阶段页；平台任务未分析禁用（TLQ-1），
- *           本地任务不强制（T5）
+ * 口径变化：
+ * - 列表是**全部项目的任务**。项目管理是独立模块（维护项目信息、环境、资料），
+ *   在里面点项目视图/环境/资料不该反向筛掉别的模块的列表，所以本页不再读 currentProject
+ *   作为过滤条件，改调 `/api/me/qa-platform-tasks` 按账号可访问项目聚合。
+ * - 顶部筛选 = 搜索框（任务名称/任务号）+ 状态下拉 + 所属项目下拉，默认全部；
+ *   原状态 tab 条（带计数）取消。页头的说明文字也去掉，只留标题与新建按钮。
+ * - 「优先级」与「AI 建议」两列内容重复，只留优先级：平台任务用平台定的优先级，
+ *   本地任务没有定级则以 AI 建议优先级落位（单元格标注来源）。
  *
- * 来源双轨：platform（任务平台映射）/ local（本地新建），徽章区分。
- * 列表仅展示平台同步任务与用户创建的本地任务。
+ * 四件套行操作（2026-11-20 确认；2026-11-24 查看改全页路由、阶段页入口改名「任务详情」）：
+ *   编辑     平台任务=补充性字段（T4）；本地任务=全量字段
+ *   查看     任务档案详情全页 /qa/project/platform-tasks/:taskId
+ *   任务详情 进入该任务的阶段工作台 /qa/project/tasks/:sessionId（全流程阶段页）
+ *   AI分析   平台任务=失败重试/重新分析（T2）；本地任务=可选增强（T5）
+ *   开始测试 创建真实测试工作会话并打开既有全流程阶段页；平台任务未分析禁用（TLQ-1）
+ *
+ * 跨项目行操作：接口仍按项目作用域，每行带 task.projectId；打开另一个项目的任务时
+ * 先把该项目设为当前项目，页面里的 owner/member 判断才与任务归属一致。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { toastError, toastSuccess } from "@prismshadow/penguin-ui";
-import { useProject, projectDisplayName } from "../../../state/project";
-import { ENV_END_LABELS } from "../project-management/types";
+import { projectDisplayName, useProject } from "../../../state/project";
 import { RetestScopeDrawer } from "../retest-scope-drawer";
 import {
   analyzeTask,
   deleteTaskAttachment,
   editTask,
   getTaskDetail,
+  listAllTasks,
   listTaskAttachments,
-  listTasks,
   startTask,
   uploadTaskAttachment,
   type AiSummary,
@@ -41,70 +48,107 @@ const STATUS_LABEL: Record<string, string> = {
   result_returned: "已回传",
   terminated: "已终止",
 };
-const SEGMENTS: Array<[string, string]> = [
-  ["all", "全部"],
-  ["pending_analysis", "待分析"],
-  ["ready", "可开始"],
-  ["in_progress", "进行中"],
-  ["impact_pending", "待确认影响"],
-  ["result_returned", "已回传"],
-  ["terminated", "已终止"],
-];
+/** 状态下拉的顺序（与列表排序口径一致：越靠前越需要处理）。 */
+const STATUS_ORDER_UI = ["pending_analysis", "ready", "in_progress", "impact_pending", "result_returned", "terminated"];
 const PRIORITY_LABEL: Record<string, string> = { high: "高", medium: "中", low: "低" };
 
-type EditTarget =
-  | { kind: "platform"; id: string; title: string; notes: { localTitleNote: string; localTestFocusNote: string } }
-  | { kind: "local"; id: string; title: string; description: string; envBaseUrl: string; account: string };
+type EditTarget = { kind: "platform" | "local"; id: string; projectId: string; title: string };
 
 type LocalTaskPayload = { title: string; description: string; envBaseUrl: string; account: string };
 
+/** 列表里显示的任务号：平台外部编号可能很长，表格内截断、title 给全量。 */
+function shortTaskNo(task: TaskListItem): string {
+  const raw = task.taskNo;
+  const limit = task.source === "local" ? 14 : 20;
+  return raw.length > limit ? `${raw.slice(0, limit - 1)}…` : raw;
+}
+
 export function PlatformTasksPage() {
   const navigate = useNavigate();
-  const { currentProject } = useProject();
-  const projectId = currentProject?.projectId ?? null;
+  const { projects, currentProject, setCurrentProjectId } = useProject();
   const [items, setItems] = useState<TaskListItem[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [seg, setSeg] = useState("all");
-  const [includeTerm, setIncludeTerm] = useState(false);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [projectFilter, setProjectFilter] = useState("all");
   const [analyzing, setAnalyzing] = useState<Set<string>>(new Set());
   const [starting, setStarting] = useState<string | null>(null);
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
   const [retestTarget, setRetestTarget] = useState<TaskListItem | null>(null);
 
   const reload = useCallback(async () => {
-    if (!projectId) return;
     setLoading(true);
     try {
-      const data = await listTasks(projectId, includeTerm);
+      const data = await listAllTasks(true);
       setItems(data.items);
       setCounts(data.counts);
       setLoadError("");
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : "加载平台任务失败，请重试");
+      setLoadError(e instanceof Error ? e.message : "加载测试任务失败，请重试");
     } finally {
       setLoading(false);
     }
-  }, [projectId, includeTerm]);
+  }, []);
 
   useEffect(() => {
     void reload();
   }, [reload]);
 
-  const visible = items.filter((i) => (seg === "all" ? true : i.status === seg));
-  const countOf = (key: string) => (key === "all" ? items.length : counts[key] ?? 0);
+  /** 所属项目名：优先项目管理里的项目名，缺失时回落项目 id（不隐藏任务）。 */
+  const projectNameOf = (projectId: string) => {
+    const found = projects.find((p) => p.projectId === projectId);
+    return found ? projectDisplayName(found) : projectId;
+  };
+  /** 下拉选项：已登记项目 + 任务里出现但不在项目列表的项目（保证选项不缺）。 */
+  const projectOptions = (() => {
+    const known = projects.map((p) => ({ id: p.projectId, name: projectDisplayName(p) }));
+    const extra = [...new Set(items.map((i) => i.projectId))]
+      .filter((id) => !known.some((k) => k.id === id))
+      .map((id) => ({ id, name: id }));
+    return [...known, ...extra].sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  })();
 
-  /** 查看：详情全页路由（2026-11-24 替代侧边抽屉；浏览器前进后退/链接分享可用）。 */
-  const openDetail = (id: string) => {
-    navigate(`/qa/project/platform-tasks/${encodeURIComponent(id)}`);
+  const keyword = query.trim().toLowerCase();
+  const visible = items.filter((task) => {
+    // 「全部」沿用原默认口径不含已终止；要看终止记录就选「已终止」。
+    if (statusFilter === "all" && task.status === "terminated") return false;
+    if (statusFilter !== "all" && task.status !== statusFilter) return false;
+    if (projectFilter !== "all" && task.projectId !== projectFilter) return false;
+    if (!keyword) return true;
+    return `${task.title} ${task.taskNo}`.toLowerCase().includes(keyword);
+  });
+  const filtering = statusFilter !== "all" || projectFilter !== "all" || !!keyword;
+  const resetFilters = () => {
+    setQuery("");
+    setStatusFilter("all");
+    setProjectFilter("all");
+  };
+  const activeCount = items.filter((i) => i.status !== "terminated").length;
+
+  /** 打开另一个项目的任务前先切项目：页面里的 owner/member 判断要与任务归属一致。 */
+  const focusProject = (projectId: string) => {
+    if (currentProject?.projectId !== projectId) setCurrentProjectId(projectId);
+  };
+
+  /** 查看：任务档案详情全页（浏览器前进后退/链接分享可用）。 */
+  const openDetail = (task: TaskListItem) => {
+    focusProject(task.projectId);
+    navigate(`/qa/project/platform-tasks/${encodeURIComponent(task.id)}`);
+  };
+
+  /** 任务详情：进入该任务的阶段工作台（需求分析→…→测试报告）。 */
+  const openStagePage = (task: TaskListItem) => {
+    if (!task.mainSessionId) return;
+    focusProject(task.projectId);
+    navigate(`/qa/project/tasks/${encodeURIComponent(task.mainSessionId)}`);
   };
 
   const doAnalyze = async (task: TaskListItem) => {
-    if (!projectId) return;
     setAnalyzing((prev) => new Set(prev).add(task.id));
     try {
-      const result = await analyzeTask(projectId, task.id);
+      const result = await analyzeTask(task.projectId, task.id);
       toastSuccess(
         result.degraded
           ? `「${task.title}」AI 分析未走模型（${result.degraded.reason}），已回填演示结论`
@@ -123,17 +167,17 @@ export function PlatformTasksPage() {
   };
 
   const doStart = async (task: TaskListItem) => {
-    if (!projectId) return;
     setStarting(task.id);
     try {
-      const result = await startTask(projectId, task.id);
+      const result = await startTask(task.projectId, task.id);
       toastSuccess(
         task.mainSessionId
           ? "已打开既有测试工作会话"
-          : `已创建测试工作会话并进入全流程阶段页（需求分析→场景与测试点→用例设计→测试执行→缺陷分析→测试报告）`
+          : "已创建测试工作会话并进入全流程阶段页（需求分析→场景与测试点→用例设计→测试执行→缺陷分析→测试报告）"
       );
+      focusProject(task.projectId);
       await reload();
-      navigate(`/chat/${result.sessionId}`);
+      navigate(`/qa/project/tasks/${encodeURIComponent(result.sessionId)}`);
     } catch (e) {
       toastError(e instanceof Error ? e.message : "开始测试失败，请重试");
     } finally {
@@ -141,44 +185,23 @@ export function PlatformTasksPage() {
     }
   };
 
+  /* 编辑：字段回显由 EditModal 自己按 id 拉详情完成，这里只传 id/kind/项目，
+     不再用「异步补 target」的方式（那会让弹窗 state 停在初始空值上）。 */
   const openEdit = (task: TaskListItem) => {
-    if (task.source === "local") {
-      setEditTarget({ kind: "local", id: task.id, title: task.title, description: "", envBaseUrl: "", account: "" });
-      // 全量字段回填：详情加载后覆盖空值（异步 fire-and-forget）
-      if (projectId) {
-        void getTaskDetail(projectId, task.id)
-          .then((d) => {
-            setEditTarget((prev) =>
-              prev && prev.kind === "local" && prev.id === task.id
-                ? { ...prev, description: d.task.description ?? "", envBaseUrl: d.task.envBaseUrl ?? "", account: d.task.account ?? "" }
-                : prev
-            );
-          })
-          .catch(() => undefined);
-      }
-    } else {
-      setEditTarget({ kind: "platform", id: task.id, title: task.title, notes: { localTitleNote: "", localTestFocusNote: "" } });
-      // 抽屉里可能已有备注：详情加载后回填（异步 fire-and-forget）
-      if (projectId) {
-        void getTaskDetail(projectId, task.id)
-          .then((d) => {
-            setEditTarget((prev) =>
-              prev && prev.kind === "platform" && prev.id === task.id
-                ? { ...prev, notes: { localTitleNote: d.task.localTitleNote, localTestFocusNote: d.task.localTestFocusNote } }
-                : prev
-            );
-          })
-          .catch(() => undefined);
-      }
-    }
+    setEditTarget({
+      kind: task.source === "local" ? "local" : "platform",
+      id: task.id,
+      projectId: task.projectId,
+      title: task.title,
+    });
   };
 
-  // 编辑保存：平台任务=补充性字段；本地任务=全量字段。新建走独立整页（platform-task-create-page）。
   const saveEdit = async (payload: { platform?: { localTitleNote: string; localTestFocusNote: string }; local?: LocalTaskPayload }) => {
-    if (!projectId || !editTarget) return;
+    if (!editTarget) return;
+    const { projectId, id, kind } = editTarget;
     try {
-      if (editTarget.kind === "platform" && payload.platform) {
-        const result = await editTask(projectId, editTarget.id, payload.platform);
+      if (kind === "platform" && payload.platform) {
+        const result = await editTask(projectId, id, payload.platform);
         toastSuccess(
           result.analysisStale
             ? "已保存补充性字段（不被平台同步覆盖）。资料已修改，建议点「AI 分析」重新分析。"
@@ -186,8 +209,8 @@ export function PlatformTasksPage() {
         );
         setEditTarget(null);
         await reload();
-      } else if (editTarget.kind === "local" && payload.local) {
-        const result = await editTask(projectId, editTarget.id, payload.local);
+      } else if (kind === "local" && payload.local) {
+        const result = await editTask(projectId, id, payload.local);
         toastSuccess(result.analysisStale ? "本地任务已保存。内容有修改，建议重新 AI 分析。" : "本地任务已保存。");
         setEditTarget(null);
         await reload();
@@ -197,30 +220,12 @@ export function PlatformTasksPage() {
     }
   };
 
-  if (!projectId) {
-    return (
-      <main className="qpm-page">
-        <div className="qpm-scroll">
-          <div className="qpm-empty-card">
-            <p className="qpm-empty-title">还没有进入项目</p>
-            <p className="qpm-empty-sub">任务按项目隔离，先在顶部项目切换器中选择项目，或去项目管理新建。</p>
-            <button type="button" className="qpm-btn-main" onClick={() => navigate("/qa/projects")}>去项目管理</button>
-          </div>
-        </div>
-      </main>
-    );
-  }
-
   return (
     <main className="qpm-page qpt-page" aria-label="测试任务">
       <div className="qpm-scroll">
         <header className="qpm-head">
           <div>
             <h1>测试任务</h1>
-            <p>
-              {currentProject ? projectDisplayName(currentProject) : "—"} · 来源「平台同步」+ 本地新建 ·
-              平台数据由 AITestHarness 定时拉取（1 分钟/次），任务平台不主动推送
-            </p>
           </div>
           <div className="qpm-head-actions">
             <button type="button" className="qpm-btn-main" onClick={() => navigate("/qa/project/platform-tasks/new")}>＋ 新建任务</button>
@@ -234,151 +239,181 @@ export function PlatformTasksPage() {
           </div>
         )}
 
-        <div className="qpt-segbar" role="tablist" aria-label="状态筛选">
-          {SEGMENTS.map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              className={`qpt-seg${seg === key ? " is-active" : ""}`}
-              aria-pressed={seg === key}
-              onClick={() => setSeg(key)}
-            >
-              {label}<span className="qpt-seg-n">{countOf(key)}</span>
-            </button>
-          ))}
-          <label className="qpt-term-toggle">
-            <input type="checkbox" checked={includeTerm} onChange={(e) => setIncludeTerm(e.target.checked)} />
-            显示已终止
+        <div className="qpt-toolbar" role="search">
+          <label className="qpt-search">
+            <span className="qpt-search-icon" aria-hidden="true">⌕</span>
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索任务名称或任务号"
+              aria-label="搜索任务名称或任务号"
+            />
           </label>
+          <label className="qpt-filter">
+            <span>状态</span>
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="按状态筛选">
+              <option value="all">全部（不含已终止） · {activeCount}</option>
+              {STATUS_ORDER_UI.map((key) => (
+                <option key={key} value={key}>
+                  {STATUS_LABEL[key]} · {counts[key] ?? 0}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="qpt-filter">
+            <span>所属项目</span>
+            <select value={projectFilter} onChange={(e) => setProjectFilter(e.target.value)} aria-label="按所属项目筛选">
+              <option value="all">全部项目</option>
+              {projectOptions.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </label>
+          {filtering && (
+            <button type="button" className="qpt-toolbar-reset" onClick={resetFilters}>重置</button>
+          )}
+          <span className="qpt-toolbar-count" role="status">
+            {loading ? "加载中…" : `共 ${visible.length} 条${filtering ? ` / 全部 ${items.length} 条` : ""}`}
+          </span>
         </div>
 
         {loading ? (
           <p className="qpt-loading">加载中…</p>
         ) : visible.length === 0 ? (
           <div className="qpm-empty-card">
-            <p className="qpm-empty-title">当前筛选下没有任务</p>
-            <p className="qpm-empty-sub">平台同步任务会随交接包到达自动出现；也可以点「新建任务」自己建一个。</p>
-            <button type="button" className="qpm-btn-main" onClick={() => navigate("/qa/project/platform-tasks/new")}>＋ 新建任务</button>
+            <p className="qpm-empty-title">{filtering ? "当前筛选下没有任务" : "还没有测试任务"}</p>
+            <p className="qpm-empty-sub">
+              {filtering
+                ? "试试清空搜索词，或把状态、所属项目切回「全部」。"
+                : "平台同步任务会随交接包到达自动出现；也可以点「新建任务」自己建一个。"}
+            </p>
+            {filtering
+              ? <button type="button" className="qpm-btn-ghost" onClick={resetFilters}>清空筛选</button>
+              : <button type="button" className="qpm-btn-main" onClick={() => navigate("/qa/project/platform-tasks/new")}>＋ 新建任务</button>}
           </div>
         ) : (
-          <table className="qpt-table">
-            <thead>
-              <tr>
-                <th>任务号</th><th>任务名称</th><th>优先级</th><th>包版本</th><th>轮次</th>
-                <th>AI 建议</th><th>状态</th><th className="qpt-ops-head">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((task) => {
-                const analyzingThis = analyzing.has(task.id);
-                return (
-                  <tr key={task.id}>
-                    <td>
-                      <span className="qpt-tno" title={task.sourceUrl || "本地任务"}>
-                        {task.taskNo}
-                        {task.sourceUrl && <a href={task.sourceUrl} target="_blank" rel="noreferrer" aria-label="打开平台任务" onClick={(e) => e.stopPropagation()}>↗</a>}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="qpt-title">
-                        {task.edited && <span className="qpt-edit-dot" title="本地补充字段已编辑" />}
-                        <b>{task.title}</b>
-                        {task.edited && <span className="qpt-edit-tag">已编辑</span>}
-                      </div>
-                      <div className="qpt-sub">
-                        <span className={`qpt-src qpt-src-${task.source}`}>{task.source === "local" ? "本地" : "平台"}</span>
-                        {task.productLines.length > 0
-                          ? task.productLines.map((l) => `${l.isPrimary ? "" : "关联 "}${l.name}`).join(" · ")
-                          : task.source === "local" ? "本地任务" : "—"}
-                      </div>
-                    </td>
-                    <td>
-                      {task.source === "local"
-                        ? <span className="qpt-muted" title="本地任务不手工定级，以 AI 建议优先级为准">—</span>
-                        : <span className={`qpt-pri qpt-pri-${task.priority}`}>{PRIORITY_LABEL[task.priority] ?? task.priority}</span>}
-                    </td>
-                    <td className="qpt-mono">{task.packageVersion != null ? `v${task.packageVersion}` : "—"}</td>
-                    <td>{task.roundNo != null ? `第 ${task.roundNo} 轮` : "—"}</td>
-                    <td>
-                      {task.status === "pending_analysis" && !task.suggestedPriority
-                        ? <span className="qpt-muted">—</span>
-                        : task.suggestedPriority
-                          ? <span className="qpt-ai">{PRIORITY_LABEL[task.suggestedPriority] ?? task.suggestedPriority}</span>
-                          : <span className="qpt-muted">—</span>}
-                    </td>
-                    <td><span className={`qpt-pill qpt-st-${task.status}`}>{STATUS_LABEL[task.status] ?? task.status}</span></td>
-                    <td>
-                      <div className="qpt-ops">
-                        <button type="button" className="qpt-op" onClick={() => openEdit(task)}>编辑</button>
-                        <button type="button" className="qpt-op" onClick={() => openDetail(task.id)}>查看</button>
-                        {task.status !== "result_returned" && task.status !== "terminated" && (
-                          task.status === "pending_analysis" && !task.suggestedPriority ? (
-                            <button
-                              type="button"
-                              className="qpt-op qpt-op-accent"
-                              disabled={analyzingThis}
-                              onClick={() => void doAnalyze(task)}
-                            >
-                              {analyzingThis ? "分析中…" : task.analysisSource === null && task.status === "pending_analysis" ? "重试分析" : "AI 分析"}
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className="qpt-op qpt-op-accent"
-                              disabled={analyzingThis}
-                              onClick={() => void doAnalyze(task)}
-                            >
-                              {analyzingThis ? "分析中…" : "重新分析"}
-                            </button>
-                          )
-                        )}
-                        {task.status === "ready" && (
-                          <button type="button" className="qpt-op qpt-op-main" disabled={starting === task.id} onClick={() => void doStart(task)}>
-                            {starting === task.id ? "启动中…" : "开始测试"}
-                          </button>
-                        )}
-                        {task.status === "in_progress" && (
-                          <button
-                            type="button"
-                            className="qpt-op qpt-op-main"
-                            disabled={!task.mainSessionId}
-                            title={task.mainSessionId ? undefined : "会话尚未绑定"}
-                            onClick={() => task.mainSessionId && navigate(`/chat/${task.mainSessionId}`)}
+          <div className="qpt-table-wrap">
+            <table className="qpt-table">
+              <thead>
+                <tr>
+                  <th className="qpt-c-no">任务号</th>
+                  <th className="qpt-c-name">任务名称</th>
+                  <th className="qpt-c-project">所属项目</th>
+                  <th className="qpt-c-pri">优先级</th>
+                  <th className="qpt-c-ver">版本 / 轮次</th>
+                  <th className="qpt-c-status">状态</th>
+                  <th className="qpt-ops-head">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((task) => {
+                  const analyzingThis = analyzing.has(task.id);
+                  // 优先级：平台任务用平台定的级别；本地任务不手工定级，取 AI 建议值并标注来源。
+                  const priorityFromAi = task.source === "local";
+                  const priority = (priorityFromAi ? task.suggestedPriority : task.priority) || task.priority || task.suggestedPriority || "";
+                  const versionText = [
+                    task.packageVersion != null ? `v${task.packageVersion}` : "",
+                    task.roundNo != null ? `第 ${task.roundNo} 轮` : "",
+                  ].filter(Boolean).join(" · ") || "—";
+                  return (
+                    <tr key={`${task.projectId}:${task.id}`}>
+                      <td className="qpt-c-no">
+                        <span className="qpt-tno" title={task.sourceUrl || task.taskNo}>
+                          {shortTaskNo(task)}
+                          {task.sourceUrl && (
+                            <a href={task.sourceUrl} target="_blank" rel="noreferrer" aria-label="打开平台任务" onClick={(e) => e.stopPropagation()}>↗</a>
+                          )}
+                        </span>
+                      </td>
+                      <td className="qpt-c-name">
+                        <div className="qpt-title">
+                          {task.edited && <span className="qpt-edit-dot" title="本地补充字段已编辑" />}
+                          <b>{task.title}</b>
+                          {task.edited && <span className="qpt-edit-tag">已编辑</span>}
+                        </div>
+                        <div className="qpt-sub">
+                          <span className={`qpt-src qpt-src-${task.source}`}>{task.source === "local" ? "本地" : "平台"}</span>
+                          {task.productLines.length > 0
+                            ? task.productLines.map((l) => `${l.isPrimary ? "" : "关联 "}${l.name}`).join(" · ")
+                            : task.source === "local" ? "本地任务" : "—"}
+                        </div>
+                      </td>
+                      <td className="qpt-c-project">
+                        <span className="qpt-project" title={task.projectId}>{projectNameOf(task.projectId)}</span>
+                      </td>
+                      <td className="qpt-c-pri">
+                        {priority ? (
+                          <span
+                            className={`qpt-pri qpt-pri-${priority}`}
+                            title={priorityFromAi ? "本地任务不手工定级，取 AI 建议优先级" : "平台任务优先级"}
                           >
-                            进入测试工作
-                          </button>
+                            {PRIORITY_LABEL[priority] ?? priority}
+                            {priorityFromAi && <small className="qpt-pri-from">AI</small>}
+                          </span>
+                        ) : (
+                          <span className="qpt-muted" title="尚未分析，暂无优先级">—</span>
                         )}
-                        {task.status === "pending_analysis" && (
-                          <button type="button" className="qpt-op" disabled title="AI 分析未完成，开始测试不可用（TLQ-1）">开始测试</button>
-                        )}
-                        {task.status === "result_returned" && (
-                          <button type="button" className="qpt-op qpt-op-accent" onClick={() => setRetestTarget(task)}>发起复测</button>
-                        )}
-                        {task.status === "impact_pending" && (
-                          <button type="button" className="qpt-op qpt-op-main" onClick={() => openDetail(task.id)}>确认影响</button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                      </td>
+                      <td className="qpt-c-ver"><span className="qpt-mono">{versionText}</span></td>
+                      <td className="qpt-c-status"><span className={`qpt-pill qpt-st-${task.status}`}>{STATUS_LABEL[task.status] ?? task.status}</span></td>
+                      <td>
+                        <div className="qpt-ops">
+                          <button type="button" className="qpt-op" onClick={() => openEdit(task)}>编辑</button>
+                          <button type="button" className="qpt-op" onClick={() => openDetail(task)}>查看</button>
+                          {task.status !== "result_returned" && task.status !== "terminated" && (
+                            <button
+                              type="button"
+                              className="qpt-op qpt-op-accent"
+                              disabled={analyzingThis}
+                              onClick={() => void doAnalyze(task)}
+                            >
+                              {analyzingThis ? "分析中…" : task.status === "pending_analysis" && !task.suggestedPriority ? "重试分析" : "重新分析"}
+                            </button>
+                          )}
+                          {task.status === "ready" && (
+                            <button type="button" className="qpt-op qpt-op-main" disabled={starting === task.id} onClick={() => void doStart(task)}>
+                              {starting === task.id ? "启动中…" : "开始测试"}
+                            </button>
+                          )}
+                          {task.status === "in_progress" && (
+                            <button
+                              type="button"
+                              className="qpt-op qpt-op-main"
+                              disabled={!task.mainSessionId}
+                              title={task.mainSessionId ? "进入阶段工作台" : "会话尚未绑定"}
+                              onClick={() => openStagePage(task)}
+                            >
+                              任务详情
+                            </button>
+                          )}
+                          {task.status === "pending_analysis" && (
+                            <button type="button" className="qpt-op" disabled title="AI 分析未完成，开始测试不可用（TLQ-1）">开始测试</button>
+                          )}
+                          {task.status === "result_returned" && (
+                            <button type="button" className="qpt-op qpt-op-accent" onClick={() => setRetestTarget(task)}>发起复测</button>
+                          )}
+                          {task.status === "impact_pending" && (
+                            <button type="button" className="qpt-op qpt-op-main" onClick={() => openDetail(task)}>确认影响</button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
-      {editTarget && projectId && (
-        <EditModal
-          target={editTarget}
-          projectId={projectId}
-          onClose={() => setEditTarget(null)}
-          onSave={saveEdit}
-        />
+      {editTarget && (
+        <EditModal target={editTarget} onClose={() => setEditTarget(null)} onSave={saveEdit} />
       )}
 
-      {retestTarget && projectId && (
+      {retestTarget && (
         <RetestScopeDrawer
-          projectId={projectId}
+          projectId={retestTarget.projectId}
           taskId={retestTarget.id}
           taskTitle={retestTarget.title}
           onClose={() => setRetestTarget(null)}
@@ -479,20 +514,51 @@ function TaskAttachments({ projectId, taskId }: { projectId: string; taskId: str
   );
 }
 
-function EditModal({ target, projectId, onClose, onSave }: {
+/**
+ * 编辑弹窗：**自己按 id 拉详情**再填字段。
+ *
+ * 原实现由父组件异步补 target：弹窗用 useState(target.x) 初始化，详情回来时父组件换了
+ * 新 target，但弹窗自己的 state 早已初始化完、不会重算 —— 于是字段全空（关掉重开才
+ * 有时有值）。改成弹窗内取数：加载完成前不渲染表单，渲染时字段一定有值。
+ */
+function EditModal({ target, onClose, onSave }: {
   target: EditTarget;
-  projectId: string;
   onClose: () => void;
   onSave: (payload: { platform?: { localTitleNote: string; localTestFocusNote: string }; local?: LocalTaskPayload }) => Promise<void>;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [localTitleNote, setLocalTitleNote] = useState(target.kind === "platform" ? target.notes.localTitleNote : "");
-  const [localTestFocusNote, setLocalTestFocusNote] = useState(target.kind === "platform" ? target.notes.localTestFocusNote : "");
-  const [title, setTitle] = useState(target.kind === "local" ? target.title : "");
-  const [description, setDescription] = useState(target.kind === "local" ? target.description : "");
-  const [envBaseUrl, setEnvBaseUrl] = useState(target.kind === "local" ? target.envBaseUrl : "");
-  const [account, setAccount] = useState(target.kind === "local" ? target.account : "");
   const isLocalForm = target.kind === "local";
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [localTitleNote, setLocalTitleNote] = useState("");
+  const [localTestFocusNote, setLocalTestFocusNote] = useState("");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [envBaseUrl, setEnvBaseUrl] = useState("");
+  const [account, setAccount] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setLoadError("");
+    void getTaskDetail(target.projectId, target.id)
+      .then((d) => {
+        if (!alive) return;
+        setTitle(d.task.title ?? "");
+        setDescription(d.task.description ?? "");
+        setEnvBaseUrl(d.task.envBaseUrl ?? "");
+        setAccount(d.task.account ?? "");
+        setLocalTitleNote(d.task.localTitleNote ?? "");
+        setLocalTestFocusNote(d.task.localTestFocusNote ?? "");
+      })
+      .catch((e: unknown) => {
+        if (alive) setLoadError(e instanceof Error ? e.message : "读取任务详情失败");
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => { alive = false; };
+  }, [target.projectId, target.id]);
 
   const submit = async () => {
     if (isLocalForm) {
@@ -517,7 +583,7 @@ function EditModal({ target, projectId, onClose, onSave }: {
     }
   };
 
-  const heading = target.kind === "platform" ? "编辑补充性字段" : "编辑本地任务";
+  const heading = isLocalForm ? "编辑本地任务" : "编辑补充性字段";
   return (
     <div className="qpt-modal" role="dialog" aria-modal="true" aria-label={heading}>
       <div className="qpt-mbox">
@@ -526,44 +592,52 @@ function EditModal({ target, projectId, onClose, onSave }: {
           <button type="button" className="qpt-dw-close" onClick={onClose} disabled={busy}>✕</button>
         </header>
         <div className="qpt-m-body">
-          <p className="qpt-m-hint">
-            {target.kind === "platform"
-              ? "平台交接包为不可变版本快照，这里只能编辑本地补充性字段；保存后作为 AI 分析的附加输入，且不会被平台后续同步覆盖（T4）。"
-              : "本地任务字段全部本地可编辑，不影响任何平台数据；内容修改后建议重新 AI 分析。"}
-          </p>
-          {isLocalForm ? (
-            <>
-              <label className="qpt-field"><span>任务名称 *</span>
-                <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例如：导入模板边界值回归" disabled={busy} />
-              </label>
-              <label className="qpt-field"><span>测试环境 URL <small>选填；默认取项目环境，开始测试时自动绑定</small></span>
-                <input type="text" value={envBaseUrl} onChange={(e) => setEnvBaseUrl(e.target.value)}
-                  placeholder="例如 http://gateway.example.com" disabled={busy} />
-              </label>
-              <label className="qpt-field"><span>登录账号 <small>选填；作为 AI 分析上下文，密码请在会话内输入</small></span>
-                <input type="text" value={account} onChange={(e) => setAccount(e.target.value)}
-                  placeholder="例如 qa_tester" disabled={busy} />
-              </label>
-              <label className="qpt-field"><span>需求描述 / 测试背景 * <small>AI 分析主输入</small></span>
-                <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={4}
-                  placeholder="描述要测什么、背景与预期" disabled={busy} />
-              </label>
-            </>
+          {loading ? (
+            <p className="qpt-muted">正在读取任务内容…</p>
+          ) : loadError ? (
+            <p className="qpt-m-error" role="alert">内容读取失败：{loadError}。请关闭后重试。</p>
           ) : (
             <>
-              <p className="qpt-m-readonly-label">平台原文（只读）：{target.title}</p>
-              <label className="qpt-field"><span>本地标题备注 <small>仅本地列表展示，不改平台任务名</small></span>
-                <textarea value={localTitleNote} onChange={(e) => setLocalTitleNote(e.target.value)} rows={2} />
-              </label>
-              <label className="qpt-field"><span>测试重点备注 <small>拼接进 AI 分析上下文，优先级低于包原文</small></span>
-                <textarea value={localTestFocusNote} onChange={(e) => setLocalTestFocusNote(e.target.value)} rows={3} />
-              </label>
+              <p className="qpt-m-hint">
+                {isLocalForm
+                  ? "本地任务字段全部本地可编辑，不影响任何平台数据；内容修改后建议重新 AI 分析。"
+                  : "平台交接包为不可变版本快照，这里只能编辑本地补充性字段；保存后作为 AI 分析的附加输入，且不会被平台后续同步覆盖（T4）。"}
+              </p>
+              {isLocalForm ? (
+                <>
+                  <label className="qpt-field"><span>任务名称 *</span>
+                    <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例如：导入模板边界值回归" disabled={busy} />
+                  </label>
+                  <label className="qpt-field"><span>测试环境 URL <small>选填；默认取项目环境，开始测试时自动绑定</small></span>
+                    <input type="text" value={envBaseUrl} onChange={(e) => setEnvBaseUrl(e.target.value)}
+                      placeholder="例如 http://gateway.example.com" disabled={busy} />
+                  </label>
+                  <label className="qpt-field"><span>登录账号 <small>选填；作为 AI 分析上下文，密码请在会话内输入</small></span>
+                    <input type="text" value={account} onChange={(e) => setAccount(e.target.value)}
+                      placeholder="例如 qa_tester" disabled={busy} />
+                  </label>
+                  <label className="qpt-field"><span>需求描述 / 测试背景 * <small>AI 分析主输入</small></span>
+                    <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={10}
+                      placeholder="描述要测什么、背景与预期" disabled={busy} />
+                  </label>
+                </>
+              ) : (
+                <>
+                  <p className="qpt-m-readonly-label">平台原文（只读）：{title}</p>
+                  <label className="qpt-field"><span>本地标题备注 <small>仅本地列表展示，不改平台任务名</small></span>
+                    <textarea value={localTitleNote} onChange={(e) => setLocalTitleNote(e.target.value)} rows={2} disabled={busy} />
+                  </label>
+                  <label className="qpt-field"><span>测试重点备注 <small>拼接进 AI 分析上下文，优先级低于包原文</small></span>
+                    <textarea value={localTestFocusNote} onChange={(e) => setLocalTestFocusNote(e.target.value)} rows={4} disabled={busy} />
+                  </label>
+                </>
+              )}
             </>
           )}
         </div>
         <footer className="qpt-m-foot">
           <button type="button" className="qpt-op" onClick={onClose} disabled={busy}>取消</button>
-          <button type="button" className="qpt-op qpt-op-main" disabled={busy} onClick={() => void submit()}>
+          <button type="button" className="qpt-op qpt-op-main" disabled={busy || loading || !!loadError} onClick={() => void submit()}>
             {busy ? "保存中…" : "保存"}
           </button>
         </footer>

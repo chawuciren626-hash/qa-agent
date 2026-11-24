@@ -70,6 +70,8 @@ export interface AiSummary {
 
 export interface TaskListItem {
   id: string;
+  /** 任务所属项目：列表是跨项目的，行内操作都要带它回落项目作用域接口。 */
+  projectId: string;
   source: "platform" | "local";
   taskNo: string;
   title: string;
@@ -151,6 +153,18 @@ const STATUS_ORDER: Record<string, number> = {
   terminated: 5,
 };
 
+/** 一份全 0 的状态计数（跨项目列表没有行时也要给出完整键，前端好按状态渲染）。 */
+function emptyCounts(): Record<string, number> {
+  return {
+    pending_analysis: 0,
+    ready: 0,
+    in_progress: 0,
+    impact_pending: 0,
+    result_returned: 0,
+    terminated: 0,
+  };
+}
+
 /** 任务平台反馈类型编码 → 中文（与平台侧 FEEDBACK_TYPE_LABELS 对齐；未知编码原样展示）。 */
 const FEEDBACK_TYPE_LABELS: Record<string, string> = {
   requirement: "需求反馈",
@@ -202,21 +216,38 @@ function asSummary(value: unknown): AiSummary | null {
 }
 
 const PLATFORM_SELECT = `
-  SELECT link_id AS id, 'platform' AS source, external_task_no AS task_no, title, priority,
+  SELECT link_id AS id, project_id, 'platform' AS source, external_task_no AS task_no, title, priority,
          package_version, pm_round_no, product_lines_json, suggested_priority, ai_summary_json,
          status, local_edited_at, main_session_id, source_url, NULL AS env_name, ends_json, change_source, updated_at
     FROM platform_task_links
     WHERE project_id = ?`;
 const LOCAL_SELECT = `
-  SELECT task_id AS id, 'local' AS source, task_id AS task_no, title, priority,
+  SELECT task_id AS id, project_id, 'local' AS source, task_id AS task_no, title, priority,
          NULL AS package_version, NULL AS pm_round_no, '[]' AS product_lines_json,
          suggested_priority, ai_summary_json, status, NULL AS local_edited_at,
          main_session_id, '' AS source_url, env_name, ends_json, change_source, updated_at
     FROM qa_local_tasks
     WHERE project_id = ?`;
 
+/**
+ * 跨项目查询：同一份列清单，作用域从「= 一个项目」换成「IN 一组项目」。
+ * 项目清单由调用方按访问权解析（Access.accessibleProjectIds），这里不做授权判断。
+ */
+const PLATFORM_SELECT_MANY = `
+  SELECT link_id AS id, project_id, 'platform' AS source, external_task_no AS task_no, title, priority,
+         package_version, pm_round_no, product_lines_json, suggested_priority, ai_summary_json,
+         status, local_edited_at, main_session_id, source_url, NULL AS env_name, ends_json, change_source, updated_at
+    FROM platform_task_links`;
+const LOCAL_SELECT_MANY = `
+  SELECT task_id AS id, project_id, 'local' AS source, task_id AS task_no, title, priority,
+         NULL AS package_version, NULL AS pm_round_no, '[]' AS product_lines_json,
+         suggested_priority, ai_summary_json, status, NULL AS local_edited_at,
+         main_session_id, '' AS source_url, env_name, ends_json, change_source, updated_at
+    FROM qa_local_tasks`;
+
 interface RawRow {
   id: string;
+  project_id: string;
   source: string;
   task_no: string;
   title: string;
@@ -262,15 +293,34 @@ export class QaPlatformTaskService {
       ...(this.db.prepare(`${PLATFORM_SELECT} ORDER BY updated_at DESC`).all(projectId) as RawRow[]),
       ...(this.db.prepare(`${LOCAL_SELECT} ORDER BY updated_at DESC`).all(projectId) as RawRow[]),
     ];
+    return this.project(rows, includeTerminated);
+  }
+
+  /**
+   * 跨项目列表：任务列表不再被当前项目筛住（项目管理是独立模块，不反向过滤其他模块）。
+   * projectIds 由调用方按访问权给出；空数组直接返回空列表，不发 SQL（`IN ()` 是语法错）。
+   */
+  listAcrossProjects(projectIds: readonly string[], includeTerminated: boolean): {
+    items: TaskListItem[];
+    counts: Record<string, number>;
+  } {
+    if (projectIds.length === 0) return { items: [], counts: emptyCounts() };
+    const holes = projectIds.map(() => "?").join(",");
+    const where = ` WHERE project_id IN (${holes}) ORDER BY updated_at DESC`;
+    const rows = [
+      ...(this.db.prepare(`${PLATFORM_SELECT_MANY}${where}`).all(...projectIds) as RawRow[]),
+      ...(this.db.prepare(`${LOCAL_SELECT_MANY}${where}`).all(...projectIds) as RawRow[]),
+    ];
+    return this.project(rows, includeTerminated);
+  }
+
+  /** 行 → 条目 → 计数 → 终止过滤 → 排序（单个项目与跨项目共用同一条口径）。 */
+  private project(rows: RawRow[], includeTerminated: boolean): {
+    items: TaskListItem[];
+    counts: Record<string, number>;
+  } {
     const items = rows.map((r) => this.toListItem(r));
-    const counts: Record<string, number> = {
-      pending_analysis: 0,
-      ready: 0,
-      in_progress: 0,
-      impact_pending: 0,
-      result_returned: 0,
-      terminated: 0,
-    };
+    const counts = emptyCounts();
     for (const item of items) counts[item.status] = (counts[item.status] ?? 0) + 1;
     const visible = items.filter((i) => includeTerminated || i.status !== "terminated");
     visible.sort(
@@ -288,6 +338,7 @@ export class QaPlatformTaskService {
       : [];
     return {
       id: r.id,
+      projectId: r.project_id,
       source: r.source === "local" ? "local" : "platform",
       taskNo: r.task_no,
       title: r.title,

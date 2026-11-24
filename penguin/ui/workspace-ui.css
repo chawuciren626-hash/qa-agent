@@ -2107,3 +2107,94 @@
     min-height: 0;
   }
 }
+
+/* ------------------------------------------------------------------
+   「全部项目」会话视图（2026-11-24）
+   侧栏默认只列当前项目的会话；切到全部项目后，平铺一份跨项目快照，
+   每行带所属项目名。项目名做成小标签，避免和标题抢视觉。
+   ------------------------------------------------------------------ */
+.qa-scope-toggle {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--qa-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--qa-muted);
+  font-size: 10.5px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.qa-scope-toggle:hover {
+  background: var(--qa-hover);
+  color: var(--qa-secondary);
+}
+.qa-scope-toggle.is-on {
+  border-color: #4a8fd4;
+  background: rgba(74, 143, 212, 0.12);
+  color: #2f74b8;
+  font-weight: 600;
+}
+:root.dark[data-qa-client] .qa-scope-toggle.is-on {
+  border-color: #6aa7e0;
+  background: rgba(106, 167, 224, 0.18);
+  color: #9cc7ef;
+}
+.qa-global-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0 4px;
+}
+.qa-global-session {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 9px;
+  color: var(--qa-secondary);
+  border-radius: 7px;
+  font-size: 12.5px;
+  text-align: left;
+}
+.qa-global-session:hover {
+  background: var(--qa-hover);
+}
+.qa-global-session.is-active {
+  background: var(--qa-active);
+  color: var(--qa-text);
+  font-weight: 600;
+}
+.qa-global-project {
+  flex-shrink: 0;
+  max-width: 88px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--qa-hover);
+  color: var(--qa-muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+.qa-global-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.qa-global-session time {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--qa-muted);
+  font-weight: 400;
+}
+.qa-global-hint {
+  margin: 2px 0 0;
+  padding: 2px 9px;
+  font-size: 10.5px;
+  color: var(--qa-muted);
+}

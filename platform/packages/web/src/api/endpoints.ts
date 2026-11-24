@@ -3061,3 +3061,23 @@ export const clearBuiltinBrowserData = (
     body: { storages, ...scope },
     server: null,
   });
+
+/* ---------------------------------------------------------------------------
+   跨项目会话索引（侧栏「全部项目」视图）
+   侧栏的 Sessions store 是单 Project 作用域；这里读的是「我账号下所有项目里
+   active 的会话」，由服务端按 Access 的项目清单聚合，口径与侧栏一致。
+   --------------------------------------------------------------------------- */
+export interface MeSessionIndexItem {
+  sessionId: string;
+  projectId: string;
+  agentId: string;
+  title: string;
+  workspace: string;
+  lastActiveAt: string;
+}
+export interface MeSessionIndexResponse {
+  items: MeSessionIndexItem[];
+  projectIds: string[];
+}
+export const getSessionIndex = (limit = 60) =>
+  apiFetch<MeSessionIndexResponse>("/api/me/session-index", { query: { limit } });

@@ -15,8 +15,6 @@ import { DefectResults } from "./defect-results";
 import { EndsReportSection } from "./ends-report";
 import { ExecutionChannelAuthorization } from "./execution-channels";
 import { ArtifactPreview, previewKind, type ArtifactPreviewData } from "./artifact-preview";
-import { ContextLedgerCard } from "./context-ledger-card";
-import { RunTraceCard } from "./run-trace-card";
 import "./task-detail.css";
 
 type RunIndex = { id: string; status: string; attempt?: number; attemptLabel?: string };
@@ -176,16 +174,30 @@ export function QaTaskDetail() {
     } catch (cause) { setPreviewError(cause instanceof Error ? cause.message : "预览失败"); }
   };
   const runAttemptGroups = attemptGroups(task?.runs ?? []);
-  const runAttemptsKnown = (task?.runs.length ?? 0) > 1 && runAttemptGroups.length > 1;
+  // 2026-11-24：详情页顶部的「装配账目 + 本次运行/时间线/事实」证据区整块移除（对使用者无信息量）。
+  // 运行切换在有多轮修订时才需要，收进标题栏的一个小下拉，不再占一条通栏。
+  const runSwitcher = task && task.runs.length > 1 && (
+    <label className="qtd-run-switch">
+      <span>运行</span>
+      <select
+        aria-label="选择任务运行"
+        value={runId}
+        onChange={event => { setRunId(event.target.value); setPreferredStage(""); setStageTab("result"); }}
+      >
+        {runAttemptGroups.map(group => (
+          <optgroup key={group.label} label={group.label}>
+            {group.runs.map(run => <option key={run.id} value={run.id}>{run.id}</option>)}
+          </optgroup>
+        ))}
+      </select>
+    </label>
+  );
   return <main className="qa-task-detail" aria-label="测试任务详情">
-    <header className="qtd-top"><button type="button" aria-label="返回项目视图" onClick={() => navigate("/qa/project")}>←</button><div><h1>{task?.session.title || "任务详情"}</h1><small>{sessionId}</small></div><button type="button" className="qtd-chat" onClick={openChat} disabled={!task}>打开任务会话</button></header>
+    <header className="qtd-top"><button type="button" aria-label="返回项目视图" onClick={() => navigate("/qa/project")}>←</button><div><h1>{task?.session.title || "任务详情"}</h1><small>{sessionId}</small></div>{runSwitcher}<button type="button" className="qtd-chat" onClick={openChat} disabled={!task}>打开任务会话</button></header>
     {error && <p role="alert" className="qtd-message qtd-error">{error}</p>}
     {notice && <p role="status" className="qtd-message">{notice}</p>}
     {loading && <p role="status" className="qtd-message">正在读取任务…</p>}
     {!loading && !task && !error && <p className="qtd-message">当前项目没有这个任务。</p>}
-    {task && projectId && <ContextLedgerCard projectId={projectId} sessionId={sessionId}/>}
-    {task && <div className="qtd-runbar"><label>本次运行 <select aria-label="选择任务运行" value={runId} disabled={task.runs.length === 0} onChange={event => { setRunId(event.target.value); setPreferredStage(""); setStageTab("result"); }}><option value="" disabled>请选择运行</option>{runAttemptGroups.map(group => <optgroup key={group.label} label={group.label}>{group.runs.map(run => <option key={run.id} value={run.id}>{run.id}</option>)}</optgroup>)}</select></label>{!runAttemptsKnown && task.runs.length > 1 && <small className="qtd-runbar-hint" role="note">修订轮次信息尚未登记，暂按运行平铺展示。</small>}<button type="button" onClick={() => { setRunListRefresh(value => value + 1); setRefresh(value => value + 1); }}>刷新运行</button></div>}
-    {task && projectId && runId && <RunTraceCard projectId={projectId} sessionId={sessionId} runId={runId} refresh={refresh}/>}
     {task && task.runs.length === 0 && <div className="qtd-wrap"><p className="qtd-placeholder-caption">这项任务尚无已登记的运行。以下为默认阶段示意，实际阶段会按任务计划确定；可从任务会话开始测试。</p><nav className="qtd-flow" aria-label="默认流程阶段">{defaultStageIds.filter(id => id !== "api_execution").map((id, index) => <div className="qtd-flow-item" key={id}>{index > 0 && <span className="qtd-sep">››</span>}<div className="qtd-step"><span className="qtd-dot">{index + 1}</span><span><strong>{names[id]}</strong><small>未开始</small></span></div></div>)}</nav></div>}
     {task && task.runs.length > 0 && <div className="qtd-wrap qtd-run-detail">
       {!detail && !error && <p role="status" className="qtd-message">正在读取运行详情…</p>}

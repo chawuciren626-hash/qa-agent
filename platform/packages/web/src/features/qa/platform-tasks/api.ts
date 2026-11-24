@@ -15,6 +15,8 @@ export type TaskSource = "platform" | "local";
 
 export interface TaskListItem {
   id: string;
+  /** 任务所属项目（跨项目列表每行都带，行内操作据此回落项目作用域接口）。 */
+  projectId: string;
   source: TaskSource;
   taskNo: string;
   title: string;
@@ -106,6 +108,17 @@ export interface TaskListResponse {
 export function listTasks(projectId: string, includeTerminated = false): Promise<TaskListResponse> {
   return apiFetch<TaskListResponse>(
     `${base(projectId)}${includeTerminated ? "?includeTerminated=true" : ""}`
+  );
+}
+
+/**
+ * 全部项目的任务（列表页默认口径）。
+ * 项目管理是独立模块：在里面点项目视图 / 环境 / 资料不会反向筛掉任务列表，
+ * 所以列表按账号可访问的项目聚合，而不是按当前选中项目过滤。
+ */
+export function listAllTasks(includeTerminated = true): Promise<TaskListResponse & { projectIds: string[] }> {
+  return apiFetch<TaskListResponse & { projectIds: string[] }>(
+    `/api/me/qa-platform-tasks${includeTerminated ? "?includeTerminated=true" : ""}`
   );
 }
 

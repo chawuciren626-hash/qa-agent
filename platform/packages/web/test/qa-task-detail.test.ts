@@ -56,13 +56,15 @@ it("groups the run list by revision attempt when the backend records it (A1)", a
   expect(groups[1]?.querySelector("option")?.value).toBe("run-two");
   expect(document.querySelector(".qtd-runbar-hint")).toBeNull();
 });
-it("keeps a flat fallback and shows the pending hint while attempts are not registered (A1)", async () => {
+it("keeps a flat fallback while attempts are not registered (A1)", async () => {
   state.attemptRuns = 2;
   await mount(h(QaTaskDetail));
   await run(() => {});
   const select = document.querySelector('[aria-label="选择任务运行"]') as HTMLSelectElement | null;
   expect([...(select?.querySelectorAll("optgroup") ?? [])].map(group => group.label)).toEqual(["运行记录"]);
-  expect(document.querySelector(".qtd-runbar-hint")?.textContent).toContain("修订轮次信息尚未登记");
+  // 2026-11-24：顶部证据区（含「修订轮次信息尚未登记」提示条）整块移除，改动后不再有 runbar。
+  expect(document.querySelector(".qtd-runbar")).toBeNull();
+  expect(document.querySelector(".qtd-runbar-hint")).toBeNull();
 });
 it("opens an owned run with only its recorded stage, summary, artifact and review history", async () => {
   await mount(h(QaTaskDetail));
@@ -87,26 +89,6 @@ it("shows default stages without claiming a run exists", async () => {
   expect(document.body.textContent).toContain("默认阶段示意");
   expect(document.body.textContent).toContain("未开始");
   expect(document.querySelector('[aria-label="选择运行"]')).toBeNull();
-});
-it("raises the stalled trace card with its evidence and does not offer auto-rerun", async () => {
-  const ex = { invocationId: "attempt-a", startedAt: "2026-11-19T03:02:40Z", finishedAt: null, phase: "playwright", state: "running", lastActivityAt: "2026-11-19T03:07:03Z", attempts: 0, locked: true, orphaned: true, pidStatus: "dead", blockReason: null };
-  state.trace = { registered: true, trace: { runId: "run-one", present: true, manifest: { status: "in_progress", manifestVersion: 1, baselineHash: null, sha256: "4b10c02d" }, execution: ex, dispatch: { dispatchedAt: "2026-11-19T03:02:11Z", sessionId: "session-a", host: "work-1", ownerPid: 18344 }, startedAt: "2026-11-19T03:02:40Z", stalled: true, stalledReason: "锁在而持锁进程已退出", staleAfterMs: 1800000 } };
-  await mount(h(QaTaskDetail));
-  await run(async () => {});
-  const card = document.querySelector("details.qtr") as HTMLDetailsElement | null;
-  expect(card).not.toBeNull();
-  // 默认展开（alertive），红条与证据可见。
-  expect(card?.open).toBe(true);
-  expect(card?.querySelector(".qtr-alert-red")).not.toBeNull();
-  expect(card?.textContent).toContain("执行锁未释放且持锁进程已退出");
-  expect(card?.textContent).toContain("不要自动续跑");
-  expect(card?.textContent).toContain("没有正常收尾");
-  expect(card?.textContent).toContain("stalled = true");
-  expect(card?.textContent).toContain("已退出");
-  expect(card?.textContent).toContain("dispatch.json");
-  // 本卡只读：没有"重新发起 / 标记已处置"这类假按钮。
-  expect(card?.textContent).not.toContain("重新发起");
-  expect(card?.textContent).not.toContain("标记已人工处置");
 });
 it("shows verified Markdown in results and keeps the artifact table in its own tab", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => new Response("# 分析原文\n\n这是阶段结论。", { status: 200 })));

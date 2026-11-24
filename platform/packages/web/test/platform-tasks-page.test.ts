@@ -17,7 +17,7 @@ import type { TaskDetail, TaskListItem } from "../src/features/qa/platform-tasks
 
 const fixture = vi.hoisted(() => {
   const platformReady: TaskListItem = {
-    id: "ptl-1", source: "platform", taskNo: "FB202611090001", title: "gov 用户端登录优化",
+    id: "ptl-1", projectId: "proj-1", source: "platform", taskNo: "FB202611090001", title: "gov 用户端登录优化",
     priority: "high", packageVersion: 3, roundNo: 3,
     productLines: [{ name: "gov 用户端", isPrimary: true }],
     ends: [],
@@ -66,9 +66,11 @@ const fixture = vi.hoisted(() => {
 });
 
 vi.mock("../src/features/qa/platform-tasks/api", () => ({
-  listTasks: async () => ({
+  // 列表页 2026-11-24 起走跨项目接口（全部项目的任务），不再按当前项目过滤。
+  listAllTasks: async () => ({
     items: fixture.state.items,
     counts: fixture.state.counts,
+    projectIds: ["proj-1"],
   }),
   getTaskDetail: async (_projectId: string, taskId: string) => {
     fixture.state.detailCalls.push(taskId);
@@ -106,7 +108,7 @@ vi.mock("../src/state/project", () => ({
   useProject: () => ({
     currentProject: { projectId: "proj-1", name: "会员中心改版回归" },
     setCurrentProjectId: () => undefined,
-    projects: [],
+    projects: [{ projectId: "proj-1", name: "会员中心改版回归", role: "owner", ownerUserId: "u1", createdAt: "" }],
     reloadProjects: async () => undefined,
   }),
   projectDisplayName: (p: { name?: string; projectId: string }) => p.name ?? p.projectId,
@@ -142,7 +144,7 @@ describe("platform tasks page", () => {
     fixture.state.counts = {};
     const mounted = await mount(h(MemoryRouter, {initialEntries:["/qa/project/platform-tasks"]},
       h(Routes,null,h(Route,{path:"/qa/project/platform-tasks",element:h(PlatformTasksPage)}))));
-    await waitFor(()=>mounted.container.textContent?.includes("当前筛选下没有任务")===true);
+    await waitFor(()=>mounted.container.textContent?.includes("还没有测试任务")===true);
     expect(mounted.container.querySelectorAll("tbody tr")).toHaveLength(0);
     expect(mounted.container.textContent).not.toContain("演示数据");
     expect(fixture.state.created).toEqual([]);
@@ -153,8 +155,11 @@ describe("platform tasks page", () => {
     expect(text).not.toContain("演示数据");
     expect(text).toContain("gov 用户端登录优化");
     expect(text).toContain("FB202611090001");
-    // 状态分段计数条
-    expect(text).toContain("待分析1");
+    // 状态筛选改成下拉（原分段计数条取消）：选项里带各状态与计数
+    const statusOptions = Array.from(root.querySelectorAll('select[aria-label="按状态筛选"] option')).map((o) => o.textContent ?? "");
+    expect(statusOptions.some((t) => t.startsWith("待分析"))).toBe(true);
+    // 所属项目列（跨项目列表）
+    expect(text).toContain("会员中心改版回归");
     // 状态 pill
     expect(root.querySelector(".qpt-st-pending_analysis")?.textContent).toBe("待分析");
     // pending_analysis 行的开始测试禁用（TLQ-1）
@@ -179,8 +184,11 @@ describe("platform tasks page", () => {
     await click(create!);
     await waitFor(() => root.querySelector('[aria-label="新建测试任务"]') !== null);
     const form = root.querySelector(".qpt-create-form")!;
-    // 无优先级下拉（以 AI 建议为准）
-    expect(form.querySelector("select")).toBeNull();
+    // 表单里唯一的 select = 所属项目（优先级不收集，以 AI 建议为准）
+    const selects = Array.from(form.querySelectorAll("select"));
+    expect(selects).toHaveLength(1);
+    expect(selects[0]!.getAttribute("aria-label") ?? "").toBe("");
+    expect(Array.from(selects[0]!.querySelectorAll("option")).map((o) => o.textContent)).toContain("会员中心改版回归");
     const textInputs = Array.from(form.querySelectorAll("input[type=text]"));
     const title = textInputs[0]!;
     const envInput = textInputs[1]!;
@@ -227,46 +235,31 @@ describe("platform tasks page", () => {
     await settle();
   });
 
-  it("详情抽屉：结构化结论展示需求整理、测试环境与账号密码", async () => {
+  it("编辑弹窗回显：打开即按任务 id 取回字段（不再出现空白表单）", async () => {
+    // 平台任务的补充性字段：详情里有值，弹窗打开时就该看到
     fixture.detail = {
       ...fixture.detail,
-      summary: { ...fixture.detail.summary!, source: "requirement_analysis" },
+      task: { ...fixture.detail.task, localTitleNote: "本地备注：只看登录链路", localTestFocusNote: "重点看会话保持" },
     };
     const root = await renderPage();
     const readyRow = root.querySelectorAll("tbody tr")[1]!;
-    const view = Array.from(readyRow.querySelectorAll("button")).find((b) => b.textContent === "查看")!;
-    await click(view);
-    await waitFor(() => root.querySelector(".qpt-drawer") !== null);
+    await click(Array.from(readyRow.querySelectorAll("button")).find((b) => b.textContent === "编辑")!);
     await waitFor(() => fixture.state.detailCalls.length === 1);
-    const drawer = root.querySelector(".qpt-drawer")!;
-    const text = drawer.textContent ?? "";
-    expect(text).toContain("模型分析（任务填写内容）");
-    expect(text).toContain("需求内容整理");
-    expect(text).toContain("整理登录页会话保持策略并回归主流程。");
-    expect(text).toContain("测试环境与账号");
-    expect(text).toContain("http://demo.example.com");
-    expect(text).toContain("qa_tester");
-    expect(text).toContain("secret-pwd-1");
-    // 无会话链接
-    expect(drawer.querySelector(".qpt-sum-foot a")).toBeNull();
+    await waitFor(() => document.body.querySelector(".qpt-modal") !== null);
+    const modal = document.body.querySelector(".qpt-modal") as HTMLElement;
+    const areas = Array.from(modal!.querySelectorAll("textarea")) as HTMLTextAreaElement[];
+    await waitFor(() => areas[0]?.value === "本地备注：只看登录链路");
+    expect(areas[0]?.value).toBe("本地备注：只看登录链路");
+    expect(areas[1]?.value).toBe("重点看会话保持");
+    expect(modal!.textContent).toContain("平台原文（只读）：gov 用户端登录优化");
   });
 
-  it("详情抽屉三段式：查看后渲染 AI 分析结论段并标注 AI 建议", async () => {
+  it("优先级合并：本地任务用 AI 建议值并标注来源，不再单列 AI 建议", async () => {
+    fixture.state.items = [{ ...fixture.localTask, suggestedPriority: "medium" }];
     const root = await renderPage();
-    const readyRow = root.querySelectorAll("tbody tr")[1]!;
-    const view = Array.from(readyRow.querySelectorAll("button")).find((b) => b.textContent === "查看")!;
-    await click(view);
-    await waitFor(() => root.querySelector(".qpt-drawer") !== null);
-    await waitFor(() => fixture.state.detailCalls.length === 1);
-    const drawer = root.querySelector(".qpt-drawer")!;
-    const text = drawer.textContent ?? "";
-    expect(text).toContain("平台资料");
-    expect(text).toContain("AI 分析结论");
-    expect(text).toContain("AI 建议");
-    expect(text).toContain("统一登录入口的会话保持策略");
-    expect(text).toContain("建议测试范围");
-    expect(text).toContain("测试进展");
-    // 平台深链（TLQ-5）
-    expect(drawer.querySelector(".qpt-deeplink a")?.getAttribute("href")).toContain("FB202611090001");
+    const row = root.querySelectorAll("tbody tr")[0]!;
+    expect(row.textContent).not.toContain("AI 建议");
+    expect(row.querySelector(".qpt-pri-from")?.textContent).toBe("AI");
+    expect(row.querySelector(".qpt-pri")?.textContent).toContain("中");
   });
 });

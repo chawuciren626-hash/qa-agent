@@ -140,6 +140,7 @@ import { Messaging } from "../../runtime/messaging/bridge.js";
 
 import { agentsRoutes } from "./agents.js";
 import { agentConfigRoutes } from "./agent-config.js";
+import { qaPlatformTasksGlobalRoutes } from "./qa-platform-tasks.js";
 import { vaultRoutes } from "./vault.js";
 import { modelsRoutes } from "./models.js";
 import { modelOAuthCallbackRoutes, modelOAuthRoutes } from "./model-oauth.js";
@@ -767,6 +768,74 @@ export function agentSessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
     return c.json({ session } satisfies SessionCreateResponse, 201);
   });
 
+  return app;
+}
+
+/** One Session in the cross-Project index: the row the sidebar needs, plus the Project it belongs to. */
+export interface MeSessionIndexItem {
+  sessionId: string;
+  projectId: string;
+  agentId: string;
+  title: string;
+  workspace: string;
+  lastActiveAt: string;
+}
+
+export interface MeSessionIndexResponse {
+  items: MeSessionIndexItem[];
+  /** The Projects the caller may read — the list's scope, so the client can name groups without asking again. */
+  projectIds: string[];
+}
+
+/**
+ * 跨项目会话索引（`/api/me/session-index`）——侧栏「全部项目」视图的数据源。
+ *
+ * 侧栏原本只列当前 Project 的 Session（Sessions store 是单 Project 作用域）。这里按
+ * Access 给出的可访问 Project 逐个读 active 会话，合并后按最近活动取前 `limit` 条。
+ * 口径与侧栏一致（走 `listSessions` 的 listing rule，分类依据 Trace 元数据），
+ * 所以归档行、后台来源行不会因为换了个入口读而混进来。
+ */
+export function meSessionIndexRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
+  const app = new Hono<AppEnv>();
+  app.get("/", async (c) => {
+    const raw = Number(c.req.query("limit") ?? "");
+    const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.trunc(raw), 200) : 60;
+    const projectIds = deps.access.accessibleProjectIds(c.var.user.userId);
+    const view = listingViewOfRequest(c);
+    const items: MeSessionIndexItem[] = [];
+    for (const projectId of projectIds) {
+      // Agents come from the rows themselves: a Project with no Session yet contributes nothing,
+      // and asking its config directory would cost a read for an empty answer.
+      const agentIds = [
+        ...new Set(deps.sessionsRepo.listByProject(projectId).map((row) => row.agentId)),
+      ];
+      for (const agentId of agentIds) {
+        let page: Awaited<ReturnType<SessionService["listSessions"]>>;
+        try {
+          page = await deps.sessionService.listSessions(projectId, agentId, {
+            order: "activity",
+            category: "active",
+            paging: { offset: 0, limit },
+            view,
+          });
+        } catch {
+          continue; // One unreadable Project must not empty a list that spans all of them.
+        }
+        for (const session of page.sessions) {
+          items.push({
+            sessionId: session.sessionId,
+            projectId,
+            agentId: session.agentId,
+            title: session.title ?? "",
+            workspace: session.workspace,
+            lastActiveAt: session.lastActiveAt ?? session.createdAt,
+          });
+        }
+      }
+    }
+    items.sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt));
+    return c.json({ items: items.slice(0, limit), projectIds } satisfies MeSessionIndexResponse);
+  });
   return app;
 }
 
@@ -1779,6 +1848,12 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
         order: 140,
       },
       {
+        id: "session-api.qa-platform-tasks",
+        prefix: "/api/me/qa-platform-tasks",
+        auth: "user",
+        order: 145,
+      },
+      {
         id: "session-api.agent-config",
         prefix: "/api/projects/:projectId/agents/:agentId/config",
         auth: "user",
@@ -1826,6 +1901,12 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
         auth: "user",
         order: 275,
       },
+      {
+        id: "session-api.me-session-index",
+        prefix: "/api/me/session-index",
+        auth: "user",
+        order: 278,
+      },
     ],
   },
 })
@@ -1872,6 +1953,7 @@ export class SessionApiRoutes {
   @Bind("session-api.chat-defaults") chatDefaultsRoutes!: Hono<AppEnv>;
   @Bind("session-api.command-policy") commandPolicyRoutes!: Hono<AppEnv>;
   @Bind("session-api.agents") agentsRoutes!: Hono<AppEnv>;
+  @Bind("session-api.qa-platform-tasks") qaPlatformTasksRoutes!: Hono<AppEnv>;
   @Bind("session-api.agent-config") agentConfigRoutes!: Hono<AppEnv>;
   @Bind("session-api.vault") vaultRoutes!: Hono<AppEnv>;
   @Bind("session-api.agent-sessions") agentSessionsRoutes!: Hono<AppEnv>;
@@ -1880,6 +1962,7 @@ export class SessionApiRoutes {
   @Bind("session-api.workspace-files") workspaceFilesRoutes!: Hono<AppEnv>;
   @Bind("session-api.sessions") sessionsRoutes!: Hono<AppEnv>;
   @Bind("session-api.archived-sessions") archivedSessionsRoutes!: Hono<AppEnv>;
+  @Bind("session-api.me-session-index") meSessionIndexRoutes!: Hono<AppEnv>;
   setup() {
     const manager = this.manager as SessionManager;
     const sessionService = this.sessionService as SessionService;
@@ -1975,6 +2058,11 @@ export class SessionApiRoutes {
       // QA 平台任务 AI 分析的项目默认模型通道；运行时查实例方法，测试可 override。
       completeOnce: (projectId, prompt, opts) => projectConfigService.completeOnce(projectId, prompt, opts),
     });
+    // 跨项目任务列表：作用域来自访问权（拥有 + 被授权），不来自「当前选中项目」。
+    this.qaPlatformTasksRoutes = qaPlatformTasksGlobalRoutes({
+      db: this.db,
+      accessibleProjectIds: (userId) => access.accessibleProjectIds(userId),
+    });
     this.agentConfigRoutes = agentConfigRoutes({
       agentConfigService,
       manager,
@@ -1993,6 +2081,7 @@ export class SessionApiRoutes {
       fileReveal: this.fileReveal,
     });
     this.sessionsRoutes = sessionsRoutes(sessionsDeps);
+    this.meSessionIndexRoutes = meSessionIndexRoutes(sessionsDeps);
     const deletion = sessionDeletionDeps(sessionsDeps);
     const projectEvents = this.projectEvents;
     const machines = this.machines;

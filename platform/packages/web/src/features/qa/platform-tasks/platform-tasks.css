@@ -127,3 +127,35 @@
 .qrs-count{flex:1;font-size:12.5px;color:light-dark(#4b5563,#d1d5db)}
 .qrs-modal footer button{border:1px solid light-dark(#dfe5ee,#475569);border-radius:8px;padding:7px 12px;font-size:13px;background:light-dark(#fff,#1b2432);color:inherit}
 .qrs-modal footer button:disabled{opacity:.5}
+
+/* ------------------------------------------------------------------
+   2026-11-24 列表改版：顶部筛选条（搜索 + 状态 + 所属项目）、跨项目列宽、
+   列间距与单元格截断。原 qpt-segbar/qpt-seg 保留给旧引用，不再渲染。
+   ------------------------------------------------------------------ */
+.qpt-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:16px;padding:10px 12px;border:1px solid light-dark(#e6e9ef,#374151);border-radius:10px;background:light-dark(#fff,#1f2937)}
+.qpt-search{position:relative;display:flex;align-items:center;flex:1 1 240px;max-width:380px;min-width:180px}
+.qpt-search-icon{position:absolute;left:10px;font-size:14px;line-height:1;color:light-dark(#8f959e,#9ca3af);pointer-events:none}
+.qpt-search input{width:100%;height:32px;padding:0 10px 0 28px;border:1px solid light-dark(#e6e9ef,#4b5563);border-radius:8px;background:light-dark(#fff,#111827);color:light-dark(#1f2329,#f3f4f6);font-size:12.5px}
+.qpt-search input:focus{outline:none;border-color:light-dark(#185fa5,#3b82f6);box-shadow:0 0 0 2px light-dark(#eaf2fb,#0f2740)}
+.qpt-filter{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:light-dark(#646a73,#9ca3af);white-space:nowrap}
+.qpt-filter select{height:32px;max-width:210px;padding:0 8px;border:1px solid light-dark(#e6e9ef,#4b5563);border-radius:8px;background:light-dark(#fff,#111827);color:light-dark(#1f2329,#f3f4f6);font-size:12.5px}
+.qpt-filter select:focus{outline:none;border-color:light-dark(#185fa5,#3b82f6);box-shadow:0 0 0 2px light-dark(#eaf2fb,#0f2740)}
+.qpt-toolbar-reset{height:32px;padding:0 10px;border:1px solid light-dark(#e6e9ef,#4b5563);border-radius:8px;background:transparent;color:light-dark(#646a73,#d1d5db);font-size:12px;cursor:pointer}
+.qpt-toolbar-reset:hover{background:light-dark(#f1f3f6,#374151)}
+.qpt-toolbar-count{margin-left:auto;font-size:12px;color:light-dark(#8f959e,#9ca3af);white-space:nowrap}
+.qpt-table-wrap{margin-top:12px;border:1px solid light-dark(#e6e9ef,#374151);border-radius:10px;overflow-x:auto;background:light-dark(#fff,#1f2937)}
+.qpt-table-wrap .qpt-table{margin-top:0}
+.qpt-c-no{width:158px}
+.qpt-c-name{min-width:280px}
+.qpt-c-project{width:176px}
+.qpt-c-pri{width:86px}
+.qpt-c-ver{width:136px}
+.qpt-c-status{width:110px}
+.qpt-table th{padding:10px 14px}
+.qpt-table td{padding:12px 14px}
+.qpt-table tbody tr:last-child td{border-bottom:none}
+.qpt-c-name .qpt-title{font-weight:600;line-height:1.45}
+.qpt-c-name .qpt-title b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-weight:600}
+.qpt-project{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;padding:1px 8px;border-radius:6px;background:light-dark(#f2f4f7,#262f3d);color:light-dark(#4b5563,#d1d5db);font-size:11.5px}
+.qpt-pri-from{font-size:9.5px;font-weight:700;margin-left:4px;opacity:.6;letter-spacing:.3px}
+.qpt-m-error{margin:0;font-size:12.5px;color:light-dark(#b91c1c,#f87171)}

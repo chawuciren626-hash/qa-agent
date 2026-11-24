@@ -9,6 +9,7 @@ import brandLogo from "../../../../../../penguin/ui/aith-logo.svg?url";
 import brandLogoLight from "../../../../../../penguin/ui/aith-logo-light.svg?url";
 import { useProject } from "../../state/project";
 import { useSessions } from "../../state/sessions";
+import { useAllProjectSessions } from "../../state/session-index";
 import { useAuth } from "../../state/auth";
 import { apiFetch } from "../../api/client";
 import { WorkspaceSelect } from "../chat/workspace-select";
@@ -38,6 +39,7 @@ function useQaNavigate() {
 
 const ui = createWorkspaceUI({
   React, useProject, useSessions, useAuth, useNavigate: useQaNavigate, useLocation,
+  useAllProjectSessions,
   FolderPicker: WorkspaceSelect, Modal, AccountMenu: UserMenu,
   useSessionActions: () => React.useContext(QaSessionActions),
   ProjectBreadcrumb: QaProjectBreadcrumb,

@@ -201,6 +201,8 @@ export function createWorkspaceUI(deps) {
     AccountMenu,
     ProjectNavigation,
     useSessionActions = () => null,
+    // 侧栏「全部项目」模式的只读会话快照（platform 侧提供；legacy 分发没有这个依赖，退回单项目）。
+    useAllProjectSessions = () => null,
     notify,
     reportError,
   } = deps;
@@ -490,6 +492,10 @@ export function createWorkspaceUI(deps) {
       navigate = useNavigate(),
       location = useLocation(),
       storedGroups = useGroups();
+    // 「全部项目」模式的索引（单项目 store 之外的只读旁路）：没有这个依赖时保持原行为。
+    const allProjectsRaw = useAllProjectSessions();
+    const globalMode =
+      allProjectsRaw && typeof allProjectsRaw.toggle === "function" ? allProjectsRaw : null;
     const [modal, setModal] = R.useState(false),
       [collapsed, setCollapsed] = R.useState({}),
       [more, setMore] = R.useState(false),
@@ -594,6 +600,69 @@ export function createWorkspaceUI(deps) {
         ),
       );
     };
+    /* 「全部项目」模式：一份跨 Project 的只读快照，平铺展示（不再按工作空间分组），
+       每行带所属项目名。点击行先把当前 Project 切过去，再进入会话——行内写操作
+       仍然走打开之后的正常链路。 */
+    const projectLabel = (id) =>
+      project.projects?.find((p) => p.projectId === id)?.name || id;
+    function openGlobal(session) {
+      if (project.currentProject?.projectId !== session.projectId)
+        project.setCurrentProjectId(session.projectId);
+      project.setCurrentAgentId(session.agentId);
+      go(`/chat/${encodeURIComponent(session.sessionId)}`);
+    }
+    const globalRows = () => {
+      const keyword = search.toLowerCase();
+      const rows = (globalMode.items || []).filter(
+        (s) => !keyword || (s.title || "").toLowerCase().includes(keyword),
+      );
+      if (globalMode.error)
+        return h(
+          "button",
+          { className: "qa-show-more", onClick: () => globalMode.refresh() },
+          `${globalMode.error}，点击重试`,
+        );
+      if (!rows.length)
+        return h(
+          "p",
+          { className: "qa-empty-task" },
+          globalMode.loading
+            ? "正在读取全部项目的会话…"
+            : keyword
+              ? "没有匹配的会话"
+              : "全部项目下还没有会话",
+        );
+      return h(
+        "div",
+        { className: "qa-global-sessions" },
+        ...rows.map((s) =>
+          h(
+            "button",
+            {
+              key: s.sessionId,
+              className:
+                "qa-global-session" +
+                (s.sessionId === selectedId ? " is-active" : ""),
+              "aria-current": s.sessionId === selectedId ? "page" : undefined,
+              title: `${s.title || "未命名会话"} · ${projectLabel(s.projectId)}`,
+              onClick: () => openGlobal(s),
+            },
+            h(
+              "span",
+              { className: "qa-global-project" },
+              projectLabel(s.projectId),
+            ),
+            h("span", { className: "qa-global-title" }, s.title || "未命名会话"),
+            h(
+              "time",
+              { dateTime: s.lastActiveAt, title: s.lastActiveAt },
+              relativeTime(s.lastActiveAt),
+            ),
+          ),
+        ),
+        globalMode.loading && h("p", { className: "qa-global-hint" }, "正在刷新…"),
+      );
+    };
     const allowed = key => key === "models" || user?.isAdmin || !user?.modulePermissions || user.modulePermissions.includes(key);
     const nav = (label, icon, path, moduleKey = path.includes("library")?"library":path.includes("schedules")?"schedules":path.includes("qa/project")?"projects":path.split("/")[1], alsoActive = null) =>
       (!allowed(moduleKey) ? null : h(
@@ -670,6 +739,20 @@ export function createWorkspaceUI(deps) {
             "工作空间",
           ),
           sessionActions?.searchControl,
+          globalMode &&
+            h(
+              "button",
+              {
+                className:
+                  "qa-scope-toggle" + (globalMode.enabled ? " is-on" : ""),
+                "aria-pressed": !!globalMode.enabled,
+                title: globalMode.enabled
+                  ? "只看当前项目的会话"
+                  : "显示全部项目的会话",
+                onClick: () => globalMode.toggle(),
+              },
+              globalMode.enabled ? "全部项目" : "当前项目",
+            ),
           h(
             "button",
             {
@@ -682,7 +765,9 @@ export function createWorkspaceUI(deps) {
           ),
         ),
         (!collapsed.projects || search) &&
-          h(
+          (globalMode && globalMode.enabled
+            ? globalRows()
+            : h(
             "div",
             null,
             ...[...groups.projects]
@@ -786,7 +871,7 @@ export function createWorkspaceUI(deps) {
                 { className: "qa-show-more", onClick: () => setMore(!more) },
                 more ? "收起" : "显示更多",
               ),
-          ),
+          )),
         h("div", { ref: loadMarker, style: { height: 1 }, "aria-hidden": true }),
         loadError && h("button", {className: "qa-show-more", onClick: () => setLoadError(false)}, "读取任务失败，点击重试"),
       ),

@@ -9,7 +9,8 @@
  * 本地任务的测试环境：保存时按 base_url 匹配项目环境（命中复用，未命中登记新环境），
  * 开始测试把 env 带进会话任务档案（qa_tasks.env），run 执行由此拿到被测地址。
  */
-import type { Context, Hono } from "hono";
+import { Hono } from "hono";
+import type { Context } from "hono";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -420,4 +421,30 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
     if (!result.updated) notFound();
     return c.json(result);
   });
+}
+
+/**
+ * 跨项目任务列表（`/api/me/qa-platform-tasks`）。
+ *
+ * 任务列表是「全部项目的任务」：项目管理是独立模块，在里面点项目视图 / 环境 / 资料
+ * 不该反向筛掉别的模块的列表。作用域因此由调用者身份决定——按 Access 给出的可访问项目
+ * 聚合，而不是按当前选中项目过滤。行内操作仍回落到项目作用域接口，所以每行都带 projectId。
+ */
+export interface QaPlatformTaskGlobalDeps {
+  db: PlatformTaskDb;
+  /** 用户名下（拥有 + 被授权）的项目 id；跨项目查询的唯一作用域来源。 */
+  accessibleProjectIds: (userId: string) => string[];
+}
+
+export function qaPlatformTasksGlobalRoutes(deps: QaPlatformTaskGlobalDeps): Hono<AppEnv> {
+  const app = new Hono<AppEnv>();
+  if (!qaEnabled) return app;
+  const svc = new QaPlatformTaskService(deps.db);
+  app.get("/", async (c) => {
+    const userId = c.var.user.userId;
+    const includeTerminated = c.req.query("includeTerminated") === "true";
+    const projectIds = deps.accessibleProjectIds(userId);
+    return c.json({ ...svc.listAcrossProjects(projectIds, includeTerminated), projectIds });
+  });
+  return app;
 }
