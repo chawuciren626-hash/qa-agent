@@ -51,19 +51,15 @@ test('child sessions load only the installed QA pre-tool boundary and respect ho
   enabled=true;installed=[{...hook,name:'other-hook'}];assert.equal(await agent.sessionHooks(null,true),undefined);
 });
 
-test('literal boundary counts are accepted only with exact successful output and no executable extensions',()=>{
-  const cmd=`node -e "const sample = 'abc123'; console.log(sample.length); console.log(sample);"`;
-  const rows=(command,output='6\nabc123\n',stop_reason='completed')=>[
+test('hand-written node -e is rejected like every other uncontrolled command',()=>{
+  const cmd=`node -e "const sample = 'abc123'; console.log(sample.length);"`;
+  const rows=(command,output='6\n',stop_reason='completed')=>[
     {payload:{type:'tool_call',name:'exec_command',tool_call_id:'count',arguments:{cmd:command}}},
     {payload:{type:'tool_call_output',tool_call_id:'count',stop_reason,output}}
   ];
   const options={allowRecovery:true,requireControlledCommands:true};
-  assert.doesNotThrow(()=>assertChildCommands(rows(cmd),options));
-  assert.throws(()=>assertChildCommands(rows(cmd),{...options,allowRecovery:false}));
-  assert.throws(()=>assertChildCommands(rows(cmd,'7\nabc123\n'),options));
-  assert.throws(()=>assertChildCommands(rows(cmd,'6\nabc123\n','fatal'),options));
-  for(const changed of [cmd+'; whoami',cmd.replace('abc123','$(whoami)'),cmd.replace('abc123','%SECRET%'),cmd.replace('const sample', 'const console'),cmd.replace('console.log(sample);',"require('fs').writeFileSync('x','y');"),cmd.replace('sample.length','process.env.SECRET'),cmd.replace('sample.length','sample.constructor.constructor'),cmd.replace('console.log(sample);','fetch(\'https://example.test\');')]) {
-    assert.throws(()=>assertChildCommands(rows(changed),options),changed);
+  for(const changed of [cmd,cmd+'; whoami',cmd.replace('abc123','$(whoami)'),cmd.replace('abc123','%SECRET%')]) {
+    assert.throws(()=>assertChildCommands(rows(changed),options),/uncontrolled/);
   }
 });
 

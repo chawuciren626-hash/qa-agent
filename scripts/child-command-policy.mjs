@@ -166,13 +166,52 @@ function backgroundCatalogWithoutOutput(rows, index, initial) {
   return outputs.length === 1 && toolOutcome(outputs[0].payload) === 'completed' && String(outputs[0].payload.output ?? '').trim() === '[no output]';
 }
 
+// A correction is a recorded attempt, never a silent pass: the category decides
+// whether the engine itself still considers the action correctable, and the
+// receipt is what proves the attempt happened at all.
+const CORRECTABLE = new Set(['input_correction','artifact_revision','read_correction','request_correction','handoff_correction']);
+function recordedCorrection(result,{allowRecovery,allowUnresolvedRecovery,verifyRecovery}) {
+  if(!allowRecovery || !result || !verifyRecovery(result)) return null;
+  const recovery=result.recovery;
+  if(!recovery) {
+    // A request that never selected an action carries no key of its own.
+    if(result.status!=='rejected' || result.exit_code!==2 || result.run_id!==null || result.action!==null) return null;
+    if(result.task_key==='unbound:request:') return {category:'request_correction',key:'unbound:request:',action:null};
+    return allowUnresolvedRecovery && result.classification==='task_paused' ? {category:'task_paused',key:result.task_key,action:null} : null;
+  }
+  // Receipts written before categories existed still describe a selected action.
+  const category=recovery.category ?? (result.action ? 'input_correction' : null);
+  if(!CORRECTABLE.has(category)) return null;
+  const stopped=result.status==='timeout'
+    ? recovery.category==='artifact_revision' && isSafeArtifactAction(result) &&
+      result.result?.termination_confirmed===true && !['interrupted','cleanup_required'].includes(result.result.termination)
+    : ['failed','rejected'].includes(result.status) && result.exit_code!==0;
+  if(!stopped) return null;
+  // 1) still correctable, 2) progress-based exhaustion, 3) a legacy exhausted
+  // receipt kept alive only by the explicit unresolved-draft path.
+  const correctable=recovery.retry_allowed===true;
+  const stalled=recovery.retry_allowed===false && recovery.stalled===true && recovery.policy==='progress_based' &&
+    Number.isInteger(recovery.failure_number) && recovery.failure_number>=3 && recovery.key===result.task_key &&
+    (result.classification!=='correction_stalled' || result.status==='rejected' && result.exit_code===2);
+  const legacy=allowUnresolvedRecovery && recovery.retry_allowed===false && Number.isInteger(recovery.failure_number) && recovery.failure_number>=3;
+  if(!correctable && !stalled && !legacy) return null;
+  return {category,key:recovery.key ?? result.task_key,action:result.action ?? null};
+}
+
+// A corrected read stays a run-relative path inside this run, or an engine doc.
+function isSafeReadPath(path,boundary) {
+  if(path.includes('\\') || path.split('/').some(part=>['','.','..'].includes(part))) return false;
+  return /^(analysis|design|execution|defects|report)\//.test(path) ||
+    Boolean(boundary.engineDirectory && /^docs\/[A-Za-z0-9_/-]+\.md$/.test(path));
+}
+
 // Only inspect structured tool calls/results, never model reasoning or prose claims.
 export function assertChildCommands(rows, { allowRecovery = false, allowUnresolvedRecovery = false, requireControlledCommands = false, verifyRecovery = () => false, verifyPartialBrowserFailure = () => false, verifyExternalRecovery = () => false, stageWriteBoundary = null } = {}) {
   assertStageWrites(rows,{stageWriteBoundary,allowRecovery});
   const pending = new Set();
   const pendingReads = new Map();
+  const pendingUnkeyed = new Set();
   let pendingCatalog = false;
-  let pendingShellProbes = 0;
   for (const [index, row] of rows.entries()) {
     if(allowRecovery && pendingReads.size && stageWriteBoundary && row.payload?.type==='tool_call' && row.payload.name==='read_file') {
       let args;try {args=parseToolArguments(row);} catch { /* A later valid native read may still correct this read-only detour. */ }
@@ -221,63 +260,37 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
       // PenguinHarness may prepend shell-profile warnings to the single JSON response.
       result = typeof raw === 'string' ? JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1)) : raw;
     } catch { throw new Error('Child runner response unreadable; review required'); }
-    // A malformed/missing request never selected or executed a business action. A later
-    // verified valid request may resolve that transport issue without resetting its budget.
-    if(allowRecovery && result?.status==='rejected' && result.classification==='task_paused' && result.exit_code===2 && result.run_id===null && result.action===null && result.task_key==='unbound:request:' && result.recovery==null && verifyRecovery(result)) {
-      pending.add('unbound:request:'); continue;
+    // One rule for every recorded correction: the action layer persisted a recovery
+    // ledger entry and the receipt matches it. Its category is the contract; the error
+    // prose is not, so a new correction kind never needs a new string comparison.
+    const correction=recordedCorrection(result,{allowRecovery,allowUnresolvedRecovery,verifyRecovery});
+    if(correction) {
+      // A child cannot complete its own handoff: the native child return does not exist
+      // yet. The rejected attempt changes no stage state; the parent still performs the
+      // real handoff and validates the complete child trace afterward.
+      if(correction.category==='handoff_correction' && correction.action==='handoff') continue;
+      // A rejection recorded before an action was selected carries no task key;
+      // only the stage validation can prove that the corrected attempt landed.
+      if(!correction.key) { pendingUnkeyed.add(correction.category); continue; }
+      // A read_source routing error is corrected with the native reader. Bind that exact
+      // path to its persisted rejection and require the later stage validation.
+      if(correction.category==='read_correction' && correction.action==='read_source' && stageWriteBoundary &&
+        typeof result.read_path==='string' && isSafeReadPath(result.read_path,stageWriteBoundary)) {
+        pendingReads.set(result.task_key,{path:result.read_path,scope:result.read_path.startsWith('docs/')?'engine':'run',run:result.run_id,readAt:null});
+        continue;
+      }
+      pending.add(correction.key); continue;
     }
-    // Exhausting malformed-request correction does not turn a later, distinct valid
-    // request into a failed business action; no action was selected or launched.
-    if(allowRecovery && result?.status==='rejected' && result.classification==='input_rejected' && result.exit_code===2 && result.run_id===null && result.action===null && result.recovery?.category==='request_correction' && result.recovery.retry_allowed===false && result.recovery.failure_number>=3 && verifyRecovery(result)) {
-      pending.add(result.task_key); continue;
-    }
-    // Independent report tasks reject lifecycle-only metrics before launch. Treat the
-    // corrected path as complete only after the report artifacts pass verification.
-    if(allowRecovery && result?.status==='rejected' && result.classification==='input_rejected' && result.action==='build_report_metrics' && result.error==='Lifecycle metrics/normalization are not prerequisites for independent tasks' && result.recovery?.retry_allowed===true && verifyRecovery(result)) {
-      pendingShellProbes++; continue;
-    }
-    // A child cannot complete its own handoff because the native child return does
-    // not exist yet. The rejected attempt changes no stage state; the parent still
-    // performs the real handoff and validates the complete child trace afterward.
-    if(allowRecovery && result?.status==='rejected' && result.classification==='input_rejected' && result.action==='handoff' && result.recovery?.category==='handoff_correction' && /^Stage handoff not ready: No unique returned child for this dispatch;/.test(String(result.error ?? '')) && verifyRecovery(result)) {
-      continue;
-    }
-    // A read_source routing error may be corrected with the native reader. Bind the
-    // exact path to its persisted rejection and require subsequent stage validation.
-    if(allowRecovery && stageWriteBoundary && result?.status==='rejected' && result.classification==='input_rejected' && result.action==='read_source' && result.error==='Source must be a run-relative inputs path' && result.recovery?.category==='read_correction' && result.recovery.retry_allowed===true && typeof result.read_path==='string' && (/^(analysis|design|execution|defects|report)\//.test(result.read_path) || stageWriteBoundary.engineDirectory && /^docs\/[A-Za-z0-9_/-]+\.md$/.test(result.read_path)) && !result.read_path.includes('\\') && !result.read_path.split('/').some(part=>['','.','..'].includes(part)) && verifyRecovery(result)) {
-      pendingReads.set(result.task_key,{path:result.read_path,scope:result.read_path.startsWith('docs/')?'engine':'run',run:result.run_id,readAt:null});continue;
-    }
-    const safeArtifactTimeout=result?.status==='timeout' && result.recovery?.category==='artifact_revision' &&
-      isSafeArtifactAction(result) && result.result?.termination_confirmed===true &&
-      !['interrupted','cleanup_required'].includes(result.result.termination);
-    const correctionStatus=['failed','rejected'].includes(result?.status) || safeArtifactTimeout;
-    // Stalling forbids unchanged retries, but does not invalidate a later verified correction.
-    if(allowRecovery && correctionStatus && result.exit_code!==0 &&
-      ['input_correction','artifact_revision','read_correction','request_correction','handoff_correction'].includes(result.recovery?.category) &&
-      result.recovery.policy==='progress_based' && result.recovery.stalled===true && result.recovery.retry_allowed===false &&
-      Number.isInteger(result.recovery.failure_number) && result.recovery.failure_number>=3 &&
-      typeof result.task_key==='string' && result.task_key.length>0 && result.recovery.key===result.task_key &&
-      (result.classification!=='correction_stalled' || result.status==='rejected' && result.exit_code===2) && verifyRecovery(result)) {
-      pending.add(result.task_key); continue;
-    }
-    // A returned draft may be archived, never completed, after verified exhaustion.
-    // Native tools label ordinary nonzero exits fatal too; only a matching persisted safe receipt can qualify.
-    if(allowRecovery && allowUnresolvedRecovery && result && verifyRecovery(result) &&
-      ((['input_correction','artifact_revision','read_correction','request_correction'].includes(result.recovery?.category) && Number.isInteger(result.recovery.failure_number) && result.recovery.failure_number>=3 && result.recovery.retry_allowed===false && correctionStatus) ||
-       (result.status==='rejected' && result.classification==='task_paused' && result.recovery==null && result.exit_code===2))) {
-      pending.add(result.task_key); continue;
-    }
-    if (allowRecovery && result?.exit_code !== 0 && correctionStatus && result?.recovery?.retry_allowed === true && ['input_correction','artifact_revision','read_correction','request_correction'].includes(result.recovery.category) && ((result.recovery.policy==='progress_based' && Number.isInteger(result.recovery.failure_number) && result.recovery.failure_number>0) || [1,2].includes(result.recovery.failure_number)) && verifyRecovery(result)) { pending.add(result.recovery.key); continue; }
     // A verified partial browser delivery preserves failed commands; it never turns them into passes.
     if(allowRecovery && verifyPartialBrowserFailure(result,row)) continue;
     if (!result || toolOutcome(response.payload) === 'fatal' || !['completed', 'ready', 'help'].includes(result.status) || (result.exit_code !== undefined && result.exit_code !== 0)) throw new Error('Child command failed or was rejected; cannot complete this dispatch after retry');
     if (pendingCatalog && isCatalogLookup(args?.cmd) && result.status === 'help') pendingCatalog = false;
     if (allowRecovery && result.status === 'completed' && result.action_receipt && verifyRecovery(result)) {
-      pending.delete(result.task_key); pending.delete('input_correction'); pending.delete('unbound:request:');
+      pending.delete(result.task_key); pending.delete('unbound:request:');
       const key = String(result.task_key ?? '');
       const validation = /^run-[A-Za-z0-9-]+:validate_artifacts:(?:analysis|test_points|test_cases|execution|api_execution|defects|report)(?:[a-f0-9-]{36})?$/.test(key) ||
         /^run-[A-Za-z0-9-]+:validate_analysis:(?:[a-f0-9-]{36})?$/.test(key);
-      if (result.script === 'validate-artifacts.mjs' && validation) pendingShellProbes = 0;
+      if(result.script==='validate-artifacts.mjs' && validation) pendingUnkeyed.clear();
       if(result.script==='validate-artifacts.mjs' && validation && stageWriteBoundary) {
         for(const [readKey,read] of pendingReads) {
           const prefix=`${read.run}:validate_artifacts:${stageWriteBoundary.stage}`;
@@ -292,6 +305,6 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
   for(const key of pending) if(verifyExternalRecovery(key)) pending.delete(key);
   if (pending.size && !allowUnresolvedRecovery) throw new Error('Recoverable errors were not resolved by a verified successful action');
   if(pendingReads.size && !allowUnresolvedRecovery) throw new Error('Source read correction requires a matching native read and verified stage validation');
-  if (pendingShellProbes) throw new Error('A recorded correction was not followed by verified artifact validation');
+  if (pendingUnkeyed.size) throw new Error('A recorded correction was not followed by verified artifact validation');
   if (pendingCatalog) throw new Error('Project action catalog lookup failure was not corrected');
 }
