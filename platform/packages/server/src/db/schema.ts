@@ -1159,6 +1159,7 @@ CREATE TABLE IF NOT EXISTS platform_task_links ( -- 平台任务映射：任务�
   requirement_baseline_json TEXT,                          -- 研发处理判断确认基准（final_content/acceptance_criteria；平台包同步）
   self_test_digest_json  TEXT,                             -- 研发自测摘要（测试地址/自测结果/验证重点/已知风险；平台包同步）
   changes_digest_json    TEXT,                             -- 节点变更摘要数组（node/批次/内容；平台包同步）
+  package_detail_json    TEXT,                             -- 交接包结构化资料全集（详情页数据源；digest 列保留向后兼容）
   submitter_name         TEXT,                             -- 平台提交人展示名
   assignee_name          TEXT,                             -- 平台处理人展示名
   complexity_level       TEXT,                             -- 平台复杂度

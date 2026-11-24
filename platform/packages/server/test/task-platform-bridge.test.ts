@@ -75,6 +75,7 @@ function makeDb(): DatabaseSync {
       requirement_baseline_json TEXT,
       self_test_digest_json  TEXT,
       changes_digest_json    TEXT,
+      package_detail_json    TEXT,
       submitter_name         TEXT,
       assignee_name          TEXT,
       complexity_level       TEXT,

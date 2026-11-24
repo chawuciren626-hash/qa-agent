@@ -1,9 +1,10 @@
 /**
  * 平台任务列表页（项目内一级页，T3 口径）。
  *
- * 四件套行操作（2026-11-20 确认）：
+ * 四件套行操作（2026-11-20 确认；2026-11-24 查看改全页路由）：
  *   编辑   平台任务=补充性字段（T4）；本地任务=全量字段
- *   查看   右侧详情抽屉（平台资料·AI 分析结论·测试进展三段式）
+ *   查看   详情全页 /qa/project/platform-tasks/:taskId（基本信息→内容整理→原始反馈→
+ *          研发判断→AI 分析→测试进展；替代原侧边抽屉）
  *   AI分析 平台任务=失败重试/重新分析（T2）；本地任务=可选增强（T5）
  *   开始测试 创建真实测试工作会话并打开既有全流程阶段页；平台任务未分析禁用（TLQ-1），
  *           本地任务不强制（T5）
@@ -11,11 +12,9 @@
  * 来源双轨：platform（任务平台映射）/ local（本地新建），徽章区分。
  * 列表仅展示平台同步任务与用户创建的本地任务。
  */
-import { PlatformSourceBlocks } from "./platform-source-blocks";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { toastError, toastSuccess } from "@prismshadow/penguin-ui";
-import { apiFetch } from "../../../api/client";
 import { useProject, projectDisplayName } from "../../../state/project";
 import { ENV_END_LABELS } from "../project-management/types";
 import { RetestScopeDrawer } from "../retest-scope-drawer";
@@ -30,7 +29,6 @@ import {
   uploadTaskAttachment,
   type AiSummary,
   type TaskAttachment,
-  type TaskDetail,
   type TaskListItem,
 } from "./api";
 import "./platform-tasks.css";
@@ -53,18 +51,6 @@ const SEGMENTS: Array<[string, string]> = [
   ["terminated", "已终止"],
 ];
 const PRIORITY_LABEL: Record<string, string> = { high: "高", medium: "中", low: "低" };
-const RUN_STATUS_LABEL: Record<string, string> = {
-  planned: "预登记",
-  running: "运行中",
-  in_progress: "进行中",
-  completed: "已完成",
-  failed: "失败",
-  unknown: "未知",
-};
-const RUN_KIND_LABEL: Record<string, string> = {
-  run: "常规", execution: "功能执行", api_execution: "接口执行",
-  regression: "回归", retest: "复测", design: "设计", legacy: "历史",
-};
 
 type EditTarget =
   | { kind: "platform"; id: string; title: string; notes: { localTitleNote: string; localTestFocusNote: string } }
@@ -84,8 +70,6 @@ export function PlatformTasksPage() {
   const [includeTerm, setIncludeTerm] = useState(false);
   const [analyzing, setAnalyzing] = useState<Set<string>>(new Set());
   const [starting, setStarting] = useState<string | null>(null);
-  const [drawerId, setDrawerId] = useState<string | null>(null);
-  const [drawerDetail, setDrawerDetail] = useState<TaskDetail | null>(null);
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
   const [retestTarget, setRetestTarget] = useState<TaskListItem | null>(null);
 
@@ -111,21 +95,9 @@ export function PlatformTasksPage() {
   const visible = items.filter((i) => (seg === "all" ? true : i.status === seg));
   const countOf = (key: string) => (key === "all" ? items.length : counts[key] ?? 0);
 
-  const reloadDrawer = async () => {
-    if (!projectId || !drawerId) return;
-    try { setDrawerDetail(await getTaskDetail(projectId, drawerId)); } catch { /* 保留原详情 */ }
-  };
-
-  const openDrawer = async (id: string) => {
-    if (!projectId) return;
-    setDrawerId(id);
-    setDrawerDetail(null);
-    try {
-      setDrawerDetail(await getTaskDetail(projectId, id));
-    } catch (e) {
-      toastError(e instanceof Error ? e.message : "加载详情失败");
-      setDrawerId(null);
-    }
+  /** 查看：详情全页路由（2026-11-24 替代侧边抽屉；浏览器前进后退/链接分享可用）。 */
+  const openDetail = (id: string) => {
+    navigate(`/qa/project/platform-tasks/${encodeURIComponent(id)}`);
   };
 
   const doAnalyze = async (task: TaskListItem) => {
@@ -138,7 +110,6 @@ export function PlatformTasksPage() {
           ? `「${task.title}」AI 分析未走模型（${result.degraded.reason}），已回填演示结论`
           : `「${task.title}」AI 分析完成：结构化结论已回填`
       );
-      if (drawerId === task.id) void openDrawer(task.id);
       await reload();
     } catch (e) {
       toastError(e instanceof Error ? e.message : "AI 分析失败，请重试");
@@ -339,7 +310,7 @@ export function PlatformTasksPage() {
                     <td>
                       <div className="qpt-ops">
                         <button type="button" className="qpt-op" onClick={() => openEdit(task)}>编辑</button>
-                        <button type="button" className="qpt-op" onClick={() => void openDrawer(task.id)}>查看</button>
+                        <button type="button" className="qpt-op" onClick={() => openDetail(task.id)}>查看</button>
                         {task.status !== "result_returned" && task.status !== "terminated" && (
                           task.status === "pending_analysis" && !task.suggestedPriority ? (
                             <button
@@ -384,7 +355,7 @@ export function PlatformTasksPage() {
                           <button type="button" className="qpt-op qpt-op-accent" onClick={() => setRetestTarget(task)}>发起复测</button>
                         )}
                         {task.status === "impact_pending" && (
-                          <button type="button" className="qpt-op qpt-op-main" onClick={() => void openDrawer(task.id)}>确认影响</button>
+                          <button type="button" className="qpt-op qpt-op-main" onClick={() => openDetail(task.id)}>确认影响</button>
                         )}
                       </div>
                     </td>
@@ -395,20 +366,6 @@ export function PlatformTasksPage() {
           </table>
         )}
       </div>
-
-      {drawerId && (
-        <>
-          <div className="qpt-mask" onClick={() => setDrawerId(null)} />
-          <TaskDrawer
-            detail={drawerDetail}
-            projectId={projectId}
-            onRetestCreated={() => { void reloadDrawer(); void reload(); }}
-            onClose={() => setDrawerId(null)}
-            onAnalyze={(t) => void doAnalyze(t)}
-            analyzing={drawerId ? analyzing.has(drawerId) : false}
-          />
-        </>
-      )}
 
       {editTarget && projectId && (
         <EditModal
@@ -519,193 +476,6 @@ function TaskAttachments({ projectId, taskId }: { projectId: string; taskId: str
         aria-label="上传附件"
       />
     </section>
-  );
-}
-
-function TaskDrawer({ detail, projectId, onClose, onAnalyze, analyzing, onRetestCreated }: {
-  detail: TaskDetail | null;
-  projectId: string;
-  onClose: () => void;
-  onAnalyze: (task: TaskListItem) => void;
-  analyzing: boolean;
-  onRetestCreated: () => void;
-}) {
-  if (!detail) {
-    return (
-      <aside className="qpt-drawer" aria-label="任务详情">
-        <header className="qpt-dw-head">
-          <h2>加载中…</h2>
-          <button type="button" className="qpt-dw-close" onClick={onClose}>✕</button>
-        </header>
-      </aside>
-    );
-  }
-  const t = detail.task;
-  const isLocal = t.source === "local";
-  const s = detail.summary;
-  // 执行通道分组（B5-2）：类型 × 环境 相同的运行归入同一通道。
-  const channelGroups: Array<[string, typeof detail.progress.runs]> = [];
-  const [retestBusy, setRetestBusy] = useState(false);
-  for (const run of detail.progress.runs) {
-    const channel = `${RUN_KIND_LABEL[run.kind] ?? run.kind} · ${run.env || "未绑定环境"}`;
-    const group = channelGroups.find(([label]) => label === channel);
-    if (group) group[1].push(run);
-    else channelGroups.push([channel, [run]]);
-  }
-  const latestRun = detail.progress.runs[0] ?? null;
-  const startRetest = async () => {
-    if (!latestRun || !detail.progress.mainSessionId || retestBusy) return;
-    setRetestBusy(true);
-    try {
-      const result = await apiFetch<{ runId: string }>(`/api/projects/${encodeURIComponent(projectId)}/agents/qa/tasks/${encodeURIComponent(detail.progress.mainSessionId)}/runs/${encodeURIComponent(latestRun.runId)}/retest`, { method: "POST", body: {} });
-      toastSuccess(`复测轮次已创建：${result.runId}（预登记，范围与授权后执行）`);
-      onRetestCreated();
-    } catch (cause) {
-      toastError(cause instanceof Error ? cause.message : "复测轮次创建失败");
-    } finally { setRetestBusy(false); }
-  };
-  return (
-    <aside className="qpt-drawer" aria-label="任务详情">
-      <header className="qpt-dw-head">
-        <div>
-          <h2>{t.title} <span className={`qpt-pill qpt-st-${t.status}`}>{STATUS_LABEL[t.status] ?? t.status}</span></h2>
-          <small className="qpt-dw-no">
-            {isLocal ? `${t.id} · 本地任务` : `${t.id} · 包版本 v${t.packageVersion} · 第 ${t.roundNo} 轮`}
-          </small>
-        </div>
-        <button type="button" className="qpt-dw-close" onClick={onClose}>✕</button>
-      </header>
-      <div className="qpt-dw-body">
-        <section className="qpt-dw-sec">
-          <h3>{isLocal ? "任务信息" : "平台资料"}</h3>
-          <dl className="qpt-fgrid">
-            <div><dt>{isLocal ? "任务来源" : "产品线"}</dt><dd>{isLocal ? "本地新建" : t.productLines.map((l) => `${l.isPrimary ? "" : "关联 "}${l.name}`).join(" · ") || "—"}</dd></div>
-            <div><dt>反馈类型</dt><dd>{t.feedbackTypeLabel || t.feedbackType || "—"}</dd></div>
-            <div><dt>优先级</dt><dd><span className={`qpt-pri qpt-pri-${t.priority}`}>{PRIORITY_LABEL[t.priority] ?? t.priority}</span></dd></div>
-            <div><dt>预估工时</dt><dd>{t.estimatedHours != null ? `${t.estimatedHours}h` : "—"}{t.estimatedDays != null ? ` / ${t.estimatedDays}天` : ""}</dd></div>
-            {!isLocal && (
-              <>
-                <div><dt>复杂度</dt><dd>{t.complexityLevel || "—"}</dd></div>
-                <div><dt>提交人 / 处理人</dt><dd>{[t.submitter, t.assignee].filter(Boolean).join(" / ") || "—"}</dd></div>
-              </>
-            )}
-          </dl>
-          {isLocal ? (
-            <>
-              <div className="qpt-local-note"><b>需求描述 / 测试背景</b><p>{t.description || "（未填写）"}</p></div>
-              <dl className="qpt-fgrid">
-                <div><dt>涉及端</dt><dd>{t.ends.length ? t.ends.map((e) => ENV_END_LABELS[e] ?? e).join(" · ") : "—"}</dd></div>
-                <div><dt>变更关联</dt><dd className="qpt-mono">{t.changeSource || "（未关联）"}</dd></div>
-                <div><dt>测试环境</dt><dd className="qpt-mono">{t.envBaseUrl || "（未填写）"}</dd></div>
-                <div><dt>登录账号</dt><dd>{t.account || "（未填写）"}</dd></div>
-              </dl>
-            </>
-          ) : (
-            <>
-              {t.selfTestDigest?.test_address && (
-                <dl className="qpt-fgrid">
-                  <div><dt>测试地址</dt><dd className="qpt-mono">{t.selfTestDigest.test_address}</dd></div>
-                </dl>
-              )}
-              {t.localEditedAt && (t.localTitleNote || t.localTestFocusNote) && (
-                <div className="qpt-local-note">
-                  <b>本地补充字段（T4，不被同步覆盖）</b>
-                  {t.localTitleNote && <p>标题备注：{t.localTitleNote}</p>}
-                  {t.localTestFocusNote && <p>测试重点备注：{t.localTestFocusNote}</p>}
-                </div>
-              )}
-              {t.sourceUrl && (
-                <p className="qpt-deeplink">平台深链：<a href={t.sourceUrl} target="_blank" rel="noreferrer">{t.sourceUrl} ↗</a></p>
-              )}
-            </>
-          )}
-          <TaskAttachments projectId={projectId} taskId={t.id} />
-        </section>
-
-        {!isLocal && (
-          <section className="qpt-dw-sec">
-            <h3>平台真实资料 <span className="qpt-ai-tag">包同步</span></h3>
-            <PlatformSourceBlocks task={t} />
-          </section>
-        )}
-
-        <section className="qpt-dw-sec">
-          <h3>AI 分析结论 <span className="qpt-ai-tag">AI 建议</span></h3>
-          {s ? (
-            <>
-              {s.requirement_summary && (
-                <div className="qpt-sum-block"><h4>需求内容整理</h4><p className="qpt-reason">{s.requirement_summary}</p></div>
-              )}
-              <div className="qpt-sum-block"><h4>需求要点</h4><ul>{s.requirement_points.map((p, i) => <li key={i}>{p}</li>)}</ul></div>
-              <div className="qpt-sum-block"><h4>建议测试范围</h4><ul>{s.suggested_test_scope.map((p, i) => <li key={i}>{p}</li>)}</ul></div>
-              {(s.test_environment || s.test_account || s.test_password) && (
-                <div className="qpt-sum-block">
-                  <h4>测试环境与账号</h4>
-                  <dl className="qpt-fgrid">
-                    <div><dt>测试环境</dt><dd className="qpt-mono">{s.test_environment || "—"}</dd></div>
-                    <div><dt>测试账号</dt><dd>{s.test_account || "—"}</dd></div>
-                    <div><dt>测试密码</dt><dd>{s.test_password || "—"}</dd></div>
-                  </dl>
-                  <p className="qpt-reason">以上只整理任务填写内容中已提供的信息，未提供即为 —。</p>
-                </div>
-              )}
-              <div className="qpt-sum-block">
-                <h4>建议优先级：{PRIORITY_LABEL[s.suggested_priority] ?? s.suggested_priority}</h4>
-                <p className="qpt-reason">{s.priority_reason}</p>
-              </div>
-              {s.risks.length > 0 && <div className="qpt-sum-block"><h4>风险点</h4><ul className="qpt-risk">{s.risks.map((p, i) => <li key={i}>{p}</li>)}</ul></div>}
-              {s.open_questions.length > 0 && <div className="qpt-sum-block"><h4>待确认问题</h4><ul className="qpt-openq">{s.open_questions.map((p, i) => <li key={i}>{p}</li>)}</ul></div>}
-              <p className="qpt-sum-foot">
-                分析时间 {s.analyzed_at || "—"} · 来源：{s.source === "requirement_analysis" ? "模型分析（任务填写内容）" : s.source === "demo" ? "演示产出（模型不可用时的回退）" : s.source}
-              </p>
-            </>
-          ) : (
-            <div className="qpt-sum-empty">
-              {isLocal
-                ? "尚未分析：点「AI 分析」整理需求内容、测试环境与账号等结构化数据（可选）。"
-                : t.status === "pending_analysis"
-                  ? "尚未分析：点「AI 分析」由模型整理任务内容并产出结构化结论（T2）。"
-                  : "暂无分析结论。"}
-              {t.status !== "result_returned" && t.status !== "terminated" && (
-                <button type="button" className="qpt-op qpt-op-accent" disabled={analyzing} onClick={() => onAnalyze(t)}>
-                  {analyzing ? "分析中…" : s || t.suggestedPriority ? "重新分析" : isLocal ? "AI 分析" : "重试分析"}
-                </button>
-              )}
-            </div>
-          )}
-        </section>
-
-        <section className="qpt-dw-sec">
-          <h3>测试进展 <small className="qpt-att-hint">按执行通道（类型 × 环境）分组</small>
-            <button type="button" className="qpt-op qpt-op-accent" disabled={retestBusy || !latestRun} onClick={() => void startRetest()} style={{ marginLeft: 10 }}>
-              {retestBusy ? "创建中…" : "发起复测轮次"}
-            </button>
-          </h3>
-          {detail.progress.runs.length > 0 ? (
-            channelGroups.map(([channel, channelRuns]) => (
-              <div key={channel} className="qpt-channel">
-                <h4 className="qpt-channel-head">{channel}</h4>
-                {channelRuns.map((r) => (
-              <div className="qpt-run" key={r.runId}>
-                <div className="qpt-run-l1">
-                  <span className="qpt-mono">{r.runId}</span>
-                  <span className={`qpt-pill qpt-st-${r.status}`}>{RUN_STATUS_LABEL[r.status] ?? r.status}</span>
-                  {r.env && <span className="qpt-pill qpt-run-env">{r.env}</span>}
-                </div>
-                <div className="qpt-run-l2 qpt-mono">{Object.keys(r.counts ?? {}).length ? JSON.stringify(r.counts) : (r.status === "planned" ? "预登记：等待执行发起" : "—")}</div>
-              </div>
-                ))}
-              </div>
-            ))
-          ) : (
-            <p className="qpt-muted">
-              暂无测试运行记录。
-              {isLocal && "点「开始测试」将创建测试工作会话并打开既有全流程阶段页。"}
-            </p>
-          )}
-        </section>
-      </div>
-    </aside>
   );
 }
 

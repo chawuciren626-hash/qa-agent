@@ -107,6 +107,8 @@ export function openDatabase(dbPath: string): DatabaseSync {
   ensureColumn(db, "platform_task_links", "assignee_name", "TEXT");
   ensureColumn(db, "platform_task_links", "complexity_level", "TEXT");
   ensureColumn(db, "platform_task_links", "estimated_days", "INTEGER");
+  // 交接包结构化资料全集（详情页"平台真实资料"数据源；digest 列保留向后兼容）。
+  ensureColumn(db, "platform_task_links", "package_detail_json", "TEXT");
   // 客户端本地镜像语义列（同步层阶段 B）：服务端事实源 link_id 与归属中央用户。
   ensureColumn(db, "platform_task_links", "server_link_id", "TEXT");
   ensureColumn(db, "platform_task_links", "acct_user_id", "TEXT");

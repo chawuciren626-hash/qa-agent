@@ -52,6 +52,7 @@ import { ProjectManagementPage } from "./features/qa/project-management/project-
 import { ProjectEnvironmentsPage } from "./features/qa/project-management/project-environments-page";
 import { PlatformTasksPage } from "./features/qa/platform-tasks/platform-tasks-page";
 import { PlatformTaskCreatePage } from "./features/qa/platform-tasks/platform-task-create-page";
+import { PlatformTaskDetailPage } from "./features/qa/platform-tasks/platform-task-detail-page";
 import { ConfirmGatePage } from "./features/qa/confirm-gate-page";
 import { QaTaskDetail } from "./features/qa/task-detail";
 import { QualityTraceabilityPage } from "./features/qa/quality-traceability-page";
@@ -266,8 +267,11 @@ export function appRoutes(admin = false) {
             以便模块权限沿用 projects（module-permissions 的 /qa/project 前缀规则）。 */}
         <Route path="/qa/project/environments" element={<ProjectEnvironmentsPage />} />
         {/* 测试任务：任务平台对接 + 本地新建合并列表（原「平台任务」，B1 双入口）。
-            新建走整页表单（platform-task-create-page），替代原创建弹窗。 */}
+            新建走整页表单（platform-task-create-page），替代原创建弹窗。
+            详情走全页路由（2026-11-24：替代原侧边抽屉——四段式长内容页宽松排版，
+            支持浏览器前进后退与链接分享）。 */}
         <Route path="/qa/project/platform-tasks/new" element={<PlatformTaskCreatePage />} />
+        <Route path="/qa/project/platform-tasks/:taskId" element={<PlatformTaskDetailPage />} />
         <Route path="/qa/project/platform-tasks" element={<PlatformTasksPage />} />
         {/* 确认卡点（A3 三层卡点 + A4 报告审批）：项目内的一级页，模块权限同样沿用
             projects 的 /qa/project 前缀规则。 */}

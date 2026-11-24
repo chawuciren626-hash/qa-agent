@@ -41,7 +41,7 @@ function makeDb(): DatabaseSync {
       suggested_priority TEXT, local_title_note TEXT NOT NULL DEFAULT '',
       local_test_focus_note TEXT NOT NULL DEFAULT '', local_edited_at TEXT,
       last_event_id TEXT, last_synced_at TEXT,
-      requirement_baseline_json TEXT, self_test_digest_json TEXT, changes_digest_json TEXT,
+      requirement_baseline_json TEXT, self_test_digest_json TEXT, changes_digest_json TEXT, package_detail_json TEXT,
       submitter_name TEXT, assignee_name TEXT, complexity_level TEXT, estimated_days INTEGER,
       last_action_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL,

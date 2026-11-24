@@ -234,6 +234,7 @@ export class PlatformTaskBridge implements PackageActivationHook {
       .prepare(
         `UPDATE platform_task_links SET
            requirement_baseline_json = ?, self_test_digest_json = ?, changes_digest_json = ?,
+           package_detail_json = ?,
            submitter_name = ?, assignee_name = ?, complexity_level = ?, estimated_days = ?,
            updated_at = ?
          WHERE project_id = ? AND source_system = 'sbkj-taskassignment'
@@ -243,6 +244,7 @@ export class PlatformTaskBridge implements PackageActivationHook {
         baseline,
         this.selfTestDigest(pkg),
         this.changesDigest(pkg),
+        this.packageDetail(pkg),
         pkg.task.submitter.display_name,
         pkg.task.assignee.display_name,
         pkg.task.complexity_level,
@@ -469,6 +471,7 @@ export class PlatformTaskBridge implements PackageActivationHook {
     const baseline = this.requirementBaselineDigest(pkg);
     const selfTest = this.selfTestDigest(pkg);
     const changes = this.changesDigest(pkg);
+    const detail = this.packageDetail(pkg);
     if (existing) {
       // T4 本地补充字段不被同步覆盖；终止态不自动复活（对接方案 §8.4）；旧版本号幂等跳过
       if (existing.status === "terminated") return;
@@ -480,6 +483,7 @@ export class PlatformTaskBridge implements PackageActivationHook {
              package_version = ?, pm_round_no = ?, source_url = ?, ai_summary_json = ?,
              suggested_priority = ?, status = ?,
              requirement_baseline_json = ?, self_test_digest_json = ?, changes_digest_json = ?,
+             package_detail_json = ?,
              submitter_name = ?, assignee_name = ?, complexity_level = ?, estimated_days = ?,
              updated_at = ?
            WHERE link_id = ?`,
@@ -499,6 +503,7 @@ export class PlatformTaskBridge implements PackageActivationHook {
           baseline,
           selfTest,
           changes,
+          detail,
           pkg.task.submitter.display_name,
           pkg.task.assignee.display_name,
           pkg.task.complexity_level,
@@ -514,10 +519,10 @@ export class PlatformTaskBridge implements PackageActivationHook {
            link_id, project_id, source_system, external_tenant_id, external_task_id, external_task_no,
            title, priority, product_lines_json, feedback_type, estimated_hours,
            package_version, pm_round_no, source_url, status, ai_summary_json, suggested_priority,
-           requirement_baseline_json, self_test_digest_json, changes_digest_json,
+           requirement_baseline_json, self_test_digest_json, changes_digest_json, package_detail_json,
            submitter_name, assignee_name, complexity_level, estimated_days,
            last_action_json, created_at, updated_at
-         ) VALUES (?, ?, 'sbkj-taskassignment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, 'sbkj-taskassignment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         `ptl-${crypto.randomUUID()}`,
@@ -539,6 +544,7 @@ export class PlatformTaskBridge implements PackageActivationHook {
         baseline,
         selfTest,
         changes,
+        detail,
         pkg.task.submitter.display_name,
         pkg.task.assignee.display_name,
         pkg.task.complexity_level,
@@ -599,5 +605,85 @@ export class PlatformTaskBridge implements PackageActivationHook {
         operator: change.operator.display_name,
       })),
     );
+  }
+
+  /**
+   * 交接包结构化资料全集（详情页"平台真实资料"数据源；digest 列的有损提炼保留向后兼容，
+   * 这里字段级原样透出）：内容整理（任务平台侧 AI 结构化）/ 原始反馈（正文+富文本+
+   * 补充意见）/ 研发自测提交（字段级 sections）/ 节点变更（含 sections 结构化字段）/
+   * 包附件清单 / 排期设计文档（三份 md 的 attachment 引用）/ 回归上下文（上轮失败+整改）。
+   */
+  private packageDetail(pkg: HandoffPackage): string {
+    const requirement = pkg.requirement;
+    const selfTest = pkg.development_self_test;
+    return JSON.stringify({
+      package_version: pkg.package_version,
+      event_type: pkg.event.event_type,
+      generated_at: pkg.event.generated_at,
+      // 内容整理（任务平台侧 AI 整理；字段结构化展示用）
+      ai_content: requirement.ai_content || "",
+      ai_structured_result: requirement.ai_structured_result ?? null,
+      final_content: requirement.final_content || "",
+      // 原始反馈
+      original_content: requirement.original_content || "",
+      original_rich_content: requirement.original_rich_content || "",
+      supplements: (requirement.original_supplements ?? []).map(s => ({
+        content: s.content,
+        operator: s.operator.display_name,
+        created_at: s.created_at,
+      })),
+      confirmed_baseline: {
+        final_content: requirement.confirmed_baseline.final_content || "",
+        acceptance_criteria: requirement.confirmed_baseline.acceptance_criteria ?? [],
+        missing_fields: requirement.confirmed_baseline.missing_fields ?? [],
+        confirmed: requirement.confirmed_baseline.confirmed === true,
+        confirmed_at: requirement.confirmed_baseline.confirmed_at,
+        confirmed_by: requirement.confirmed_baseline.confirmed_by,
+      },
+      // 研发自测提交（正式开发节点审核通过的提交记录，字段级）
+      self_test: {
+        submitted_at: selfTest.submitted_at,
+        review_mode: selfTest.review_mode,
+        approval_status: selfTest.approval_status,
+        reviewed_at: selfTest.reviewed_at,
+        request_reason: selfTest.request_reason,
+        sections: selfTest.submission_sections ?? [],
+        related_links: selfTest.related_links ?? [],
+      },
+      // 节点变更记录（含结构化 sections：变更原因/影响范围/验证结果/风险说明等）
+      changes: (pkg.changes ?? []).map(c => ({
+        node: c.node_label,
+        node_code: c.node_code,
+        batch: c.change_batch_no,
+        sequence: c.change_sequence,
+        content: c.change_content,
+        sections: c.sections ?? [],
+        changed_at: c.changed_at,
+        operator: c.operator.display_name,
+      })),
+      // 包附件清单（研发判断文档/排期设计文档等，含归属节点）
+      attachments: (pkg.attachments ?? []).map(a => ({
+        attachment_id: a.attachment_id,
+        file_name: a.file_name,
+        file_category: a.file_category,
+        node_code: a.node_code,
+        file_size: a.file_size,
+        content_type: a.content_type,
+        download_url: a.download_url,
+      })),
+      // 排期设计文档引用（任务平台侧"三份 md"的结构化传递）
+      schedule_design_documents: pkg.schedule_design_documents ?? [],
+      // 交接文档（任务平台侧渲染的结构化全量 md）
+      handoff_document: pkg.handoff_document
+        ? { title: pkg.handoff_document.title, content: pkg.handoff_document.content }
+        : null,
+      // 新轮次的回归上下文（上轮失败问题 + 整改说明）
+      regression_context: pkg.regression_context
+        ? {
+            previous_failed_issues: pkg.regression_context.previous_failed_issues ?? [],
+            rectifications: pkg.regression_context.rectifications ?? [],
+          }
+        : null,
+    });
   }
 }

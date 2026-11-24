@@ -132,6 +132,8 @@ export interface TaskDetail {
     selfTestDigest: Record<string, unknown> | null;
     /** 平台任务：节点变更摘要数组（node/batch/content/...）；本地任务空数组。 */
     changesDigest: Array<Record<string, unknown>>;
+    /** 平台任务：交接包结构化资料全集（内容整理/原始反馈含补充意见/自测提交字段级/变更 sections/包附件/文档引用/回归上下文）；老库回填前 null。 */
+    packageDetail: Record<string, unknown> | null;
     /** 平台任务：复杂度/预估天数。 */
     complexityLevel: string | null;
     estimatedDays: number | null;
@@ -345,6 +347,7 @@ export class QaPlatformTaskService {
           `SELECT feedback_type, estimated_hours, local_title_note, local_test_focus_note,
                   local_edited_at, source_url,
                   requirement_baseline_json, self_test_digest_json, changes_digest_json,
+                  package_detail_json,
                   submitter_name, assignee_name, complexity_level, estimated_days
              FROM platform_task_links WHERE link_id = ? AND project_id = ?`
         )
@@ -359,6 +362,7 @@ export class QaPlatformTaskService {
             requirement_baseline_json: string | null;
             self_test_digest_json: string | null;
             changes_digest_json: string | null;
+            package_detail_json: string | null;
             submitter_name: string | null;
             assignee_name: string | null;
             complexity_level: string | null;
@@ -373,6 +377,9 @@ export class QaPlatformTaskService {
         localTestFocusNote: full?.local_test_focus_note ?? "",
         localEditedAt: full?.local_edited_at ?? null,
         sourceUrl: full?.source_url ?? "",
+        // 交接包结构化资料全集（内容整理/原始反馈含补充意见/自测提交字段级/变更 sections/
+        // 包附件/三份文档引用/回归上下文）；老库回填前为 null，前端回退 digest 字段展示。
+        packageDetail: parseJson(full?.package_detail_json) as Record<string, unknown> | null,
         requirementBaseline: parseJson(full?.requirement_baseline_json) as Record<string, unknown> | null,
         selfTestDigest: parseJson(full?.self_test_digest_json) as Record<string, unknown> | null,
         changesDigest: (Array.isArray(parseJson(full?.changes_digest_json))
@@ -403,6 +410,7 @@ export class QaPlatformTaskService {
         requirementBaseline: null,
         selfTestDigest: null,
         changesDigest: [],
+        packageDetail: null,
         submitter: null,
         assignee: null,
         complexityLevel: null,
@@ -458,6 +466,7 @@ export class QaPlatformTaskService {
         requirementBaseline: extra.requirementBaseline ?? null,
         selfTestDigest: extra.selfTestDigest ?? null,
         changesDigest: extra.changesDigest ?? [],
+        packageDetail: extra.packageDetail ?? null,
         complexityLevel: extra.complexityLevel ?? null,
         estimatedDays: extra.estimatedDays ?? null,
         ends: item.ends,

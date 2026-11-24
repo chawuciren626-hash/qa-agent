@@ -78,6 +78,8 @@ export interface TaskDetail {
     requirementBaseline?: { final_content?: string; original_content?: string; acceptance_criteria?: string[]; confirmed?: boolean; confirmed_at?: string | null } | null;
     selfTestDigest?: { reviewed_at?: string | null; review_mode?: string | null; test_address?: string; self_test_result?: string; affected_modules?: string; known_risks?: string; test_focus?: string; version_info?: string; related_links?: string[] } | null;
     changesDigest?: Array<{ node?: string; node_code?: string; batch?: number; sequence?: number; content?: string; changed_at?: string | null; operator?: string | null }>;
+    /** 交接包结构化资料全集（内容整理/原始反馈含补充意见/自测提交字段级/变更 sections/包附件/文档引用/回归上下文）；老库回填前 null。 */
+    packageDetail?: Record<string, unknown> | null;
     description: string | null;
     localTitleNote: string;
     localTestFocusNote: string;
