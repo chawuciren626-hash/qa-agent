@@ -186,7 +186,7 @@ export function findParentDispatch(parent, { runId, agent, childId, dispatchedAt
   if (call.outputs.length !== 1) return null;
   let returned=call.outputs[0].output.payload;
   // A continuation must use the native retained handle from this exact call.
-  const retained=/^\[subagent retained with subagent_id (subagent-[A-Za-z0-9-]+);[^\r\n]*\]/.exec(String(returned.output));
+  const retained=/(?:^|\n)\[subagent retained with subagent_id (subagent-[A-Za-z0-9-]+);[^\r\n]*\]/.exec(String(returned.output));
   if(retained) {
     const continuations=parent.filter(row=>{
       if(row.payload?.type!=='tool_call' || row.payload.name!=='input_subagent' || Date.parse(row.timestamp)<=Date.parse(call.outputs[0].output.timestamp)) return false;

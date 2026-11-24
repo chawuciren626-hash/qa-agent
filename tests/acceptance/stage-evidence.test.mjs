@@ -101,6 +101,18 @@ test('only native retained-handle continuation can complete an interrupted bindi
   assert.equal(findParentDispatch([...rows,call,{...output,payload:{...output.payload,stop_reason:'aborted'}}],request),null);
 });
 
+test('retained handle appended after streamed child text still binds its continuation',()=>{
+  // Real abort traces carry the child's partial output first and append the retained marker
+  // on a later line; an anchored-only match would make every such dispatch unrecoverable.
+  const rows=trace();rows[2].payload.stop_reason='aborted';
+  rows[2].payload.output='我先读取输入原文和技能文档。\n\n我已读取派发契约。\n\n[subagent retained with subagent_id subagent-streamed; parent stopped; continue this child with input_subagent after the user resumes]\n[interrupted: tool aborted by user]';
+  const call={timestamp:'2026-10-09T02:06:00Z',type:'model_msg',payload:{type:'tool_call',name:'input_subagent',tool_call_id:'resume',arguments:{subagent_id:'subagent-streamed',prompt:'continue'}}};
+  const output={timestamp:'2026-10-09T02:06:30Z',type:'model_msg',payload:{type:'tool_call_output',tool_call_id:'resume',stop_reason:'completed',output:'Delivered'}};
+  assert.equal(findParentDispatch([...rows,call],request),null);
+  assert.equal(findParentDispatch(rows,request),null);
+  assert.equal(findParentDispatch([...rows,call,output],request)?.tool_call_id,'call-a');
+});
+
 test('handle lookup distinguishes interrupted, returned and pending; denied redispatch is ignored',()=>{
   const dispatch={agent:request.agent,at:request.dispatchedAt,dispatch_id:'dispatch-a',child_command_policy:'policy-a'};
   const rows=trace();rows[0].payload.arguments={agent_id:request.agent,prompt:`${request.runId} dispatch-a policy-a`};
