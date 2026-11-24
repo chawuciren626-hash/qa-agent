@@ -204,6 +204,7 @@ import { docksOnScreen, openPanel } from "../../features/dock/dock-state";
 import { dockWorkspace } from "../../features/dock/dock-terminal";
 import { CreateProjectDialog, ProjectSettingsDialog } from "./project-dialogs";
 import { UserMenu } from "./user-menu";
+import { usesQaSidebar } from "./sidebar-surface";
 import { PinnedBalanceBadge } from "../../features/models/group-balance";
 import { isCurrentPath, renderRouterLink } from "./router-link";
 import { navNoteFor, useUpdateBadges } from "../../lib/use-update-badges";
@@ -1969,7 +1970,12 @@ export function Sidebar({
 
   // Deployment identity is known before this shell mounts. An unfinished Agent fetch
   // must not briefly select the upstream sidebar (also applies on Project switches).
-  if (!inCompany && (accountClient || agents.some((agent) => agent.agentId === "test_agent"))) return (
+  if (usesQaSidebar({
+    inCompany,
+    accountClient,
+    hasTestAgent: agents.some((agent) => agent.agentId === "test_agent"),
+    pathname: location.pathname,
+  })) return (
     <QaSessionActions.Provider value={{ pins: pinnedSessions, row: (session: SessionInfo) => renderRows([session], false), overlays: dialogs,
       searchQuery, searchOpen,
       searchControl: searchOpen ? <SearchInput ref={searchInputRef} icon alwaysClearable autoFocus className="min-w-0 flex-1" value={searchQuery} onChange={setSearchQuery} onClear={closeSearch} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); closeSearch(); } }} placeholder={S.chat.searchSessionsPlaceholder} aria-label={S.chat.searchSessions} clearLabel={S.chat.searchClear} /> : <SidebarControl label={S.chat.searchSessions} tooltip={searchTitle} glyph={ICONS.search} onClick={() => setSearchOpen(true)} />,
