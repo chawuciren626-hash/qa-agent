@@ -44,7 +44,6 @@ import { SessionsProvider } from "./state/sessions";
 import { CompanyProvider } from "./state/company";
 import { AppLayout } from "./components/layout/app-layout";
 import { IntegratedAccountPage } from "./pages/integrated-account";
-import { LoginPage } from "./pages/login";
 import { ChatPage } from "./features/chat/chat-page";
 import { QaSectionPage } from "./features/qa/workspace-ui";
 import { QaProjectView } from "./features/qa/project-view";
@@ -167,7 +166,7 @@ function LoginRoute() {
   const { user } = useAuth();
   if (user === undefined) return null;
   if (user) return <Navigate to="/qa/projects" replace />;
-  return <IntegratedAccountPage login fallback={<LoginPage />} />;
+  return <IntegratedAccountPage />;
 }
 
 /**
