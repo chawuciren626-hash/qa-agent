@@ -12,15 +12,15 @@ export { requiredArtifacts } from './artifact-contracts.mjs';
 
 // Eligibility only: completion still validates the child and artifacts under lock.
 // Historical failure wording must not permanently invalidate a recovered draft.
-export function draftHandoffReconciliation(root,runId,manifest,stage,parentId,agentRoot) {
+export function draftHandoffReconciliation(root,runId,manifest,stage,parentId,agentRoot,cache=null) {
   if(!['analysis','test_points','test_cases','defects','report'].includes(stage) || !['blocked','failed'].includes(manifest.stages?.[stage]?.status)) throw new Error('Only blocked or failed draft delivery can reconcile');
   assertRecoveryDecisions(manifest,stage);
   const events=manifest.orchestration?.events ?? [];
   const dispatch=events.filter(e=>e.type==='dispatched' && e.stage===stage).at(-1);
   const block=events.filter(e=>e.stage===stage).at(-1);
   if(!dispatch || !['blocked','failed'].includes(block?.type) || block['dispatch-id']!==dispatch.dispatch_id || dispatch['parent-session-id']!==parentId) throw new Error('Current blocked or failed dispatch required');
-  const child=resolveDispatchedChild(root,runId,stage,parentId,agentRoot);
-  const rows=readSession(agentRoot ?? process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(),'.penguin/data/default_project/agents'),dispatch.agent,child.child_session);
+  const child=resolveDispatchedChild(root,runId,stage,parentId,agentRoot,{cache});
+  const rows=readSession(agentRoot ?? process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(),'.penguin/data/default_project/agents'),dispatch.agent,child.child_session,cache);
   const unexecuted=rows.filter((row,index)=>row.payload?.type==='tool_call' && toolOutcome(row.payload)==='retryable' && toolWasNotExecuted(rows,index)).map(row=>row.payload.tool_call_id);
   return {kind:'current_dispatch_revalidation',previous_stage:structuredClone(manifest.stages[stage]),child_session:child.child_session,
     dispatch_id:dispatch.dispatch_id,binding:child.binding,unexecuted_tool_calls:unexecuted,
@@ -75,7 +75,7 @@ export function verifyActionRecoveryReceipt(root, runId, parentId, dispatchedAt,
   return receipt.session_id===parentId && (receipt.run_id===runId || unboundRequest) && receipt.run_id===result.run_id && Date.parse(receipt.at)>=Date.parse(dispatchedAt) && typeof receipt.task_key==='string' && receipt.status===result.status && receipt.exit_code===result.exit_code && receipt.task_key===result.task_key && JSON.stringify(receipt.recovery ?? null)===JSON.stringify(result.recovery ?? null);
 }
 
-function verifiedParentArtifactCorrection(root,runId,stage,parentId,childId,agentRoot,dispatchAt,childRows,key) {
+function verifiedParentArtifactCorrection(root,runId,stage,parentId,childId,agentRoot,dispatchAt,childRows,key,cache=null) {
   if(stage!=='execution' || key!==`${runId}:validate_artifacts:execution`) return false;
   const failures=childRows.flatMap(row=>{
     if(row.payload?.type!=='tool_call_output' || typeof row.payload.output!=='string') return [];
@@ -91,7 +91,7 @@ function verifiedParentArtifactCorrection(root,runId,stage,parentId,childId,agen
     const current=inspectStageArtifacts(root,runId,stage);
     if(current.status!=='passed' || current.errors.length) return false;
     const base=dataPath(root,'output/action-audit',parentId),commandBase=dataPath(root,'output/command-runs');
-    const parent=readSession(agentRoot,'test_agent',parentId);
+    const parent=readSession(agentRoot,'test_agent',parentId,cache);
     for(const name of readdirSync(base).filter(name=>/^[a-f0-9-]{36}\.json$/.test(name))) {
       try {
         const receiptPath=resolve(base,name);
@@ -118,7 +118,13 @@ function verifiedParentArtifactCorrection(root,runId,stage,parentId,childId,agen
   return false;
 }
 
-export function readSession(agentRoot, agent, id) {
+// One verification reads the same traces several times (parent, child, replay).
+// The cache lives exactly as long as one handoff/revision call, so a caller never
+// sees a trace older than the call that asked for it.
+export function readSession(agentRoot, agent, id, cache = null) {
+  const cacheKey = `${resolve(agentRoot)}\0${agent}\0${id}`;
+  const cached = cache?.get(cacheKey);
+  if (cached) return cached;
   const match = /^session-(\d{4}-\d{2}-\d{2})-\d{2}-\d{2}-\d{2}-[a-f0-9]+$/.exec(id ?? '');
   if (!match || !/^[a-z0-9_-]+$/.test(agent)) throw new Error('Valid agent and session ID required');
   const dir = resolve(agentRoot, agent, 'traces', match[1]);
@@ -126,7 +132,7 @@ export function readSession(agentRoot, agent, id) {
   if (!files.length) throw new Error('PenguinHarness session trace missing');
   const rows=files.flatMap(name => readFileSync(resolve(dir, name), 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)));
   const commands=new Map(rows.filter(r=>r.payload?.type==='tool_call' && ['exec_command','input_command'].includes(r.payload.name)).map(r=>[r.payload.tool_call_id,r]));
-  return rows.map(row=>{
+  const parsed=rows.map(row=>{
     const p=row.payload;
     if(p?.type!=='tool_call_output' || !commands.has(p.tool_call_id) || typeof p.output!=='string') return row;
     const call=commands.get(p.tool_call_id),name=call.payload.name;
@@ -137,7 +143,7 @@ export function readSession(agentRoot, agent, id) {
       const args=typeof call.payload.arguments==='string'?JSON.parse(call.payload.arguments):call.payload.arguments;
       const processId=args?.process_id;
       if(!/^proc-[A-Za-z0-9-]+$/.test(processId??'')) throw new Error('Archived poll process identity missing');
-      const launches=rows.slice(0,rows.indexOf(call)).filter(r=>r.payload?.type==='tool_call_output' && commands.get(r.payload.tool_call_id)?.payload.name==='exec_command' && String(r.payload.output).endsWith(`[process running with process_id ${processId}; use input_command to send input or poll for output]`));
+      const launches=rows.slice(0,rows.indexOf(call)).filter(r=>r.payload?.type==='tool_call_output' && commands.get(r.payload.tool_call_id)?.payload.name==='exec_command' && String(r.payload.output).trim().endsWith(`[process running with process_id ${processId}; use input_command to send input or poll for output]`));
       if(launches.length!==1) throw new Error('Archived poll has no unique originating command');
       if(suffix && suffix!==`[process ${processId} had already exited (exit code 0); session removed]`) throw new Error('Archived poll has an unverified terminal suffix');
     } else if(suffix && !/^\[exit code: [1-9]\d{0,2}\]$/.test(suffix)) throw new Error('Archived command has an unverified suffix');
@@ -155,17 +161,36 @@ export function readSession(agentRoot, agent, id) {
     }
     return {...row,payload:{...p,output:full,archived_output_path:path}};
   });
+  cache?.set(cacheKey,parsed);
+  return parsed;
 }
 
-export function assertParentSession(root, runId, id, agentRoot = process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(), '.penguin/data/default_project/agents')) {
+export function assertParentSession(root, runId, id, agentRoot = process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(), '.penguin/data/default_project/agents'), cache = null) {
   assertContextSession(root,id);
-  const rows = readSession(agentRoot, 'test_agent', id);
+  const rows = readSession(agentRoot, 'test_agent', id, cache);
   const meta = rows.find(row => row.type === 'session_meta')?.payload;
   if (meta?.session_id !== id || resolve(meta.agent_state ?? '') !== resolve(agentRoot, 'test_agent/agent_state') || !sessionWorkspaces(root,runDirectory(root, runId)).includes(resolve(meta.workspace ?? ''))) throw new Error('Parent session identity or workspace mismatch');
   return rows;
 }
 
+// One index of tool results keeps the per-call scan linear in trace length. The
+// previous form walked the whole trace once per subagent call, so a long controller
+// session paid O(n²) on every handoff, three or four handoffs per stage.
+function toolResultsById(parent) {
+  const index=new Map();
+  for(const [position,row] of parent.entries()) {
+    if(row.type!=='model_msg' || row.payload?.type!=='tool_call_output') continue;
+    const id=row.payload.tool_call_id;
+    if(!id) continue;
+    const list=index.get(id);
+    if(list) list.push({output:row,position});
+    else index.set(id,[{output:row,position}]);
+  }
+  return index;
+}
+
 export function findParentDispatch(parent, { runId, agent, childId, dispatchedAt, dispatchId, commandPolicy, parallel = false, includeFailed = false, includeInterrupted = false }) {
+  const results=toolResultsById(parent);
   const calls = [];
   for (const [index, row] of parent.entries()) {
     if (row.type !== 'model_msg' || row.payload?.type !== 'tool_call' || row.payload.name !== 'run_subagent') continue;
@@ -173,7 +198,7 @@ export function findParentDispatch(parent, { runId, agent, childId, dispatchedAt
       let args;try {args=typeof row.payload.arguments==='string'?JSON.parse(row.payload.arguments):row.payload.arguments;} catch {continue;}
       if(!dispatchId || args?.agent_id!==agent || !String(args.prompt).split(/[^A-Za-z0-9-]+/).includes(dispatchId)) continue;
     }
-    const outputs = parent.map((output, position) => ({ output, position })).filter(({ output, position }) => position > index && output.type === 'model_msg' && output.payload?.type === 'tool_call_output' && output.payload.tool_call_id === row.payload.tool_call_id);
+    const outputs = (results.get(row.payload.tool_call_id) ?? []).filter(entry => entry.position > index);
     // Token-bearing tasks bind to the dispatch; legacy traces require global uniqueness.
     calls.push({ row, index, outputs, end: outputs[0]?.position ?? parent.length });
   }
@@ -214,9 +239,11 @@ export function findParentDispatch(parent, { runId, agent, childId, dispatchedAt
 }
 
 export function matchingDispatchCalls(parent, runId, dispatch) {
+  const results=toolResultsById(parent);
   return parent.filter(row => {
     if (row.payload?.type !== 'tool_call' || row.payload.name !== 'run_subagent' || !(Date.parse(row.timestamp) >= Date.parse(dispatch.at))) return false;
-    if (parent.some(result => result.payload?.type === 'tool_call_output' && result.payload.tool_call_id === row.payload.tool_call_id && String(result.payload.output).startsWith('Tool call denied by the qa-delegation-guard hook'))) return false;
+    const denied=(results.get(row.payload.tool_call_id) ?? []).some(({output})=>String(output.payload.output).startsWith('Tool call denied by the qa-delegation-guard hook'));
+    if(denied) return false;
     let args;
     try { args = typeof row.payload.arguments === 'string' ? JSON.parse(row.payload.arguments) : row.payload.arguments; } catch { return false; }
     const tokens = String(args?.prompt).split(/[^A-Za-z0-9-]+/);
@@ -224,8 +251,8 @@ export function matchingDispatchCalls(parent, runId, dispatch) {
   });
 }
 
-export function resolveDispatchedChild(root, runId, stage, parentId, agentRoot = process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(), '.penguin/data/default_project/agents'), {includeFailed=false,includeInterrupted=false}={}) {
-  const parent=assertParentSession(root,runId,parentId,agentRoot);
+export function resolveDispatchedChild(root, runId, stage, parentId, agentRoot = process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(), '.penguin/data/default_project/agents'), {includeFailed=false,includeInterrupted=false,cache=null}={}) {
+  const parent=assertParentSession(root,runId,parentId,agentRoot,cache);
   const manifest=JSON.parse(readRunFile(runDirectory(root,runId),'manifest.json').data);
   const dispatch=manifest.orchestration?.events?.filter(e=>e.type==='dispatched' && e.stage===stage).at(-1);
   if (!dispatch || dispatch['parent-session-id']!==parentId) throw new Error('No current dispatch owned by this parent');
@@ -234,11 +261,11 @@ export function resolveDispatchedChild(root, runId, stage, parentId, agentRoot =
   const parallel=manifest.orchestration?.plan?.workflow_mode==='task' || (manifest.orchestration?.plan?.execution_branches?.length??0)>1;
   const owned=candidates.filter(childId=>{
     if(!parallel) return true;
-    try {return readSession(agentRoot,dispatch.agent,childId).some(r=>r.payload?.type==='text' && r.payload.role==='user' && r.payload.text?.split(/[^A-Za-z0-9-]+/).includes(dispatch.dispatch_id) && r.payload.text.includes(dispatch.child_command_policy));} catch {return false;}
+    try {return readSession(agentRoot,dispatch.agent,childId,cache).some(r=>r.payload?.type==='text' && r.payload.role==='user' && r.payload.text?.split(/[^A-Za-z0-9-]+/).includes(dispatch.dispatch_id) && r.payload.text.includes(dispatch.child_command_policy));} catch {return false;}
   });
   const matches=owned.map(childId=>({childId,binding:findParentDispatch(parent,{runId,agent:dispatch.agent,childId,dispatchedAt:dispatch.at,dispatchId:dispatch.dispatch_id,commandPolicy:dispatch.child_command_policy,parallel,includeFailed,includeInterrupted})})).filter(m=>m.binding);
   if (matches.length!==1) throw new CommandUsageError('No unique returned child for this dispatch; wait for the tool return, do not guess or scan directories');
-  const child=readSession(agentRoot,dispatch.agent,matches[0].childId);
+  const child=readSession(agentRoot,dispatch.agent,matches[0].childId,cache);
   const meta=child.find(r=>r.type==='session_meta')?.payload;
   if (meta?.session_id!==matches[0].childId || meta.source!=='subagent' || resolve(meta.agent_state ?? '')!==resolve(agentRoot,dispatch.agent,'agent_state') || !sessionWorkspaces(root,runDirectory(root,runId)).includes(resolve(meta.workspace ?? ''))) throw new Error('Resolved child identity or workspace mismatch');
   const failed=matches[0].binding.outcome==='failed';
@@ -284,14 +311,14 @@ export function resolveChildHandle(root, runId, stage, parentId, agentRoot) {
   return recordedChildHandle(rows, dispatch, runId);
 }
 
-export function verifyStageEvidence(root, runId, manifest, options, agentRoot = process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(), '.penguin/data/default_project/agents')) {
+export function verifyStageEvidence(root, runId, manifest, options, agentRoot = process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(), '.penguin/data/default_project/agents'), cache = null) {
   const dispatch = manifest.orchestration.events.filter(e => e.stage === options.stage && e.type === 'dispatched').at(-1);
   if (!dispatch) throw new Error('Dispatch event required');
   const childId = options['session-id'];
   const parentId = options['parent-session-id'];
   if (dispatch.dispatch_id && (options['dispatch-id'] !== dispatch.dispatch_id || parentId !== dispatch['parent-session-id'])) throw new Error('Completion does not belong to the current dispatch');
-  const child = readSession(agentRoot, dispatch.agent, childId);
-  const parent = readSession(agentRoot, 'test_agent', parentId);
+  const child = readSession(agentRoot, dispatch.agent, childId, cache);
+  const parent = readSession(agentRoot, 'test_agent', parentId, cache);
   if (dispatch.dispatch_id) {
     const matchingCalls = matchingDispatchCalls(parent,runId,dispatch);
     if (matchingCalls.length !== 1) throw new Error('Dispatch must bind exactly one child call; retries need failure and explicit recovery');
@@ -311,7 +338,7 @@ export function verifyStageEvidence(root, runId, manifest, options, agentRoot = 
       requireControlledCommands:true,
       allowRecovery:/^QA_COMMAND_POLICY_V[23] /.test(dispatch.child_command_policy),
       verifyRecovery:result=>verifyActionRecoveryReceipt(root,runId,parentId,dispatch.at,result),
-      verifyExternalRecovery:key=>verifiedParentArtifactCorrection(root,runId,options.stage,parentId,childId,agentRoot,dispatch.at,child,key),
+      verifyExternalRecovery:key=>verifiedParentArtifactCorrection(root,runId,options.stage,parentId,childId,agentRoot,dispatch.at,child,key,cache),
       verifyPartialBrowserFailure:options.stage==='execution'?partialBrowserFailureVerifier(root,runId,parentId,childId,manifest,partialFailures):undefined,
       stageWriteBoundary:{
         stage:options.stage,

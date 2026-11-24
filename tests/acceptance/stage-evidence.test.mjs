@@ -20,6 +20,34 @@ test('a denied shell detour is skipped while every other uncontrolled command is
   for(const cmd of ['rg "foo|bar" docs','Get-Content "E:/QAWorkspaces/run/input.md"']) assert.doesNotThrow(()=>inspect(cmd,true));
 });
 
+test('one verification reads each session trace once',()=>{
+  const root=mkdtempSync(resolve(tmpdir(),'qa-session-cache-')),agent=request.agent,id=request.childId;
+  const dir=resolve(root,agent,'traces/2026-10-09');mkdirSync(dir,{recursive:true});
+  const trace=resolve(dir,`${id}_001.jsonl`);
+  const write=rows=>writeFileSync(trace,rows.map(JSON.stringify).join('\n'));
+  write([{type:'session_meta',payload:{session_id:id}},{payload:{type:'text',role:'user',text:'x'}}]);
+  const cache=new Map(),first=readSession(root,agent,id,cache);
+  assert.equal(readSession(root,agent,id,cache),first,'the same call reuses one snapshot');
+  write([{type:'session_meta',payload:{session_id:id}}]);
+  assert.equal(readSession(root,agent,id,cache),first,'a cached snapshot never changes mid-call');
+  assert.equal(readSession(root,agent,id).length,1,'a new call re-reads the trace');
+  rmSync(root,{recursive:true,force:true});
+});
+
+test('one verification reads each session trace once',()=>{
+  const root=mkdtempSync(resolve(tmpdir(),'qa-session-cache-')),agent=request.agent,id=request.childId;
+  const dir=resolve(root,agent,'traces/2026-10-09');mkdirSync(dir,{recursive:true});
+  const trace=resolve(dir,`${id}_001.jsonl`);
+  const write=rows=>writeFileSync(trace,rows.map(JSON.stringify).join(String.fromCharCode(10)));
+  write([{type:'session_meta',payload:{session_id:id}},{payload:{type:'text',role:'user',text:'x'}}]);
+  const cache=new Map(),first=readSession(root,agent,id,cache);
+  assert.equal(readSession(root,agent,id,cache),first,'the same call reuses one snapshot');
+  write([{type:'session_meta',payload:{session_id:id}}]);
+  assert.equal(readSession(root,agent,id,cache),first,'a cached snapshot never changes mid-call');
+  assert.equal(readSession(root,agent,id).length,1,'a new call re-reads the trace');
+  rmSync(root,{recursive:true,force:true});
+});
+
 test('native truncated command output reads only the same session archive and preserves failure status',()=>{
   const root=mkdtempSync(resolve(tmpdir(),'qa-truncated-'));const agent=request.agent,id=request.childId;
   const dir=resolve(root,agent,'traces/2026-10-09');mkdirSync(dir,{recursive:true});

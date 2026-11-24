@@ -14,7 +14,7 @@ import { verifyInterruptedReportRecovery } from './interrupted-report-recovery.m
 export class HandoffInputError extends CommandUsageError {}
 
 // Precheck is read-only. The existing locked writers revalidate before each commit.
-export function inspectStageHandoff(root, parent, request, agentRoot) {
+export function inspectStageHandoff(root, parent, request, agentRoot, cache = null) {
   const {run_id: runId, stage, artifacts} = request;
   const manifest = JSON.parse(readRunFile(runDirectory(root,runId),'manifest.json').data);
   assertStageHistory(manifest,stage);
@@ -29,13 +29,17 @@ export function inspectStageHandoff(root, parent, request, agentRoot) {
   const commands = [];
   const partialReconciliation=stage==='execution' && ['blocked','failed'].includes(current.status);
   const draftReconciliation=stage!=='execution' && ['blocked','failed'].includes(current.status);
-  if(draftReconciliation) draftHandoffReconciliation(root,runId,manifest,stage,parent,agentRoot);
+  // One read of each session trace per inspection; every check below reuses it.
+  // A caller that inspects several stages of the same run passes its own map so the
+  // parent trace is parsed once for the whole sweep, not once per stage.
+  const sessions=cache ?? new Map();
+  if(draftReconciliation) draftHandoffReconciliation(root,runId,manifest,stage,parent,agentRoot,sessions);
   if(partialReconciliation) partialBrowserDelivery(root,runId,manifest);
   if (current.status==='in_progress' || partialReconciliation || draftReconciliation) {
     const recovery=request.recovery==='interrupted_report';
     if(recovery && stage!=='report') throw new Error('Interrupted report recovery is report-only');
-    const child = resolveDispatchedChild(root,runId,stage,parent,agentRoot,recovery?{includeInterrupted:true}:{});
-    const evidence=recovery?verifyInterruptedReportRecovery(root,runId,manifest,parent,artifacts,agentRoot):verifyStageEvidence(root,runId,manifest,{stage,'dispatch-id':dispatch.dispatch_id,'parent-session-id':parent,'session-id':child.child_session,artifacts:artifacts.join(',')},agentRoot);
+    const child = resolveDispatchedChild(root,runId,stage,parent,agentRoot,recovery?{includeInterrupted:true,cache:sessions}:{cache:sessions});
+    const evidence=recovery?verifyInterruptedReportRecovery(root,runId,manifest,parent,artifacts,agentRoot,sessions):verifyStageEvidence(root,runId,manifest,{stage,'dispatch-id':dispatch.dispatch_id,'parent-session-id':parent,'session-id':child.child_session,artifacts:artifacts.join(',')},agentRoot,sessions);
     if(partialReconciliation && !evidence.partial_browser_failures?.some(f=>['failed','timeout'].includes(f.status))) throw new Error('Blocked execution lacks a verified closed browser failure for partial delivery');
     assertDependencyArtifacts(root,runId,manifest,stage);
     assertArtifactContract(root,runId,stage,{mode:prepare?'prepare':'execute',artifacts});

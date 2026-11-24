@@ -11,7 +11,7 @@ const after = (a,b) => Number.isFinite(Date.parse(a)) && Date.parse(a) > Date.pa
 
 // Explicit engineering recovery for a report whose original child was interrupted.
 // This is never evidence that the child returned successfully.
-export function verifyInterruptedReportRecovery(root, runId, manifest, parentId, artifacts, agentRoot = process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(), '.penguin/data/default_project/agents')) {
+export function verifyInterruptedReportRecovery(root, runId, manifest, parentId, artifacts, agentRoot = process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(), '.penguin/data/default_project/agents'), cache = null) {
   if (manifest.stages?.report?.status !== 'in_progress') throw new Error('Interrupted report recovery requires an active report');
   const dispatch = manifest.orchestration?.events?.filter(e => e.type === 'dispatched' && e.stage === 'report').at(-1);
   if (!dispatch || dispatch['parent-session-id'] !== parentId) throw new Error('Report dispatch owner mismatch');
@@ -19,7 +19,7 @@ export function verifyInterruptedReportRecovery(root, runId, manifest, parentId,
   if (child.outcome !== 'interrupted' || child.completion_verified !== false) throw new Error('Original report child was not verified interrupted');
   const parent = assertParentSession(root, runId, parentId, agentRoot);
   if (recordedChildHandle(parent, dispatch, runId).subagent_id) throw new Error('Original child still has a recorded continuation handle');
-  const childRows = readSession(agentRoot, dispatch.agent, child.child_session);
+  const childRows = readSession(agentRoot, dispatch.agent, child.child_session, cache);
   const abort = childRows.filter(r => r.type === 'event_msg' && r.payload?.type === 'abort').at(-1);
   if (!abort || abort.payload?.error_code!=='user_abort') throw new Error('Child trace lacks a verified user interruption');
   const run = runDirectory(root, runId);

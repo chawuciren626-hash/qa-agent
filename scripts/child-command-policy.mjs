@@ -155,7 +155,8 @@ function terminalCommandOutput(rows, index, initial, allowRecovery) {
 // has no business side effects, so later structured action receipts remain the
 // evidence for delivery; this exception must never apply to execute.
 function backgroundCatalogWithoutOutput(rows, index, initial) {
-  const match = String(initial.payload.output ?? '').match(/^\[command running in background with process_id (proc-[A-Za-z0-9-]+); its completion will arrive as a user message — no need to poll\. Use input_command to interact \(kill: true stops it\)\]$/);
+  // Host messages arrive with a trailing newline on Windows; anchor the text, not the bytes.
+  const match = String(initial.payload.output ?? '').trim().match(/^\[command running in background with process_id (proc-[A-Za-z0-9-]+); its completion will arrive as a user message — no need to poll\. Use input_command to interact \(kill: true stops it\)\]$/);
   if (!match || toolOutcome(initial.payload) !== 'completed') return false;
   const polls = rows.slice(index + 1).filter(row => row.payload?.type === 'tool_call' && row.payload.name === 'input_command').filter(row => {
     try { const args = parseToolArguments(row); return args.process_id === match[1] && args.kill !== true; }
@@ -175,9 +176,13 @@ function recordedCorrection(result,{allowRecovery,allowUnresolvedRecovery,verify
   const recovery=result.recovery;
   if(!recovery) {
     // A request that never selected an action carries no key of its own.
-    if(result.status!=='rejected' || result.exit_code!==2 || result.run_id!==null || result.action!==null) return null;
+    // A receipt written before an action was selected omits these fields entirely,
+    // so absent and null both mean "no action was selected".
+    if(result.status!=='rejected' || result.exit_code!==2 || result.run_id!=null || result.action!=null) return null;
+    // Only a paused task is correctable; any other classification is a real stop.
+    if(result.classification!=='task_paused') return null;
     if(result.task_key==='unbound:request:') return {category:'request_correction',key:'unbound:request:',action:null};
-    return allowUnresolvedRecovery && result.classification==='task_paused' ? {category:'task_paused',key:result.task_key,action:null} : null;
+    return allowUnresolvedRecovery ? {category:'task_paused',key:result.task_key,action:null} : null;
   }
   // Receipts written before categories existed still describe a selected action.
   const category=recovery.category ?? (result.action ? 'input_correction' : null);
@@ -303,8 +308,10 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     if (result.status === 'completed' && (result.exit_code !== 0 || (!inProcess && result.result?.termination_confirmed !== true))) throw new Error('Child process completion is unconfirmed');
   }
   for(const key of pending) if(verifyExternalRecovery(key)) pending.delete(key);
-  if (pending.size && !allowUnresolvedRecovery) throw new Error('Recoverable errors were not resolved by a verified successful action');
-  if(pendingReads.size && !allowUnresolvedRecovery) throw new Error('Source read correction requires a matching native read and verified stage validation');
-  if (pendingUnkeyed.size) throw new Error('A recorded correction was not followed by verified artifact validation');
-  if (pendingCatalog) throw new Error('Project action catalog lookup failure was not corrected');
+  // Each open correction names what is still owed and the single action that clears it.
+  // A refusal that cannot be turned into the next command is the defect this guards.
+  if (pending.size && !allowUnresolvedRecovery) throw new Error(`Recoverable errors were not resolved by a verified successful action. Still open: ${[...pending].join(', ')}. Re-run each recorded action and let it succeed; a different action does not clear these keys.`);
+  if(pendingReads.size && !allowUnresolvedRecovery) throw new Error(`Source read correction requires a matching native read and verified stage validation. Still open: ${[...pendingReads].map(([,read])=>read.path).join(', ')}. Read each exact path with the native reader, then run one successful validate_artifacts for this stage; revising a draft does not clear it.`);
+  if (pendingUnkeyed.size) throw new Error(`A recorded correction was not followed by verified artifact validation. Still open: ${[...pendingUnkeyed].join(', ')}. Run validate_artifacts for this stage after the corrected attempt; re-dispatching does not clear it.`);
+  if (pendingCatalog) throw new Error('Project action catalog lookup failure was not corrected. Repeat the catalog lookup until its help response succeeds; no other action clears it.');
 }

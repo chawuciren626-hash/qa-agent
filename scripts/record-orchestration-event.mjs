@@ -102,11 +102,14 @@ if (eventType === "dispatched" && options.stage) {
     throw new Error(`阶段 ${options.stage} 必须使用 Skill: ${plannedSkills.join(",")}。`);
   }
 }
+// Every check in this event verifies the same child and parent traces; one snapshot
+// per event keeps a reconciliation from re-reading the same JSONL three times.
+const stageSessions = new Map();
 if (["completed", "failed", "blocked"].includes(eventType) && options.stage) {
   const current = manifest.stages[options.stage]?.status;
   const partialReconciliation=eventType==='completed' && options.stage==='execution' && ['blocked','failed'].includes(current);
   const draftReconciliation=eventType==='completed' && options.stage!=='execution' && ['blocked','failed'].includes(current);
-  if(draftReconciliation) draftHandoffReconciliation(root,runId,manifest,options.stage,options['parent-session-id']);
+  if(draftReconciliation) draftHandoffReconciliation(root,runId,manifest,options.stage,options['parent-session-id'],undefined,stageSessions);
   if(partialReconciliation) partialBrowserDelivery(root,runId,manifest);
   if (current !== "in_progress" && !partialReconciliation && !draftReconciliation) throw new Error(`阶段 ${options.stage} 当前状态为 ${current ?? "未计划"}，不能记录 ${eventType}。`);
   const dispatch = manifest.orchestration.events.filter(event => event.type === 'dispatched' && event.stage === options.stage).at(-1);
@@ -137,8 +140,8 @@ if (eventType === 'completed') {
   event.evidence = options.recovery ? {
     verified_at:new Date().toISOString(),parent_session_id:options['parent-session-id'],session_id:options['session-id'],
     artifacts:(options.artifacts??'').split(',').filter(Boolean).map(path=>{const file=readRunFile(runDirectory(root,runId),path);return {path:file.path,sha256:file.sha256};}),
-    recovery:verifyInterruptedReportRecovery(root,runId,manifest,options['parent-session-id'],(options.artifacts??'').split(',').filter(Boolean),process.env.PENGUIN_AGENT_ROOT)
-  } : verifyStageEvidence(root, runId, manifest, options);
+    recovery:verifyInterruptedReportRecovery(root,runId,manifest,options['parent-session-id'],(options.artifacts??'').split(',').filter(Boolean),process.env.PENGUIN_AGENT_ROOT,stageSessions)
+  } : verifyStageEvidence(root, runId, manifest, options, undefined, stageSessions);
   if(options.recovery && event.evidence.session_id!==event.evidence.recovery.child_session_id) throw new Error('Recovery child identity mismatch');
   event.evidence.artifact_contract = assertArtifactContract(root, runId, options.stage, { mode: manifest.stages[options.stage].mode, artifacts: (options.artifacts ?? '').split(',').filter(Boolean) });
   const reviewDocument = writeStageReviewDocument(dirname(manifestPath), options.stage, event.evidence.artifact_contract);
@@ -147,7 +150,7 @@ if (eventType === 'completed') {
     event.artifacts = options.artifacts;
   }
   if(['blocked','failed'].includes(manifest.stages[options.stage].status) && options.stage!=='execution') {
-    event.draft_delivery_reconciliation=draftHandoffReconciliation(root,runId,manifest,options.stage,options['parent-session-id']);
+    event.draft_delivery_reconciliation=draftHandoffReconciliation(root,runId,manifest,options.stage,options['parent-session-id'],undefined,stageSessions);
   }
   if(['blocked','failed'].includes(manifest.stages[options.stage].status) && options.stage==='execution') {
     if(!event.evidence.partial_browser_failures?.some(f=>['failed','timeout'].includes(f.status))) throw new Error('Blocked execution requires verified browser failure evidence for partial delivery');

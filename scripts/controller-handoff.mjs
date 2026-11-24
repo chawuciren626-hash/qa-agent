@@ -10,7 +10,10 @@ import { writeJson } from './orchestration-state.mjs';
 import { guardDelegation } from './delegation-guard.mjs';
 
 export function inspectHandoff(root,parentId,agentRoot) {
-  const rows=assertParentSession(root,'run-command-session',parentId,agentRoot);
+  // This sweep walks every run and stage owned by one controller. Every check below
+  // resolves the same parent trace, so one snapshot serves the whole sweep.
+  const sessions=new Map();
+  const rows=assertParentSession(root,'run-command-session',parentId,agentRoot,sessions);
   const state=readControllerSession(root,parentId);
   if(state.status!=='ready' && !(state.status==='stopped' && permitsArtifactContinuation(root,state,{action:'handoff'}))) return null;
   const runIds=new Set();
@@ -51,7 +54,7 @@ export function inspectHandoff(root,parentId,agentRoot) {
           if(!calls.some(call=>rows.some(r=>r.payload?.type==='tool_call_output' && r.payload.tool_call_id===call.payload.tool_call_id))) continue;
         }
         let child;
-        try { child=resolveDispatchedChild(root,runId,stage,parentId,agentRoot,{includeFailed:true}); }
+        try { child=resolveDispatchedChild(root,runId,stage,parentId,agentRoot,{includeFailed:true,cache:sessions}); }
         catch(error) { if(stage==='execution') continue; throw error; }
         if(child.outcome==='failed') {
           if(current.status==='in_progress') pending.push({dispatch_id:dispatch.dispatch_id,request:child.failure_template});
@@ -60,7 +63,7 @@ export function inspectHandoff(root,parentId,agentRoot) {
         if(stage==='execution') {
           try {partialBrowserDelivery(root,runId,manifest);} catch {continue;}
         }
-        inspectStageHandoff(root,parentId,{run_id:runId,stage,artifacts},agentRoot);
+        inspectStageHandoff(root,parentId,{run_id:runId,stage,artifacts},agentRoot,sessions);
         pending.push({dispatch_id:dispatch.dispatch_id,request:{action:'complete',run_id:runId,stage,dispatch_id:dispatch.dispatch_id,artifacts}});
       } else if(manifest.orchestration.plan.stages.find(s=>s.id===stage)?.confirmation==='after' || manifest.orchestration.plan.stages.find(s=>s.id===stage)?.result_confirmation==='after') {
         const completed=manifest.orchestration.events.filter(e=>e.type==='completed' && e.stage===stage).at(-1);
