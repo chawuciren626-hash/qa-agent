@@ -2,13 +2,18 @@ import { describe, expect, it } from "vitest";
 import { usesQaSidebar } from "../src/components/layout/sidebar-surface";
 
 describe("usesQaSidebar", () => {
-  it("keeps QA routes on the product shell before a Project or test Agent has loaded", () => {
+  it.each([
+    "/qa/projects",
+    "/chat",
+    "/chat/new",
+    "/chat/session-id",
+  ])("keeps %s on the product shell before a Project or test Agent has loaded", (pathname) => {
     expect(
       usesQaSidebar({
         inCompany: false,
         accountClient: false,
         hasTestAgent: false,
-        pathname: "/qa/projects",
+        pathname,
       }),
     ).toBe(true);
   });
@@ -29,7 +34,7 @@ describe("usesQaSidebar", () => {
       inCompany: false,
       accountClient: false,
       hasTestAgent: false,
-      pathname: "/chat",
+      pathname: "/settings",
     };
     expect(usesQaSidebar({ ...base, accountClient: true })).toBe(true);
     expect(usesQaSidebar({ ...base, hasTestAgent: true })).toBe(true);
