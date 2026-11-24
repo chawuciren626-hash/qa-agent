@@ -1,9 +1,18 @@
 /**
- * 客户端本地服务的任务同步 worker（同步层方案 阶段 B）。
+ * 客户端本地服务的任务同步 worker（同步层方案 阶段 B）——**仅本机服务模式使用**。
  *
- * 职责：定时从服务端（单实例 AITestHarness）增量拉取当前中央用户名下的平台任务，
- * upsert 写入本地镜像表 platform_task_links（server_link_id + acct_user_id 标记镜像语义）。
- * UI 列表/详情读本地镜像（离线可看）；"开始测试"先经 registerState 登记服务端。
+ * ⚠ 架构归属（2026-11-24 remote 客户端模式定稿后）：
+ * - remote 模式（安装配置 connection.mode="remote"）：桌面壳直开远程服务页面，
+ *   本机业务服务不启动（main.ts boot 直接 return；local-service.mjs 拒绝启动），
+ *   本 worker 没有宿主进程——列表/详情/开始测试全部是远程服务的 same-origin 请求，
+ *   业务数据只在远程库，本地不落镜像。本文件在该模式下不执行。
+ * - 本机服务模式（无 connection 配置的安装/开发态）：本机服务进程内，登录绑定钩子
+ *   按 acct_user_id 启动本 worker 拉增量到本地镜像（离线可看）。
+ *
+ * 职责（仅本机服务模式）：定时从服务端（单实例 AITestHarness）增量拉取当前中央用户
+ * 名下的平台任务，upsert 写入本地镜像表 platform_task_links（server_link_id +
+ * acct_user_id 标记镜像语义）。UI 列表/详情读本地镜像（离线可看）；
+ * "开始测试"先经 registerState 登记服务端。
  *
  * 隔离：本地镜像行带 acct_user_id（AccountClient 绑定的中央 userId），
  * 登录用户切换时各读各的镜像（与 WorkBuddy user-<ID> 隔离同构）。

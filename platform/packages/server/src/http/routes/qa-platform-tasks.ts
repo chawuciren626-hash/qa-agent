@@ -309,10 +309,12 @@ export function registerQaPlatformTaskRoutes(app: Hono<AppEnv>, deps: AgentsRout
       asHttp(e);
     }
     const found = svc.findAny(projectId, taskId) ?? notFound();
-    // B3 状态登记闸（同步层方案 K5）：平台镜像任务（server_link_id 非空）开工前先经
-    // 本地 sync worker 登记服务端（A3）——成功才继续建会话；离线/冲突 409 拦截提示
-    // （"开始测试必须在线登记"，本地缓存照常可看）。服务端直写行（server_link_id NULL）
-    // 与本地任务跳过；未配置同步（registerPlatformTaskState 返回 null）= 单机模式放行。
+    // B3 状态登记闸（同步层方案 K5）——仅本机服务模式有意义：平台镜像任务（server_link_id
+    // 非空）开工前先经本地 sync worker 登记服务端（A3）——成功才继续建会话；离线/冲突
+    // 409 拦截提示（"开始测试必须在线登记"，本地缓存照常可看）。服务端直写行
+    // （server_link_id NULL）与本地任务跳过；未配置同步（registerPlatformTaskState 返回
+    // null）= 放行。remote 客户端模式下本机服务不启动，开始测试请求直接落在远程服务
+    // 进程——行是服务端直写行（NULL），闸天然旁路，业务数据只在远程库。
     if (found.source === "platform") {
       const serverLinkId = (deps.db
         .prepare("SELECT server_link_id FROM platform_task_links WHERE link_id = ?")
