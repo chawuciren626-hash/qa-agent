@@ -84,37 +84,18 @@ const nativeRead = (file_path = path, stop = 'completed') => [
   call('read_file', 'native-read', { file_path }), output('native-read', 'source content', stop)
 ];
 
-test('F03: same-path native read resolves historical single-file Shell read failure', () => {
-  for (const cmd of [`Get-Content "${path}"`, `Get-Content -LiteralPath "${path}" -Raw`, `Get-Content -Path "${path}" -TotalCount 20 -Encoding UTF8`]) {
-    const rows = [...failedRead(cmd), ...nativeRead('e:\\qaworkspaces\\run\\inputs\\SOURCE.md')];
-    assert.doesNotThrow(() => assertChildCommands(rows, options));
-    assert.doesNotThrow(() => assertChildCommands(rows, { ...options, allowUnresolvedRecovery: true }));
-    assert.throws(() => assertChildCommands(rows), /Child command failed/);
+test('F03: a denied shell read needs no native repair while an executed one fails closed', () => {
+  const denied = cmd => [
+    call('exec_command', 'shell-read', { cmd }),
+    { type: 'event_msg', payload: { type: 'approval_decision', tool_call_id: 'shell-read', decision: 'deny' } },
+    output('shell-read', 'Tool call denied by the qa-stage-boundary hook: QA shell redirect: This command was NOT executed.', 'aborted')
+  ];
+  for (const cmd of [`Get-Content "${path}"`, `Get-Content -LiteralPath "${path}" -Raw`]) {
+    assert.doesNotThrow(() => assertChildCommands([...denied(cmd), ...nativeRead()], options));
+    assert.doesNotThrow(() => assertChildCommands(denied(cmd), options));
   }
-  const missingTool = failedRead();
-  missingTool[1].payload.output = '/usr/bin/sh: Get-Content: command not found';
-  assert.doesNotThrow(() => assertChildCommands([...missingTool, ...nativeRead()], options));
-  assert.throws(() => assertChildCommands(missingTool, options), /not corrected/);
+  assert.throws(() => assertChildCommands([...failedRead(), ...nativeRead()], options), /uncontrolled|Child command failed/);
 });
-
-test('F03: native recovery requires unique successful evidence for the same file after the failure', () => {
-  const duplicateCall = nativeRead(); duplicateCall.splice(1, 0, duplicateCall[0]);
-  const duplicateOutput = nativeRead(); duplicateOutput.push(duplicateOutput[1]);
-  const invalidArgs = nativeRead(); invalidArgs[0].payload.arguments = '{broken';
-  const noId = nativeRead(); noId.forEach(row => delete row.payload.tool_call_id);
-  for (const rows of [
-    nativeRead(path + '.other'), nativeRead(path, 'fatal'), nativeRead(path, 'aborted'),
-    nativeRead(path, 'interrupted'), nativeRead().slice(0, 1), duplicateCall, duplicateOutput, invalidArgs, noId
-  ]) {
-    for (const allowUnresolvedRecovery of [false, true]) {
-      assert.throws(() => assertChildCommands([...failedRead(), ...rows], { ...options, allowUnresolvedRecovery }), /not corrected/);
-    }
-  }
-  assert.throws(() => assertChildCommands([...nativeRead(), ...failedRead()], options), /not corrected/);
-  const failed = failedRead(), read = nativeRead();
-  assert.throws(() => assertChildCommands([failed[0], read[0], failed[1], read[1]], options), /not corrected/);
-});
-
 test('F03: reading one file cannot resolve listings, searches, multiple targets or unsafe commands', () => {
   for (const cmd of [
     `Get-ChildItem "${path}"`, `Select-String -Path "${path}" -Pattern foo`,

@@ -20,59 +20,10 @@ function isDirectBypass(command) {
   return /^\s*node(?:\.exe)?\s+(?:["']?[^\s"']*[\\/])?(?:generate-analysis-markdown|validate-artifacts|record-orchestration-event|resolve-stage-confirmation|select-test-cases|create-execution-plan)\.mjs(?:["']?)(?=\s|$)/i.test(String(command));
 }
 
-function isSuccessfulLiteralCount(command, response) {
-  if(toolOutcome(response)!=='completed') return false;
-  // Recognize only a literal-only grammar and its exact output; never evaluate code.
-  const outer=/^\s*node(?:\.exe)?\s+-e\s+"([^"\\`$%\r\n]+)"\s*$/.exec(String(command));
-  if(!outer || outer[1].length>12000) return false;
-  const declaration=/^\s*const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'([^'"\\`$%\r\n]*)'\s*;\s*/.exec(outer[1]);
-  if(!declaration || ['console','process','global','globalThis','require','module','exports'].includes(declaration[1])) return false;
-  let rest=outer[1].slice(declaration[0].length);const expected=[];
-  while(rest) {
-    const print=/^console\.log\(\s*([A-Za-z_][A-Za-z0-9_]*)(\.length)?\s*\)\s*;?\s*/.exec(rest);
-    if(!print || print[1]!==declaration[1] || expected.length>=4) return false;
-    expected.push(print[2]?String(declaration[2].length):declaration[2]);rest=rest.slice(print[0].length);
-  }
-  return expected.length>0 && String(response.output).replaceAll('\r\n','\n')===expected.join('\n')+'\n';
-}
-
-function isSafeInspection(command) {
-  const value = String(command ?? '').trim();
-  if (/`|\$\(|[\r\n]/.test(value)) return false;
-  if (/^find\s+["'][a-z]:[\\/][^"']+["'](?:\s+-maxdepth\s+\d+)?\s+-type\s+f(?:\s+2>\/dev\/null)?(?:\s*\|\s*(?:head\s+-\d+|sort))?$/i.test(value)) return true;
-  return /^(?:dir|ls|Get-ChildItem|Get-Content|Select-String)(?=\s|$)/i.test(value) &&
-    !/[;&>`\r\n]|\$\(/.test(value) &&
-    value.split('|').slice(1).every(segment => /^\s*(?:Select-Object|Out-String|Format-Table)(?:\s|$)/i.test(segment));
-}
-
-function isReadOnlyFind(command) {
-  const value=String(command ?? '').trim();
-  const sections=value.split('|');
-  if(sections.length>2 || (sections.length===2 && !/^\s*(?:head\s+-\d{1,4}|sort)\s*$/i.test(sections[1]))) return false;
-  const primary=sections[0].replace(/\s+2>\/dev\/null\s*$/i,'').trim();
-  if(!/^find\s+(?:output\/runs\/[A-Za-z0-9_./-]+|\/[a-z](?:\/[^\s;&|><`\r\n]+)?|"[a-z]:[\\/][^"\r\n]+"|'[a-z]:[\\/][^'\r\n]+'|[a-z]:[\\/][^\s;&|><`\r\n]+)(?:\s+.+)?$/i.test(primary)) return false;
-  return !/[;&><`\r\n]|\$\(|\s-(?:delete|exec|execdir|ok|okdir|fprint|fprintf|fls)(?:\s|$)/i.test(primary);
-}
-
-function isRecoverableReadOnlyShellDetour(command) {
-  const value=String(command ?? '').trim();
-  if (/`|\$\(|[\r\n]/.test(value)) return false;
-  if (/^node(?:\.exe)?\s+(?:["']?[^\s"']*[\\/])?project-action\.mjs(?:["']?)\s+catalog\s*\|\s*grep\s+-A\s+\d{1,3}\s+(?:'[^';&|><`\r\n]+'|"[^";&|><`\r\n]+")$/i.test(value)) return true;
-  if (/^pwd\s*&&\s*ls\s+-la\s+output\/action-requests\/?\s+2>\/dev\/null\s*\|\|\s*echo\s+(?:'[^';&|><`\r\n]+'|"[^";&|><`\r\n]+")$/i.test(value)) return true;
-  if (/^ls\s+-[A-Za-z]+\s+(?:"[^";&|><`\r\n]+"|'[^';&|><`\r\n]+'|[^\s;&|><`\r\n]+)\s+2>\/dev\/null(?:\s*\|\|\s*echo\s+(?:'[^';&|><`\r\n]+'|"[^";&|><`\r\n]+"))?$/i.test(value)) return true;
-  if (/^rg\s+/i.test(value)) {
-    const shellSyntax=value.replace(/'[^'\r\n]*'|"[^"\r\n]*"/g,'');
-    if (!/[;&|><`\r\n]|\$\(/.test(shellSyntax) && !/--pre(?:[\s='"]|$)/i.test(value.replace(/["']/g,''))) return true;
-  }
-  if(isReadOnlyFind(value)) return true;
-  const compound=value.split(/\s*&&\s*/);
-  if(compound.length>=2 && compound.length<=4 && compound.every(isSafeInspection)) return true;
-  return compound.length===2 && isSafeInspection(compound[0]) && isReadOnlyFind(compound[1]);
-}
-
+// Every shell call must use the controlled project entry point. The stage hook
+// denies anything else before execution, so no other command can become
+// evidence of delivery: there is no historical shell grammar left to re-litigate.
 export function isPermittedChildShell(command) {
-  // New tool calls use native file tools for inspection; historical traces retain
-  // their existing read-only compatibility checks below.
   return isControlledCommand(command);
 }
 
@@ -164,39 +115,10 @@ export function toolWasNotExecuted(rows,index) {
     String(terminal.payload.error_message).includes(`for tool "${call.name}" (tool_call_id="${call.tool_call_id}",`);
 }
 
-function normalizedInspectionPath(path) {
-  return path.replaceAll('\\', '/').replace(/\/$/, '').toLowerCase();
-}
-
-function inspectedPath(command) {
-  const path=String(command ?? '').match(/["']([a-z]:[\\/][^"']+)["']/i)?.[1];
-  return path ? normalizedInspectionPath(path) : null;
-}
-
-function isSingleFileRead(command) {
-  // Native file reads can replace a single content read, not listings or searches.
-  return /^\s*Get-Content\s+(?:(?:-LiteralPath|-Path)\s+)?(?:"[a-z]:[\\/][^"*?\[\]]+"|'[a-z]:[\\/][^'*?\[\]]+')(?:\s+(?:-Raw|-(?:TotalCount|Tail)\s+\d+|-Encoding\s+[A-Za-z0-9-]+))*\s*$/i.test(String(command));
-}
-
 function isCatalogLookup(command) {
   return /^\s*node(?:\.exe)?\s+(?:"[^"]*project-action\.mjs"|'[^']*project-action\.mjs'|\S*project-action\.mjs)\s+catalog(?:\s+--(?:action|stage)=[^\s;&|><`\r\n]+)?\s*$/i.test(String(command));
 }
 
-function isHarmlessShellProbe(command, output) {
-  const value = String(command ?? '').trim();
-  if (!/command not found/.test(String(output ?? ''))) return false;
-  if (isSafeInspection(value)) return true;
-  if (/^pwsh -NoProfile -Command "Get-ChildItem -LiteralPath '[a-z]:[^'";&`]+?' -Recurse \| Select-Object FullName,Length"$/i.test(value)) return true;
-  if (/^printf 'DOCX: '; head -c 4 [a-z]:[^\s;|]+ \| od -An -tx1; printf 'PDF: '; head -c 8 [a-z]:[^\s;|]+ \| od -An -tx1$/i.test(value)) return true;
-  return /^xxd -l 8 [a-z]:[^\s;|]+; xxd -l 8 [a-z]:[^\s;|]+$/i.test(value);
-}
-
-function isSuccessfulReportHeaderInspection(command, output) {
-  const value = String(command ?? '').trim();
-  if (!/^python - <<'PY'\r?\nfrom pathlib import Path\r?\nfor name in \['test_report\.docx','test_report\.pdf'\]:\r?\n\s+p = Path\('[a-z]:[^']+\/report'\)\/name\r?\n\s+data = p\.read_bytes\(\)\[:8\]\r?\n\s+print\(name, data\.hex\(\)\)\r?\nPY$/i.test(value)) return false;
-  const result = String(output ?? '');
-  return /test_report\.docx 504b0304[0-9a-f]{8}/i.test(result) && /test_report\.pdf 25504446[0-9a-f]{8}/i.test(result);
-}
 
 function entryModuleMissing(output) {
   const value = String(output ?? '');
@@ -249,18 +171,14 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
   assertStageWrites(rows,{stageWriteBoundary,allowRecovery});
   const pending = new Set();
   const pendingReads = new Map();
-  let pendingInspection = null;
   let pendingCatalog = false;
   let pendingShellProbes = 0;
   for (const [index, row] of rows.entries()) {
-    if(allowRecovery && (pendingInspection || pendingReads.size && stageWriteBoundary) && row.payload?.type==='tool_call' && row.payload.name==='read_file') {
+    if(allowRecovery && pendingReads.size && stageWriteBoundary && row.payload?.type==='tool_call' && row.payload.name==='read_file') {
       let args;try {args=parseToolArguments(row);} catch { /* A later valid native read may still correct this read-only detour. */ }
       const outputs=rows.slice(index+1).filter(item=>item.payload?.type==='tool_call_output' && item.payload.tool_call_id===row.payload.tool_call_id);
       const calls=rows.filter(item=>item.payload?.type==='tool_call' && item.payload.tool_call_id===row.payload.tool_call_id);
       if(typeof args?.file_path==='string' && row.payload.tool_call_id && calls.length===1 && outputs.length===1 && toolOutcome(outputs[0].payload)==='completed') {
-        const target=/^[a-z]:[\\/]/i.test(args.file_path) || isAbsolute(args.file_path) ? args.file_path : stageWriteBoundary && resolve(stageWriteBoundary.workspace,args.file_path);
-        if(pendingInspection?.nativeRead && index>pendingInspection.failedAt && target && normalizedInspectionPath(target)===pendingInspection.path) pendingInspection=null;
-        if(!stageWriteBoundary) continue;
         const path=normalizeRunRelative(stageWriteBoundary.runDirectory,args.file_path,stageWriteBoundary.workspace);
         for(const read of pendingReads.values()) if(read.scope==='engine'
           ? stageWriteBoundary.engineDirectory && isAbsolute(args.file_path) && resolve(args.file_path)===resolve(stageWriteBoundary.engineDirectory,read.path)
@@ -278,20 +196,10 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     const response = terminalCommandOutput(rows, index, outputs[0], allowRecovery);
     if(allowRecovery && wasRedirectedBeforeExecution(rows,index,response,row.payload.tool_call_id)) continue;
     if (!isControlledCommand(args?.cmd)) {
-      if(allowRecovery && isSuccessfulLiteralCount(args?.cmd,response.payload)) continue;
+      // A denied detour never ran; a recorded failure here has no compliant repair path.
       if (requireControlledCommands && isDirectBypass(args?.cmd)) throw new Error('Child bypassed the controlled project entry; file existence cannot prove compliant delivery');
-      const recoverableDetour=allowRecovery && !isSafeInspection(args?.cmd) && isRecoverableReadOnlyShellDetour(args?.cmd);
-      if (requireControlledCommands && !isSafeInspection(args?.cmd) && !isSuccessfulReportHeaderInspection(args?.cmd,response.payload.output) && !recoverableDetour) throw new Error('Child used an uncontrolled shell command; stage delivery requires the project entry point');
-      if (recoverableDetour && toolOutcome(response.payload) === 'fatal') pendingShellProbes++;
-      if (toolOutcome(response.payload) === 'fatal') {
-        const path = inspectedPath(args?.cmd);
-        if (recoverableDetour) {}
-        else if (allowRecovery && isSafeInspection(args?.cmd) && isSingleFileRead(args?.cmd) && path && !pendingInspection) pendingInspection = {path,nativeRead:true,failedAt:rows.indexOf(response)};
-        else if (allowRecovery && isHarmlessShellProbe(args?.cmd, response.payload.output)) pendingShellProbes++;
-        else if (!allowRecovery || !isSafeInspection(args?.cmd) || !path || pendingInspection) throw new Error('Child command failed');
-        else pendingInspection = {path,nativeRead:isSingleFileRead(args?.cmd),failedAt:rows.indexOf(response)};
-      } else if (pendingInspection && isSafeInspection(args?.cmd) && inspectedPath(args?.cmd) === pendingInspection.path && toolOutcome(response.payload) === 'completed') pendingInspection = null;
-      if (allowRecovery && toolOutcome(response.payload) === 'completed' && isSuccessfulReportHeaderInspection(args?.cmd, response.payload.output)) pendingShellProbes = 0;
+      if (requireControlledCommands) throw new Error('Child used an uncontrolled shell command; stage delivery requires the project entry point');
+      if (toolOutcome(response.payload) === 'fatal') throw new Error('Child command failed');
       continue;
     }
     const raw = response.payload.output;
@@ -384,7 +292,6 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
   for(const key of pending) if(verifyExternalRecovery(key)) pending.delete(key);
   if (pending.size && !allowUnresolvedRecovery) throw new Error('Recoverable errors were not resolved by a verified successful action');
   if(pendingReads.size && !allowUnresolvedRecovery) throw new Error('Source read correction requires a matching native read and verified stage validation');
-  if (pendingInspection) throw new Error('Read-only inspection failure was not corrected');
-  if (pendingShellProbes) throw new Error('Shell inspection failures were not followed by verified artifact validation');
+  if (pendingShellProbes) throw new Error('A recorded correction was not followed by verified artifact validation');
   if (pendingCatalog) throw new Error('Project action catalog lookup failure was not corrected');
 }

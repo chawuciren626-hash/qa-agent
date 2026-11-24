@@ -9,13 +9,15 @@ import { assertChildCommands, childCommandPolicy } from '../../scripts/child-com
 
 const request = { runId: 'run-synthetic-a', agent: 'requirement_analysis_agent', childId: 'session-2026-10-09-10-05-30-a8bced7d', dispatchedAt: '2026-10-09T02:05:25.179Z' };
 
-test('read-only shell inspection rejects substitutions and rg preprocessors',()=>{
-  const inspect=cmd=>assertChildCommands([
+test('a denied shell detour is skipped while every other uncontrolled command is rejected',()=>{
+  const denial='Tool call denied by the qa-stage-boundary hook: QA shell redirect: This command was NOT executed.';
+  const inspect=(cmd,denied=false)=>assertChildCommands([
     {payload:{type:'tool_call',name:'exec_command',tool_call_id:'inspect',arguments:{cmd}}},
-    {payload:{type:'tool_call_output',tool_call_id:'inspect',output:'files',stop_reason:'completed'}}
+    ...(denied?[{type:'event_msg',payload:{type:'approval_decision',tool_call_id:'inspect',decision:'deny'}},{payload:{type:'tool_call_output',tool_call_id:'inspect',output:denial,stop_reason:'aborted'}}]
+      :[{payload:{type:'tool_call_output',tool_call_id:'inspect',output:'files',stop_reason:'completed'}}])
   ],{allowRecovery:true,requireControlledCommands:true});
-  for(const cmd of ['rg "foo|bar" docs','find output/runs/run-example -type f | sort']) assert.doesNotThrow(()=>inspect(cmd));
-  for(const cmd of ['rg "$(touch marker)" docs','rg "`touch marker`" docs','rg "--pre" tool docs',"rg '--pre=tool' docs",'rg --"pre"=tool docs','find output/runs/run-example -delete','ls "$(touch marker)" 2>/dev/null']) assert.throws(()=>inspect(cmd),/uncontrolled/);
+  for(const cmd of ['rg "foo|bar" docs','find output/runs/run-example -type f | sort','Get-Content "E:/QAWorkspaces/run/input.md"','ls -la']) assert.throws(()=>inspect(cmd),/uncontrolled/);
+  for(const cmd of ['rg "foo|bar" docs','Get-Content "E:/QAWorkspaces/run/input.md"']) assert.doesNotThrow(()=>inspect(cmd,true));
 });
 
 test('native truncated command output reads only the same session archive and preserves failure status',()=>{
@@ -226,33 +228,31 @@ test('stage delivery rejects arbitrary shell generators and compound controlled 
   assert.throws(()=>assertChildCommands(pair('node scripts/project-action.mjs catalog && python generate-artifacts.py'),{requireControlledCommands:true}),/uncontrolled shell command/);
 });
 
-test('successful read-only shell inspections do not require extra artifact validation',()=>{
-  const pair=(id,cmd,output,stop_reason='completed')=>[
+test('denied shell detours never require artifact validation',()=>{
+  const pair=(id,cmd)=>[
     {payload:{type:'tool_call',name:'exec_command',tool_call_id:id,arguments:{cmd}}},
-    {payload:{type:'tool_call_output',tool_call_id:id,stop_reason,output}}
+    {type:'event_msg',payload:{type:'approval_decision',tool_call_id:id,decision:'deny'}},
+    {payload:{type:'tool_call_output',tool_call_id:id,stop_reason:'aborted',output:'Tool call denied by the qa-stage-boundary hook: QA shell redirect: This command was NOT executed.'}}
   ];
   const detours=[
-    ...pair('catalog-filter',`node scripts/project-action.mjs catalog | grep -A 20 '"explore_url"'`,'catalog excerpt'),
-    ...pair('workspace-probe','pwd && ls -la output/action-requests/ 2>/dev/null || echo "no action-requests"','/workspace\naction.json'),
-    ...pair('run-files','find E:/QAWorkspaces/run-a -maxdepth 3 -type f | head -50','manifest.json'),
-    ...pair('schema-search','find E:/Codex/AITestWorker -maxdepth 4 -type f -name "*test_case*schema*" -o -name "*schema*test_case*" 2>/dev/null | head -20','schemas/test_case.schema.json'),
-    ...pair('quoted-find','find "E:/QAWorkspaces/run-a" -name "*.schema.json" -o -name "test_case.schema.json"',''),
-    ...pair('compound-read','ls -la "E:/Codex/AITestWorker" && find "E:/Codex/AITestWorker" -maxdepth 3 -name "schemas" -type d','schemas'),
-    ...pair('directory-chain','ls -la E:/QAWorkspaces/run-a && ls -la E:/QAWorkspaces/run-a/output && ls -la E:/QAWorkspaces/run-a/output/runs/run-a && ls -la E:/QAWorkspaces/run-a/scripts','directories'),
-    ...pair('posix-skill-search','find /c -path "*/skills/playwright-execution/SKILL.md" 2>/dev/null | head -20','/c/skills/playwright-execution/SKILL.md'),
-    ...pair('optional-directory','ls -la "C:/Users/test/.penguin/agent_state/skills/" 2>/dev/null || echo "Not found"','Not found'),
-    ...pair('quiet-directory','ls -la "E:/QAWorkspaces/run-a/scripts/" 2>/dev/null','scripts'),
-    ...pair('source-search','rg -n "report-task.json|independent_required_artifacts|report" E:/Codex/AITestWorker/docs -S','')
+    ...pair('catalog-filter',`node scripts/project-action.mjs catalog | grep -A 20 '"explore_url"'`),
+    ...pair('workspace-probe','pwd && ls -la output/action-requests/ 2>/dev/null || echo "no action-requests"'),
+    ...pair('source-read','Get-Content "E:/QAWorkspaces/run-a/input.md"')
   ];
   const result={status:'completed',exit_code:0,script:'validate-artifacts.mjs',task_key:'run-a:validate_artifacts:execution',action_receipt:'receipt',execution_mode:'in_process',launches_child:false,result:{termination_confirmed:true}};
-  const validation=pair('validated','node scripts/project-action.mjs execute --controller-session=session-a --request=request.json',JSON.stringify(result));
+  const validation=[
+    {payload:{type:'tool_call',name:'exec_command',tool_call_id:'validated',arguments:{cmd:'node scripts/project-action.mjs execute --controller-session=session-a --request=request.json'}}},
+    {payload:{type:'tool_call_output',tool_call_id:'validated',output:JSON.stringify(result),stop_reason:'completed'}}
+  ];
   const options={allowRecovery:true,requireControlledCommands:true,verifyRecovery:()=>true};
   assert.doesNotThrow(()=>assertChildCommands([...detours,...validation],options));
   assert.doesNotThrow(()=>assertChildCommands(detours,options));
-  assert.throws(()=>assertChildCommands(pair('unsafe','node scripts/project-action.mjs catalog | python generate.py','ok'),options),/uncontrolled shell command/);
-  assert.throws(()=>assertChildCommands(pair('delete','find E:/QAWorkspaces/run-a -type f -delete','ok'),options),/uncontrolled shell command/);
-  assert.throws(()=>assertChildCommands(pair('write','find E:/QAWorkspaces/run-a -type f -fprint E:/out.txt','ok'),options),/uncontrolled shell command/);
-  assert.throws(()=>assertChildCommands(pair('third-command','ls -la "E:/run" && find "E:/run" -type f && python generate.py','ok'),options),/uncontrolled shell command/);
+  const executed=(id,cmd)=>[
+    {payload:{type:'tool_call',name:'exec_command',tool_call_id:id,arguments:{cmd}}},
+    {payload:{type:'tool_call_output',tool_call_id:id,stop_reason:'completed',output:'ok'}}
+  ];
+  assert.throws(()=>assertChildCommands(executed('unsafe','node scripts/project-action.mjs catalog | python generate.py'),options),/uncontrolled/);
+  assert.throws(()=>assertChildCommands(executed('delete','find E:/QAWorkspaces/run-a -type f -delete'),options),/uncontrolled/);
 });
 
 test('rejected lifecycle metrics in an independent report task require verified report validation',()=>{
@@ -515,7 +515,7 @@ test('failed, rejected, unknown and timed-out child commands cannot be hidden by
   assert.throws(() => assertChildCommands(pair('bad', JSON.stringify({ status: 'completed', exit_code: 0 }))));
 });
 
-test('reading controlled entry source is not treated as an action receipt', () => {
+test('a plain source read is never an action receipt', () => {
   const rows = [
     { payload: { type: 'tool_call', name: 'exec_command', tool_call_id: 'read', arguments: JSON.stringify({ cmd: "Get-Content 'E:\\Codex\\AITestWorker\\scripts\\project-action.mjs' -TotalCount 320" }) } },
     { payload: { type: 'tool_call_output', tool_call_id: 'read', output: 'export function run() {}', stop_reason: 'completed' } }
@@ -525,64 +525,23 @@ test('reading controlled entry source is not treated as an action receipt', () =
     { payload: { type: 'tool_call', name: 'exec_command', tool_call_id: 'search', arguments: JSON.stringify({ cmd: "Select-String -Path 'E:\\Codex\\AITestWorker\\scripts\\validate-artifacts.mjs' -Pattern 'test_cases'" }) } },
     { payload: { type: 'tool_call_output', tool_call_id: 'search', output: 'test_cases', stop_reason: 'completed' } }
   ];
-  assert.doesNotThrow(() => assertChildCommands(search, { requireControlledCommands: true }));
+  assert.throws(() => assertChildCommands(search, { requireControlledCommands: true }), /uncontrolled/);
 });
 
-test('a failed read-only directory inspection can be corrected without hiding command failures', () => {
+test('a failed uncontrolled inspection fails closed even when a later inspection succeeds', () => {
   const pair = (id, cmd, stop_reason) => [
     { payload: { type: 'tool_call', name: 'exec_command', tool_call_id: id, arguments: JSON.stringify({ cmd }) } },
     { payload: { type: 'tool_call_output', tool_call_id: id, output: stop_reason === 'fatal' ? 'Get-ChildItem: invalid /s' : 'analysis', stop_reason } }
   ];
-  const failed = pair('bad', 'dir "E:\\QAWorkspaces\\run" /b /s', 'fatal');
-  const corrected = pair('good', 'Get-ChildItem -Recurse "E:\\QAWorkspaces\\run" | Select-Object -ExpandProperty FullName', 'completed');
-  assert.doesNotThrow(() => assertChildCommands([...failed, ...corrected], { allowRecovery: true }));
-  assert.doesNotThrow(() => assertChildCommands([
-    ...pair('shell-mismatch', 'Get-ChildItem -Recurse "E:\\QAWorkspaces\\run" | Select-Object FullName', 'fatal'),
-    ...pair('posix-correction', 'find "E:/QAWorkspaces/run" -type f | head -100', 'completed')
-  ], { allowRecovery: true }));
-  assert.doesNotThrow(() => assertChildCommands([
-    ...pair('shell-mismatch', 'Get-ChildItem -Recurse -Name "E:\\QAWorkspaces\\run" | Select-Object -First 60', 'fatal'),
-    ...pair('posix-correction', 'find "E:/QAWorkspaces/run" -maxdepth 3 -type f | head -60', 'completed')
-  ], { allowRecovery: true }));
-  assert.doesNotThrow(() => assertChildCommands([
-    ...pair('shell-mismatch', 'Get-ChildItem -Path "E:\\QAWorkspaces\\run" -Recurse | Select-Object FullName, Length | Format-Table -AutoSize', 'fatal'),
-    ...pair('posix-correction', 'find "E:/QAWorkspaces/run" -maxdepth 4 -type f | sort', 'completed')
-  ], { allowRecovery: true }));
+  const failed = pair('bad', 'dir "E:////QAWorkspaces////run" /b /s', 'fatal');
+  const corrected = pair('good', 'Get-ChildItem -Recurse "E:////QAWorkspaces////run"', 'completed');
+  assert.throws(() => assertChildCommands([...failed, ...corrected], { allowRecovery: true }), /Child command failed/);
+  assert.throws(() => assertChildCommands([...failed, ...corrected]), /Child command failed/);
   assert.throws(() => assertChildCommands([
-    ...pair('shell-mismatch', 'Get-ChildItem -Recurse "E:\\QAWorkspaces\\run" | Select-Object FullName', 'fatal'),
-    ...pair('unsafe-correction', 'find "E:/QAWorkspaces/run" -exec rm {} \\;', 'completed')
-  ], { allowRecovery: true }), /not corrected/);
-  assert.doesNotThrow(() => assertChildCommands([
-    ...pair('read-bad', 'Get-Content "E:\\QAWorkspaces\\run\\input.md"', 'fatal'),
-    ...pair('read-good', 'Get-Content "E:\\QAWorkspaces\\run\\input.md" | Select-Object -First 5', 'completed')
-  ], { allowRecovery: true }));
-  assert.throws(() => assertChildCommands(failed, { allowRecovery: true }), /not corrected/);
-  assert.throws(() => assertChildCommands([...failed, ...pair('different', 'Get-ChildItem "E:\\QAWorkspaces\\other"', 'completed')], { allowRecovery: true }), /not corrected/);
-  assert.throws(() => assertChildCommands([...failed, ...corrected]));
-  assert.throws(() => assertChildCommands([...pair('bad', 'node destructive-script.mjs', 'fatal'), ...corrected], { allowRecovery: true }));
-  assert.throws(() => assertChildCommands([...pair('bad', 'dir x; Remove-Item x', 'fatal'), ...corrected], { allowRecovery: true }));
+    ...pair('read-bad', 'Get-Content "E:////QAWorkspaces////run////input.md"', 'fatal'),
+    ...pair('read-good', 'Get-Content "E:////QAWorkspaces////run////input.md"', 'completed')
+  ], { allowRecovery: true }), /Child command failed/);
 });
-
-test('missing shell inspection tools require a verified later artifact validation', () => {
-  const pair = (id, cmd, output, stop_reason) => [
-    { payload: { type: 'tool_call', name: 'exec_command', tool_call_id: id, arguments: JSON.stringify({ cmd }) } },
-    { payload: { type: 'tool_call_output', tool_call_id: id, output, stop_reason } }
-  ];
-  const failed = [
-    ...pair('directory', "Get-ChildItem -Path 'E:\\QAWorkspaces\\run' -Recurse | Select-Object FullName,Length", '/usr/bin/sh: Get-ChildItem: command not found', 'fatal'),
-    ...pair('header', 'xxd -l 8 E:/QAWorkspaces/run/report/test_report.docx; xxd -l 8 E:/QAWorkspaces/run/report/test_report.pdf', '/usr/bin/sh: xxd: command not found', 'fatal')
-  ];
-  const result = { status: 'completed', exit_code: 0, script: 'validate-artifacts.mjs', task_key: 'run-a:validate_artifacts:report', action_receipt: 'receipt', execution_mode: 'in_process', launches_child: false, result: { termination_confirmed: true } };
-  const validation = pair('validated', 'node scripts/project-action.mjs execute --controller-session=session-a --request=request.json', JSON.stringify(result), 'completed');
-  assert.doesNotThrow(() => assertChildCommands([...failed, ...validation], { allowRecovery: true, verifyRecovery: () => true }));
-  assert.throws(() => assertChildCommands(failed, { allowRecovery: true }), /not followed by verified artifact validation/);
-  assert.throws(() => assertChildCommands([...failed, ...validation], { allowRecovery: true, verifyRecovery: () => false }), /not followed by verified artifact validation/);
-  assert.throws(() => assertChildCommands([...pair('unsafe', 'xxd -l 8 E:/x; rm E:/x', 'xxd: command not found', 'fatal'), ...validation], { allowRecovery: true, verifyRecovery: () => true }), /Child command failed/);
-  const header = "python - <<'PY'\nfrom pathlib import Path\nfor name in ['test_report.docx','test_report.pdf']:\n    p = Path('E:/QAWorkspaces/run/report')/name\n    data = p.read_bytes()[:8]\n    print(name, data.hex())\nPY";
-  assert.doesNotThrow(() => assertChildCommands([...validation, ...failed, ...pair('header-ok', header, 'test_report.docx 504b030414000000\ntest_report.pdf 255044462d312e34', 'completed')], { allowRecovery: true, verifyRecovery: () => true }));
-  assert.throws(() => assertChildCommands([...validation, ...failed, ...pair('header-bad', header, 'test_report.docx bad\ntest_report.pdf bad', 'completed')], { allowRecovery: true, verifyRecovery: () => true }), /not followed by verified artifact validation/);
-});
-
 test('a missing catalog entry path is resolved only by a later successful catalog', () => {
   const pair = (id, cmd, output, stop_reason) => [
     { payload: { type: 'tool_call', name: 'exec_command', tool_call_id: id, arguments: JSON.stringify({ cmd }) } },
