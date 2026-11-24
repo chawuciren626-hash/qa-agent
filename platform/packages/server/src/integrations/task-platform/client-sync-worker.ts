@@ -24,6 +24,8 @@ export interface ClientSyncConfig {
   userId: string;
   /** 本地 web.db（镜像表所在库）。 */
   db: DatabaseSync;
+  /** 本地数据根（镜像项目显示名写入 <root>/<projectId>/.project_config.toml；缺省跳过）。 */
+  dataRoot?: string;
   /** 轮询间隔毫秒；默认 60s。 */
   intervalMs?: number;
   /** fetch 注入（测试用）。 */
@@ -48,7 +50,7 @@ const MIRROR_COLUMNS = `
   last_synced_at, server_link_id, acct_user_id, updated_at`;
 
 export class ClientTaskSyncWorker {
-  private readonly config: Required<Pick<ClientSyncConfig, "serverBaseUrl" | "serviceKey" | "userId" | "db" | "intervalMs">>;
+  private readonly config: Required<Pick<ClientSyncConfig, "serverBaseUrl" | "serviceKey" | "userId" | "db" | "intervalMs">> & { dataRoot: string };
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => Date;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -65,6 +67,7 @@ export class ClientTaskSyncWorker {
       serviceKey: config.serviceKey,
       userId: config.userId,
       db: config.db,
+      dataRoot: config.dataRoot ?? "",
       intervalMs: config.intervalMs ?? 60_000,
     };
     this.fetchImpl = config.fetchImpl ?? globalThis.fetch;
@@ -180,21 +183,40 @@ export class ClientTaskSyncWorker {
    * projects 无行时补建，使 platform_task_links.project_id 外键成立。幂等：
    * 已存在（无论手工还是上次补建）不改动——不覆盖 owner、不动 project_management。
    */
-  private ensureMirrorProject(projectId: string): void {
+  private ensureMirrorProject(projectId: string, displayName?: string): void {
     const exists = this.config.db
       .prepare("SELECT 1 FROM projects WHERE project_id = ?")
       .get(projectId);
-    if (exists) return;
-    this.config.db
-      .prepare("INSERT OR IGNORE INTO projects (project_id, owner_user_id, created_at) VALUES (?, ?, ?)")
-      .run(projectId, this.config.userId, this.now().toISOString());
-    // project_management 标记 sync 来源：项目列表"来源"展示与手工项目区分（服务端同款语义）。
-    this.config.db
-      .prepare(
-        `INSERT OR IGNORE INTO project_management (project_id, source_type, source_system_name)
-         VALUES (?, 'sync', 'sbkj-taskassignment')`,
-      )
-      .run(projectId);
+    if (!exists) {
+      this.config.db
+        .prepare("INSERT OR IGNORE INTO projects (project_id, owner_user_id, created_at) VALUES (?, ?, ?)")
+        .run(projectId, this.config.userId, this.now().toISOString());
+      // project_management 标记 sync 来源：项目列表"来源"展示与手工项目区分（服务端同款语义）。
+      this.config.db
+        .prepare(
+          `INSERT OR IGNORE INTO project_management (project_id, source_type, source_system_name)
+           VALUES (?, 'sync', 'sbkj-taskassignment')`,
+        )
+        .run(projectId);
+    }
+    // 显示名：项目列表读 <projectDir>/.project_config.toml 的 name（getName 回退 projectId
+    // ——不写就是一串 sync_ 编码）。主产品线名即同步项目名（服务端 bridge 建项目同语义）；
+    // 存量项目（此前只建了库行）也补写——config 文件缺失且未手工命名时幂等补名。
+    const name = (displayName ?? "").trim();
+    if (name && this.config.dataRoot) {
+      try {
+        const dir = path.join(this.config.dataRoot, projectId);
+        const file = path.join(dir, ".project_config.toml");
+        // 已有 config（含手工建的同名项目/已补名）不覆盖——不篡改任何既有命名。
+        if (!fs.existsSync(file)) {
+          fs.mkdirSync(dir, { recursive: true });
+          const escaped = name.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+          fs.writeFileSync(file, `name = "${escaped}"\n`, { encoding: "utf8", mode: 0o600 });
+        }
+      } catch {
+        // 显示名写入失败不阻断同步（列表回退显示 projectId）。
+      }
+    }
   }
 
   /** 镜像 upsert：按 server_link_id 定位（同库唯一），字段全量覆盖（服务端为准）。 */
@@ -232,9 +254,10 @@ export class ClientTaskSyncWorker {
     const linkId = `ptl-sync-${item.server_link_id}`.slice(0, 64);
     // 项目归属：platform_task_links.project_id 引用本机 projects（PRAGMA foreign_keys=ON），
     // 服务端下发的 project_id 在本机可能不存在——先补建镜像项目行再写任务
-    // （INSERT OR IGNORE 幂等；owner=当前登录用户，project_management 记 sync 来源，
-    // 与服务端 bridge 建同步项目同款语义；显示名走 project_config，镜像项目只建行）。
-    this.ensureMirrorProject(item.project_id);
+    // （INSERT OR IGNORE 幂等；owner=当前登录用户，project_management 记 sync 来源；
+    // 显示名 = 主产品线名，写入 .project_config.toml 供项目列表展示）。
+    const primaryLine = (item.product_lines ?? []).find((l) => l.isPrimary) ?? item.product_lines?.[0];
+    this.ensureMirrorProject(item.project_id, primaryLine?.name);
     this.config.db
       .prepare(
         `INSERT INTO platform_task_links (

@@ -44,7 +44,7 @@ const STATUS_LABEL: Record<string, string> = {
   pending_analysis: "待分析",
   ready: "可开始",
   in_progress: "进行中",
-  impact_pending: "待确认影响",
+  impact_pending: "资料已更新",
   result_returned: "已回传",
   terminated: "已终止",
 };
@@ -393,9 +393,9 @@ export function PlatformTasksPage() {
                           {task.status === "result_returned" && (
                             <button type="button" className="qpt-op qpt-op-accent" onClick={() => setRetestTarget(task)}>发起复测</button>
                           )}
-                          {task.status === "impact_pending" && (
-                            <button type="button" className="qpt-op qpt-op-main" onClick={() => openDetail(task)}>确认影响</button>
-                          )}
+                          {/* impact_pending 是同步层的"资料有新版本"机器状态，不是用户操作环节：
+                              用户流程 = 新建→分析→开始测试；此状态只影响状态列展示与详情页资料，
+                              不提供"确认影响"操作（2026-11-24 用户确认） */}
                         </div>
                       </td>
                     </tr>

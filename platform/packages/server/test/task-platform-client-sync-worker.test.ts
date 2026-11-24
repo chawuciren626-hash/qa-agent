@@ -4,6 +4,7 @@
  * 离线降级（不删缓存）、重放幂等、配置持久化。
  */
 import { DatabaseSync } from "node:sqlite";
+import fs from "node:fs";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -110,7 +111,7 @@ interface RouteMock {
   respond: () => Response | Promise<Response>;
 }
 
-function makeWorker(db: DatabaseSync, routes: RouteMock[], userId = "zhangsan") {
+function makeWorker(db: DatabaseSync, routes: RouteMock[], userId = "zhangsan", opts: { dataRoot?: string } = {}) {
   const fetchImpl = (async (url: URL | string): Promise<Response> => {
     const full = url instanceof URL ? url : new URL(url);
     for (const route of routes) {
@@ -123,6 +124,7 @@ function makeWorker(db: DatabaseSync, routes: RouteMock[], userId = "zhangsan") 
     serviceKey: "svc-key",
     userId,
     db,
+    dataRoot: opts.dataRoot,
     fetchImpl,
     intervalMs: 3_600_000, // 测试不触发定时
   });
@@ -213,6 +215,32 @@ describe("ClientTaskSyncWorker", () => {
     // 外键完整性校验通过
     const integrity = db.prepare("PRAGMA foreign_key_check").all();
     expect(integrity).toHaveLength(0);
+  });
+
+  it("mirror project display name is written to project_config.toml (列表显示产品线名而非 sync_ 编码)", async () => {
+    const db = makeDb();
+    const dataRoot = mkdtempSync(path.join(tmpdir(), "atp-names-"));
+    tempDirs.push(dataRoot);
+    const serverProjectId = "sync_data_platform_ab12cd34ef56aa11";
+    const { worker } = makeWorker(db, [
+      {
+        match: url => url.pathname.includes("/api/sync/v1/platform-tasks"),
+        respond: () => okPage([syncItem("srv-1", "task-1", "2026-11-23T00:00:00Z", { project_id: serverProjectId })]),
+      },
+    ], "zhangsan", { dataRoot });
+    await worker.tickOnce();
+    // 显示名 = 主产品线名写入 .project_config.toml（getName 读取源）
+    const configFile = path.join(dataRoot, serverProjectId, ".project_config.toml");
+    expect(fs.existsSync(configFile)).toBe(true);
+    const content = readFileSync(configFile, "utf8");
+    expect(content).toContain('name = "数据平台"');
+    // 存量项目补名：config 已存在时不覆盖（不篡改既有命名）
+    fs.writeFileSync(configFile, 'name = "手工命名"\n', "utf8");
+    const { worker: worker2 } = makeWorker(db, [
+      { match: () => true, respond: () => okPage([]) },
+    ], "zhangsan", { dataRoot });
+    await worker2.tickOnce();
+    expect(readFileSync(configFile, "utf8")).toContain('name = "手工命名"');
   });
 
   it("mirror project provisioning is idempotent and does not overwrite existing projects", async () => {

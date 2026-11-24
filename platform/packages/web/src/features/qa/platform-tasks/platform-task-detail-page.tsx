@@ -37,7 +37,7 @@ const STATUS_LABEL: Record<string, string> = {
   pending_analysis: "待分析",
   ready: "可开始",
   in_progress: "进行中",
-  impact_pending: "待确认影响",
+  impact_pending: "资料已更新",
   result_returned: "已回传",
   terminated: "已终止",
 };
@@ -276,7 +276,9 @@ export function PlatformTaskDetailPage() {
   const isLocal = t.source === "local";
   const s = detail.summary;
   const pkg = asPackageDetail(t.packageDetail);
-  const canStart = t.status === "ready" || t.status === "in_progress";
+  // 开始测试可用 = ready / in_progress（打开会话）/ impact_pending（资料有新版本仍可开工，
+  // 用户流程没有"确认影响"操作环节）；pending_analysis 受 TLQ-1 闸禁用。
+  const canStart = t.status === "ready" || t.status === "in_progress" || t.status === "impact_pending";
   const canAct = t.status !== "result_returned" && t.status !== "terminated";
 
   // 执行通道分组（B5-2）：类型 × 环境相同的运行归入同一通道。
@@ -319,6 +321,11 @@ export function PlatformTaskDetailPage() {
             {t.status === "in_progress" && (
               <button type="button" className="qpt-op qpt-op-main" disabled={starting} onClick={() => void doStart()}>
                 打开会话
+              </button>
+            )}
+            {t.status === "impact_pending" && (
+              <button type="button" className="qpt-op qpt-op-main" disabled={starting} onClick={() => void doStart()}>
+                {starting ? "启动中…" : "开始测试"}
               </button>
             )}
             {t.status === "pending_analysis" && (

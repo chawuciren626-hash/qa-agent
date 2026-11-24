@@ -959,9 +959,9 @@ export class QaPlatformTaskService {
     if (source === "platform" && row.status === "pending_analysis") {
       reject("analysis_required", "AI 分析未完成，开始测试不可用（TLQ-1）；可先点重试分析。");
     }
-    if (source === "platform" && row.status === "impact_pending") {
-      reject("impact_confirm_required", "新版本影响待确认，请先在详情中确认影响。");
-    }
+    // impact_pending（资料有新版本）不拦截开始测试：用户流程 = 新建→分析→开始测试，
+    // 没有"确认影响"操作环节（2026-11-24 用户确认）——新版本资料在详情页"平台资料"
+    // 四 tab 里可见；开始测试仅受 TLQ-1 闸约束。
     return found;
   }
 

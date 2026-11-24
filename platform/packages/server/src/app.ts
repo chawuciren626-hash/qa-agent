@@ -544,6 +544,7 @@ export function createApp(boot: ServerBoot): Hono<AppEnv> {
             serviceKey: syncConfig.serviceKey,
             userId: localId,
             db: boot.db as unknown as DatabaseSync,
+            dataRoot: deps.config.root, // 镜像项目显示名写入 <root>/<projectId>/.project_config.toml
             intervalMs: 60_000,
           });
           worker.start();
