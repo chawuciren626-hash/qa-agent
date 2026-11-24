@@ -159,3 +159,50 @@
 .qpt-project{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;padding:1px 8px;border-radius:6px;background:light-dark(#f2f4f7,#262f3d);color:light-dark(#4b5563,#d1d5db);font-size:11.5px}
 .qpt-pri-from{font-size:9.5px;font-weight:700;margin-left:4px;opacity:.6;letter-spacing:.3px}
 .qpt-m-error{margin:0;font-size:12.5px;color:light-dark(#b91c1c,#f87171)}
+
+/* ------------------------------------------------------------------
+   2026-11-24 详情全页：头部/平台资料四 tab/字段级展示。
+   对齐任务平台任务详情页的资料分区（原始反馈/内容整理/研发初判/研发自测）。
+   ------------------------------------------------------------------ */
+.qpt-dtl-head{display:flex;align-items:flex-start;gap:14px;justify-content:space-between;margin:16px 0 4px;padding:14px 16px;border:1px solid light-dark(#e6e9ef,#374151);border-radius:12px;background:light-dark(#fff,#1f2937)}
+.qpt-dtl-head-main{display:flex;align-items:flex-start;gap:12px;min-width:0}
+.qpt-dtl-title{min-width:0}
+.qpt-dtl-title h1{font-size:16px;font-weight:700;color:light-dark(#1f2329,#f9fafb);display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 6px}
+.qpt-dtl-sub{margin:0;font-size:12px;color:light-dark(#646a73,#9ca3af);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.qpt-dtl-head .qpt-ops{flex:none;padding-top:2px}
+.qpt-dtl-body{margin-top:14px;padding-bottom:40px}
+
+/* 四 tab 条（任务平台同款下划线式） */
+.qpt-tabs{display:flex;gap:4px;border-bottom:1px solid light-dark(#e6e9ef,#374151);margin:4px 0 14px;flex-wrap:wrap}
+.qpt-tab{position:relative;padding:8px 16px;border:none;background:transparent;color:light-dark(#646a73,#9ca3af);font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;border-radius:8px 8px 0 0}
+.qpt-tab:hover{color:light-dark(#1f2329,#f3f4f6);background:light-dark(#f1f3f6,#262f3d)}
+.qpt-tab.is-active{color:light-dark(#185fa5,#7cb1e8)}
+.qpt-tab.is-active::after{content:"";position:absolute;left:10px;right:10px;bottom:-1px;height:2px;background:light-dark(#185fa5,#3b82f6);border-radius:2px}
+.qpt-tab-empty{font-size:10px;font-weight:500;color:light-dark(#c1c6cf,#6b7280);border:1px solid currentColor;border-radius:8px;padding:0 5px}
+.qpt-tabpanel{min-height:80px}
+
+/* 字段级展示块（各 tab 内） */
+.qpt-field-block{margin-bottom:12px;padding:10px 14px;border:1px solid light-dark(#e6e9ef,#374151);border-radius:10px;background:light-dark(#fcfcfd,#111827)}
+.qpt-field-block>b{display:block;font-size:12px;font-weight:700;color:light-dark(#1f2329,#f9fafb);margin-bottom:6px}
+.qpt-field-value{margin:4px 0 0;font-size:12.5px;line-height:1.75;color:light-dark(#1f2329,#f3f4f6);white-space:pre-wrap;word-break:break-word}
+.qpt-field-block .qpt-field-value{color:light-dark(#3a3f47,#d1d5db)}
+.qpt-section-row{padding:9px 12px;border:1px solid light-dark(#e6e9ef,#374151);border-radius:9px;margin-bottom:9px;background:light-dark(#fff,#1f2937)}
+.qpt-section-row>b{display:block;font-size:12.5px;font-weight:700;color:light-dark(#1f2329,#f9fafb);margin-bottom:4px}
+.qpt-change-field{margin:7px 0 0;padding-left:10px;border-left:2px solid light-dark(#cfe0f3,#1e3a5f)}
+.qpt-change-field small{display:block;font-size:11px;font-weight:700;color:light-dark(#185fa5,#7cb1e8);margin-bottom:2px}
+.qpt-change-field .qpt-field-value{margin:0}
+.qpt-supplement{padding:8px 0;border-top:1px dashed light-dark(#e6e9ef,#374151)}
+.qpt-supplement:first-of-type{border-top:none}
+.qpt-supplement-meta{margin:0;font-size:11px;color:light-dark(#8f959e,#9ca3af)}
+.qpt-supplement .qpt-field-value{margin:2px 0 0}
+
+/* 需求反馈测试用例卡（研发自测 tab 的 test_cases） */
+.qpt-case-row{margin:8px 0;padding:9px 12px;border:1px solid light-dark(#cfe0f3,#1e3a5f);border-radius:9px;background:light-dark(#f7fafe,#0f2740)}
+.qpt-case-head{display:flex;align-items:center;gap:8px;margin-bottom:7px;font-size:12.5px}
+.qpt-case-head .qpt-mono{color:light-dark(#185fa5,#7cb1e8);font-weight:700}
+.qpt-case-src{font-size:10px;color:light-dark(#8f959e,#9ca3af);border:1px solid light-dark(#e6e9ef,#4b5563);border-radius:8px;padding:0 6px}
+.qpt-case-row .qpt-fgrid{grid-template-columns:1fr 1fr}
+
+/* extracted_fields 字段抽取明细（内容整理 tab） */
+.qpt-extracted{margin-top:12px;padding-top:10px;border-top:1px dashed light-dark(#e6e9ef,#374151)}
+.qpt-extracted>h4{font-size:12px;font-weight:700;color:light-dark(#646a73,#9ca3af);margin:0 0 6px}

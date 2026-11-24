@@ -356,18 +356,11 @@ export function PlatformTaskDetailPage() {
                 )}
               </section>
 
-              {/* ③ 内容整理（字段结构化） */}
-              <ContentOrganizedSection pkg={pkg} t={t} />
-
-              {/* ④ 原始反馈 */}
-              <OriginalFeedbackSection pkg={pkg} />
-
-              {/* ⑤ 研发判断 */}
-              <DevelopmentJudgmentSection
+              {/* 平台资料：四 tab（原始反馈/内容整理/研发初判/研发自测）——2026-11-24 结构定稿，
+                  每个 tab 内按字段结构化展示，对应任务平台任务详情页的资料分区 */}
+              <PlatformDataTabs
                 pkg={pkg}
-                baselineDigest={t.requirementBaseline ?? null}
-                selfTestDigest={t.selfTestDigest ?? null}
-                changesDigest={t.changesDigest ?? []}
+                digest={{ baseline: t.requirementBaseline ?? null, selfTest: t.selfTestDigest ?? null, changes: t.changesDigest ?? [] }}
               />
 
               {/* 本地任务附件管理（平台任务也可补充本地材料） */}
@@ -438,236 +431,411 @@ function LocalTaskSections({ detail }: { detail: TaskDetail }) {
   );
 }
 
-/** ③ 内容整理：任务平台侧 AI 结构化 + 确认基准/验收口径（字段级）。 */
-function ContentOrganizedSection({ pkg, t }: { pkg: PackageDetail | null; t: TaskDetail["task"] }) {
-  const structured = pkg?.ai_structured_result;
-  const structuredEntries = structured && typeof structured === "object"
-    ? Object.entries(structured as Record<string, unknown>).filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== "")
-    : [];
-  const baseline = pkg?.confirmed_baseline;
-  const hasAi = Boolean(str(pkg?.ai_content)) || structuredEntries.length > 0;
-  const hasBaseline = Boolean(baseline?.final_content || (baseline?.acceptance_criteria?.length ?? 0));
-  if (!hasAi && !hasBaseline) return null;
+// ---------------------------------------------------------------------------
+// 平台资料四 tab（2026-11-24 结构定稿，对齐任务平台任务详情页的资料分区）：
+//   ① 原始反馈  = original_content + original_rich_content + supplements（补充意见）
+//   ② 内容整理  = ai_structured_result（任务平台侧 AI 字段级全量）+ ai_content
+//               + confirmed_baseline（最终内容/验收口径/遗漏字段）
+//   ③ 研发初判  = schedule_design_documents（研发处理判断三份 md）+ 节点变更记录
+//               （changes[].sections 字段级）+ 包附件清单
+//   ④ 研发自测  = development_self_test（字段级 submission_sections 全量，含
+//               section_type=test_cases 的结构化测试用例 items）+ 审核信息
+// digest 回退：老库回填前 packageDetail 为 null，对应 tab 用 digest 字段兜底显示。
+// ---------------------------------------------------------------------------
+
+/** 自测/变更 sections 的标准 key 中文标签（任务平台 allowed_keys 与自测提交口径对齐）。 */
+const TAB_SECTION_LABEL: Record<string, string> = {
+  self_test_result: "自测结果",
+  affected_modules: "影响模块",
+  known_risks: "已知风险",
+  version_info: "版本信息",
+  test_account: "测试账号",
+  test_password: "测试密码",
+  delivery_channels: "交付形态",
+  access_url: "测试地址/访问地址",
+  test_address: "测试地址/访问地址",
+  app_qr_reference: "APP 二维码",
+  mini_program_qr_reference: "小程序二维码",
+  product_validation_points: "验收重点验证点",
+  extra_notes: "补充说明",
+  requirement_test_cases: "需求反馈测试用例",
+  change_reason: "变更原因",
+  affected_scope: "影响范围",
+  validation_result: "本次自测/修复验证",
+  risk_note: "风险说明",
+  related_links: "相关链接",
+  material_items: "节点提交材料",
+};
+
+/** ai_structured_result 的展示字段顺序与中文标签（任务平台"内容整理"页对齐）。 */
+const STRUCTURED_FIELD_ORDER: Array<[string, string]> = [
+  ["title", "任务概括"],
+  ["feedback_type", "反馈类型"],
+  ["module_name", "模块"],
+  ["product_line_name", "产品线"],
+  ["product_section_name", "产品版块"],
+  ["priority", "优先级"],
+  ["resolution_type", "解决方式"],
+  ["need_development", "是否需要开发"],
+  ["due_at", "计划截止"],
+  ["expected_online_at", "预计上线"],
+  ["tags", "标签"],
+  ["summary", "摘要"],
+];
+
+/** 自测 sections 渲染（字段级；test_cases 类型渲染结构化用例卡，其余按 label+value）。 */
+function SelfTestSectionRows({ sections }: { sections: Array<Record<string, unknown>> | undefined }) {
+  const rendered = (sections ?? []).filter((sec) => str(sec.value) || (Array.isArray(sec.items) && (sec.items as unknown[]).length > 0));
+  if (rendered.length === 0) return <p className="qpt-muted">（提交资料为空）</p>;
   return (
-    <section className="qpt-dw-sec">
-      <h3>内容整理 <span className="qpt-ai-tag">平台资料</span></h3>
-      {structuredEntries.length > 0 && (
-        <div className="qpt-sum-block">
-          <h4>任务平台结构化整理</h4>
-          <dl className="qpt-fgrid">
-            {structuredEntries.map(([key, value]) => (
-              <div key={key}><dt>{SECTION_KEY_LABEL[key] ?? key}</dt><dd style={{ whiteSpace: "pre-wrap" }}>{typeof value === "string" ? value : JSON.stringify(value, null, 2)}</dd></div>
-            ))}
-          </dl>
-        </div>
-      )}
-      {str(pkg?.ai_content) && (
-        <div className="qpt-sum-block"><h4>整理正文（任务平台侧 AI）</h4><p className="qpt-reason" style={{ whiteSpace: "pre-wrap" }}>{stripRichText(str(pkg?.ai_content))}</p></div>
-      )}
-      {baseline?.final_content && (
-        <div className="qpt-sum-block">
-          <h4>研发处理判断确认基准 {baseline.confirmed ? "" : " · 未确认"}{baseline.confirmed_at ? ` · ${timeShort(baseline.confirmed_at)}` : ""}</h4>
-          <p className="qpt-reason" style={{ whiteSpace: "pre-wrap" }}>{baseline.final_content}</p>
-        </div>
-      )}
-      {baseline?.acceptance_criteria && baseline.acceptance_criteria.length > 0 && (
-        <div className="qpt-sum-block"><h4>验收口径</h4><ul>{baseline.acceptance_criteria.map((item, i) => <li key={i}>{item}</li>)}</ul></div>
-      )}
-      {baseline?.missing_fields && baseline.missing_fields.length > 0 && (
-        <div className="qpt-sum-block"><h4>待澄清/遗漏字段</h4><ul className="qpt-openq">{baseline.missing_fields.map((item, i) => <li key={i}>{item}</li>)}</ul></div>
-      )}
-    </section>
-  );
-}
-
-/** ④ 原始反馈：正文 + 富文本 + 补充意见。 */
-function OriginalFeedbackSection({ pkg }: { pkg: PackageDetail | null }) {
-  const original = str(pkg?.original_content);
-  const rich = str(pkg?.original_rich_content);
-  const supplements = pkg?.supplements ?? [];
-  if (!original && !rich && supplements.length === 0) return null;
-  return (
-    <section className="qpt-dw-sec">
-      <h3>原始反馈 <span className="qpt-ai-tag">平台资料</span></h3>
-      {(original || rich) && (
-        <div className="qpt-sum-block">
-          <h4>反馈正文</h4>
-          <p className="qpt-reason" style={{ whiteSpace: "pre-wrap", color: "inherit", fontSize: 12.5 }}>
-            {original || stripRichText(rich)}
-          </p>
-        </div>
-      )}
-      {supplements.length > 0 && (
-        <div className="qpt-sum-block">
-          <h4>补充意见（{supplements.length} 条）</h4>
-          {supplements.map((sup, i) => (
-            <div key={i} className="qpt-supplement">
-              <p className="qpt-supplement-meta">{timeShort(sup.created_at)}{sup.operator ? ` · ${sup.operator}` : ""}</p>
-              <p className="qpt-reason" style={{ whiteSpace: "pre-wrap" }}>{stripRichText(str(sup.content))}</p>
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
-/** ⑤ 研发判断：自测提交记录（字段级）+ 节点变更记录（含结构化 sections）+ 包附件/文档引用 + 回归上下文。 */
-function DevelopmentJudgmentSection({ pkg, baselineDigest, selfTestDigest, changesDigest }: {
-  pkg: PackageDetail | null;
-  baselineDigest: Record<string, unknown> | null;
-  selfTestDigest: Record<string, unknown> | null;
-  changesDigest: Array<Record<string, unknown>>;
-}) {
-  const selfTest = pkg?.self_test;
-  const changes = pkg?.changes ?? [];
-  const attachments = pkg?.attachments ?? [];
-  const designDocs = pkg?.schedule_design_documents ?? [];
-  const regression = pkg?.regression_context;
-  // 老库回填前 packageDetail 为 null：回退 digest 展示（研发判断内容不丢——需求基准/自测摘要/变更正文）
-  const fallbackBaseline = baselineDigest as { final_content?: string; acceptance_criteria?: string[]; confirmed?: boolean } | null;
-  const fallbackSelfTest = selfTestDigest as Record<string, unknown> | null;
-  const fallbackChanges = changesDigest;
-  const hasContent = Boolean(selfTest || changes.length || attachments.length || designDocs.length || regression ||
-    (fallbackSelfTest && Object.keys(fallbackSelfTest).length > 0) || fallbackChanges.length > 0 ||
-    (fallbackBaseline && str(fallbackBaseline.final_content)));
-  if (!hasContent) return null;
-
-  const sectionEntries = (sections: Array<Record<string, unknown>> | undefined) =>
-    (sections ?? [])
-      .map((sec) => ({
-        label: str(sec.label) || SECTION_KEY_LABEL[str(sec.key)] || str(sec.key) || "资料项",
-        value: stripRichText(str(sec.value)),
-        items: Array.isArray(sec.material_items)
-          ? (sec.material_items as Array<Record<string, unknown>>).map((item) => `${str(item.title)}：${str(item.result)}`)
-          : [],
-      }))
-      .filter((sec) => sec.value || sec.items.length > 0);
-
-  return (
-    <section className="qpt-dw-sec">
-      <h3>研发判断 <span className="qpt-ai-tag">平台资料</span></h3>
-
-      {/* 需求基准（老库回退：packageDetail 缺失时 digest 里仍有确认基准正文） */}
-      {!selfTest && fallbackBaseline && str(fallbackBaseline.final_content) && (
-        <div className="qpt-sum-block">
-          <h4>需求基准（研发处理判断确认版）{fallbackBaseline.confirmed ? "" : " · 未确认"}</h4>
-          <p className="qpt-reason" style={{ whiteSpace: "pre-wrap" }}>{str(fallbackBaseline.final_content)}</p>
-          {Array.isArray(fallbackBaseline.acceptance_criteria) && fallbackBaseline.acceptance_criteria.length > 0 && (
-            <><h4>验收口径</h4><ul>{fallbackBaseline.acceptance_criteria.map((item, i) => <li key={i}>{item}</li>)}</ul></>
-          )}
-        </div>
-      )}
-
-      {/* 正式开发节点：审核通过的自测提交记录（字段级） */}
-      {(selfTest || fallbackSelfTest) && (
-        <div className="qpt-sum-block">
-          <h4>
-            正式开发提交记录（研发自测 · 审核通过）
-            {selfTest?.submitted_at ? ` · 提交 ${timeShort(selfTest.submitted_at)}` : ""}
-            {!selfTest && fallbackSelfTest?.reviewed_at ? ` · 审核通过 ${timeShort(fallbackSelfTest.reviewed_at)}` : ""}
-          </h4>
-          {selfTest ? (
-            <>
-              {selfTest.request_reason && <p className="qpt-reason"><b>提交说明：</b>{selfTest.request_reason}</p>}
-              {sectionEntries(selfTest.sections).map((sec, i) => (
-                <div key={i} className="qpt-section-row">
-                  <b>{sec.label}</b>
-                  {sec.value && <p className="qpt-reason" style={{ whiteSpace: "pre-wrap" }}>{sec.value}</p>}
-                  {sec.items.length > 0 && <ul>{sec.items.map((item, j) => <li key={j}>{item}</li>)}</ul>}
+    <>
+      {rendered.map((sec, i) => {
+        const key = str(sec.key);
+        const label = str(sec.label) || TAB_SECTION_LABEL[key] || key || "资料项";
+        const isCases = str(sec.section_type) === "test_cases" || key === "requirement_test_cases";
+        const items = Array.isArray(sec.items) ? (sec.items as Array<Record<string, unknown>>) : [];
+        return (
+          <div key={i} className="qpt-field-block">
+            <b>{label}</b>
+            {str(sec.value) && !isCases && <p className="qpt-field-value">{stripRichText(str(sec.value))}</p>}
+            {isCases && items.map((item, j) => (
+              <div key={j} className="qpt-case-row">
+                <div className="qpt-case-head">
+                  <span className="qpt-mono">{str(item.case_no) || `用例 ${j + 1}`}</span>
+                  {str(item.title) && <b>{str(item.title)}</b>}
+                  {str(item.source) && <small className="qpt-case-src">{str(item.source) === "manual_test_case" ? "人工录入" : str(item.source)}</small>}
                 </div>
-              ))}
-              {selfTest.related_links && selfTest.related_links.length > 0 && (
-                <p className="qpt-mono qpt-reason">{selfTest.related_links.join(" · ")}</p>
+                <dl className="qpt-fgrid">
+                  <div><dt>测试场景</dt><dd>{str(item.test_scene) || "—"}</dd></div>
+                  <div><dt>实际结果</dt><dd>{str(item.actual_result) || "—"}</dd></div>
+                  <div><dt>操作步骤</dt><dd>{stripRichText(str(item.steps)) || "—"}</dd></div>
+                  <div><dt>预期结果</dt><dd>{stripRichText(str(item.expected_result)) || "—"}</dd></div>
+                </dl>
+                {Array.isArray(item.screenshot_attachment_ids) && (item.screenshot_attachment_ids as unknown[]).length > 0 && (
+                  <p className="qpt-sum-foot">截图凭证 {(item.screenshot_attachment_ids as unknown[]).length} 张（原件在任务平台，详情页「平台深链」可查）</p>
+                )}
+              </div>
+            ))}
+            {isCases && str(sec.value) && items.length === 0 && <p className="qpt-field-value">{stripRichText(str(sec.value))}</p>}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+/** 变更/节点 sections 渲染（字段级 label+value）。 */
+function ChangeSectionRows({ sections }: { sections: Array<Record<string, unknown>> | undefined }) {
+  const rendered = (sections ?? []).filter((sec) => str(sec.value));
+  if (rendered.length === 0) return null;
+  return (
+    <>
+      {rendered.map((sec, i) => (
+        <div key={i} className="qpt-change-field">
+          <small>{str(sec.label) || TAB_SECTION_LABEL[str(sec.key)] || str(sec.key) || "资料项"}</small>
+          <p className="qpt-field-value">{stripRichText(str(sec.value))}</p>
+        </div>
+      ))}
+    </>
+  );
+}
+
+/** extracted_fields 字段抽取表（任务平台内容整理页的字段级明细；数组/字符串均支持）。 */
+function ExtractedFieldsTable({ fields }: { fields: Record<string, unknown> }) {
+  const entries = Object.entries(fields).filter(([, v]) => v !== null && v !== undefined && str(String(v)) !== "");
+  if (entries.length === 0) return null;
+  return (
+    <div className="qpt-extracted">
+      <h4>字段抽取明细</h4>
+      {entries.map(([key, value]) => (
+        <div key={key} className="qpt-change-field">
+          <small>{key}</small>
+          <p className="qpt-field-value">{Array.isArray(value) ? value.map((item) => (typeof item === "object" ? JSON.stringify(item) : String(item))).join("；") : stripRichText(String(value))}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** digest 回退时原始反馈正文的可用性（baseline digest 里有 original_content）。 */
+function fallbackBaselineContent(baseline: Record<string, unknown> | null): boolean {
+  return Boolean(baseline && str((baseline as { original_content?: string }).original_content));
+}
+
+/** 平台资料四 tab 容器（原始反馈/内容整理/研发初判/研发自测）。 */
+function PlatformDataTabs({ pkg, digest }: {
+  pkg: PackageDetail | null;
+  digest: { baseline: Record<string, unknown> | null; selfTest: Record<string, unknown> | null; changes: Array<Record<string, unknown>> };
+}) {
+  const [tab, setTab] = useState<"original" | "organized" | "judgment" | "selftest">("original");
+
+  // ---- 各 tab 内容可用性（空 tab 仍显示并标"无"，点击后内容区提示"该阶段无资料"——与任务平台一致，tab 恒四枚）----
+  const original = pkg ? { content: str(pkg.original_content), rich: str(pkg.original_rich_content), supplements: pkg.supplements ?? [] } : null;
+  const fallbackOriginal = digest.baseline as { original_content?: string } | null;
+  const hasOriginal = Boolean(original && (original.content || original.rich || original.supplements.length > 0)) ||
+    Boolean(!pkg && fallbackBaselineContent(digest.baseline));
+
+  const structured = (pkg?.ai_structured_result ?? null) as Record<string, unknown> | null;
+  const hasOrganized = Boolean(
+    (pkg && (str(pkg.ai_content) || (structured && Object.keys(structured).length > 0) || str(pkg.final_content))) ||
+    (!pkg && digest.baseline && str((digest.baseline as { final_content?: string }).final_content)),
+  );
+
+  const changes = pkg?.changes ?? [];
+  const designDocs = pkg?.schedule_design_documents ?? [];
+  const attachments = pkg?.attachments ?? [];
+  const regression = pkg?.regression_context;
+  const fallbackChanges = digest.changes;
+  const hasJudgment = Boolean(changes.length || designDocs.length || attachments.length || regression || fallbackChanges.length > 0);
+
+  const selfTest = pkg?.self_test ?? null;
+  const fallbackSelfTest = digest.selfTest;
+  const hasSelfTest = Boolean(selfTest || (fallbackSelfTest && Object.keys(fallbackSelfTest).length > 0));
+
+  return (
+    <section className="qpt-dw-sec">
+      <h3>平台资料 <span className="qpt-ai-tag">包同步</span>
+        <small className="qpt-att-hint">任务平台交接包原样资料 · 按阶段分区</small>
+      </h3>
+      <div className="qpt-tabs" role="tablist" aria-label="平台资料分区">
+        {([
+          ["original", "原始反馈", hasOriginal],
+          ["organized", "内容整理", hasOrganized],
+          ["judgment", "研发初判", hasJudgment],
+          ["selftest", "研发自测", hasSelfTest],
+        ] as Array<[typeof tab, string, boolean]>).map(([key, label, hasData]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={tab === key}
+            className={`qpt-tab${tab === key ? " is-active" : ""}`}
+            onClick={() => setTab(key)}
+          >
+            {label}
+            {!hasData && <small className="qpt-tab-empty">无</small>}
+          </button>
+        ))}
+      </div>
+
+      {tab === "original" && (
+        <div className="qpt-tabpanel" role="tabpanel">
+          {original && (original.content || original.rich || original.supplements.length > 0) ? (
+            <>
+              {(original.content || original.rich) && (
+                <div className="qpt-sum-block">
+                  <h4>反馈正文</h4>
+                  <p className="qpt-field-value">{original.content || stripRichText(original.rich)}</p>
+                </div>
+              )}
+              {original.supplements.length > 0 && (
+                <div className="qpt-sum-block">
+                  <h4>补充意见（{original.supplements.length} 条）</h4>
+                  {original.supplements.map((sup, i) => (
+                    <div key={i} className="qpt-supplement">
+                      <p className="qpt-supplement-meta">{timeShort(sup.created_at)}{sup.operator ? ` · ${sup.operator}` : ""}</p>
+                      <p className="qpt-field-value">{stripRichText(str(sup.content))}</p>
+                    </div>
+                  ))}
+                </div>
               )}
             </>
           ) : (
-            fallbackSelfTest && (
-              <>
-                {str(fallbackSelfTest.self_test_result) && <p className="qpt-reason"><b>自测结果：</b>{str(fallbackSelfTest.self_test_result)}</p>}
-                {str(fallbackSelfTest.test_focus) && <p className="qpt-reason"><b>验证重点：</b>{str(fallbackSelfTest.test_focus)}</p>}
-                {str(fallbackSelfTest.affected_modules) && <p className="qpt-reason"><b>影响模块：</b>{str(fallbackSelfTest.affected_modules)}</p>}
-                {str(fallbackSelfTest.known_risks) && <p className="qpt-reason"><b>已知风险：</b>{str(fallbackSelfTest.known_risks)}</p>}
-                {str(fallbackSelfTest.test_address) && <p className="qpt-reason qpt-mono"><b>测试地址：</b>{str(fallbackSelfTest.test_address)}</p>}
-              </>
-            )
+            <p className="qpt-muted">该阶段无资料。{!pkg && fallbackOriginal?.original_content ? "" : "（此任务交接包未携带原始反馈）"}</p>
+          )}
+          {!pkg && fallbackOriginal?.original_content && (
+            <div className="qpt-sum-block">
+              <h4>反馈正文（摘要回退）</h4>
+              <p className="qpt-field-value">{str(fallbackOriginal.original_content)}</p>
+            </div>
           )}
         </div>
       )}
 
-      {/* 节点变更记录（含结构化 sections） */}
-      {(changes.length > 0 || fallbackChanges.length > 0) && (
-        <div className="qpt-sum-block">
-          <h4>节点变更记录（{changes.length || fallbackChanges.length} 条）</h4>
-          {(changes.length > 0 ? changes : fallbackChanges.map((c) => ({
-            node: str(c.node) || str(c.node_code),
-            batch: typeof c.batch === "number" ? c.batch : undefined,
-            content: str(c.content),
-            sections: undefined,
-            changed_at: c.changed_at as string | null,
-            operator: (c.operator as string | null) ?? null,
-          }))).map((c, i) => {
-            const entries = sectionEntries(c.sections as Array<Record<string, unknown>> | undefined);
-            return (
-              <div key={i} className="qpt-section-row">
-                <b>[{c.node || "变更"}]{typeof c.batch === "number" ? ` 第${c.batch}批` : ""}{c.operator ? ` · ${c.operator}` : ""}{timeShort(c.changed_at) ? ` · ${timeShort(c.changed_at)}` : ""}</b>
-                {str(c.content) && <p className="qpt-reason" style={{ whiteSpace: "pre-wrap" }}>{stripRichText(str(c.content))}</p>}
-                {entries.map((sec, j) => (
-                  <div key={j} className="qpt-change-field">
-                    <small>{sec.label}</small>
-                    {sec.value && <p className="qpt-reason" style={{ whiteSpace: "pre-wrap" }}>{sec.value}</p>}
-                    {sec.items.length > 0 && <ul>{sec.items.map((item, k) => <li key={k}>{item}</li>)}</ul>}
-                  </div>
-                ))}
-              </div>
-            );
-          })}
+      {tab === "organized" && (
+        <div className="qpt-tabpanel" role="tabpanel">
+          {hasOrganized ? (
+            <>
+              {structured && Object.keys(structured).length > 0 && (
+                <div className="qpt-sum-block">
+                  <h4>AI 结构化字段</h4>
+                  <dl className="qpt-fgrid">
+                    {STRUCTURED_FIELD_ORDER.map(([key, label]) => {
+                      const value = structured[key];
+                      if (value === null || value === undefined || str(String(value)) === "") return null;
+                      const display = Array.isArray(value) ? value.map(String).join(" · ") : stripRichText(String(value));
+                      return <div key={key}><dt>{label}</dt><dd style={{ whiteSpace: "pre-wrap" }}>{display}</dd></div>;
+                    })}
+                  </dl>
+                  {/* extracted_fields：任务平台侧字段抽取表（接口地址/请求方法/响应状态/高风险点等） */}
+                  {(() => {
+                    const extracted = structured.extracted_fields;
+                    return extracted && typeof extracted === "object"
+                      ? <ExtractedFieldsTable fields={extracted as Record<string, unknown>} />
+                      : null;
+                  })()}
+                  {/* 其余标量字段（enhanced_content/confidence/prompt_version 等）按 key 原样补齐，不丢字段 */}
+                  {Object.entries(structured)
+                    .filter(([key]) => !STRUCTURED_FIELD_ORDER.some(([k]) => k === key) && key !== "extracted_fields" && key !== "acceptance_criteria" && key !== "missing_fields")
+                    .filter(([, value]) => value !== null && value !== undefined && str(String(value)) !== "" && typeof value !== "object")
+                    .map(([key, value]) => (
+                      <div key={key} className="qpt-change-field">
+                        <small>{key}</small>
+                        <p className="qpt-field-value">{stripRichText(String(value))}</p>
+                      </div>
+                    ))}
+                </div>
+              )}
+              {str(pkg?.ai_content) && (
+                <div className="qpt-sum-block">
+                  <h4>AI 整理内容</h4>
+                  <p className="qpt-field-value">{stripRichText(str(pkg?.ai_content))}</p>
+                </div>
+              )}
+              {pkg?.confirmed_baseline?.final_content && (
+                <div className="qpt-sum-block">
+                  <h4>最终内容（研发处理判断确认版）{pkg.confirmed_baseline.confirmed ? "" : " · 未确认"}{pkg.confirmed_baseline.confirmed_at ? ` · ${timeShort(pkg.confirmed_baseline.confirmed_at)}` : ""}</h4>
+                  <p className="qpt-field-value">{pkg.confirmed_baseline.final_content}</p>
+                </div>
+              )}
+              {pkg?.confirmed_baseline?.acceptance_criteria && pkg.confirmed_baseline.acceptance_criteria.length > 0 && (
+                <div className="qpt-sum-block"><h4>验收口径</h4><ul>{pkg.confirmed_baseline.acceptance_criteria.map((item, i) => <li key={i}>{item}</li>)}</ul></div>
+              )}
+              {pkg?.confirmed_baseline?.missing_fields && pkg.confirmed_baseline.missing_fields.length > 0 && (
+                <div className="qpt-sum-block"><h4>需补充资料</h4><ul className="qpt-openq">{pkg.confirmed_baseline.missing_fields.map((item, i) => <li key={i}>{item}</li>)}</ul></div>
+              )}
+              {/* 老库回退：digest 里的确认基准 */}
+              {!pkg && digest.baseline && str((digest.baseline as { final_content?: string }).final_content) && (
+                <div className="qpt-sum-block">
+                  <h4>研发处理判断确认基准（摘要回退）</h4>
+                  <p className="qpt-field-value">{str((digest.baseline as { final_content?: string }).final_content)}</p>
+                  {Array.isArray((digest.baseline as { acceptance_criteria?: string[] }).acceptance_criteria) && (
+                    <ul>{((digest.baseline as { acceptance_criteria?: string[] }).acceptance_criteria ?? []).map((item, i) => <li key={i}>{item}</li>)}</ul>
+                  )}
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="qpt-muted">该阶段无资料。</p>
+          )}
         </div>
       )}
 
-      {/* 包附件 + 排期设计文档（三份 md） */}
-      {(attachments.length > 0 || designDocs.length > 0) && (
-        <div className="qpt-sum-block">
-          <h4>研发判断材料（{attachments.length + designDocs.length} 件）</h4>
-          <ul className="qpt-att-list">
-            {designDocs.map((doc, i) => (
-              <li key={`doc-${i}`} className="qpt-att-item">
-                <span className="qpt-att-name">📄 {str(doc.file_name) || "排期设计文档"}</span>
-                <small>排期设计文档 · 原件在任务平台</small>
-              </li>
-            ))}
-            {attachments.map((att, i) => (
-              <li key={`att-${i}`} className="qpt-att-item">
-                <span className="qpt-att-name">{str(att.file_name) || "附件"}</span>
-                <small>
-                  {ATT_CATEGORY_LABEL[str(att.file_category)] ?? (str(att.file_category) || "附件")}
-                  {att.node_code ? ` · ${att.node_code}` : ""}
-                  {typeof att.file_size === "number" ? ` · ${Math.ceil(att.file_size / 1024)}KB` : ""}
-                </small>
-                {str(att.download_url) && <a href={str(att.download_url)} target="_blank" rel="noreferrer">下载</a>}
-              </li>
-            ))}
-          </ul>
-          <p className="qpt-sum-foot">文本类附件已自动同步进项目资料；截图等二进制原件请到任务平台查看（详情页「平台深链」）。</p>
+      {tab === "judgment" && (
+        <div className="qpt-tabpanel" role="tabpanel">
+          {hasJudgment ? (
+            <>
+              {/* 研发处理判断文档（三份 md） */}
+              {designDocs.length > 0 && (
+                <div className="qpt-sum-block">
+                  <h4>研发处理判断资料 · 节点原提交文档（{designDocs.length} 份）</h4>
+                  <ul className="qpt-att-list">
+                    {designDocs.map((doc, i) => (
+                      <li key={`doc-${i}`} className="qpt-att-item">
+                        <span className="qpt-att-name">📄 {str(doc.file_name) || "研发处理判断文档"}</span>
+                        <small>文本类 · 原件与正文在任务平台（平台深链可查）</small>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {/* 节点变更记录（含字段级 sections） */}
+              {(changes.length > 0 || fallbackChanges.length > 0) && (
+                <div className="qpt-sum-block">
+                  <h4>节点变更记录（{changes.length || fallbackChanges.length} 条）</h4>
+                  {(changes.length > 0 ? changes : fallbackChanges.map((c) => ({
+                    node: str(c.node) || str(c.node_code),
+                    batch: typeof c.batch === "number" ? c.batch : undefined,
+                    content: str(c.content),
+                    sections: undefined as Array<Record<string, unknown>> | undefined,
+                    changed_at: c.changed_at as string | null,
+                    operator: (c.operator as string | null) ?? null,
+                  }))).map((c, i) => (
+                    <div key={i} className="qpt-section-row">
+                      <b>[{c.node || "变更"}]{typeof c.batch === "number" ? ` 第${c.batch}批` : ""}{c.operator ? ` · ${c.operator}` : ""}{timeShort(c.changed_at) ? ` · ${timeShort(c.changed_at)}` : ""}</b>
+                      {str(c.content) && <p className="qpt-field-value">{stripRichText(str(c.content))}</p>}
+                      <ChangeSectionRows sections={c.sections} />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* 包附件（研发初判阶段的截图/材料等） */}
+              {attachments.length > 0 && (
+                <div className="qpt-sum-block">
+                  <h4>变更与审核材料（{attachments.length} 件）</h4>
+                  <ul className="qpt-att-list">
+                    {attachments.map((att, i) => (
+                      <li key={`att-${i}`} className="qpt-att-item">
+                        <span className="qpt-att-name">{str(att.file_name) || "附件"}</span>
+                        <small>
+                          {ATT_CATEGORY_LABEL[str(att.file_category)] ?? (str(att.file_category) || "附件")}
+                          {att.node_code ? ` · ${att.node_code}` : ""}
+                          {typeof att.file_size === "number" ? ` · ${Math.ceil(att.file_size / 1024)}KB` : ""}
+                        </small>
+                        {str(att.download_url) && <a href={str(att.download_url)} target="_blank" rel="noreferrer">下载</a>}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="qpt-sum-foot">文本类附件已自动同步进项目资料；截图等二进制原件请到任务平台查看。</p>
+                </div>
+              )}
+              {/* 回归上下文（新一轮抽测时） */}
+              {regression && (
+                <div className="qpt-sum-block">
+                  <h4>上轮抽测退回问题（回归范围参考）</h4>
+                  {(regression.previous_failed_issues ?? []).map((issue, i) => (
+                    <div key={`i-${i}`} className="qpt-section-row">
+                      <b>[{str(issue.severity) || "问题"}] {str(issue.issue_no)} {str(issue.title)}</b>
+                      <p className="qpt-field-value">{str(issue.problem_description)}</p>
+                    </div>
+                  ))}
+                  {(regression.rectifications ?? []).map((rect, i) => (
+                    <div key={`r-${i}`} className="qpt-section-row">
+                      <b>整改说明</b>
+                      <p className="qpt-field-value">{str(rect.solution)}{str(rect.changed_content) ? `（${str(rect.changed_content)}）` : ""}{str(rect.test_method) ? ` · 验证方式：${str(rect.test_method)}` : ""}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="qpt-muted">该阶段无资料。</p>
+          )}
         </div>
       )}
 
-      {/* 回归上下文（新一轮抽测时） */}
-      {regression && (
-        <div className="qpt-sum-block">
-          <h4>上轮抽测退回问题（回归范围参考）</h4>
-          {(regression.previous_failed_issues ?? []).map((issue, i) => (
-            <div key={`i-${i}`} className="qpt-section-row">
-              <b>[{str(issue.severity) || "问题"}] {str(issue.issue_no)} {str(issue.title)}</b>
-              <p className="qpt-reason" style={{ whiteSpace: "pre-wrap" }}>{str(issue.problem_description)}</p>
+      {tab === "selftest" && (
+        <div className="qpt-tabpanel" role="tabpanel">
+          {hasSelfTest ? (
+            <div className="qpt-sum-block">
+              <h4>
+                提交审核材料（研发自测 · 审核通过）
+                {selfTest?.submitted_at ? ` · 提交 ${timeShort(selfTest.submitted_at)}` : ""}
+                {!selfTest && fallbackSelfTest?.reviewed_at ? ` · 审核通过 ${timeShort(fallbackSelfTest.reviewed_at)}` : ""}
+              </h4>
+              {selfTest ? (
+                <>
+                  {selfTest.request_reason && <p className="qpt-field-value"><b>提交说明：</b>{selfTest.request_reason}</p>}
+                  <SelfTestSectionRows sections={selfTest.sections} />
+                  {selfTest.related_links && selfTest.related_links.length > 0 && (
+                    <p className="qpt-mono qpt-sum-foot">{selfTest.related_links.join(" · ")}</p>
+                  )}
+                </>
+              ) : (
+                fallbackSelfTest && (
+                  <>
+                    {str(fallbackSelfTest.self_test_result) && <p className="qpt-field-value"><b>自测结果：</b>{str(fallbackSelfTest.self_test_result)}</p>}
+                    {str(fallbackSelfTest.test_focus) && <p className="qpt-field-value"><b>验证重点：</b>{str(fallbackSelfTest.test_focus)}</p>}
+                    {str(fallbackSelfTest.affected_modules) && <p className="qpt-field-value"><b>影响模块：</b>{str(fallbackSelfTest.affected_modules)}</p>}
+                    {str(fallbackSelfTest.known_risks) && <p className="qpt-field-value"><b>已知风险：</b>{str(fallbackSelfTest.known_risks)}</p>}
+                    {str(fallbackSelfTest.test_address) && <p className="qpt-field-value qpt-mono"><b>测试地址：</b>{str(fallbackSelfTest.test_address)}</p>}
+                  </>
+                )
+              )}
             </div>
-          ))}
-          {(regression.rectifications ?? []).map((rect, i) => (
-            <div key={`r-${i}`} className="qpt-section-row">
-              <b>整改说明</b>
-              <p className="qpt-reason" style={{ whiteSpace: "pre-wrap" }}>{str(rect.solution)}{str(rect.changed_content) ? `（${str(rect.changed_content)}）` : ""}{str(rect.test_method) ? ` · 验证方式：${str(rect.test_method)}` : ""}</p>
-            </div>
-          ))}
+          ) : (
+            <p className="qpt-muted">该阶段无资料。</p>
+          )}
         </div>
       )}
     </section>

@@ -2,16 +2,18 @@
 /**
  * 平台任务详情全页（/qa/project/platform-tasks/:taskId）的页面行为。
  *
- * 替代 2026-11-24 被移除的抽屉 2 测（f9dcc4f 详情从侧边抽屉改全页路由）：
- * - 结构化重排：基本信息/内容整理/原始反馈/研发判断（正式开发提交字段级 + 变更含
- *   sections）/AI 分析结论/测试进展，按 packageDetail（交接包资料全集）渲染；
- * - 老库回填前 packageDetail 为 null → 回退 digest 字段展示（研发判断内容不丢）；
- * - 富文本残留清理（变更内容里的 <ul><li> 片段转纯文本换行）。
+ * 2026-11-24 平台资料四 tab 结构（对齐任务平台任务详情页资料分区）：
+ * - "平台资料"标题下恒四个 tab（原始反馈/内容整理/研发初判/研发自测），空 tab 标"无"；
+ * - 每个 tab 字段级展示：原始反馈=正文+补充意见；内容整理=ai_structured_result
+ *   字段表+extracted_fields 抽取明细+最终内容/验收口径；研发初判=三份文档+节点变更
+ *   （sections 字段级）+附件+回归上下文；研发自测=13 个标准字段+需求反馈测试用例卡；
+ * - 富文本残留清理（<ul><li> → 纯文本换行）；
+ * - 老库回填前 packageDetail 为 null → 各 tab 用 digest 字段兜底（标"摘要回退"）。
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createElement as h } from "react";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { mount, unmountAll, waitFor } from "./helpers/dom";
+import { click, mount, settle, unmountAll, waitFor } from "./helpers/dom";
 import { PlatformTaskDetailPage } from "../src/features/qa/platform-tasks/platform-task-detail-page";
 import type { TaskDetail } from "../src/features/qa/platform-tasks/api";
 
@@ -36,15 +38,28 @@ const fixture = vi.hoisted(() => {
     /** getTaskDetail 当前返回值（renderDetail 可切换为 digest-only 形态）。 */
     detail: null as TaskDetail | null,
   };
-  /** packageDetail：交接包结构化资料全集（服务端激活/回填落库后的形态）。 */
+  /** packageDetail：交接包结构化资料全集（对齐任务平台真实包 v2 实测结构）。 */
   const packageDetail = {
     package_version: 2,
     event_type: "material_changed",
     generated_at: "2026-11-23T18:30:00+08:00",
     ai_content: "任务平台侧 AI 整理正文",
     ai_structured_result: {
-      summary: "后台新增用户失败的修复回归",
-      acceptance_criteria: ["新增用户后列表可见", "重复提交返回明确错误"],
+      title: "后台新增用户失败的修复回归",
+      feedback_type: "bug",
+      module_name: "登录",
+      product_line_name: "gov用户端",
+      priority: "high",
+      tags: ["gov用户端", "登录", "身份管理"],
+      summary: "任务平台侧 AI 摘要",
+      extracted_fields: {
+        "接口地址": "http://localhost:5173/api/v1/identity/users",
+        "请求方法": "POST",
+        "响应状态": "500 Internal Server Error",
+        "高风险实现点": "session.flush() 未局部捕获 IntegrityError",
+        "关键业务约束": ["同一租户内用户名唯一", "新用户 tenant_id 取自当前登录用户"],
+      },
+      enhanced_content: "增强内容正文",
     },
     final_content: "研发处理判断最终内容",
     original_content: "后台新增用户失败，无法完成用户创建",
@@ -67,10 +82,24 @@ const fixture = vi.hoisted(() => {
       reviewed_at: "2026-11-20T06:04:00+08:00",
       request_reason: "自测说明：已完成主流程回归",
       sections: [
-        { key: "test_address", label: "测试地址", value: "https://local.console.gov-bid.com/bbiao-admin/register/user/index" },
+        { key: "access_url", label: "测试地址/访问地址", value: "https://local.console.gov-bid.com/bbiao-admin/register/user/index" },
         { key: "self_test_result", label: "自测结果", value: "测试通过" },
-        { key: "test_focus", label: "验证重点", value: "用户创建" },
+        { key: "affected_modules", label: "影响模块", value: "用户管理模块" },
         { key: "known_risks", label: "已知风险", value: "无" },
+        { key: "version_info", label: "版本信息", value: "https://local.console.gov-bid.com/v2" },
+        { key: "test_account", label: "测试账号", value: "yanfa" },
+        { key: "delivery_channels", label: "交付形态", value: "链接" },
+        { key: "product_validation_points", label: "验收重点验证点", value: "用户创建" },
+        {
+          key: "requirement_test_cases", label: "需求反馈测试用例", section_type: "test_cases",
+          value: "1. 测试用例：用户创建成功",
+          items: [{
+            id: "mat-1", case_no: "TC-001", title: "测试用例",
+            test_scene: "用户创建", steps: "1.打开后台 2.填写信息 3.提交",
+            expected_result: "创建成功且列表可见", actual_result: "用户创建成功",
+            screenshot_attachment_ids: ["shot-1"], source: "manual_test_case", locked: false,
+          }],
+        },
       ],
       related_links: ["http://task-platform:8000/self-test"],
     },
@@ -81,7 +110,7 @@ const fixture = vi.hoisted(() => {
         sections: [
           { key: "change_reason", label: "变更原因", value: "修复后端创建用户接口的角色校验缺陷" },
           { key: "affected_scope", label: "影响范围", value: "后台用户管理新增功能" },
-          { key: "validation_result", label: "验证结果", value: "已完成自测回归" },
+          { key: "validation_result", label: "本次自测/修复验证", value: "已完成自测回归" },
         ],
         changed_at: "2026-11-20T01:37:00+08:00",
         operator: "研发",
@@ -89,10 +118,10 @@ const fixture = vi.hoisted(() => {
     ],
     attachments: [
       { attachment_id: "att-1", file_name: "研发处理判断.md", file_category: "development_judgment", node_code: "developing", file_size: 4096, content_type: "text/markdown", download_url: null },
-      { attachment_id: "att-2", file_name: "排期设计文档.md", file_category: "schedule_design_document", node_code: "developing", file_size: 2048, content_type: "text/markdown", download_url: null },
+      { attachment_id: "att-2", file_name: "变更截图.png", file_category: "node_change_attachment", node_code: "developing", file_size: 20480, content_type: "image/png", download_url: null },
     ],
     schedule_design_documents: [
-      { document_key: "doc-key-1", file_name: "排期设计文档.md", attachment_id: "att-2" },
+      { document_key: "technical_solution", file_name: "解决问题的技术方案说明.md", attachment_id: "att-3" },
     ],
     handoff_document: { title: "交接文档", content: "# 交接文档全文" },
     regression_context: {
@@ -125,19 +154,24 @@ const fixture = vi.hoisted(() => {
       ],
     },
   };
-  /** 老库回填前：packageDetail 为 null，回退 digest 展示。 */
+  /** 老库回填前：packageDetail 为 null，各 tab 用 digest 兜底。 */
   const detailDigestOnly: TaskDetail = {
     task: {
       ...baseTask,
       packageDetail: null,
-      requirementBaseline: { final_content: "旧任务的基准正文", acceptance_criteria: ["旧验收口径"], confirmed: true },
+      requirementBaseline: {
+        final_content: "旧任务的基准正文",
+        original_content: "旧任务的原始反馈正文",
+        acceptance_criteria: ["旧验收口径"],
+        confirmed: true,
+      },
       selfTestDigest: { reviewed_at: "2026-11-20T06:04:00Z", test_address: "https://old-env", self_test_result: "测试通过", test_focus: "用户创建" },
       changesDigest: [{ node: "正式开发", batch: 1, content: "旧任务的变更正文", changed_at: "2026-11-20T01:37:00Z", operator: "研发" }],
     },
     summary: null,
     progress: { mainSessionId: null, runs: [] },
   };
-  return { state, detailWithPackage, detailDigestOnly, withPackageBase: JSON.parse(JSON.stringify(detailWithPackage)) };
+  return { state, detailWithPackage, detailDigestOnly };
 });
 
 vi.mock("../src/features/qa/platform-tasks/api", () => ({
@@ -192,8 +226,15 @@ async function renderDetail(detail?: TaskDetail) {
   return mounted.container;
 }
 
+/** 点击平台资料的某个 tab（四 tab：原始反馈/内容整理/研发初判/研发自测）。 */
+async function openTab(root: HTMLElement, label: string) {
+  const tab = Array.from(root.querySelectorAll<HTMLButtonElement>(".qpt-tab")).find((b) => b.textContent?.includes(label))!;
+  await click(tab);
+  await settle();
+}
+
 describe("platform task detail page", () => {
-  it("交接包结构化重排：基本信息/内容整理/原始反馈/研发判断（提交字段级+变更 sections）/回归上下文", async () => {
+  it("平台资料四 tab：原始反馈/内容整理（字段级+抽取表）/研发初判（文档+变更 sections）/研发自测（用例卡）", async () => {
     const root = await renderDetail();
     const text = root.textContent ?? "";
 
@@ -203,60 +244,112 @@ describe("platform task detail page", () => {
     expect(text).toContain("包版本 v2");
     expect(text).toContain("第 1 轮");
     expect(text).toContain("资料变更"); // event_type=material_changed 中文标签
-
-    // ② 基本信息（含平台任务链接）
     expect(text).toContain("需求优化");
     expect(text).toContain("产品 张瑛 / 研发 王智");
     const deeplink = root.querySelector<HTMLAnchorElement>(".qpt-deeplink a");
     expect(deeplink?.getAttribute("href")).toContain("FB202611090001");
 
-    // ③ 内容整理：ai_structured_result 字段级 + 确认基准 + 验收口径 + 遗漏字段
-    expect(text).toContain("任务平台结构化整理");
-    expect(text).toContain("后台新增用户失败的修复回归");
-    expect(text).toContain("具备 identity:manage 权限的管理员");
-    expect(text).toContain("创建成功、数据准确落库并在用户列表可见");
-    expect(text).toContain("待澄清/遗漏字段");
-    expect(text).toContain("影响范围未标注");
+    // 四 tab 恒在（任务平台同款结构）
+    const tabLabels = Array.from(root.querySelectorAll(".qpt-tab")).map((b) => b.textContent ?? "");
+    expect(tabLabels.some((t) => t.includes("原始反馈"))).toBe(true);
+    expect(tabLabels.some((t) => t.includes("内容整理"))).toBe(true);
+    expect(tabLabels.some((t) => t.includes("研发初判"))).toBe(true);
+    expect(tabLabels.some((t) => t.includes("研发自测"))).toBe(true);
 
-    // ④ 原始反馈：正文 + 补充意见
+    // ① 原始反馈（默认 tab）：正文 + 补充意见
+    expect(text).toContain("反馈正文");
     expect(text).toContain("后台新增用户失败，无法完成用户创建");
     expect(text).toContain("补充意见（1 条）");
     expect(text).toContain("仅生产环境复现");
 
-    // ⑤ 研发判断：正式开发提交记录（字段级 sections）+ 变更记录（含结构化字段）+ 材料清单 + 回归
-    expect(text).toContain("正式开发提交记录");
-    expect(text).toContain("自测说明：已完成主流程回归");
-    expect(text).toContain("https://local.console.gov-bid.com/bbiao-admin/register/user/index");
-    expect(text).toContain("验证重点");
-    expect(text).toContain("节点变更记录（1 条）");
-    expect(text).toContain("变更原因"); // sections 结构化字段中文标签
-    expect(text).toContain("修复后端创建用户接口的角色校验缺陷");
-    // 富文本残留清理：<li> 转换行点、无裸标签
-    expect(text).toContain("修复用户创建时角色校验缺失");
-    expect(text).not.toContain("<ul><li>");
-    expect(text).toContain("研发判断材料（3 件）"); // 排期设计文档同时在 designDocs 引用与 attachments 清单里，共 2+1
-    expect(text).toContain("研发处理判断.md");
-    expect(text).toContain("排期设计文档.md");
-    expect(text).toContain("上轮抽测退回问题");
-    expect(text).toContain("补充唯一性校验");
+    // ② 内容整理 tab：AI 结构化字段 + 抽取明细 + 最终内容 + 验收口径 + 需补充资料
+    await openTab(root, "内容整理");
+    const organized = root.textContent ?? "";
+    expect(organized).toContain("AI 结构化字段");
+    expect(organized).toContain("任务概括");
+    expect(organized).toContain("后台新增用户失败的修复回归");
+    expect(organized).toContain("字段抽取明细");
+    expect(organized).toContain("接口地址");
+    expect(organized).toContain("500 Internal Server Error");
+    expect(organized).toContain("同一租户内用户名唯一");
+    expect(organized).toContain("最终内容（研发处理判断确认版）");
+    expect(organized).toContain("具备 identity:manage 权限的管理员");
+    expect(organized).toContain("验收口径");
+    expect(organized).toContain("创建成功、数据准确落库并在用户列表可见");
+    expect(organized).toContain("需补充资料");
+    expect(organized).toContain("影响范围未标注");
 
-    // ⑥ AI 分析结论（标 AI 建议）+ ⑦ 测试进展
+    // ③ 研发初判 tab：文档 + 节点变更记录（含字段级 sections）+ 材料 + 回归
+    await openTab(root, "研发初判");
+    const judgment = root.textContent ?? "";
+    expect(judgment).toContain("研发处理判断资料 · 节点原提交文档（1 份）");
+    expect(judgment).toContain("解决问题的技术方案说明.md");
+    expect(judgment).toContain("节点变更记录（1 条）");
+    expect(judgment).toContain("第1批");
+    expect(judgment).toContain("变更原因"); // sections 字段中文标签
+    expect(judgment).toContain("修复后端创建用户接口的角色校验缺陷");
+    expect(judgment).toContain("影响范围");
+    // 富文本残留清理：<li> 转换行、无裸标签
+    expect(judgment).toContain("修复用户创建时角色校验缺失");
+    expect(judgment).not.toContain("<ul><li>");
+    expect(judgment).toContain("变更与审核材料（2 件）");
+    expect(judgment).toContain("研发处理判断.md");
+    expect(judgment).toContain("上轮抽测退回问题");
+    expect(judgment).toContain("补充唯一性校验");
+
+    // ④ 研发自测 tab：字段级 sections（任务平台 13 个标准字段的非空项）+ 测试用例卡
+    await openTab(root, "研发自测");
+    const selftest = root.textContent ?? "";
+    expect(selftest).toContain("提交审核材料（研发自测 · 审核通过）");
+    expect(selftest).toContain("自测说明：已完成主流程回归");
+    expect(selftest).toContain("测试地址/访问地址");
+    expect(selftest).toContain("https://local.console.gov-bid.com/bbiao-admin/register/user/index");
+    expect(selftest).toContain("自测结果");
+    expect(selftest).toContain("测试通过");
+    expect(selftest).toContain("影响模块");
+    expect(selftest).toContain("用户管理模块");
+    expect(selftest).toContain("交付形态");
+    expect(selftest).toContain("验收重点验证点");
+    expect(selftest).toContain("需求反馈测试用例");
+    expect(selftest).toContain("TC-001"); // 结构化用例编号
+    expect(selftest).toContain("测试场景");
+    expect(selftest).toContain("用户创建");
+    expect(selftest).toContain("预期结果");
+    expect(selftest).toContain("创建成功且列表可见");
+    expect(selftest).toContain("截图凭证 1 张");
+
+    // ⑥ AI 分析结论 + ⑦ 测试进展
     expect(text).toContain("AI 分析结论");
     expect(text).toContain("AI 建议");
     expect(text).toContain("测试进展");
     expect(text).toContain("run-1");
   });
 
-  it("老库回退：packageDetail 为 null 时按 digest 字段展示研发判断，不空板块", async () => {
+  it("老库回退：packageDetail 为 null 时四 tab 按 digest 兜底（摘要回退标注）", async () => {
     const root = await renderDetail(fixture.detailDigestOnly);
-    const text = root.textContent ?? "";
-    expect(text).toContain("正式开发提交记录");
-    expect(text).toContain("旧任务的基准正文");
-    expect(text).toContain("测试通过");
-    expect(text).toContain("旧任务的变更正文");
-    // 无 packageDetail 时不应出现结构化专属板块标题
-    expect(text).not.toContain("任务平台结构化整理");
-    expect(text).not.toContain("上轮抽测退回问题");
+    // 默认原始反馈 tab：digest baseline 里的 original_content 兜底
+    await openTab(root, "原始反馈");
+    expect((root.textContent ?? "")).toContain("反馈正文（摘要回退）");
+    expect((root.textContent ?? "")).toContain("旧任务的原始反馈正文");
+
+    await openTab(root, "内容整理");
+    const organized = root.textContent ?? "";
+    expect(organized).toContain("研发处理判断确认基准（摘要回退）");
+    expect(organized).toContain("旧任务的基准正文");
+    expect(organized).toContain("旧验收口径");
+
+    await openTab(root, "研发初判");
+    const judgment = root.textContent ?? "";
+    expect(judgment).toContain("旧任务的变更正文");
+    // 老库回退不出现结构化专属块（真实包才有）
+    expect(judgment).not.toContain("字段抽取明细");
+    expect(judgment).not.toContain("上轮抽测退回问题");
+
+    await openTab(root, "研发自测");
+    const selftest = root.textContent ?? "";
+    expect(selftest).toContain("自测结果：测试通过");
+    expect(selftest).toContain("验证重点：用户创建");
+    expect(selftest).toContain("测试地址：https://old-env");
   });
 
   it("页面操作：AI 分析/开始测试可发起，终止需要确认", async () => {
