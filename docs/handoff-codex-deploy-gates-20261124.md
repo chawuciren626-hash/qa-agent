@@ -83,6 +83,8 @@ node scripts/local-service.mjs status E:/AITestHarness/installed/installation.js
 ```
 
 方案 B 另需：`deploy-project-management-local.mjs` + web/server 构建，顺序按 runbook §5（server 与 web 不并行）。
+平台那批（`d156469` `a8bbbd3` `ed6abd5`）另有独立清单 `docs/部署清单-平台资料四tab与流程闭环-2026-11-24.md`，
+两批可以分别部署：先按本清单同步引擎（不重启前端资源），再按平台清单构建部署 web/server。
 
 同步后必须核对一件事：**`hook-denial.mjs` 出现在引擎副本里，且 `aitest-source-runtime.json` 的 `engine_files` 含该键**。
 只看"脚本报成功"不够——`deploy-engine-files.mjs` 只同步清单内的文件，清单漏项它会安静地不同步。
