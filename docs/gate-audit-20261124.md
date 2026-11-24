@@ -69,9 +69,26 @@ journal 落在 `output/handoff-checks/<parent>/launch-reminders.json`，计数�
 
 ## 四、部署清单（交 codex）
 
-1. 拉取 `e9bcc5e`、`6546f4e`、`4df9a53` 三个提交（本地 main，尚未 push）。
+1. 拉取四个提交（本地 main，尚未 push）：`e9bcc5e`、`6546f4e`、`4df9a53`、`1dcd6cf`。
 2. 引擎侧改动集中在 `scripts/`，**无需重建 `core/dist`**；若部署流程会重建，照常重建。
+   `1dcd6cf` 新增 `scripts/hook-denial.mjs`，部署时必须整目录同步，不能只覆盖被改名的旧文件。
 3. 部署后验证：
-   - 跑一次 `node scripts/run-engineering-tests.mjs tests/acceptance/stage-evidence.test.mjs tests/acceptance/child-history-recovery.test.mjs`（应 52 通过）
+   - 跑 `node scripts/run-engineering-tests.mjs tests/acceptance/stage-evidence.test.mjs tests/acceptance/child-history-recovery.test.mjs`（应 52 通过）
    - 取一个此前卡在 handoff 的 run，重试一次 handoff；不重跑子任务、不重派发
-4. 回滚：三个提交互相独立，可单独 `git revert`；`4df9a53` 只加了可选参数（默认 `null`），旧调用点行为不变。
+   - 取一个此前因「Registered child was not launched after two internal reminders」被 stop 的 run，
+     发一条新用户消息后确认 hook 重新给出 `continue` 而不是继续 `stop`（`1dcd6cf` 的额度按轮次）
+4. 回滚：四个提交互相独立，可单独 `git revert`；`4df9a53` 与 `1dcd6cf` 的缓存参数都是可选（默认 `null`），
+   旧调用点行为不变。注意 `1dcd6cf` 同时删除了 `handoffReminder` 导出，回滚该提交时若有外部引用会一并恢复。
+
+### 在本机 Agent 沙箱里跑测试的前置条件
+
+`structured-actions.test.mjs` 必须**独占串行**跑，且要抬高沙箱防批量删除阈值，否则第 6 个用例起全部 fixture 失败：
+
+```bash
+CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD=1000000 \
+  node scripts/run-engineering-tests.mjs tests/acceptance/structured-actions.test.mjs
+```
+
+不抬高阈值时的表象是 16 通过 / 69 失败，错误统一从 `input_rejected` 变成 `runner_error`，
+收尾报 `[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":50,"threshold":50}`——
+看到这组特征直接判定为环境误报，不要当代码回归去改代码。
