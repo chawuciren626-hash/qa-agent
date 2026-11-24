@@ -6,6 +6,7 @@ import { assertStageHistory } from './orchestration-state.mjs';
 import { readControllerSession, controllerCommandIsLive, permitsArtifactContinuation, permitsIndependentRunContinuation } from './controller-command-session.mjs';
 import { verifyDelegationBinding } from './delegation-binding.mjs';
 import { toolWasNotExecuted } from './child-command-policy.mjs';
+import { DELEGATION_DENIAL, denialRecorded } from './hook-denial.mjs';
 
 export function guardDelegation(root,input,agentRoot) {
   if(input.tool_name==='input_subagent') {
@@ -52,7 +53,7 @@ export function guardDelegation(root,input,agentRoot) {
       // Native hook refusal is also prelaunch evidence, including malformed arguments.
       const outputs=rows.slice(index+1).filter(r=>r.payload?.type==='tool_call_output' && r.payload.tool_call_id===row.payload.tool_call_id);
       if(outputs.length===1 && rows.filter(r=>r.payload?.type==='tool_call' && r.payload.tool_call_id===row.payload.tool_call_id).length===1 &&
-        String(outputs[0].payload.output).startsWith('Tool call denied by the qa-delegation-guard hook')) return false;
+        denialRecorded(rows,row.payload.tool_call_id,DELEGATION_DENIAL)) return false;
       let call; try {call=typeof row.payload.arguments==='string'?JSON.parse(row.payload.arguments):row.payload.arguments;} catch {return true;}
       if (!String(call?.prompt).includes(dispatch.dispatch_id)) return false;
       return true;

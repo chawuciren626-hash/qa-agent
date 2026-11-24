@@ -12,7 +12,8 @@ import { createServer } from 'node:http';
 import xlsx from '../../scripts/spreadsheet-runtime.mjs';
 import { validateExplorationTarget } from '../../scripts/explore-task-url.mjs';
 const root=resolve(import.meta.dirname,'../..');
-const roles={analysis:['requirement_analysis_agent','requirement-analysis'],test_points:['test_point_agent','test-point-design'],test_cases:['test_case_agent','test-case-writing'],execution:['automation_execution_agent','playwright-execution'],defects:['defect_analysis_agent','bug-reporting'],report:['test_report_agent','test-report-writing']};
+// The saved plan owns the skill list; a stage may need more than one Skill.
+const roles={analysis:['requirement_analysis_agent',['requirement-analysis','api-contract-analysis']],test_points:['test_point_agent',['test-point-design']],test_cases:['test_case_agent',['test-case-writing']],execution:['automation_execution_agent',['playwright-execution']],defects:['defect_analysis_agent',['bug-reporting']],report:['test_report_agent',['test-report-writing']]};
 
 test('report uses the latest sealed case design after a reviewed edit',()=>{
   const files=sha256=>[{path:'design/test_cases.json',sha256}];
@@ -49,10 +50,10 @@ async function fixture(stage,{source_mode,requested=[stage]}={}) {
   const manifest=()=>JSON.parse(readFileSync(resolve(dir,'manifest.json')));
   assert.equal(manifest().orchestration.plan.workflow_mode,'task');
   assert.deepEqual(manifest().orchestration.plan.stages.filter(s=>s.selected).map(s=>s.id),source_mode==='live_product'?['execution',...requested.filter(s=>s!=='execution')]:requested);
-  const dispatched=await send({action:'dispatch',stage,agent:roles[stage][0],skills:[roles[stage][1]]});assert.equal(dispatched.exit_code,0,JSON.stringify(dispatched));
+  const dispatched=await send({action:'dispatch',stage,agent:roles[stage][0],skills:roles[stage][1]});assert.equal(dispatched.exit_code,0,JSON.stringify(dispatched));
   assert.ok(dispatched.delegation.prompt.includes('INDEPENDENT TASK CONTRACT'));
   const contract=readFileSync(dispatched.delegation_contract_path,'utf8');
-  assert.deepEqual(dispatched.skill_files,[{skill:roles[stage][1],read_file_path:resolve(root,'skills',roles[stage][1],'SKILL.md')}]);
+  assert.deepEqual(dispatched.skill_files,roles[stage][1].map(skill=>({skill,read_file_path:resolve(root,'skills',skill,'SKILL.md')})));
   assert.ok(contract.includes(JSON.stringify(dispatched.skill_files)));
   if(stage==='report') {
     assert.match(contract,/tool-generated evidence index/);

@@ -12,7 +12,7 @@ import { inspectIndependentArtifacts } from '../../scripts/independent-task.mjs'
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const root=resolve(import.meta.dirname,'../..');
-const roles={execution:['automation_execution_agent','playwright-execution'],test_cases:['test_case_agent','test-case-writing'],report:['test_report_agent','test-report-writing'],analysis:['requirement_analysis_agent','requirement-analysis']};
+const roles={execution:['automation_execution_agent',['playwright-execution']],test_cases:['test_case_agent',['test-case-writing']],report:['test_report_agent',['test-report-writing']],analysis:['requirement_analysis_agent',['requirement-analysis','api-contract-analysis']]};
 const sleep=ms=>new Promise(done=>setTimeout(done,ms));
 
 async function fixture(workflow_mode='task') {
@@ -26,7 +26,7 @@ async function fixture(workflow_mode='task') {
   const id=created.run_id,dir=resolve(root,'output/runs',id),call=r=>send({run_id:id,...r});
   assert.equal((await call({action:'archive_input',name:'request.txt',text:'Synthetic requirement: reject an empty name. No product tests executed.'})).exit_code,0);
   assert.equal((await call({action:'plan_run',stages:workflow_mode==='task'?['execution','test_cases','report','analysis']:['analysis','test_points'],workflow_mode})).exit_code,0);
-  const dispatch=stage=>call({action:'dispatch',stage,agent:roles[stage][0],skills:[roles[stage][1]]});
+  const dispatch=stage=>call({action:'dispatch',stage,agent:roles[stage][0],skills:roles[stage][1]});
   const append=row=>{rows.push({timestamp:new Date().toISOString(),...row});save();};
   const makeChild=(delegation,ended)=>{
     const child=`session-2026-10-13-00-00-01-${randomUUID().replaceAll('-','')}`,traces=resolve(agentRoot,delegation.agent_id,'traces/2026-10-13');mkdirSync(traces,{recursive:true});
@@ -125,7 +125,7 @@ test('separate native command processes queue the same controller without losing
   const f=await fixture();
   const invoke=async stage=>{
     const path=resolve(f.dir,`synthetic-${stage}-request.json`);
-    writeFileSync(path,JSON.stringify({action:'dispatch',run_id:f.id,stage,agent:roles[stage][0],skills:[roles[stage][1]]}));
+    writeFileSync(path,JSON.stringify({action:'dispatch',run_id:f.id,stage,agent:roles[stage][0],skills:roles[stage][1]}));
     const result=await promisify(execFile)(process.execPath,[resolve(root,'scripts/project-action.mjs'),'execute',`--controller-session=${f.parent}`,`--request=${path}`],{cwd:root,env:{...process.env,PENGUIN_AGENT_ROOT:f.agentRoot},windowsHide:true});
     return JSON.parse(result.stdout);
   };

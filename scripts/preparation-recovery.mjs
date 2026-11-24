@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { dataPath } from './directory-context.mjs';
 import { readRunFile } from './design-quality.mjs';
+import { STAGE_BOUNDARY_DENIAL, denialCorroborated } from './hook-denial.mjs';
 
 const safeActions = new Set(['read_source', 'run_status', 'prepare_execution_plan', 'validate_execution_prepare', 'validate_artifacts']);
 const safeScripts = new Set(['select-test-cases.mjs', 'create-execution-plan.mjs', 'validate-artifacts.mjs', 'show-run-status.mjs', 'record-orchestration-event.mjs']);
@@ -34,8 +35,7 @@ export function inspectPreparationSafety(root, dir, runId, parentId, dispatch, c
     assert(outputs.length === 1, 'Preparation tool has no unique terminal response');
     const output = outputs[0].payload;
     if (toolOutcome(output) === 'aborted') {
-      const denied = child.slice(index + 1, child.indexOf(outputs[0])).some(item => item.type === 'event_msg' && item.payload?.type === 'approval_decision' && item.payload.tool_call_id === call.tool_call_id && item.payload.decision === 'deny');
-      assert(denied && String(output.output).startsWith('Tool call denied by the qa-stage-boundary hook:'), 'Unverified tool interruption');
+      assert(denialCorroborated(child, call.tool_call_id, STAGE_BOUNDARY_DENIAL), 'Unverified tool interruption');
       continue;
     }
     if (call.name !== 'exec_command') {

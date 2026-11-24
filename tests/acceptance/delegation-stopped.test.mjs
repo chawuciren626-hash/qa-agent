@@ -100,6 +100,27 @@ test('native unexecuted malformed delegation does not poison another bound draft
   assert.equal(f.gate(draft.delegation).decision,'deny');
 });
 
+test('an unlaunched dispatch is reminded once per turn instead of staying poisoned forever',async()=>{
+  const f=await fixture();
+  await f.stop({status:'timeout',exit_code:124,result:{termination_confirmed:true}});
+  const draft=await f.dispatch('report');assert.equal(draft.exit_code,0,JSON.stringify(draft));
+  // Two reminders in one turn, then the hook stops the loop instead of repeating forever.
+  for(const attempt of [1,2]) {
+    const reminder=await reconcileHandoff(root,f.parent,f.agentRoot);
+    assert.equal(reminder.decision,'continue',`attempt ${attempt}: ${JSON.stringify(reminder)}`);
+    assert.match(reminder.input,/run_subagent/);
+  }
+  const exhausted=await reconcileHandoff(root,f.parent,f.agentRoot);
+  assert.equal(exhausted.decision,'stop',JSON.stringify(exhausted));
+  assert.match(exhausted.reason,/never started/);
+  // A new user message is a new turn: the run must become workable again rather than
+  // staying locked out for the rest of its life because two reminders were spent.
+  f.append([{type:'model_msg',payload:{type:'text',role:'user',text:'continue'}}]);
+  const resumed=await reconcileHandoff(root,f.parent,f.agentRoot);
+  assert.equal(resumed.decision,'continue',JSON.stringify(resumed));
+  assert.match(resumed.input,/run_subagent/);
+});
+
 test('stop hook resumes a bound draft and commits a verified partial report without clearing the product fault',async()=>{
   const f=await fixture();
   await f.stop({status:'timeout',exit_code:124,result:{termination_confirmed:true}});

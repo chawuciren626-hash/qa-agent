@@ -421,7 +421,7 @@ function captureUserInputs(root,runId,session,agentRoot,rows) {
   writeJson(contextPath,context);
   return {...context,context_path:contextPath,word_extraction_templates:context.attachments.filter(entry=>/\.docx$/i.test(entry.path)).map(entry=>({action:'extract_word',run_id:runId,path:entry.path}))};
 }
-function artifactProgress(root, runId, stage, parent, agentRoot, action, sourcePath) {
+function artifactProgress(root, runId, stage, parent, agentRoot, action, sourcePath, cache = null) {
   if (!runId || !stage) return null;
   try {
     const dir=runDirectory(root,runId),manifest=JSON.parse(readRunFile(dir,'manifest.json').data);
@@ -437,8 +437,8 @@ function artifactProgress(root, runId, stage, parent, agentRoot, action, sourceP
     let child=null;
     if(['handoff','complete'].includes(action)) {
       try {
-        const resolved=resolveDispatchedChild(root,runId,stage,parent,agentRoot);
-        child=hash(JSON.stringify(readSession(agentRoot ?? process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(),'.penguin/data/default_project/agents'),resolved.agent,resolved.child_session)));
+        const resolved=resolveDispatchedChild(root,runId,stage,parent,agentRoot,{cache});
+        child=hash(JSON.stringify(readSession(agentRoot ?? process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(),'.penguin/data/default_project/agents'),resolved.agent,resolved.child_session,cache)));
       } catch { /* An unresolved return is unchanged progress, not completion evidence. */ }
     }
     return hash(JSON.stringify({dispatch:dispatch?.dispatch_id,files,child}));
@@ -451,6 +451,10 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
   try { assertParentSession(root,'run-command-session',session,agentRoot); }
   catch(error) { recordTrace(root,{session,status:'rejected',exit_code:2,ok:false,error:error.message,args:null}); throw error; }
   const dir=auditDir(root,session); mkdirSync(dir,{recursive:true});
+  // One action resolves the same dispatch, parent and child traces in several separate
+  // checks. Nothing appends to those traces until this action returns, so one snapshot
+  // per action serves the progress hash and the readiness/completion prechecks alike.
+  const stageSessions=new Map();
   const path=resolve(dir,`${randomUUID()}.json`);
   const receipt={version:1,session_id:session,at:new Date().toISOString(),status:'started',action:null,request_sha256:null};
   // 工具级 trace：只在这里攒，finally 统一落盘。散在各 action 内部记，漏一个就是一条断链。
@@ -470,11 +474,11 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
   if(receipt.action==='read_source' && typeof parsed?.path==='string') receipt.read_path=parsed.path;
   // Controlled stage revision grants a new dispatch-local budget; old counters remain intact.
   const budgetStage = draftArtifactActions[receipt.action]?.stage ?? (['generate_analysis','validate_analysis','read_source'].includes(receipt.action) ? 'analysis' : ['validate_artifacts','handoff','complete','dispatch'].includes(receipt.action) ? parsed?.stage : null);
-  const artifactHash=artifactProgress(root,receipt.run_id,budgetStage,session,agentRoot,receipt.action,parsed?.path);
+  const artifactHash=artifactProgress(root,receipt.run_id,budgetStage,session,agentRoot,receipt.action,parsed?.path,stageSessions);
   if(artifactHash) progressHash=hash(JSON.stringify({request:progressHash,artifacts:artifactHash}));
   if(receipt.action==='handoff' && parsed?.stage==='execution') {
     try {
-      const readiness=inspectStageHandoff(root,session,parsed,agentRoot);
+      const readiness=inspectStageHandoff(root,session,parsed,agentRoot,stageSessions);
       progressHash=hash(JSON.stringify({progress:progressHash,verified_handoff_ready:readiness.dispatch_id}));
     } catch { /* An unresolved handoff keeps its existing correction history. */ }
   }
@@ -878,9 +882,9 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
       }
       if (parsed.action === 'complete') {
         try {
-          const child=resolveDispatchedChild(root,parsed.run_id,parsed.stage,session,agentRoot);
+          const child=resolveDispatchedChild(root,parsed.run_id,parsed.stage,session,agentRoot,{cache:stageSessions});
           requireInput(!parsed.child_session || parsed.child_session===child.child_session,'Completion child differs from the current returned dispatch');
-          const inspection=inspectStageHandoff(root,session,parsed,agentRoot);
+          const inspection=inspectStageHandoff(root,session,parsed,agentRoot,stageSessions);
           requireInput(inspection.dispatch_id===parsed.dispatch_id,'Completion dispatch differs from the current dispatch');
           parsed={...parsed,child_session:child.child_session};
         } catch(error) {

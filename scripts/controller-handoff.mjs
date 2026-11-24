@@ -8,11 +8,12 @@ import { readRunFile, runDirectory } from './design-quality.mjs';
 import { assertArtifactContract, stageRequiredArtifacts } from './artifact-contracts.mjs';
 import { writeJson } from './orchestration-state.mjs';
 import { guardDelegation } from './delegation-guard.mjs';
+import { DELEGATION_DENIAL, denialRecorded } from './hook-denial.mjs';
 
-export function inspectHandoff(root,parentId,agentRoot) {
+export function inspectHandoff(root,parentId,agentRoot,cache=null) {
   // This sweep walks every run and stage owned by one controller. Every check below
   // resolves the same parent trace, so one snapshot serves the whole sweep.
-  const sessions=new Map();
+  const sessions=cache ?? new Map();
   const rows=assertParentSession(root,'run-command-session',parentId,agentRoot,sessions);
   const state=readControllerSession(root,parentId);
   if(state.status!=='ready' && !(state.status==='stopped' && permitsArtifactContinuation(root,state,{action:'handoff'}))) return null;
@@ -47,7 +48,7 @@ export function inspectHandoff(root,parentId,agentRoot) {
         {
           const calls=rows.filter(r=>{
             if(r.payload?.type!=='tool_call' || r.payload.name!=='run_subagent') return false;
-            if(rows.some(output=>output.payload?.type==='tool_call_output' && output.payload.tool_call_id===r.payload.tool_call_id && String(output.payload.output).startsWith('Tool call denied by the qa-delegation-guard hook'))) return false;
+            if(denialRecorded(rows,r.payload.tool_call_id,DELEGATION_DENIAL)) return false;
             let args;try {args=typeof r.payload.arguments==='string'?JSON.parse(r.payload.arguments):r.payload.arguments;} catch {return false;}
             return args?.agent_id===dispatch.agent && String(args.prompt).split(/[^A-Za-z0-9-]+/).includes(dispatch.dispatch_id);
           });
@@ -79,10 +80,17 @@ export function inspectHandoff(root,parentId,agentRoot) {
   return pending[0] ?? null;
 }
 
-function resumeUnlaunchedDispatch(root,parentId,agentRoot) {
+function resumeUnlaunchedDispatch(root,parentId,agentRoot,cache=null) {
   if(!['ready','stopped'].includes(readControllerSession(root,parentId).status)) return {};
   const audit=dataPath(root,'output/action-audit',parentId);
   if(!existsSync(audit)) return {};
+  const sessions=cache ?? new Map();
+  const rows=assertParentSession(root,'run-command-session',parentId,agentRoot,sessions);
+  // A reminder budget belongs to one user turn. A fresh user message means a human is
+  // engaged again and the model gets a fresh chance; without this the second reminder
+  // poisons the dispatch for the rest of the run, including after the user asks to resume.
+  const at=value=>{const t=Date.parse(value ?? '');return Number.isFinite(t) ? t : 0;};
+  const lastUserAt=at(rows.filter(r=>r.type==='model_msg' && r.payload?.type==='text' && r.payload.role==='user' && r.payload.sender!=='harness').at(-1)?.timestamp);
   const receipts=readdirSync(audit).filter(name=>name.endsWith('.json')).flatMap(name=>{
     try {return [JSON.parse(readFileSync(resolve(audit,name),'utf8'))];} catch {return [];}
   });
@@ -103,10 +111,12 @@ function resumeUnlaunchedDispatch(root,parentId,agentRoot) {
     const dir=dataPath(root,'output/handoff-checks',parentId);mkdirSync(dir,{recursive:true});
     const file=resolve(dir,'launch-reminders.json');
     const journal=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):{counts:{},events:[]};
-    const used=journal.counts[receipt.dispatch_id] ?? 0;
-    if(used>=2) return {decision:'stop',reason:'Registered child was not launched after two internal reminders. No product request or stage completion occurred; report the engineering limitation without user unlock paperwork.'};
-    journal.counts[receipt.dispatch_id]=used+1;
-    journal.events.push({at:new Date().toISOString(),dispatch_id:receipt.dispatch_id});writeJson(file,journal);
+    const used=(journal.events ?? []).filter(event=>event.dispatch_id===receipt.dispatch_id && at(event.at)>=lastUserAt).length;
+    if(used>=2) return {decision:'stop',reason:`Dispatch ${receipt.dispatch_id} (run ${receipt.run_id}, stage ${receipt.stage}) is registered but never started: two reminders in this turn produced no run_subagent call. Nothing ran and no product request was made, so no stage progress can be claimed. Tell the user this stage never started and ask whether to re-dispatch it; do not report any deliverable or verification result for it.`};
+    // One source of truth: the event log, trimmed so a long run cannot grow it forever.
+    journal.events=[...(journal.events ?? []),{at:new Date().toISOString(),dispatch_id:receipt.dispatch_id}].slice(-50);
+    delete journal.counts;
+    writeJson(file,journal);
     return {decision:'continue',reason:'Registered professional task has no native child invocation',input:`Internal bookkeeping, NOT a user message or approval. This dispatch is registered but has NOT started. Invoke run_subagent now with these exact arguments: ${JSON.stringify(receipt.delegation)}. Do not register another dispatch or report background work before invoking it. Existing scope, role and execution safeguards remain unchanged.`};
   }
   return {};
@@ -114,9 +124,11 @@ function resumeUnlaunchedDispatch(root,parentId,agentRoot) {
 
 // Host bookkeeping only: never approve, repair artifacts, dispatch or run tests.
 export async function reconcileHandoff(root,parentId,agentRoot) {
+  // One snapshot for one hook decision: every check below reads the same parent trace.
+  const sessions=new Map();
   try {
-    const next=inspectHandoff(root,parentId,agentRoot);
-    if (!next) return resumeUnlaunchedDispatch(root,parentId,agentRoot);
+    const next=inspectHandoff(root,parentId,agentRoot,sessions);
+    if (!next) return resumeUnlaunchedDispatch(root,parentId,agentRoot,sessions);
     const {executeAction}=await import('./structured-actions.mjs');
     const request=next.request.action==='fail'?next.request:{action:'handoff',run_id:next.request.run_id,stage:next.request.stage,artifacts:next.request.artifacts ?? stageRequiredArtifacts(root,next.request.run_id,next.request.stage)};
     const result=await executeAction(root,parentId,()=>JSON.stringify(request),{agentRoot});
@@ -126,22 +138,9 @@ export async function reconcileHandoff(root,parentId,agentRoot) {
     return {decision:'continue',reason:'Verified stage handoff recorded',input:`Internal bookkeeping, NOT a user message or approval. ${JSON.stringify(result.data)}. ${awaiting?'Present the deliverables and the specific pending decision, then wait for the user.':'Continue the next selected stage in this run when dependencies are ready. Present the accumulated result at a real business decision or the final deliverable.'} Do not invent a business decision or bypass execution authorization.`,handoff_receipt:result.action_receipt};
   } catch(error) {
     try {
-      const launch=resumeUnlaunchedDispatch(root,parentId,agentRoot);
+      const launch=resumeUnlaunchedDispatch(root,parentId,agentRoot,sessions);
       if(launch.decision==='continue') return launch;
     } catch { /* Preserve the original handoff issue when no verified launch is available. */ }
     return {decision:'stop',reason:`Handoff not verified: ${error.message}. Keep this stage incomplete; report the actual draft issue, not successful delivery. No approval or state change was performed by this check.`};
   }
-}
-
-export function handoffReminder(root,parentId,agentRoot) {
-  try {
-    const next=inspectHandoff(root,parentId,agentRoot);if(!next) return {};
-    if(next.request.action==='fail') return {decision:'stop',reason:'Professional child returned an explicit failure; do not present its artifacts as completed or retry this dispatch.'};
-    const dir=dataPath(root, 'output/handoff-checks',parentId);mkdirSync(dir,{recursive:true});
-    const file=resolve(dir,'reminders.json');const journal=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):{counts:{},events:[]};
-    const key=`${next.dispatch_id}:${next.request.action}`;const used=journal.counts[key] ?? 0;
-    if(used>=2) return {decision:'stop',reason:'Controller handoff remains incomplete after two reminders; no approval or state change was performed.'};
-    journal.counts[key]=used+1;journal.events.push({at:new Date().toISOString(),key,request:next.request});writeJson(file,journal);
-    return {decision:'continue',reason:'Verified professional result needs controller bookkeeping',input:`Internal handoff check, NOT user approval. The real child and artifacts passed precheck. Write this request to output/action-requests/${next.dispatch_id}-handoff.json using the file tool: ${JSON.stringify(next.request)}. Execute node scripts/project-action.mjs execute --controller-session=${parentId} --request=output/action-requests/${next.dispatch_id}-handoff.json . After handoff, follow the saved plan: continue when no confirmation is required, otherwise present the business decision. Do not bypass execution authorization. If a command fails, report its actual evidence; this reminder grants no retry or recovery permission.`};
-  } catch(error) {return {decision:'stop',reason:`Handoff not verified: ${error.message}. No completion or approval was recorded by this hook.`};}
 }

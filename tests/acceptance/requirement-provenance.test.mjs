@@ -103,7 +103,7 @@ test('user analysis revision archives pending and approved versions, redispatche
     if (cycle) assert.deepEqual(f.read().confirmations.slice(0, history.confirmations.length), history.confirmations);
     assert.equal(hasApprovedConfirmation(f.read(), 'analysis'), false);
     assert.notEqual(f.call('request-stage-confirmation', [f.id, 'analysis']).status, 0);
-    f.ok('record-orchestration-event', [f.id, 'dispatched', '--stage=analysis', '--agent=requirement_analysis_agent', '--skills=requirement-analysis', `--parent-session-id=${f.parent}`]);
+    f.ok('record-orchestration-event', [f.id, 'dispatched', '--stage=analysis', '--agent=requirement_analysis_agent', '--skills=requirement-analysis,api-contract-analysis', `--parent-session-id=${f.parent}`]);
     f.ledger.rules[0].reason = `Synthetic clarified explanation ${cycle}`; f.save();
     const generated = f.ok('generate-analysis-markdown', [f.id], { QA_CONTROLLER_SESSION: f.parent });
     assert.equal(generated.generation.revision, 0);

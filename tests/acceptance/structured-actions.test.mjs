@@ -149,15 +149,27 @@ test('URL source path errors reject before launch without globally stopping the 
   }
 });
 
-test('verified analysis validation alias clears harmless shell probes, not unverified or unrelated actions',()=>{
-  const probe=[{payload:{type:'tool_call',name:'exec_command',tool_call_id:'probe',arguments:{cmd:'Get-ChildItem .'}}},{payload:{type:'tool_call_output',tool_call_id:'probe',stop_reason:'fatal',output:'Get-ChildItem: command not found'}}];
-  const rows=(key,script='validate-artifacts.mjs')=>[...probe,{payload:{type:'tool_call',name:'exec_command',tool_call_id:'validation',arguments:{cmd:'node project-action.mjs execute'}}},{payload:{type:'tool_call_output',tool_call_id:'validation',stop_reason:'completed',output:JSON.stringify({status:'completed',exit_code:0,script,task_key:key,action_receipt:'verified',execution_mode:'in_process',launches_child:false})}}];
-  for(const key of ['run-a:validate_analysis:',`run-a:validate_analysis:${randomUUID()}`,'run-a:validate_artifacts:analysis',`run-a:validate_artifacts:test_points${randomUUID()}`]) {
-    assert.doesNotThrow(()=>assertChildCommands(rows(key),{allowRecovery:true,verifyRecovery:()=>true}));
-    assert.throws(()=>assertChildCommands(rows(key),{allowRecovery:true,verifyRecovery:()=>false}),/Shell inspection/);
-  }
-  for(const key of ['run-a:diagnose_analysis:','run-a:validate_artifacts:invented','run-a:validate_analysis:garbage']) assert.throws(()=>assertChildCommands(rows(key),{allowRecovery:true,verifyRecovery:()=>true}),/Shell inspection/);
-  assert.throws(()=>assertChildCommands(rows('run-a:validate_analysis:','other.mjs'),{allowRecovery:true,verifyRecovery:()=>true}),/Shell inspection/);
+test('an executed uncontrolled probe cannot be laundered by a later verified validation',()=>{
+  const probe=(stop='fatal',output='Get-ChildItem: command not found')=>[
+    {payload:{type:'tool_call',name:'exec_command',tool_call_id:'probe',arguments:{cmd:'Get-ChildItem .'}}},
+    {payload:{type:'tool_call_output',tool_call_id:'probe',stop_reason:stop,output}}
+  ];
+  const validation=[
+    {payload:{type:'tool_call',name:'exec_command',tool_call_id:'validation',arguments:{cmd:'node scripts/project-action.mjs execute'}}},
+    {payload:{type:'tool_call_output',tool_call_id:'validation',stop_reason:'completed',output:JSON.stringify({status:'completed',exit_code:0,script:'validate-artifacts.mjs',task_key:'run-a:validate_analysis:',action_receipt:'verified',execution_mode:'in_process',launches_child:false})}}
+  ];
+  const options={allowRecovery:true,verifyRecovery:()=>true};
+  // The stage hook refuses every uncontrolled command before execution, so an executed
+  // fatal probe means the guard itself was bypassed: no later success may launder it.
+  assert.throws(()=>assertChildCommands([...probe(),...validation],options),/Child command failed/);
+  assert.throws(()=>assertChildCommands([...probe(),...validation],{...options,requireControlledCommands:true}),/uncontrolled/);
+  // A denied probe never ran, so it owes no repair and blocks nothing.
+  assert.doesNotThrow(()=>assertChildCommands([
+    {payload:{type:'tool_call',name:'exec_command',tool_call_id:'probe',arguments:{cmd:'Get-ChildItem .'}}},
+    {type:'event_msg',payload:{type:'approval_decision',tool_call_id:'probe',decision:'deny'}},
+    {payload:{type:'tool_call_output',tool_call_id:'probe',stop_reason:'aborted',output:'Tool call denied by the qa-stage-boundary hook: QA shell redirect: This command was NOT executed.'}},
+    ...validation
+  ],options));
 });
 
 test('dispatch mapping errors stay recoverable and plan supplies authoritative templates',async()=>{

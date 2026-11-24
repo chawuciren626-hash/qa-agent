@@ -8,6 +8,7 @@ import { requiredArtifacts, stageRequiredArtifacts, assertArtifactContract, insp
 import { assertChildCommands, childCommandPolicy, toolWasNotExecuted } from './child-command-policy.mjs';
 import { CommandUsageError } from './command-contracts.mjs';
 import { assertRecoveryDecisions } from './orchestration-state.mjs';
+import { DELEGATION_DENIAL, denialRecorded } from './hook-denial.mjs';
 export { requiredArtifacts } from './artifact-contracts.mjs';
 
 // Eligibility only: completion still validates the child and artifacts under lock.
@@ -242,7 +243,7 @@ export function matchingDispatchCalls(parent, runId, dispatch) {
   const results=toolResultsById(parent);
   return parent.filter(row => {
     if (row.payload?.type !== 'tool_call' || row.payload.name !== 'run_subagent' || !(Date.parse(row.timestamp) >= Date.parse(dispatch.at))) return false;
-    const denied=(results.get(row.payload.tool_call_id) ?? []).some(({output})=>String(output.payload.output).startsWith('Tool call denied by the qa-delegation-guard hook'));
+    const denied=denialRecorded(parent,row.payload.tool_call_id,DELEGATION_DENIAL);
     if(denied) return false;
     let args;
     try { args = typeof row.payload.arguments === 'string' ? JSON.parse(row.payload.arguments) : row.payload.arguments; } catch { return false; }

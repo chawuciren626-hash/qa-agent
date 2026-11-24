@@ -8,7 +8,7 @@ import { requiredArtifacts } from '../../scripts/stage-evidence.mjs';
 import { executionInputs } from './safety-fixtures.mjs';
 import { designArtifacts } from './artifact-fixtures.mjs';
 import { childCommandPolicy } from '../../scripts/child-command-policy.mjs';
-import { inspectHandoff, handoffReminder } from '../../scripts/controller-handoff.mjs';
+import { inspectHandoff } from '../../scripts/controller-handoff.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 test('missing artifact repair preserves history and refuses existing files', () => {
@@ -122,11 +122,11 @@ test('stage events cannot bypass approval or override state and audit fields', (
       writeFileSync(resolve(stateDir,'state.json'),JSON.stringify({session_id:parentId,status:'ready',events:[]}));
       const request=inspectHandoff(root,parentId,agentRoot);
       assert.equal(request.request.action,'complete');assert.equal(request.request.child_session,undefined);
-      assert.equal(handoffReminder(root,parentId,agentRoot).decision,'continue');
-      assert.equal(handoffReminder(root,parentId,agentRoot).decision,'continue');
-      assert.equal(handoffReminder(root,parentId,agentRoot).decision,'stop');
+      // A broken artifact must block the handoff itself, not only a reminder about it.
+      writeFileSync(target,'invalid');
+      assert.throws(()=>inspectHandoff(root,parentId,agentRoot));
       assert.equal(readFileSync(resolve(dir,'manifest.json'),'utf8'),before);
-      writeFileSync(target,'invalid');assert.equal(handoffReminder(root,parentId,agentRoot).decision,'stop');writeFileSync(target,valid);
+      writeFileSync(target,valid);
     }
     ok('record-orchestration-event', [...completion, `--parent-session-id=${parentId}`]);
     if(stage==='analysis' && !(manifest.confirmations ?? []).some(c=>c.stage===stage)) assert.equal(inspectHandoff(root,parentId,agentRoot).request.action,'request_confirmation');
@@ -143,7 +143,7 @@ test('stage events cannot bypass approval or override state and audit fields', (
   denied(['dispatched', '--stage=analysis', '--status=completed']);
   denied(['dispatched', '--stage=analysis', '--type=completed']);
   denied(['completed', '--stage=analysis']);
-  ok('record-orchestration-event', [id, 'dispatched', '--stage=analysis', '--agent=requirement_analysis_agent', '--skills=requirement-analysis']);
+  ok('record-orchestration-event', [id, 'dispatched', '--stage=analysis', '--agent=requirement_analysis_agent', '--skills=requirement-analysis,api-contract-analysis']);
   denied(['completed', '--stage=analysis', '--artifacts=quality/missing.json']);
   denied(['completed', '--stage=analysis', '--artifacts=../../quality/defect-index.json']);
   denied(['completed', '--stage=analysis']);
@@ -154,7 +154,7 @@ test('stage events cannot bypass approval or override state and audit fields', (
   // Synthetic decisions test transitions; they are not approval of an actual Agent run.
   ok('resolve-stage-confirmation', [id, 'analysis', 'revision_requested', 'synthetic test']);
   assert.notEqual(run('request-stage-confirmation', [id, 'analysis']).status, 0);
-  ok('record-orchestration-event', [id, 'dispatched', '--stage=analysis', '--agent=requirement_analysis_agent', '--skills=requirement-analysis']);
+  ok('record-orchestration-event', [id, 'dispatched', '--stage=analysis', '--agent=requirement_analysis_agent', '--skills=requirement-analysis,api-contract-analysis']);
   complete('analysis');
   ok('request-stage-confirmation', [id, 'analysis']);
   ok('resolve-stage-confirmation', [id, 'analysis', 'approved', 'synthetic test only']);

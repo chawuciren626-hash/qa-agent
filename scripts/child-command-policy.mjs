@@ -2,6 +2,7 @@ import {toolOutcome} from './trace-outcome.mjs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { stageWriteRules, isControlledStageEvidence } from './stage-registry.mjs';
 import { isSafeArtifactAction } from './recovery-policy.mjs';
+import { STAGE_BOUNDARY_DENIAL, denialCorroborated } from './hook-denial.mjs';
 
 export function childCommandPolicy(dispatchId, version = 3) {
   if (version === 3) return `QA_COMMAND_POLICY_V3 ${dispatchId}: 仅交付已分配阶段，校验和导出使用结构化动作。安全输入与草稿纠错不设固定次数；依据已记录的recovery修正原因，stalled=true时改变方法或返回已有结果和限制，不原样循环。不得要求用户技术解锁。保留真实证据，未解决的错误不得宣称完成。禁止重放结果未知的产品操作、绕过凭据或扩大范围，不自行批准阶段或直接编辑manifest。`;
@@ -27,16 +28,9 @@ export function isPermittedChildShell(command) {
   return isControlledCommand(command);
 }
 
-// The qa-stage-boundary hook owns the deny reason text. Match only its stable
-// bare prefix so a reworded reason (QA shell redirect, write target, catalog
-// detour, ...) still counts as "denied before execution" and is not mistaken
-// for a failed business command during handoff.
-const STAGE_BOUNDARY_DENIAL = 'Tool call denied by the qa-stage-boundary hook:';
-
 function wasRedirectedBeforeExecution(rows,index,response,callId) {
-  if(toolOutcome(response.payload)!=='aborted' || !String(response.payload.output).startsWith(STAGE_BOUNDARY_DENIAL)) return false;
-  const decisions=rows.slice(index+1,rows.indexOf(response)).filter(row=>row.type==='event_msg' && row.payload?.type==='approval_decision' && row.payload.tool_call_id===callId);
-  return decisions.length===1 && decisions[0].payload.decision==='deny';
+  if(toolOutcome(response.payload)!=='aborted') return false;
+  return denialCorroborated(rows,callId,STAGE_BOUNDARY_DENIAL);
 }
 
 function parseToolArguments(row) {
@@ -162,9 +156,16 @@ function backgroundCatalogWithoutOutput(rows, index, initial) {
     try { const args = parseToolArguments(row); return args.process_id === match[1] && args.kill !== true; }
     catch { return false; }
   });
-  if (polls.length !== 1) return false;
-  const outputs = rows.slice(index + 1).filter(row => row.payload?.type === 'tool_call_output' && row.payload.tool_call_id === polls[0].payload.tool_call_id);
-  return outputs.length === 1 && toolOutcome(outputs[0].payload) === 'completed' && String(outputs[0].payload.output ?? '').trim() === '[no output]';
+  if (!polls.length) return false;
+  // "Silent" is a property of every poll, not of a poll count: checking twice to
+  // confirm that a background catalog probe printed nothing must stay a no-match
+  // instead of turning into an unresolved correction debt.
+  return polls.every(poll => {
+    const outputs = rows.slice(index + 1).filter(row => row.payload?.type === 'tool_call_output' && row.payload.tool_call_id === poll.payload.tool_call_id);
+    if (outputs.length !== 1 || toolOutcome(outputs[0].payload) !== 'completed') return false;
+    const text = String(outputs[0].payload.output ?? '').trim();
+    return text === '' || text === '[no output]';
+  });
 }
 
 // A correction is a recorded attempt, never a silent pass: the category decides
@@ -192,15 +193,24 @@ function recordedCorrection(result,{allowRecovery,allowUnresolvedRecovery,verify
       result.result?.termination_confirmed===true && !['interrupted','cleanup_required'].includes(result.result.termination)
     : ['failed','rejected'].includes(result.status) && result.exit_code!==0;
   if(!stopped) return null;
-  // 1) still correctable, 2) progress-based exhaustion, 3) a legacy exhausted
-  // receipt kept alive only by the explicit unresolved-draft path.
+  // A receipt filed under a legacy label instead of a task key can never be cleared by
+  // a later success, so fall back to the receipt's own task key. Keys that already look
+  // like run/task identifiers are kept: those name the action that must succeed.
+  const filed=typeof recovery.key==='string' && /^(?:run-[A-Za-z0-9-]+:|unbound:request:)/.test(recovery.key)
+    ? recovery.key : result.task_key;
+  // A request that never selected an action is owed a valid request, not another attempt
+  // at the same action, so its retry budget does not decide whether the debt is open.
+  const requestLevel=category==='request_correction' && filed==='unbound:request:' &&
+    result.run_id==null && result.action==null;
+  // 1) still correctable, 2) a request-level debt, 3) progress-based exhaustion,
+  // 4) a legacy exhausted receipt kept alive only by the explicit unresolved-draft path.
   const correctable=recovery.retry_allowed===true;
   const stalled=recovery.retry_allowed===false && recovery.stalled===true && recovery.policy==='progress_based' &&
-    Number.isInteger(recovery.failure_number) && recovery.failure_number>=3 && recovery.key===result.task_key &&
+    Number.isInteger(recovery.failure_number) && recovery.failure_number>=3 && filed===result.task_key &&
     (result.classification!=='correction_stalled' || result.status==='rejected' && result.exit_code===2);
   const legacy=allowUnresolvedRecovery && recovery.retry_allowed===false && Number.isInteger(recovery.failure_number) && recovery.failure_number>=3;
-  if(!correctable && !stalled && !legacy) return null;
-  return {category,key:recovery.key ?? result.task_key,action:result.action ?? null};
+  if(!correctable && !requestLevel && !stalled && !legacy) return null;
+  return {category,key:filed,action:result.action ?? null};
 }
 
 // A corrected read stays a run-relative path inside this run, or an engine doc.

@@ -25,6 +25,13 @@ test('detached read-only catalog with an empty poll does not block later verifie
   assert.throws(()=>assertChildCommands([call('exec_command','catalog',{cmd:'node scripts/project-action.mjs execute'}),...catalog.slice(1)],options),/unreadable/);
   const failedPoll=[...catalog];failedPoll[3]=output('poll','failed','fatal');
   assert.throws(()=>assertChildCommands(failedPoll,options),/unreadable/);
+  // Silence is a property of every poll, not of a poll count: confirming a second time
+  // that the background catalog printed nothing must not become an unresolved debt.
+  const silentAgain=[...catalog,call('input_command','poll-again',{process_id:'proc-a'}),output('poll-again','[no output]')];
+  assert.doesNotThrow(()=>assertChildCommands([...silentAgain,call('exec_command','execute',{cmd:'node scripts/project-action.mjs execute'}),output('execute',success)],options));
+  // A poll that does return content is a real result; it must not be waved through as silence.
+  const noisyPoll=[...catalog,call('input_command','poll-again',{process_id:'proc-a'}),output('poll-again','["help"]')];
+  assert.throws(()=>assertChildCommands(noisyPoll,options),/unreadable/);
 });
 const launch = () => [
   call('exec_command', 'launch', { cmd: 'node scripts/project-action.mjs execute' }),

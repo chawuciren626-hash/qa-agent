@@ -125,7 +125,7 @@ function fixture() {
   const manifestPath = resolve(dir, 'manifest.json');
   const read = () => JSON.parse(readFileSync(manifestPath));
   const hash = () => createHash('sha256').update(readFileSync(manifestPath)).digest('hex');
-  const dispatchArgs = [id, 'dispatched', '--stage=analysis', '--agent=requirement_analysis_agent', '--skills=requirement-analysis', `--parent-session-id=${parent}`];
+  const dispatchArgs = [id, 'dispatched', '--stage=analysis', '--agent=requirement_analysis_agent', '--skills=requirement-analysis,api-contract-analysis', `--parent-session-id=${parent}`];
   const dispatch = () => ok('record-orchestration-event', dispatchArgs).event.dispatch_id;
   const block = token => ok('record-orchestration-event', [id, 'blocked', '--stage=analysis', `--parent-session-id=${parent}`, `--dispatch-id=${token}`, '--reason=synthetic-failure']);
   const recovery = (digest = hash()) => [id, 'analysis', `--expected-sha256=${digest}`, '--actor=synthetic-reviewer', '--reason=synthetic-recovery', '--approval-ref=synthetic-only', '--evidence=inputs/recovery.md', `--parent-session-id=${parent}`];
