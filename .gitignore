@@ -47,6 +47,7 @@ Thumbs.db
 !/docs/learning/
 !/docs/releases/
 !/docs/README.md
+!/docs/deployment-single-instance-20261124.md
 !/docs/acceptance-baseline.md
 !/docs/agent-development-learning-guide.md
 !/docs/handoff-codex-deploy-20261121.md
@@ -54,6 +55,7 @@ Thumbs.db
 !/docs/AITestHarness测试任务与认知资产重构方案-2026-11-21.md
 !/docs/web-design-debt-2026-11-22.md
 !/docs/handoff-codex-deploy-sidebar-20261123.md
+!/docs/handoff-codex-engine-retained-handoff-20261124.md
 !/docs/deployment-fixes-20261123.md
 !/docs/deploy-handoff-2026-11-22.md
 !/docs/four-agent-consolidated-report-2026-11-22.md
