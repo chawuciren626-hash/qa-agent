@@ -68,7 +68,16 @@ export interface TaskProgressRun {
 export interface TaskDetail {
   task: TaskListItem & {
     feedbackType: string | null;
+    /** 反馈类型中文名（服务端映射；未知编码原样）。 */
+    feedbackTypeLabel?: string | null;
     estimatedHours: number | null;
+    submitter?: string | null;
+    assignee?: string | null;
+    complexityLevel?: string | null;
+    estimatedDays?: number | null;
+    requirementBaseline?: { final_content?: string; original_content?: string; acceptance_criteria?: string[]; confirmed?: boolean; confirmed_at?: string | null } | null;
+    selfTestDigest?: { reviewed_at?: string | null; review_mode?: string | null; test_address?: string; self_test_result?: string; affected_modules?: string; known_risks?: string; test_focus?: string; version_info?: string; related_links?: string[] } | null;
+    changesDigest?: Array<{ node?: string; node_code?: string; batch?: number; sequence?: number; content?: string; changed_at?: string | null; operator?: string | null }>;
     description: string | null;
     localTitleNote: string;
     localTestFocusNote: string;

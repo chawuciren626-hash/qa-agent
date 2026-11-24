@@ -72,6 +72,13 @@ function makeDb(): DatabaseSync {
       local_edited_at        TEXT,
       last_event_id          TEXT,
       last_synced_at         TEXT,
+      requirement_baseline_json TEXT,
+      self_test_digest_json  TEXT,
+      changes_digest_json    TEXT,
+      submitter_name         TEXT,
+      assignee_name          TEXT,
+      complexity_level       TEXT,
+      estimated_days         INTEGER,
       last_action_json       TEXT NOT NULL DEFAULT '{}',
       created_at             TEXT NOT NULL,
       updated_at             TEXT NOT NULL,
@@ -575,6 +582,7 @@ describe("IngestionScheduler", () => {
       apiKey: "secret-key-value",
       pollIntervalMs: 60_000,
       batchSize: 10,
+      recipientUserId: "",
     });
     expect(applied.apiKeyMasked).toBe("secr****alue");
     expect(applied.enabled).toBe(false);

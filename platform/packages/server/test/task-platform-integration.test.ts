@@ -31,6 +31,7 @@ import {
 } from "../src/integrations/task-platform/result-outbox.js";
 import { taskPlatformIntegration } from "../src/db/migrations/steps/2026-11-20-task-platform-integration.js";
 import { taskPlatformEventRetry } from "../src/db/migrations/steps/2026-11-23-task-platform-event-retry.js";
+import { taskPlatformPackageBackfill } from "../src/db/migrations/steps/2026-11-23-task-platform-package-backfill.js";
 import { migrate as migrateSteps } from "../src/db/migrations/runner.js";
 
 // ---------- 测试基建 ----------
@@ -39,6 +40,7 @@ function makeDb(): DatabaseSync {
   const db = new DatabaseSync(":memory:");
   taskPlatformIntegration.up(db);
   taskPlatformEventRetry.up(db);
+  taskPlatformPackageBackfill.up(db);
   return db;
 }
 
@@ -50,6 +52,28 @@ describe("task-platform event retry migration", () => {
     expect(migrateSteps(db, [taskPlatformIntegration, taskPlatformEventRetry]).applied).toEqual([taskPlatformEventRetry.name]);
     expect(db.prepare("PRAGMA table_info(task_platform_events)").all().some(row => (row as { name: string }).name === "process_status")).toBe(true);
     expect(migrateSteps(db, [taskPlatformIntegration, taskPlatformEventRetry]).applied).toEqual([]);
+    db.close();
+  });
+
+  it("upgrades a legacy database for the package backfill column (base migration already recorded)", () => {
+    const db = new DatabaseSync(":memory:");
+    // 旧库账本：只记录 base + event-retry（升级前状态）
+    const first = migrateSteps(db, [taskPlatformIntegration, taskPlatformEventRetry]);
+    expect(first.applied).toEqual([taskPlatformIntegration.name, taskPlatformEventRetry.name]);
+    // 旧库 packages 表没有 backfilled_at（base 已入账，改它不会重跑）
+    expect(db.prepare("PRAGMA table_info(task_platform_packages)").all().some(row => (row as { name: string }).name === "backfilled_at")).toBe(false);
+    // 新迁移只补 backfilled_at，不重跑 base
+    const second = migrateSteps(db, [taskPlatformIntegration, taskPlatformEventRetry, taskPlatformPackageBackfill]);
+    expect(second.applied).toEqual([taskPlatformPackageBackfill.name]);
+    expect(db.prepare("PRAGMA table_info(task_platform_packages)").all().some(row => (row as { name: string }).name === "backfilled_at")).toBe(true);
+    // 重复执行幂等
+    expect(migrateSteps(db, [taskPlatformIntegration, taskPlatformEventRetry, taskPlatformPackageBackfill]).applied).toEqual([]);
+    // 标记列可用：登记（先建外键依赖的 task_link 行）+ 标记 + 清空
+    db.prepare("INSERT INTO task_platform_task_links (link_id, project_id, source_system, external_tenant_id, external_task_id, external_task_no, current_package_version, created_at, updated_at) VALUES ('link-1','proj-1','sbkj-taskassignment','t','task-1','FB-1',1,'2026-11-23T00:00:00Z','2026-11-23T00:00:00Z')").run();
+    db.prepare("INSERT INTO task_platform_packages (id, task_link_id, package_version, event_id, event_type, content_hash, payload_json, document_id, revision, received_at) VALUES ('pkg-1','link-1',1,'evt-1','initial_handoff','sha256:x','{}','doc-1',1,'2026-11-23T00:00:00Z')").run();
+    expect((db.prepare("SELECT COUNT(*) AS n FROM task_platform_packages WHERE backfilled_at IS NULL").get() as { n: number }).n).toBe(1);
+    db.prepare("UPDATE task_platform_packages SET backfilled_at = '2026-11-23T01:00:00Z' WHERE id = 'pkg-1'").run();
+    expect((db.prepare("SELECT COUNT(*) AS n FROM task_platform_packages WHERE backfilled_at IS NULL").get() as { n: number }).n).toBe(0);
     db.close();
   });
 });

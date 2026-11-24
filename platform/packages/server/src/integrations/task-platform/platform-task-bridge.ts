@@ -204,6 +204,156 @@ export class PlatformTaskBridge implements PackageActivationHook {
     this.upsertPlatformTaskLink(taskLink, pkg, "impact_pending");
   }
 
+  /**
+   * 存量任务资料字段幂等回填（审阅 P1-B）：从已接收包补齐展示行的
+   * requirement_baseline_json / self_test_digest_json / changes_digest_json / 人员规模字段。
+   * 边界（严格）：
+   * - 只在 requirement_baseline_json IS NULL 时写（空→有；已有值不覆盖）；
+   * - 不改 status、不推进 package_version/pm_round_no、不碰 last_action_json；
+   * - 不改 T4 本地字段（local_title_note/local_test_focus_note/local_edited_at）；
+   * - 不写 qa_documents、不触发激活钩子（修订历史不动）。
+   * 返回是否发生了写入（供 summary.backfilled 计数）。
+   */
+  async backfillFromPackage(taskLinkRowId: string, pkg: HandoffPackage): Promise<boolean> {
+    const taskLink = this.requireTaskLink(taskLinkRowId);
+    const row = this.db
+      .prepare(
+        `SELECT requirement_baseline_json, external_tenant_id, external_task_id
+           FROM platform_task_links
+          WHERE project_id = ? AND source_system = 'sbkj-taskassignment'
+            AND external_tenant_id = ? AND external_task_id = ?`,
+      )
+      .get(taskLink.project_id, pkg.tenant_id, pkg.task_id) as
+      | { requirement_baseline_json: string | null; external_tenant_id: string; external_task_id: string }
+      | undefined;
+    if (!row) return false; // 展示行不存在（异常态）：留给正常激活路径
+    if (row.requirement_baseline_json) return false; // 已回填/已有值：幂等跳过
+    const now = this.now().toISOString();
+    const baseline = this.requirementBaselineDigest(pkg);
+    this.db
+      .prepare(
+        `UPDATE platform_task_links SET
+           requirement_baseline_json = ?, self_test_digest_json = ?, changes_digest_json = ?,
+           submitter_name = ?, assignee_name = ?, complexity_level = ?, estimated_days = ?,
+           updated_at = ?
+         WHERE project_id = ? AND source_system = 'sbkj-taskassignment'
+           AND external_tenant_id = ? AND external_task_id = ?`,
+      )
+      .run(
+        baseline,
+        this.selfTestDigest(pkg),
+        this.changesDigest(pkg),
+        pkg.task.submitter.display_name,
+        pkg.task.assignee.display_name,
+        pkg.task.complexity_level,
+        pkg.task.estimated_days,
+        now,
+        taskLink.project_id,
+        pkg.tenant_id,
+        pkg.task_id,
+      );
+    return true;
+  }
+
+  /**
+   * 文本类附件入库（ingestion 附件下载阶段逐个调用；≤60KB、文本类，与人工上传口径一致）。
+   * 幂等：按 `[platform:<attachment_id>] <文件名>` 标记查重，重放不重复入库。
+   * 二进制（截图/压缩包）跳过——原件从任务平台按 attachment_id 鉴权拉取，详情附件清单标注"见平台原件"。
+   */
+  syncTextAttachment(taskLink: { link_id: string; project_id: string; external_task_id: string }, att: { attachment_id: string; file_name: string; content_type: string | null }, contentText: string): boolean {
+    const marker = `[platform:${att.attachment_id}]`;
+    const filename = `${marker} ${att.file_name || "attachment"}`.slice(0, 200);
+    const exists = this.db
+      .prepare("SELECT 1 FROM qa_task_attachments WHERE project_id = ? AND task_source = 'platform' AND task_id = ? AND filename = ?")
+      .get(taskLink.project_id, taskLink.link_id, filename);
+    if (exists) return false;
+    if (!contentText.trim()) return false;
+    if (/[\u0000]/.test(contentText) || (contentText.match(/[\u0001-\u0008\u000e-\u001f]/g)?.length ?? 0) > 8) return false; // 非文本
+    const bytes = Buffer.byteLength(contentText, "utf8");
+    if (bytes > 60 * 1024) return false;
+    const count = (
+      this.db
+        .prepare("SELECT COUNT(*) AS n FROM qa_task_attachments WHERE project_id = ? AND task_source = 'platform' AND task_id = ?")
+        .get(taskLink.project_id, taskLink.link_id) as { n: number }
+    ).n;
+    if (count >= 10) return false; // 与人工上传上限一致
+    const now = this.now().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO qa_task_attachments
+           (attachment_id, project_id, task_source, task_id, filename, mime, size_bytes, content_text, created_by, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        `att_${att.attachment_id.replace(/-/g, "").slice(0, 24)}`,
+        taskLink.project_id,
+        "platform",
+        taskLink.link_id,
+        filename,
+        att.content_type || "text/plain",
+        bytes,
+        contentText,
+        this.systemUserId,
+        now,
+        now,
+      );
+    return true;
+  }
+
+  /**
+   * 包附件同步闭环（审阅 P1-A）：逐个下载文本类附件 → syncTextAttachment 入库。
+   * task_id 关联口径 = **展示表 platform_task_links.link_id**（PLATFORM_SELECT 的 id 即它，
+   * 详情附件列表/AI 分析按此查询）。传入 (project_id, tenant, task) 定位展示行；
+   * 展示行不存在（激活钩子未跑完）返回 skipped 并由调用方记录。
+   * 判定与校验：文本 MIME/扩展名 + 包内 sha256 下载校验（client.downloadAttachment 已做）；
+   * 失败（网络/哈希/超限/非文本）计入 failed，不抛错——附件缺失不阻断包激活。
+   */
+  async syncPackageAttachments(
+    taskRef: { project_id: string; tenant_id: string; task_id: string },
+    pkg: HandoffPackage,
+    download: (attachmentId: string) => Promise<Uint8Array>,
+  ): Promise<{ synced: number; skipped: number; failed: number }> {
+    let synced = 0;
+    let skipped = 0;
+    let failed = 0;
+    const display = this.db
+      .prepare(
+        "SELECT link_id FROM platform_task_links WHERE project_id = ? AND source_system = 'sbkj-taskassignment' AND external_tenant_id = ? AND external_task_id = ?",
+      )
+      .get(taskRef.project_id, taskRef.tenant_id, taskRef.task_id) as { link_id: string } | undefined;
+    if (!display) return { synced: 0, skipped: (pkg.attachments ?? []).length, failed: 0 };
+    const taskLink = { link_id: display.link_id, project_id: taskRef.project_id, external_task_id: taskRef.task_id };
+    for (const att of pkg.attachments ?? []) {
+      if (!this.isTextLikeAttachment(att)) {
+        skipped++;
+        continue;
+      }
+      try {
+        const bytes = await download(att.attachment_id);
+        const contentText = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+        if (this.syncTextAttachment(taskLink, att, contentText)) synced++;
+        else skipped++;
+      } catch {
+        failed++;
+      }
+    }
+    return { synced, skipped, failed };
+  }
+
+  /** 文本类判定：MIME 前缀 + 扩展名双启发（与人工上传"仅文本"口径一致）。 */
+  private isTextLikeAttachment(att: { content_type: string | null; file_name: string; file_size: number }): boolean {
+    if (Number(att.file_size ?? 0) > 60 * 1024) return false;
+    const mime = String(att.content_type ?? "").toLowerCase();
+    if (/^(image|audio|video)\//.test(mime)) return false;
+    if (/^(application\/(zip|gzip|x-tar|x-7z|x-rar|octet-stream|pdf|msword|vnd\.))/.test(mime)) return false;
+    const name = att.file_name.toLowerCase();
+    if (/\.(png|jpe?g|gif|bmp|webp|svgz?|ico|zip|gz|tar|7z|rar|pdf|docx?|xlsx?|pptx?|exe|dll|bin)$/i.test(name)) return false;
+    if (/^(text\/|application\/(json|xml|yaml|x-yaml|javascript|x-sh|sql))/i.test(mime)) return true;
+    if (/\.(md|txt|json|csv|html?|ya?ml|xml|log|sql|ini|conf|toml|py|ts|js|sh|bat)$/i.test(name)) return true;
+    // 无 MIME 无可识别扩展名：不冒进（宁缺毋滥，避免二进制污染分析输入）
+    return false;
+  }
+
   // ------------------------------------------------------------------ internals
 
   /**
@@ -316,8 +466,11 @@ export class PlatformTaskBridge implements PackageActivationHook {
     const now = this.now().toISOString();
     const summary = extractSummaryFromPackage(pkg);
     const suggested = JSON.parse(summary) as { suggested_priority: string };
+    const baseline = this.requirementBaselineDigest(pkg);
+    const selfTest = this.selfTestDigest(pkg);
+    const changes = this.changesDigest(pkg);
     if (existing) {
-      // T4 本地补充字段不被同步覆盖；终止态不自动复活（对接方案 §8.4）
+      // T4 本地补充字段不被同步覆盖；终止态不自动复活（对接方案 §8.4）；旧版本号幂等跳过
       if (existing.status === "terminated") return;
       if (pkg.package_version <= existing.package_version) return;
       this.db
@@ -325,7 +478,10 @@ export class PlatformTaskBridge implements PackageActivationHook {
           `UPDATE platform_task_links SET
              title = ?, priority = ?, product_lines_json = ?, feedback_type = ?, estimated_hours = ?,
              package_version = ?, pm_round_no = ?, source_url = ?, ai_summary_json = ?,
-             suggested_priority = ?, status = ?, updated_at = ?
+             suggested_priority = ?, status = ?,
+             requirement_baseline_json = ?, self_test_digest_json = ?, changes_digest_json = ?,
+             submitter_name = ?, assignee_name = ?, complexity_level = ?, estimated_days = ?,
+             updated_at = ?
            WHERE link_id = ?`,
         )
         .run(
@@ -340,6 +496,13 @@ export class PlatformTaskBridge implements PackageActivationHook {
           summary,
           suggested.suggested_priority,
           nextStatus ?? existing.status,
+          baseline,
+          selfTest,
+          changes,
+          pkg.task.submitter.display_name,
+          pkg.task.assignee.display_name,
+          pkg.task.complexity_level,
+          pkg.task.estimated_days,
           now,
           existing.link_id,
         );
@@ -351,8 +514,10 @@ export class PlatformTaskBridge implements PackageActivationHook {
            link_id, project_id, source_system, external_tenant_id, external_task_id, external_task_no,
            title, priority, product_lines_json, feedback_type, estimated_hours,
            package_version, pm_round_no, source_url, status, ai_summary_json, suggested_priority,
+           requirement_baseline_json, self_test_digest_json, changes_digest_json,
+           submitter_name, assignee_name, complexity_level, estimated_days,
            last_action_json, created_at, updated_at
-         ) VALUES (?, ?, 'sbkj-taskassignment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, 'sbkj-taskassignment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         `ptl-${crypto.randomUUID()}`,
@@ -371,9 +536,68 @@ export class PlatformTaskBridge implements PackageActivationHook {
         nextStatus ?? "pending_analysis",
         summary,
         suggested.suggested_priority,
+        baseline,
+        selfTest,
+        changes,
+        pkg.task.submitter.display_name,
+        pkg.task.assignee.display_name,
+        pkg.task.complexity_level,
+        pkg.task.estimated_days,
         JSON.stringify({ action: "platform_ingest", event_id: pkg.event.event_id, at: now }),
         now,
         now,
       );
+  }
+
+  /** 需求基准摘要：研发处理判断最终确认内容 + 验收口径（最重要的验收依据）。 */
+  private requirementBaselineDigest(pkg: HandoffPackage): string {
+    return JSON.stringify({
+      final_content: pkg.requirement.confirmed_baseline.final_content || pkg.requirement.final_content || "",
+      acceptance_criteria: pkg.requirement.confirmed_baseline.acceptance_criteria ?? [],
+      confirmed: pkg.requirement.confirmed_baseline.confirmed === true,
+      confirmed_at: pkg.requirement.confirmed_baseline.confirmed_at,
+      original_content: pkg.requirement.original_content || "",
+    });
+  }
+
+  /** 研发自测摘要：测试地址/自测结果/影响模块/已知风险/验证重点（submission_sections 提炼）。 */
+  private selfTestDigest(pkg: HandoffPackage): string {
+    const sections = pkg.development_self_test.submission_sections ?? [];
+    const pick = (keywords: string[]): string => {
+      for (const section of sections) {
+        const label = String(section.label ?? section.key ?? "");
+        if (keywords.some(k => label.includes(k))) {
+          const value = String(section.value ?? "").trim();
+          if (value) return value;
+        }
+      }
+      return "";
+    };
+    return JSON.stringify({
+      reviewed_at: pkg.development_self_test.reviewed_at,
+      review_mode: pkg.development_self_test.review_mode,
+      test_address: pick(["测试地址", "访问地址", "地址"]),
+      self_test_result: pick(["自测结果", "结果"]),
+      affected_modules: pick(["影响模块", "影响范围", "模块"]),
+      known_risks: pick(["已知风险", "风险"]),
+      test_focus: pick(["验证重点", "重点验证", "重点"]),
+      version_info: pick(["版本信息", "版本"]),
+      related_links: pkg.development_self_test.related_links ?? [],
+    });
+  }
+
+  /** 节点变更摘要：轮次/节点/批次/内容（详情"变更记录"板块与开工简报共用）。 */
+  private changesDigest(pkg: HandoffPackage): string {
+    return JSON.stringify(
+      (pkg.changes ?? []).map(change => ({
+        node: change.node_label,
+        node_code: change.node_code,
+        batch: change.change_batch_no,
+        sequence: change.change_sequence,
+        content: change.change_content,
+        changed_at: change.changed_at,
+        operator: change.operator.display_name,
+      })),
+    );
   }
 }

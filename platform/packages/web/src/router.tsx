@@ -3,6 +3,7 @@ import { AdminRolesPage, AdminMenusPage } from "./features/admin/admin-system-pa
 import { AdminSkillsPage } from "./features/admin/admin-skills-page";
 import { AdminToolsPage } from "./features/admin/admin-tools-page";
 import { AdminMcpPage } from "./features/admin/admin-mcp-page";
+import { AdminTaskPlatformPage } from "./features/admin/admin-task-platform-page";
 import { AdminOverviewPage } from "./features/admin/admin-overview-page";
 import { AdminAssistantPage } from "./features/admin/admin-assistant-page";
 import { PublicationsPage } from "./features/admin/publications-page";
@@ -198,7 +199,8 @@ export function appRoutes(admin = false) {
   return createRoutesFromElements(
     <Route element={<RootFrame />}>
       <Route path="/login" element={admin ? <AdminLogin /> : <LoginRoute />} />
-      <Route path="/accounts" element={<RequireAuthBare><IntegratedAccountPage /></RequireAuthBare>} />
+      {/* /accounts（登录后账号中心仪表盘）已移除：登录直达 /qa/projects，
+          账号管理收敛到管理后台 /admin/users。 */}
       <Route
         path="/terminal"
         element={
@@ -236,6 +238,8 @@ export function appRoutes(admin = false) {
           <Route path="/skills" element={<AdminSkillsPage />} />
           <Route path="/tools" element={<AdminToolsPage />} />
           <Route path="/mcp" element={<AdminMcpPage />} />
+          {/* 任务平台对接（系统管理）：配置/连接测试/手动同步/接收人 */}
+          <Route path="/task_platform" element={<AdminTaskPlatformPage />} />
           <Route path="/publications/agents" element={<Navigate to="/agents" replace />} />
           <Route path="/publications/plugins" element={<PublicationsPage resourceKind="plugins" />} />
           <Route path="/publications/skills" element={<PublicationsPage resourceKind="skills" />} />

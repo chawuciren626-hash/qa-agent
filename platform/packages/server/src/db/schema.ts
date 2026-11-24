@@ -1154,6 +1154,15 @@ CREATE TABLE IF NOT EXISTS platform_task_links ( -- 平台任务映射：任务�
   local_edited_at        TEXT,
   last_event_id          TEXT,
   last_synced_at         TEXT,
+  server_link_id         TEXT,                            -- 服务端事实源 link_id（客户端镜像；服务端直写时为 NULL）
+  acct_user_id           TEXT,                            -- 客户端本地镜像的归属用户（AccountClient 中央 userId；服务端直写 NULL）
+  requirement_baseline_json TEXT,                          -- 研发处理判断确认基准（final_content/acceptance_criteria；平台包同步）
+  self_test_digest_json  TEXT,                             -- 研发自测摘要（测试地址/自测结果/验证重点/已知风险；平台包同步）
+  changes_digest_json    TEXT,                             -- 节点变更摘要数组（node/批次/内容；平台包同步）
+  submitter_name         TEXT,                             -- 平台提交人展示名
+  assignee_name          TEXT,                             -- 平台处理人展示名
+  complexity_level       TEXT,                             -- 平台复杂度
+  estimated_days         INTEGER,                          -- 平台预估天数
   last_action_json       TEXT NOT NULL DEFAULT '{}',     -- 最近一次状态变更审计 {action,user_id,at,detail}
   created_at             TEXT NOT NULL,
   updated_at             TEXT NOT NULL, ends_json TEXT, change_source TEXT,

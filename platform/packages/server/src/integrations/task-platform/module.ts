@@ -31,8 +31,9 @@ import type { ProjectLifecycle } from "../../mechanisms/projects.js";
 import type { UserRow } from "../../db/repos/users.js";
 import { SqliteTaskPlatformStore, type TaskPlatformStore } from "./store.js";
 import { PlatformTaskBridge } from "./platform-task-bridge.js";
-import { IngestionScheduler, type TaskPlatformConfigStore } from "./runtime.js";
+import { IngestionScheduler, loadSettings, type TaskPlatformConfigStore } from "./runtime.js";
 import { taskPlatformAdminRoutes } from "../../http/routes/task-platform-admin.js";
+import { taskPlatformSyncRoutes } from "../../http/routes/task-platform-sync.js";
 
 /** Settings 机制适配（server_settings KV）。 */
 class SettingsConfigStore implements TaskPlatformConfigStore {
@@ -71,6 +72,8 @@ export class TaskPlatformRepo implements TaskPlatformRepository {
 @Interface()
 export abstract class TaskPlatformBridgeProvider {
   abstract getBridge(): Opaque<"PlatformTaskBridge", PlatformTaskBridge>;
+  /** 接收人读取器注入（runtime setup 调用；读 settings.recipientUserId）。 */
+  abstract setRecipientResolver(resolver: (() => string) | null): void;
 }
 
 @Component()
@@ -78,6 +81,8 @@ export class PlatformTaskBridgeComponent implements TaskPlatformBridgeProvider {
   @Use() private readonly db!: Db;
   @Use() private readonly projectService!: ProjectLifecycle;
   @Use() private readonly users!: Users;
+  /** 接收人读取器（runtime 注入，读 settings.recipientUserId）；空 = admin。 */
+  recipientResolver: (() => string) | null = null;
   private bridge: PlatformTaskBridge | null = null;
 
   setup() {
@@ -91,8 +96,9 @@ export class PlatformTaskBridgeComponent implements TaskPlatformBridgeProvider {
         systemUserId: "admin",
         now: () => new Date(),
         createProject: async args => {
-          const owner = users.findById("admin");
-          if (!owner) throw new Error("admin 用户不存在，无法创建平台同步项目");
+          const recipient = this.recipientResolver?.() || "admin";
+          const owner = users.findById(recipient) ?? users.findById("admin");
+          if (!owner) throw new Error("接收人用户不存在且 admin 缺失，无法创建平台同步项目");
           // SEMANTIC_ID_PATTERN 要求 ^[a-z][a-z0-9_]{1,63}$（无连字符）：外部 ID 中的
           // 连字符/其他字符统一映射为下划线，保证首次创建即合法（审阅意见 1）
           const projectId = syncProjectId(args.externalTenantId, args.externalProjectId);
@@ -129,6 +135,10 @@ export class PlatformTaskBridgeComponent implements TaskPlatformBridgeProvider {
     if (!this.bridge) throw new Error("task-platform bridge not ready");
     return this.bridge;
   }
+
+  setRecipientResolver(resolver: (() => string) | null): void {
+    this.recipientResolver = resolver;
+  }
 }
 
 @Interface()
@@ -141,6 +151,7 @@ export class TaskPlatformRuntime implements TaskPlatformSchedulerProvider {
   @Use() private readonly settings!: Settings;
   @Use() private readonly storeHolder!: TaskPlatformRepository;
   @Use() private readonly bridgeHolder!: TaskPlatformBridgeProvider;
+  @Use() private readonly users!: Users;
   private scheduler: IngestionScheduler | null = null;
 
   setup({ effect }: ClassCtx) {
@@ -151,6 +162,16 @@ export class TaskPlatformRuntime implements TaskPlatformSchedulerProvider {
       store,
       bridge,
     });
+    // 推送接收人：bridge 建项目时读 settings.recipientUserId 做 owner；
+    // admin 页下拉从启用账号列表选（Users 机制）。
+    // 注意：setRecipientResolver 声明在 TaskPlatformBridgeProvider（provider 接口）上，
+    // 经 provider 引用调用——不对 getBridge() 的 Opaque 返回值做类型断言（审阅 P0）。
+    const settingsStore = new SettingsConfigStore(this.settings);
+    this.bridgeHolder.setRecipientResolver(() => loadSettings(settingsStore).recipientUserId);
+    const users = this.users;
+    RUNTIME_USERS_REF.list = () => users.list() as Array<{ userId: string; displayName: string | null; isAdmin: boolean }>;
+    this.scheduler.listRecipientsImpl = () =>
+      RUNTIME_USERS_REF.list().map(u => ({ userId: u.userId, displayName: u.displayName || u.userId, isAdmin: u.isAdmin }));
     if (this.settings.get("task_platform_autostart") !== "0") this.scheduler.start();
     effect(() => this.scheduler?.stop());
   }
@@ -170,6 +191,14 @@ export class TaskPlatformRuntime implements TaskPlatformSchedulerProvider {
         auth: "user",
         order: 50,
       },
+      {
+        id: "task-platform.sync",
+        prefix: "/api/sync/v1",
+        // none = 不装用户会话/API token 闸；路由内部以 Bearer 服务凭据自鉴权
+        // （requireServiceKey，客户端本地服务持久持有——与任务平台对接凭据同模式）。
+        auth: "none",
+        order: 51,
+      },
     ],
   },
 })
@@ -177,12 +206,14 @@ export class TaskPlatformAdminRoutes {
   @Use() private readonly db!: Db;
   @Use() private readonly runtime!: TaskPlatformSchedulerProvider;
   @Bind("task-platform.admin") adminRoutes!: Hono<AppEnv>;
+  @Bind("task-platform.sync") syncRoutes!: Hono<AppEnv>;
 
   setup() {
     const runtime = this.runtime;
     const db = this.db as unknown as import("node:sqlite").DatabaseSync;
+    const scheduler = runtime.getScheduler();
     this.adminRoutes = taskPlatformAdminRoutes({
-      scheduler: runtime.getScheduler(),
+      scheduler,
       audit: (actor: string, action: string, summary: string) => {
         try {
           // admin 审计与 auth.ts 登录审计同表（public_admin_audit）；表不存在时静默降级
@@ -193,6 +224,11 @@ export class TaskPlatformAdminRoutes {
           // 审计失败不阻断业务
         }
       },
+    });
+    // 同步下发面（客户端本地服务持服务凭据 Bearer 调用；路由内部自鉴权，不走用户会话）
+    this.syncRoutes = taskPlatformSyncRoutes({
+      sync: scheduler.getSyncService(db),
+      verifyKey: provided => scheduler.verifySyncKey(provided),
     });
   }
 }
@@ -209,6 +245,17 @@ export class TaskPlatformAdminRoutes {
 export class TaskPlatformIntegrationModule {}
 
 /** 同步项目 ID 派生：外部 ID（UUID/编码/中文名）→ SEMANTIC_ID_PATTERN 合法段（^[a-z][a-z0-9_]{1,63}$）。 */
+export function usersList(settings: Settings): Array<{ userId: string; displayName: string | null; isAdmin: boolean }> {
+  void settings;
+  // Users 机制由组件树注入（TaskPlatformRuntime.users.list()）；此处经闭包访问，见 setup。
+  return RUNTIME_USERS_REF.list();
+}
+
+/** setup 时回填的 Users 机制引用（避免 helper 签名侵入组件结构）。 */
+const RUNTIME_USERS_REF: { list: () => Array<{ userId: string; displayName: string | null; isAdmin: boolean }> } = {
+  list: () => [],
+};
+
 export function slugify(value: string): string {
   const slug = value.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").replace(/_{2,}/g, "_");
   return slug || "line";

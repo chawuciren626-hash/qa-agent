@@ -92,22 +92,8 @@ export function UserMenu({
   const openAdminView = async () => {
     setOpen(false);
     setAdminViewError("");
-    // The desktop host and the central admin site use separate origins and sessions.
-    // Resolve the configured origin from the host instead of opening its local /admin route.
-    try {
-      const response = await fetch("/api/account-client/config", { signal: AbortSignal.timeout(6000) });
-      if (!response.ok) throw new Error("无法读取管理服务地址。");
-      const config = await response.json() as { enabled?: boolean; origin?: string };
-      if (!config.enabled || !config.origin) throw new Error("管理服务尚未配置。");
-      const origin = new URL(config.origin);
-      if (origin.protocol !== "https:" && !(origin.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname))) throw new Error("管理服务地址无效。");
-      const adminUrl = new URL("/admin/login", origin);
-      adminUrl.searchParams.set("returnTo", new URL("/user/", window.location.origin).href);
-      window.location.assign(adminUrl.href);
-    } catch (cause) {
-      setAdminViewError(cause instanceof Error ? cause.message : "无法打开管理员视图。");
-      setOpen(true);
-    }
+    // The administrator console uses the same origin, authentication store and server.
+    window.location.assign("/admin/login");
   };
 
   // Settings can be asked for from outside this menu (see settings-request.ts): the request

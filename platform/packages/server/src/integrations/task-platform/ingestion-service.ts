@@ -35,6 +35,12 @@ export interface IngestionRunSummary {
   packages_failed: number;
   cursor_advanced: boolean;
   cursor_reset: boolean;
+  /** 附件同步：downloaded=已入任务附件数，skipped=二进制/超限跳过，failed=下载失败（下轮重试）。 */
+  attachments_synced: number;
+  attachments_skipped: number;
+  attachments_failed: number;
+  /** 已入库任务的资料字段幂等回填数（审阅 P1-B：部署升级后一次性补齐存量）。 */
+  backfilled: number;
 }
 
 /** 失败事件重试退避：30s 起翻倍，封顶 1h（审阅意见 2 的漏单兜底）。 */
@@ -77,6 +83,7 @@ export class IngestionService {
    * 1. 重试队列：上轮失败（failed 且到期）与登记未处理（pending）的事件优先处理；
    * 2. 游标增量：拉新事件 → 登记 pending → 立即处理 → 标记 succeeded/failed。
    * 登记先于处理：处理失败事件留在队列按指数退避重试，游标推进不会丢事件。
+   * 3. 已入库包的资料字段幂等回填 + 文本附件补同步（P1-B/P1-A：升级部署后存量补齐）。
    */
   async runOnce(): Promise<IngestionRunSummary> {
     const summary: IngestionRunSummary = {
@@ -87,6 +94,10 @@ export class IngestionService {
       packages_failed: 0,
       cursor_advanced: false,
       cursor_reset: false,
+      attachments_synced: 0,
+      attachments_skipped: 0,
+      attachments_failed: 0,
+      backfilled: 0,
     };
     const nowIso = this.now().toISOString();
 
@@ -128,7 +139,55 @@ export class IngestionService {
       this.store.setIngestCursor(page.next_cursor);
       summary.cursor_advanced = true;
     }
+
+    // 阶段 3：存量回填（P1-B）——每轮限处理 batch 条，全部补齐后为 no-op（幂等）。
+    // 本轮激活路径已同步过附件的任务跳过（防止计数双计/重复下载）。
+    await this.backfillStoredPackages(summary, this.attachmentsSyncedThisRun);
+    this.attachmentsSyncedThisRun.clear();
     return summary;
+  }
+
+  /**
+   * 已入库包 → 展示表资料字段幂等回填（审阅 P1-B）。
+   * 背景：需求基准/自测摘要等列晚于首轮同步上线，存量任务的详情与分析输入为空；
+   * 单纯 sync-now（事件已 succeeded 跳过）或游标重建都不会重新走激活钩子。
+   * 判定：展示行存在且 requirement_baseline_json 为空 → 从传输表最新已接收包回填。
+   * 边界：不改任务状态、不覆盖 T4 本地字段、不触碰 qa_documents 修订历史、不重发激活钩子。
+   * 附件：回填时一并补同步文本附件（P1-A 对存量的兜底）。
+   */
+  private async backfillStoredPackages(summary: IngestionRunSummary, skipAttachmentFor: Set<string>): Promise<void> {
+    const hook = this.activation as PackageActivationHook & {
+      backfillFromPackage?: (taskLinkRowId: string, pkg: HandoffPackage) => Promise<boolean>;
+      syncPackageAttachments?: (
+        taskRef: { project_id: string; tenant_id: string; task_id: string },
+        pkg: HandoffPackage,
+        download: (attachmentId: string) => Promise<Uint8Array>,
+      ) => Promise<{ synced: number; skipped: number; failed: number }>;
+    };
+    if (typeof hook.backfillFromPackage !== "function") return;
+    const rows = this.store.listPackagesNeedingBackfill(this.batchSize);
+    for (const row of rows) {
+      try {
+        const pkg = JSON.parse(row.payload_json) as HandoffPackage;
+        if (!looksLikeValidHandoffPackage(pkg)) continue;
+        const changed = await hook.backfillFromPackage(row.task_link_id, pkg);
+        if (changed) summary.backfilled++;
+        // 附件补同步（文本类；下载失败计 failed，不阻断）；本轮激活路径已处理的任务跳过
+        if (typeof hook.syncPackageAttachments === "function" && !skipAttachmentFor.has(row.external_task_id)) {
+          const result = await hook.syncPackageAttachments(
+            { project_id: row.project_id, tenant_id: pkg.tenant_id, task_id: row.external_task_id },
+            pkg,
+            async attachmentId => this.client.downloadAttachment(row.external_task_id, attachmentId),
+          );
+          summary.attachments_synced += result.synced;
+          summary.attachments_skipped += result.skipped;
+          summary.attachments_failed += result.failed;
+        }
+        this.store.markPackageBackfilled(row.task_link_id, row.package_version);
+      } catch (error) {
+        console.error(`[task-platform] backfill failed for ${row.external_task_id} v${row.package_version}:`, error);
+      }
+    }
   }
 
   /** 游标过期恢复：清空游标，下一轮 runOnce 从最早事件重建（幂等保护）。 */
@@ -143,6 +202,13 @@ export class IngestionService {
       const result = await this.ingestPackage(event);
       if (result === "received") summary.packages_received++;
       if (result === "activated") summary.packages_activated++;
+      // 附件同步计数并入（syncAttachmentsForTask 在 ingestPackage 内更新 lastAttachmentSummary）
+      if (this.lastAttachmentSummary) {
+        summary.attachments_synced += this.lastAttachmentSummary.synced;
+        summary.attachments_skipped += this.lastAttachmentSummary.skipped;
+        summary.attachments_failed += this.lastAttachmentSummary.failed;
+        this.lastAttachmentSummary = null;
+      }
       this.store.markEventSucceeded(event.event_id);
     } catch (error) {
       summary.packages_failed++;
@@ -256,8 +322,45 @@ export class IngestionService {
     });
 
     await this.dispatchActivationHook(taskLink.link_id, pkg, true);
+    await this.syncAttachmentsForTask(taskLink, pkg);
     return event.event_type === "initial_handoff" ? "activated" : "received";
   }
+
+  /**
+   * 附件同步闭环（审阅 P1-A）：包激活后逐个下载文本类附件入任务附件库。
+   * 关联口径由 bridge.syncPackageAttachments 内部解析（展示表 link_id）；
+   * 计数并入 summary；单附件失败只累计不抛错（不阻断事件 succeeded）。
+   */
+  private async syncAttachmentsForTask(
+    taskLink: { link_id: string; project_id: string; external_task_id: string },
+    pkg: HandoffPackage,
+  ): Promise<void> {
+    const hook = this.activation as PackageActivationHook & {
+      syncPackageAttachments?: (
+        taskRef: { project_id: string; tenant_id: string; task_id: string },
+        pkg: HandoffPackage,
+        download: (attachmentId: string) => Promise<Uint8Array>,
+      ) => Promise<{ synced: number; skipped: number; failed: number }>;
+    };
+    if (typeof hook.syncPackageAttachments !== "function") return;
+    try {
+      const result = await hook.syncPackageAttachments(
+        { project_id: taskLink.project_id, tenant_id: pkg.tenant_id, task_id: pkg.task_id },
+        pkg,
+        async attachmentId => this.client.downloadAttachment(taskLink.external_task_id, attachmentId),
+      );
+      this.attachmentsSyncedThisRun.add(taskLink.external_task_id);
+      this.lastAttachmentSummary = result;
+    } catch (error) {
+      console.error(`[task-platform] attachment sync failed for ${taskLink.external_task_id}:`, error);
+      this.lastAttachmentSummary = { synced: 0, skipped: 0, failed: (pkg.attachments ?? []).length };
+    }
+  }
+
+  /** 最近一次附件同步结果（runOnce 结束时并入 summary；单事件粒度近似）。 */
+  private lastAttachmentSummary: { synced: number; skipped: number; failed: number } | null = null;
+  /** 本轮激活路径已完成附件同步的任务（external_task_id），阶段 3 跳过防止双计。 */
+  private readonly attachmentsSyncedThisRun = new Set<string>();
 
   /** 首版走 onInitialHandoff；后续版本走 onPackageUpdate；已入库重复包走既有状态。 */
   private async dispatchActivationHook(

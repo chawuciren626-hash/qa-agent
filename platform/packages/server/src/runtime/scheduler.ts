@@ -548,10 +548,6 @@ export class Scheduler implements Scheduling {
     fire?: UnattendedFireContext,
   ): Promise<void> {
     const key = this.keyOf(projectId, agentId, def.name);
-    if (process.env.AITEST_ACCOUNT_CENTER === "1") {
-      this.unattended?.recordLifecycle("fire_blocked", {projectId, agentId, name:def.name, reasonCode:"local_execution_required"});
-      return;
-    }
     if (this.authState?.accountClient && !fire) {
       this.unattended?.recordLifecycle("fire_blocked", {projectId, agentId, name:def.name, reasonCode:"explicit_binding_required"});
       return;

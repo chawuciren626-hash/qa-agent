@@ -2,12 +2,12 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { HttpError } from "./errors.js";
 
-export const ADMIN_MENU_KEYS = ["overview", "chat", "agents", "models", "plugins", "skills", "tools", "users", "roles", "menus", "audit"] as const;
+export const ADMIN_MENU_KEYS = ["overview", "chat", "agents", "models", "plugins", "skills", "tools", "mcp", "task_platform", "users", "roles", "menus", "audit"] as const;
 export type AdminMenuKey = typeof ADMIN_MENU_KEYS[number];
 export type AdminMenuItem = { key: string; name: string; path: string; group: "main" | "sys"; icon: string; color: string; visible: boolean; builtin: boolean };
-const names = ["概览", "管理员助手", "Agent管理", "渠道管理", "插件管理", "技能管理", "工具管理", "用户管理", "角色管理", "菜单管理", "操作日志"];
-const colors = ["#5a8dea", "#8a7ff0", "#2866a4", "#36ae83", "#dea52e", "#d85ca5", "#3d8fbd", "#5a8dea", "#8a7ff0", "#98a3b3", "#36ae83"];
-const systemKeys = new Set(["users", "roles", "menus", "audit"]);
+const names = ["概览", "管理员助手", "Agent管理", "渠道管理", "插件管理", "技能管理", "工具管理", "MCP 服务", "任务平台对接", "用户管理", "角色管理", "菜单管理", "操作日志"];
+const colors = ["#5a8dea", "#8a7ff0", "#2866a4", "#36ae83", "#dea52e", "#d85ca5", "#3d8fbd", "#28b5c4", "#c47a28", "#5a8dea", "#8a7ff0", "#98a3b3", "#36ae83"];
+const systemKeys = new Set(["task_platform", "users", "roles", "menus", "audit"]);
 const requiredKeys = new Set(["users", "roles", "menus"]);
 const defaultMenus = (): AdminMenuItem[] => ADMIN_MENU_KEYS.map((key, index) => ({
   key, name: names[index]!, path: key === "chat" ? "/chat/new" : key === "models" ? "/channels" : `/${key}`,

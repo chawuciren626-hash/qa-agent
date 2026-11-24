@@ -99,6 +99,17 @@ export function openDatabase(dbPath: string): DatabaseSync {
   ensureColumn(db, "qa_local_tasks", "analysis_session_id", "TEXT");
   ensureColumn(db, "qa_local_tasks", "analysis_state", "TEXT");
   ensureColumn(db, "qa_local_tasks", "analysis_error", "TEXT");
+  // 平台包数据对齐：需求基准/自测摘要/变更摘要/平台人员与规模字段（老库 CREATE 不会补列）。
+  ensureColumn(db, "platform_task_links", "requirement_baseline_json", "TEXT");
+  ensureColumn(db, "platform_task_links", "self_test_digest_json", "TEXT");
+  ensureColumn(db, "platform_task_links", "changes_digest_json", "TEXT");
+  ensureColumn(db, "platform_task_links", "submitter_name", "TEXT");
+  ensureColumn(db, "platform_task_links", "assignee_name", "TEXT");
+  ensureColumn(db, "platform_task_links", "complexity_level", "TEXT");
+  ensureColumn(db, "platform_task_links", "estimated_days", "INTEGER");
+  // 客户端本地镜像语义列（同步层阶段 B）：服务端事实源 link_id 与归属中央用户。
+  ensureColumn(db, "platform_task_links", "server_link_id", "TEXT");
+  ensureColumn(db, "platform_task_links", "acct_user_id", "TEXT");
   // Superseded by idx_usage_session_ts (session_id, ts), which SCHEMA_SQL just created on
   // this database: the old index is a strict prefix of it, so every query it served is
   // served identically. Dropping is safe — an index is derived, never data.

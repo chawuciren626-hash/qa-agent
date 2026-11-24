@@ -54,10 +54,6 @@ export class KnowledgeReceiverRoutes {
   @Bind('KnowledgeReceiver.routes') routes!: Hono<AppEnv>;
   setup() {
     const app = new Hono<AppEnv>();
-    app.use('*', async (c, next) => {
-      if (process.env.AITEST_ACCOUNT_CENTER !== '1') throw new HttpError(409, 'server_receiver_required', '请使用服务端资料接收地址。');
-      await next();
-    });
     app.route('/', knowledgeReceiverRoutes(this.config.root));
     this.routes = app;
   }

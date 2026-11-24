@@ -65,6 +65,7 @@ export interface ConnectorServiceDeps {
   db: DatabaseSync;
   dataRoot: string;
   authorizer: ConnectorAuthorizer;
+  executionLocation?: ConnectorExecutionLocation;
   transports?: Record<string, ConnectorTransport>;
   now?: () => number;
 }
@@ -83,6 +84,7 @@ export class ConnectorError extends Error {
 export class ConnectorService {
   private readonly db: DatabaseSync;
   private readonly authorizer: ConnectorAuthorizer;
+  private readonly executionLocation: ConnectorExecutionLocation;
   private readonly vault: ConnectorCredentialVault;
   private readonly transports: Record<string, ConnectorTransport>;
   private readonly now: () => number;
@@ -91,6 +93,7 @@ export class ConnectorService {
   constructor(deps: ConnectorServiceDeps) {
     this.db = deps.db;
     this.authorizer = deps.authorizer;
+    this.executionLocation = deps.executionLocation ?? "local";
     this.vault = new ConnectorCredentialVault(deps.db, deps.dataRoot);
     this.now = deps.now ?? (() => Date.now());
     this.transports = { ...defaultTransports, ...deps.transports };
@@ -135,7 +138,7 @@ export class ConnectorService {
     if (input.projectId && !this.projectAccess(ownerUserId, input.projectId)) throw new ConnectorError(403, "project_forbidden", "无权使用此项目。");
     const kind = input.kind ?? "local-test";
     if (!['local-test', 'http'].includes(kind)) throw new ConnectorError(400, 'invalid_kind', '连接器类型无效。');
-    const location = process.env.AITEST_ACCOUNT_CENTER === '1' ? 'server' : 'local';
+    const location = this.executionLocation;
     if (input.executionLocation && input.executionLocation !== location) throw new ConnectorError(400, 'execution_location_mismatch', '连接器必须在配置它的服务上执行。');
     if (kind === "local-test" && (input.transportScope ?? "loopback") !== "loopback") throw new ConnectorError(400, "invalid_transport_scope", "本地测试连接器只能使用本机回环范围。");
     const recipient = input.recipient ?? (kind === "local-test" ? "local-echo" : "");

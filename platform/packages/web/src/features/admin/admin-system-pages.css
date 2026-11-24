@@ -52,3 +52,26 @@
 .sys-colors button.active{outline:2px solid var(--ad-text,#20252d);outline-offset:2px}
 .sys-form .sys-checkbox{display:flex;align-items:center;gap:8px;grid-column:1/-1;font-size:13px}
 @media(max-width:760px){.sys-menu-row{flex-wrap:wrap}.sys-menu-row code{max-width:100%;overflow:hidden;text-overflow:ellipsis}.sys-form{grid-template-columns:1fr}}
+
+/* ---- 任务平台对接（admin-task-platform-page） ---- */
+.atp-loading { padding: 24px; color: var(--text-secondary, #667085); }
+.atp-error-inline { margin-left: 12px; color: #d92d20; }
+.atp-page { display: flex; flex-direction: column; gap: 16px; max-width: 880px; }
+.atp-card { background: var(--surface, #fff); border: 1px solid var(--border, #e4e7ec); border-radius: 12px; padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; }
+.atp-card h3 { margin: 0; font-size: 15px; }
+.atp-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.atp-field span { color: var(--text-secondary, #475467); }
+.atp-field input, .atp-field select { padding: 8px 10px; border: 1px solid var(--border, #d0d5dd); border-radius: 8px; font-size: 13px; }
+.atp-field small.atp-muted { color: #98a2b3; }
+.atp-switch { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.atp-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.atp-actions button { padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border, #d0d5dd); background: var(--surface, #fff); cursor: pointer; font-size: 13px; }
+.atp-actions button:disabled { opacity: 0.5; cursor: default; }
+.atp-actions button.atp-danger { color: #d92d20; border-color: #f4b3ae; }
+.atp-msg-ok { margin: 0; color: #067647; font-size: 13px; }
+.atp-msg-error { margin: 0; color: #d92d20; font-size: 13px; }
+.atp-status { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 24px; font-size: 13px; }
+.atp-status dt { color: var(--text-secondary, #475467); font-size: 12px; }
+.atp-status dd { margin: 2px 0 0; }
+.atp-mono { font-family: ui-monospace, monospace; font-size: 12px; }
+.atp-notes { margin: 0; padding-left: 18px; color: var(--text-secondary, #475467); font-size: 13px; display: flex; flex-direction: column; gap: 6px; }

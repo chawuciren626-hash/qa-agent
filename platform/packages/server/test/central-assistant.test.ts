@@ -64,7 +64,10 @@ describe("central administrator assistant capabilities", () => {
       expect(definition.refreshPromptOnResume).toBe(true);
       const headers = { authorization: `Bearer ${state.apiToken}`, "content-type": "application/json" };
       expect((await test.app.request("/api/projects", { method: "POST", headers, body: JSON.stringify({ projectId: "admin_agent_catalog" }) })).status).toBe(201);
-      expect((await test.app.request("/api/projects/admin_agent_catalog/models", { method: "PUT", headers, body: JSON.stringify({ defaultModel: { provider: "custom", modelId: "central-test" }, models: [{ provider: "custom", modelId: "central-test", clientType: "openai", apiKey: "fake-test-key" }] }) })).status).toBe(200);
+      const modelRequest = { method: "PUT", headers, body: JSON.stringify({ defaultModel: { provider: "custom", modelId: "central-test" }, models: [{ provider: "custom", modelId: "central-test", clientType: "openai", apiKey: "fake-test-key" }] }) };
+      const modelRedirect = await test.app.request("/api/projects/admin_agent_catalog/models", modelRequest);
+      expect(modelRedirect.status).toBe(307);
+      expect((await test.app.request(modelRedirect.headers.get("location")!, modelRequest)).status).toBe(200);
       let currentPrompt = definition.prompt;
       const agent = await createAgent({ root: test.root, projectId: "admin_agent_catalog", agentId: "default_agent", assembly: { publishedDefinition: async context => ({ ...assistant.definition(context)!, prompt: currentPrompt }) } });
       const session = await agent.createSession();

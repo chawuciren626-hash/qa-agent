@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { AgentAssembly } from "@prismshadow/penguin-core";
 import type { AppEnv } from "../auth/middleware.js";
 import { HttpError } from "./errors.js";
-import { CENTRAL_ASSISTANT_PROJECT } from "./account-center.js";
+import { ADMIN_ASSISTANT_PROJECT_ID } from "./admin-management.js";
 
 const MCP_PATH = "/api/control/admin/assistant/mcp";
 type Operation = { name: string; method: string; path: string; description: string; body?: boolean };
@@ -19,7 +19,7 @@ export const assistantOperations: readonly Operation[] = [
   { name: "resource_delete", method: "DELETE", path: "/api/control/admin/resources/:id", body: true, description: "删除中央草稿，body: {revision}，须有用户明确授权。" },
   { name: "agent_defaults", method: "GET", path: "/api/control/admin/agent-defaults", description: "读取中央 Agent 默认提示词和工具配置，创建 Agent 时使用。" },
   { name: "skills_list", method: "GET", path: "/api/control/skills/admin", description: "读取中央技能正文、文件、分类、资源 ID 和 revision。" },
-  { name: "skill_create", method: "POST", path: "/api/control/skills/admin", body: true, description: "创建并保存中央技能，立即供用户读取。body: {name,description,content}，name 使用英文数字及连字符。" },
+  { name: "skill_create", method: "POST", path: "/api/control/skills/admin", body: true, description: "创建并发布技能，保存后立即供用户读取。body: {name,description,content}，name 使用英文数字及连字符。" },
   { name: "skill_update", method: "PUT", path: "/api/control/skills/admin/:id", body: true, description: "保存中央技能，立即供用户读取。body: {description,content,revision}；先读取最新 revision。" },
   { name: "skill_delete", method: "DELETE", path: "/api/control/skills/admin/:id", description: "删除中央技能；引用检查由中央服务执行。须有用户明确授权。" },
   { name: "skill_categories", method: "GET", path: "/api/control/skills/categories", description: "读取中央技能分类和分类分配。" },
@@ -35,8 +35,8 @@ export const assistantOperations: readonly Operation[] = [
   { name: "roles_list", method: "GET", path: "/api/control/admin/roles", description: "读取中央角色及成员。" },
   { name: "role_users_set", method: "PUT", path: "/api/control/admin/roles/:id/users", body: true, description: "设置中央角色成员，body: {userIds:[用户ID]}。" },
   { name: "audit_list", method: "GET", path: "/api/control/admin/audit", description: "读取中央最近操作日志，诊断管理操作。" },
-  { name: "assistant_models_get", method: "GET", path: `/api/projects/${CENTRAL_ASSISTANT_PROJECT}/models`, description: "读取中央助手运行模型配置及凭据是否已配置（不返回密钥）。" },
-  { name: "assistant_models_set", method: "PUT", path: `/api/projects/${CENTRAL_ASSISTANT_PROJECT}/models`, body: true, description: "按明确授权配置中央助手运行模型。先读取当前配置，body 使用相同 models/defaultModel 结构。不得修改本地客户端模型。" },
+  { name: "assistant_models_get", method: "GET", path: `/api/projects/${ADMIN_ASSISTANT_PROJECT_ID}/models`, description: "读取管理员助手运行模型配置及凭据是否已配置（不返回密钥）。" },
+  { name: "assistant_models_set", method: "PUT", path: `/api/projects/${ADMIN_ASSISTANT_PROJECT_ID}/models`, body: true, description: "按明确授权配置管理员助手运行模型。先读取当前配置，body 使用相同 models/defaultModel 结构。" },
 ];
 
 const instructions = `你是 AITestHarness 管理员助手，负责中央服务的技能、Agent、模型、插件、用户和权限管理。
@@ -51,7 +51,7 @@ export class CentralAssistant {
   constructor(private readonly baseUrl: string, private readonly token: () => string | null) {}
 
   definition(context: { projectId: string; agentId: string; sessionId: string }): Awaited<ReturnType<NonNullable<AgentAssembly["publishedDefinition"]>>> {
-    if (context.projectId !== CENTRAL_ASSISTANT_PROJECT) return null;
+    if (context.projectId !== ADMIN_ASSISTANT_PROJECT_ID) return null;
     if (context.agentId !== "default_agent") throw new HttpError(403, "assistant_agent_only", "管理员助手只能使用专用管理能力。");
     const token = this.token();
     if (!token) throw new HttpError(503, "assistant_unavailable", "中央助手服务凭据尚未就绪。");
@@ -106,8 +106,9 @@ export function centralAssistantRoutes(dispatch: (request: Request) => Promise<R
       const value = c.req.header(key);
       if (value) headers.set(key, value);
     }
+    const body = op.name === "skill_create" || op.name === "skill_update" ? { ...args.body, publish: true } : args.body;
     const response = await dispatch(new Request(new URL(op.path.replace(":id", args.id ?? ""), c.req.url), {
-      method: op.method, headers, ...(op.body ? { body: JSON.stringify(args.body) } : {}),
+      method: op.method, headers, ...(op.body ? { body: JSON.stringify(body) } : {}),
     }));
     return result({ isError: !response.ok, content: [{ type: "text", text: await response.text() || JSON.stringify({ ok: response.ok }) }] });
   });

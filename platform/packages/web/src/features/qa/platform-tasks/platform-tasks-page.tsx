@@ -11,6 +11,7 @@
  * 来源双轨：platform（任务平台映射）/ local（本地新建），徽章区分。
  * 列表仅展示平台同步任务与用户创建的本地任务。
  */
+import { PlatformSourceBlocks } from "./platform-source-blocks";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { toastError, toastSuccess } from "@prismshadow/penguin-ui";
@@ -579,9 +580,15 @@ function TaskDrawer({ detail, projectId, onClose, onAnalyze, analyzing, onRetest
           <h3>{isLocal ? "任务信息" : "平台资料"}</h3>
           <dl className="qpt-fgrid">
             <div><dt>{isLocal ? "任务来源" : "产品线"}</dt><dd>{isLocal ? "本地新建" : t.productLines.map((l) => `${l.isPrimary ? "" : "关联 "}${l.name}`).join(" · ") || "—"}</dd></div>
-            <div><dt>反馈类型</dt><dd>{t.feedbackType || "—"}</dd></div>
+            <div><dt>反馈类型</dt><dd>{t.feedbackTypeLabel || t.feedbackType || "—"}</dd></div>
             <div><dt>优先级</dt><dd><span className={`qpt-pri qpt-pri-${t.priority}`}>{PRIORITY_LABEL[t.priority] ?? t.priority}</span></dd></div>
-            <div><dt>预估工时</dt><dd>{t.estimatedHours != null ? `${t.estimatedHours}h` : "—"}</dd></div>
+            <div><dt>预估工时</dt><dd>{t.estimatedHours != null ? `${t.estimatedHours}h` : "—"}{t.estimatedDays != null ? ` / ${t.estimatedDays}天` : ""}</dd></div>
+            {!isLocal && (
+              <>
+                <div><dt>复杂度</dt><dd>{t.complexityLevel || "—"}</dd></div>
+                <div><dt>提交人 / 处理人</dt><dd>{[t.submitter, t.assignee].filter(Boolean).join(" / ") || "—"}</dd></div>
+              </>
+            )}
           </dl>
           {isLocal ? (
             <>
@@ -595,6 +602,11 @@ function TaskDrawer({ detail, projectId, onClose, onAnalyze, analyzing, onRetest
             </>
           ) : (
             <>
+              {t.selfTestDigest?.test_address && (
+                <dl className="qpt-fgrid">
+                  <div><dt>测试地址</dt><dd className="qpt-mono">{t.selfTestDigest.test_address}</dd></div>
+                </dl>
+              )}
               {t.localEditedAt && (t.localTitleNote || t.localTestFocusNote) && (
                 <div className="qpt-local-note">
                   <b>本地补充字段（T4，不被同步覆盖）</b>
@@ -609,6 +621,13 @@ function TaskDrawer({ detail, projectId, onClose, onAnalyze, analyzing, onRetest
           )}
           <TaskAttachments projectId={projectId} taskId={t.id} />
         </section>
+
+        {!isLocal && (
+          <section className="qpt-dw-sec">
+            <h3>平台真实资料 <span className="qpt-ai-tag">包同步</span></h3>
+            <PlatformSourceBlocks task={t} />
+          </section>
+        )}
 
         <section className="qpt-dw-sec">
           <h3>AI 分析结论 <span className="qpt-ai-tag">AI 建议</span></h3>

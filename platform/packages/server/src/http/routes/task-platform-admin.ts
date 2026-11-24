@@ -51,10 +51,16 @@ export function taskPlatformAdminRoutes(deps: TaskPlatformAdminDeps): Hono<AppEn
       apiKey: typeof body.apiKey === "string" && body.apiKey ? body.apiKey : deps.scheduler.currentApiKey(),
       pollIntervalMs: body.pollIntervalMs,
       batchSize: body.batchSize,
+      recipientUserId: body.recipientUserId,
     });
     const applied = deps.scheduler.applySettings(next);
-    deps.audit(c.var.user.userId, "task_platform_settings", `任务平台集成配置更新：enabled=${next.enabled} baseUrl=${next.baseUrl}`);
+    deps.audit(c.var.user.userId, "task_platform_settings", `任务平台集成配置更新：enabled=${next.enabled} baseUrl=${next.baseUrl} recipient=${next.recipientUserId || "admin"}`);
     return c.json({ settings: applied });
+  });
+
+  /** 推送接收人候选：启用账号列表（管理后台用户管理同源；前端下拉）。 */
+  app.get("/recipients", async c => {
+    return c.json({ recipients: deps.scheduler.listRecipients() });
   });
 
   app.post("/ping", async c => {

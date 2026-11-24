@@ -119,6 +119,16 @@ export interface TaskPlatformStore {
   /** ---- 包接收（幂等：同任务同版本唯一） ---- */
   findPackage(taskLinkRowId: string, packageVersion: number): PackageRow | null;
   recordPackage(row: Omit<PackageRow, "id" | "received_at">): PackageRow;
+  /** 待资料回填的已接收包（最新版本、展示行 baseline 为空、未标记回填）；P1-B。 */
+  listPackagesNeedingBackfill(limit: number): Array<{
+    task_link_id: string;
+    project_id: string;
+    external_task_id: string;
+    package_version: number;
+    payload_json: string;
+  }>;
+  /** 标记包已完成回填（幂等标记，失败不标记下轮重试）。 */
+  markPackageBackfilled(taskLinkRowId: string, packageVersion: number): void;
 
   /** ---- 结果 outbox ---- */
   enqueueResult(row: Omit<OutboxRow, "id" | "attempts" | "next_retry_at" | "last_error" | "delivered_at" | "created_at">): { created: boolean };
@@ -394,6 +404,45 @@ export class SqliteTaskPlatformStore implements TaskPlatformStore {
       row.activated,
     );
     return this.findPackage(row.task_link_id, row.package_version)!;
+  }
+
+  /** 待资料回填的已接收包（每任务最新版本；展示行 baseline 为空且未标记回填）。P1-B。 */
+  listPackagesNeedingBackfill(limit: number): Array<{
+    task_link_id: string;
+    project_id: string;
+    external_task_id: string;
+    package_version: number;
+    payload_json: string;
+  }> {
+    return this.db
+      .prepare(
+        `SELECT p.task_link_id, p.package_version, p.payload_json,
+                l.project_id, l.external_task_id
+           FROM task_platform_packages p
+           JOIN task_platform_task_links l ON l.link_id = p.task_link_id
+          WHERE p.backfilled_at IS NULL
+            AND p.activated = 1
+            AND p.package_version = (
+                  SELECT MAX(p2.package_version) FROM task_platform_packages p2
+                   WHERE p2.task_link_id = p.task_link_id AND p2.activated = 1)
+          ORDER BY p.received_at ASC
+          LIMIT ?`,
+      )
+      .all(limit) as unknown as Array<{
+      task_link_id: string;
+      project_id: string;
+      external_task_id: string;
+      package_version: number;
+      payload_json: string;
+    }>;
+  }
+
+  markPackageBackfilled(taskLinkRowId: string, packageVersion: number): void {
+    this.db
+      .prepare(
+        "UPDATE task_platform_packages SET backfilled_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE task_link_id = ? AND package_version = ?",
+      )
+      .run(taskLinkRowId, packageVersion);
   }
 
   enqueueResult(row: Omit<OutboxRow, "id" | "attempts" | "next_retry_at" | "last_error" | "delivered_at" | "created_at">): { created: boolean } {

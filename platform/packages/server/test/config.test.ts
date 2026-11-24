@@ -14,10 +14,74 @@
  *   query and a fragment.
  */
 import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { resolveServerConfig } from "../src/config.js";
 
 const base = { PENGUIN_HOME: "/tmp/penguin-config-test" };
+
+describe("resolveServerConfig: unified identity store", () => {
+  it("activates the account-client bridge when account-center.json exists (client login connects the unified server)", () => {
+    // 客户端登录直连统一服务端：本地服务 root 下存在 account-center.json
+    // （origin+ownerUserId，部署写入）即启用 AccountClient 桥接——
+    // /api/account-client/config 返回 enabled:true，登录代理到服务端鉴权。
+    const root = mkdtempSync(path.join(os.tmpdir(), "atp-ac-"));
+    try {
+      fs.mkdirSync(root, { recursive: true });
+      fs.writeFileSync(
+        path.join(root, "account-center.json"),
+        JSON.stringify({ origin: "http://localhost:18777", ownerUserId: "admin" }),
+        "utf8",
+      );
+      const config = resolveServerConfig({ ...base, PENGUIN_HOME: root });
+      expect(config.accountClient).toBeDefined();
+      expect(config.accountClient!.origin).toBe("http://localhost:18777");
+      expect(config.accountClient!.ownerUserId).toBe("admin");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("environment variables override the saved account-center.json", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "atp-ac-env-"));
+    try {
+      fs.mkdirSync(root, { recursive: true });
+      fs.writeFileSync(
+        path.join(root, "account-center.json"),
+        JSON.stringify({ origin: "http://localhost:18777", ownerUserId: "admin" }),
+        "utf8",
+      );
+      const config = resolveServerConfig({
+        ...base,
+        PENGUIN_HOME: root,
+        AITEST_ACCOUNT_CENTER_ORIGIN: "http://localhost:19999",
+        AITEST_ACCOUNT_CENTER_OWNER: "opsadmin",
+      });
+      expect(config.accountClient!.origin).toBe("http://localhost:19999");
+      expect(config.accountClient!.ownerUserId).toBe("opsadmin");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("environment variables alone activate the bridge even without the file", () => {
+    const config = resolveServerConfig({
+      ...base,
+      AITEST_ACCOUNT_CENTER_ORIGIN: "https://accounts.example.test",
+      AITEST_ACCOUNT_CENTER_OWNER: "admin",
+    });
+    expect(config.accountClient).toBeDefined();
+    expect(config.accountClient!.origin).toBe("https://accounts.example.test");
+    expect(config.accountClient!.ownerUserId).toBe("admin");
+  });
+
+  it("no file and no env variables stays in business mode (no bridge)", () => {
+    const config = resolveServerConfig({ ...base, AITEST_ACCOUNT_CENTER: "1" }); // 旧开关退役，不参与激活
+    expect(config.accountClient).toBeUndefined();
+  });
+});
 
 describe("resolveServerConfig: PORT parsing", () => {
   it("reads an empty PORT as unset, not as port 0", () => {

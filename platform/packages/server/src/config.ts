@@ -278,6 +278,9 @@ export function resolveServerConfig(env: NodeJS.ProcessEnv = process.env): Serve
   const cli = cliLaunchFor(env);
   return {
     root,
+    // 客户端登录直连统一服务端（18777 单实例）：读取 account-center.json（origin+ownerUserId，
+    // 可被 AITEST_ACCOUNT_CENTER_ORIGIN/OWNER 覆盖）。存在时 app.ts 启用 AccountClient 桥接
+    // （登录代理到服务端鉴权，本地 principal=中央 userId），缺失时业务模式照常。
     ...(readAccountClientConfig(root, env) ? { accountClient: readAccountClientConfig(root, env)! } : {}),
     host,
     port,

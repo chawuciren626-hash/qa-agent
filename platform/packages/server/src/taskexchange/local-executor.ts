@@ -55,7 +55,6 @@ export class LocalExchangeExecutor implements LocalExchangePolling {
     const app = new Hono<AppEnv>();
     app.get('/bindings', c => c.json({ bindings: this.bindings.filter(b => b.userId === c.var.user.userId).map(({ token, ...b }) => ({ ...b, tokenConfigured: !!token })) }));
     app.post('/bindings', async c => {
-      if (process.env.AITEST_ACCOUNT_CENTER === '1') throw new HttpError(409, 'local_execution_required', '请在本机配置执行器。');
       const body = await readJson(c);
       const required = (key: string) => {
         const value = body[key];
@@ -97,7 +96,7 @@ export class LocalExchangeExecutor implements LocalExchangePolling {
     fs.renameSync(tmp, this.file);
   }
   start() {
-    if (this.timer || process.env.AITEST_ACCOUNT_CENTER === '1') return;
+    if (this.timer) return;
     this.stopped = false;
     this.timer = setInterval(() => { void this.tickOnce(); }, 10_000);
     this.timer.unref?.();
@@ -113,7 +112,7 @@ export class LocalExchangeExecutor implements LocalExchangePolling {
     return response.json();
   }
   async tickOnce() {
-    if (this.busy || this.stopped || process.env.AITEST_ACCOUNT_CENTER === '1') return;
+    if (this.busy || this.stopped) return;
     this.busy = true;
     try {
       for (const binding of this.bindings) {

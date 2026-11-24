@@ -12,6 +12,7 @@
 import { IngestionService } from "./ingestion-service.js";
 import { TaskPlatformClient } from "./client.js";
 import { PlatformTaskBridge } from "./platform-task-bridge.js";
+import { PlatformTaskSyncService } from "./client-sync-service.js";
 import { SqliteTaskPlatformStore, type TaskPlatformStore } from "./store.js";
 
 export interface TaskPlatformSettings {
@@ -20,6 +21,8 @@ export interface TaskPlatformSettings {
   apiKey: string;
   pollIntervalMs: number;
   batchSize: number;
+  /** 推送接收人（同步项目 owner / 任务归属用户）；空 = admin。 */
+  recipientUserId: string;
 }
 
 export interface TaskPlatformConfigStore {
@@ -33,7 +36,7 @@ const SETTINGS_KEY = "task_platform_settings_json";
 export function loadSettings(configStore: TaskPlatformConfigStore): TaskPlatformSettings {
   const raw = configStore.get(SETTINGS_KEY);
   if (!raw) {
-    return { enabled: false, baseUrl: "", apiKey: "", pollIntervalMs: 60_000, batchSize: 50 };
+    return { enabled: false, baseUrl: "", apiKey: "", pollIntervalMs: 60_000, batchSize: 50, recipientUserId: "" };
   }
   try {
     const parsed = JSON.parse(raw) as Partial<TaskPlatformSettings>;
@@ -43,9 +46,10 @@ export function loadSettings(configStore: TaskPlatformConfigStore): TaskPlatform
       apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
       pollIntervalMs: clampInterval(parsed.pollIntervalMs),
       batchSize: typeof parsed.batchSize === "number" && parsed.batchSize >= 1 && parsed.batchSize <= 500 ? parsed.batchSize : 50,
+      recipientUserId: typeof parsed.recipientUserId === "string" ? parsed.recipientUserId : "",
     };
   } catch {
-    return { enabled: false, baseUrl: "", apiKey: "", pollIntervalMs: 60_000, batchSize: 50 };
+    return { enabled: false, baseUrl: "", apiKey: "", pollIntervalMs: 60_000, batchSize: 50, recipientUserId: "" };
   }
 }
 
@@ -71,6 +75,7 @@ export function clampSettingsInput(input: {
   apiKey: string;
   pollIntervalMs: unknown;
   batchSize: unknown;
+  recipientUserId?: unknown;
 }): TaskPlatformSettings {
   const baseUrl = input.baseUrl.replace(/\/+$/, "");
   if (input.enabled && !/^https?:\/\/.+/i.test(baseUrl)) {
@@ -85,12 +90,16 @@ export function clampSettingsInput(input: {
   if (typeof input.batchSize !== "number" || input.batchSize < 1 || input.batchSize > 500) {
     throw new RangeError("单轮事件批量必须在 1~500 之间");
   }
+  const recipientUserId = typeof input.recipientUserId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(input.recipientUserId.trim())
+    ? input.recipientUserId.trim()
+    : "";
   return {
     enabled: input.enabled,
     baseUrl,
     apiKey: input.apiKey,
     pollIntervalMs: clampInterval(input.pollIntervalMs),
     batchSize: Math.round(input.batchSize),
+    recipientUserId,
   };
 }
 
@@ -115,6 +124,8 @@ export class IngestionScheduler {
   private readonly store: TaskPlatformStore;
   private readonly bridge: PlatformTaskBridge;
   private readonly configStore: TaskPlatformConfigStore;
+  /** 接收人候选提供者（接线层注入 Users 机制）；未注入时只返回 admin。 */
+  listRecipientsImpl: (() => Array<{ userId: string; displayName: string; isAdmin: boolean }>) | null = null;
   /** 运行观测（admin 页展示）。 */
   lastRunAt: string | null = null;
   lastError: string | null = null;
@@ -133,8 +144,14 @@ export class IngestionScheduler {
     }
   }
 
+  /** 推送接收人候选（启用账号；管理页下拉）。 */
+  listRecipients(): Array<{ userId: string; displayName: string; isAdmin: boolean }> {
+    if (this.listRecipientsImpl) return this.listRecipientsImpl();
+    return [{ userId: "admin", displayName: "管理员", isAdmin: true }];
+  }
+
   /** 更新配置；重启调度器使新配置生效。返回 masked 视图。 */
-  applySettings(next: TaskPlatformSettings): { enabled: boolean; baseUrl: string; apiKeyMasked: string; pollIntervalMs: number; batchSize: number } {
+  applySettings(next: TaskPlatformSettings): { enabled: boolean; baseUrl: string; apiKeyMasked: string; pollIntervalMs: number; batchSize: number; recipientUserId: string } {
     saveSettings(this.configStore, next);
     this.settings = next;
     this.stop();
@@ -151,13 +168,14 @@ export class IngestionScheduler {
     return this.settings.apiKey;
   }
 
-  describe(): { enabled: boolean; baseUrl: string; apiKeyMasked: string; pollIntervalMs: number; batchSize: number } {
+  describe(): { enabled: boolean; baseUrl: string; apiKeyMasked: string; pollIntervalMs: number; batchSize: number; recipientUserId: string } {
     return {
       enabled: this.settings.enabled,
       baseUrl: this.settings.baseUrl,
       apiKeyMasked: maskApiKey(this.settings.apiKey),
       pollIntervalMs: this.settings.pollIntervalMs,
       batchSize: this.settings.batchSize,
+      recipientUserId: this.settings.recipientUserId,
     };
   }
 
@@ -212,6 +230,28 @@ export class IngestionScheduler {
   /** 清除项目下演示种子（切换真数据源的动作）。bridge 已解包 changes，直接返回数字。 */
   clearDemo(projectId: string): number {
     return this.bridge.clearDemo(projectId);
+  }
+
+  /** 同步下发服务凭据（客户端本地服务持有）；缺失时自动生成并持久化。 */
+  ensureServiceKey(): string {
+    const KEY = "task_platform_service_key";
+    const existing = this.configStore.get(KEY);
+    if (existing) return existing;
+    const key = PlatformTaskSyncService.issueServiceKey();
+    this.configStore.set(KEY, key);
+    return key;
+  }
+
+  /** 同步下发服务（面向客户端本地服务的增量下发/状态登记）。 */
+  getSyncService(db: import("node:sqlite").DatabaseSync): PlatformTaskSyncService {
+    const recipient = () => loadSettings(this.configStore).recipientUserId || null;
+    return new PlatformTaskSyncService(db, recipient);
+  }
+
+  /** 校验客户端同步凭据。 */
+  verifySyncKey(provided: string | undefined): boolean {
+    const stored = this.configStore.get("task_platform_service_key");
+    return PlatformTaskSyncService.verifyServiceKey(provided ?? "", stored ?? "");
   }
 
   private async tickOnce(): Promise<void> {

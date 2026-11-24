@@ -106,6 +106,7 @@ export interface TaskProgressRun {
 export interface TaskDetail {
   task: TaskListItem & {
     feedbackType: string | null;
+    feedbackTypeLabel: string | null;
     estimatedHours: number | null;
     submitter: string | null;
     assignee: string | null;
@@ -125,6 +126,15 @@ export interface TaskDetail {
     ends: string[];
     /** 变更分析证据指针（分支/MR 标识）；null = 未关联。 */
     changeSource: string | null;
+    /** 平台任务：研发处理判断确认基准（final_content/acceptance_criteria/original_content）；本地任务 null。 */
+    requirementBaseline: Record<string, unknown> | null;
+    /** 平台任务：研发自测摘要（test_address/self_test_result/test_focus/known_risks 等）；本地任务 null。 */
+    selfTestDigest: Record<string, unknown> | null;
+    /** 平台任务：节点变更摘要数组（node/batch/content/...）；本地任务空数组。 */
+    changesDigest: Array<Record<string, unknown>>;
+    /** 平台任务：复杂度/预估天数。 */
+    complexityLevel: string | null;
+    estimatedDays: number | null;
   };
   summary: AiSummary | null;
   progress: { mainSessionId: string | null; runs: TaskProgressRun[] };
@@ -138,6 +148,20 @@ const STATUS_ORDER: Record<string, number> = {
   result_returned: 4,
   terminated: 5,
 };
+
+/** 任务平台反馈类型编码 → 中文（与平台侧 FEEDBACK_TYPE_LABELS 对齐；未知编码原样展示）。 */
+const FEEDBACK_TYPE_LABELS: Record<string, string> = {
+  requirement: "需求反馈",
+  data_fix: "数据修复",
+  bug: "Bug反馈",
+  question: "使用咨询",
+  config: "配置处理",
+};
+
+function feedbackTypeLabel(code: string | null | undefined): string | null {
+  if (!code) return null;
+  return FEEDBACK_TYPE_LABELS[code] ?? code;
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -319,7 +343,9 @@ export class QaPlatformTaskService {
       const full = this.db
         .prepare(
           `SELECT feedback_type, estimated_hours, local_title_note, local_test_focus_note,
-                  local_edited_at, source_url
+                  local_edited_at, source_url,
+                  requirement_baseline_json, self_test_digest_json, changes_digest_json,
+                  submitter_name, assignee_name, complexity_level, estimated_days
              FROM platform_task_links WHERE link_id = ? AND project_id = ?`
         )
         .get(id, projectId) as
@@ -330,15 +356,33 @@ export class QaPlatformTaskService {
             local_test_focus_note: string;
             local_edited_at: string | null;
             source_url: string;
+            requirement_baseline_json: string | null;
+            self_test_digest_json: string | null;
+            changes_digest_json: string | null;
+            submitter_name: string | null;
+            assignee_name: string | null;
+            complexity_level: string | null;
+            estimated_days: number | null;
           }
         | undefined;
       extra = {
         feedbackType: full?.feedback_type ?? null,
+        feedbackTypeLabel: feedbackTypeLabel(full?.feedback_type),
         estimatedHours: full?.estimated_hours ?? null,
         localTitleNote: full?.local_title_note ?? "",
         localTestFocusNote: full?.local_test_focus_note ?? "",
         localEditedAt: full?.local_edited_at ?? null,
         sourceUrl: full?.source_url ?? "",
+        requirementBaseline: parseJson(full?.requirement_baseline_json) as Record<string, unknown> | null,
+        selfTestDigest: parseJson(full?.self_test_digest_json) as Record<string, unknown> | null,
+        changesDigest: (Array.isArray(parseJson(full?.changes_digest_json))
+          ? (parseJson(full?.changes_digest_json) as Array<Record<string, unknown>>)
+          : []),
+        submitter: full?.submitter_name ?? null,
+        assignee: full?.assignee_name ?? null,
+        complexityLevel: full?.complexity_level ?? null,
+        estimatedDays: full?.estimated_days ?? null,
+        envBaseUrl: null, // 平台任务测试地址在 selfTestDigest.test_address
       };
     } else {
       const full = this.db
@@ -355,6 +399,14 @@ export class QaPlatformTaskService {
         envName: full?.env_name ?? null,
         envBaseUrl: full?.env_base_url ?? null,
         account: full?.account ?? null,
+        feedbackTypeLabel: null,
+        requirementBaseline: null,
+        selfTestDigest: null,
+        changesDigest: [],
+        submitter: null,
+        assignee: null,
+        complexityLevel: null,
+        estimatedDays: null,
       };
     }
     const runs = row.main_session_id
@@ -388,9 +440,10 @@ export class QaPlatformTaskService {
       task: {
         ...item,
         feedbackType: extra.feedbackType ?? null,
+        feedbackTypeLabel: extra.feedbackTypeLabel ?? feedbackTypeLabel(extra.feedbackType),
         estimatedHours: extra.estimatedHours ?? null,
-        submitter: null,
-        assignee: null,
+        submitter: extra.submitter ?? null,
+        assignee: extra.assignee ?? null,
         description: extra.description ?? null,
         localTitleNote: extra.localTitleNote ?? "",
         localTestFocusNote: extra.localTestFocusNote ?? "",
@@ -402,6 +455,12 @@ export class QaPlatformTaskService {
         envBaseUrl: extra.envBaseUrl ?? null,
         account: extra.account ?? null,
         changeSource: extra.changeSource ?? null,
+        requirementBaseline: extra.requirementBaseline ?? null,
+        selfTestDigest: extra.selfTestDigest ?? null,
+        changesDigest: extra.changesDigest ?? [],
+        complexityLevel: extra.complexityLevel ?? null,
+        estimatedDays: extra.estimatedDays ?? null,
+        ends: item.ends,
       },
       summary: asSummary(parseJson(row.ai_summary_json)),
       progress: { mainSessionId: row.main_session_id, runs },
@@ -703,17 +762,58 @@ export class QaPlatformTaskService {
     const ends = parseEnds(row.ends_json);
     if (source === "platform") {
       const full = this.db
-        .prepare(`SELECT title, local_title_note, local_test_focus_note FROM platform_task_links WHERE link_id = ? AND project_id = ?`)
+        .prepare(
+          `SELECT title, local_title_note, local_test_focus_note,
+                  requirement_baseline_json, self_test_digest_json, changes_digest_json
+             FROM platform_task_links WHERE link_id = ? AND project_id = ?`
+        )
         .get(id, projectId) as
-        | { title: string; local_title_note: string; local_test_focus_note: string }
+        | {
+            title: string;
+            local_title_note: string;
+            local_test_focus_note: string;
+            requirement_baseline_json: string | null;
+            self_test_digest_json: string | null;
+            changes_digest_json: string | null;
+          }
         | undefined;
+      // 平台包同步的真实需求材料进分析输入（对齐修复：原 description 为空串导致
+      // 分析泛泛而谈；现在以需求基准为主体，自测/变更为补充）。
+      const baseline = parseJson(full?.requirement_baseline_json) as
+        | { final_content?: unknown; original_content?: unknown; acceptance_criteria?: unknown }
+        | null;
+      const selfTest = parseJson(full?.self_test_digest_json) as Record<string, unknown> | null;
+      const changes = Array.isArray(parseJson(full?.changes_digest_json))
+        ? (parseJson(full?.changes_digest_json) as Array<Record<string, unknown>>)
+        : [];
+      const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+      const materialParts = [
+        str(baseline?.final_content) ? `【需求基准（研发确认版）】\n${str(baseline?.final_content)}` : "",
+        str(baseline?.original_content) ? `【原始反馈】\n${str(baseline?.original_content)}` : "",
+        Array.isArray(baseline?.acceptance_criteria) && (baseline?.acceptance_criteria as unknown[]).length
+          ? `【验收口径】\n${(baseline?.acceptance_criteria as unknown[]).map(String).join("\n")}`
+          : "",
+        selfTest && str(selfTest.test_address) ? `【测试地址】${str(selfTest.test_address)}` : "",
+        selfTest && str(selfTest.self_test_result) ? `【研发自测结果】\n${str(selfTest.self_test_result)}` : "",
+        selfTest && str(selfTest.test_focus) ? `【研发验证重点】${str(selfTest.test_focus)}` : "",
+        selfTest && str(selfTest.known_risks) ? `【研发已知风险】${str(selfTest.known_risks)}` : "",
+        changes.length
+          ? `【节点变更记录】\n${changes
+              .slice(-10)
+              .map(c => `- [${String(c.node ?? "")}] 第${String(c.batch ?? "?")}批: ${String(c.content ?? "")}`)
+              .join("\n")}`
+          : "",
+        full?.local_title_note || "",
+        full?.local_test_focus_note || "",
+        ...attachments,
+      ];
       return {
         title: full?.title ?? row.title,
-        description: "",
-        notes: [full?.local_title_note, full?.local_test_focus_note, ...attachments].filter(Boolean).join("\n"),
+        description: str(baseline?.final_content) || str(baseline?.original_content),
+        notes: materialParts.filter(Boolean).join("\n\n"),
         ends,
         changeSource: row.change_source ?? null,
-        envUrl: "",
+        envUrl: (selfTest && str(selfTest.test_address)) || "",
         account: "",
       };
     }

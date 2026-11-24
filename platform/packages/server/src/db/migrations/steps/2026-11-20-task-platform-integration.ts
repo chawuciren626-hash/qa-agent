@@ -29,7 +29,9 @@ export const taskPlatformIntegration: Migration = {
       INSERT OR IGNORE INTO task_platform_ingest_cursor (id, cursor, updated_at) VALUES (1, NULL, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
     `);
 
-    // 事件去重表（游标重建后靠它幂等）
+    // 事件去重表（游标重建后靠它幂等）。
+    // 注意：process_status 等重试列由独立迁移 2026-11-23-task-platform-event-retry 负责
+    // （保持本 base 迁移与已发布结构一致，升级链：base → retry）。
     db.exec(`
       CREATE TABLE IF NOT EXISTS task_platform_events (
         event_id               TEXT PRIMARY KEY,

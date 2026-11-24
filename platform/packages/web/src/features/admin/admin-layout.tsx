@@ -29,6 +29,7 @@ import { SettingsDialog } from "../settings/settings-dialog";
 import { AdminMenusPage, AdminRolesPage, defaultAdminMenus, normalizeAdminMenus } from "./admin-system-pages";
 import type { AdminMenuItem } from "./admin-system-pages";
 import { AdminAuditPage } from "./admin-audit-page";
+import { AdminTaskPlatformPage } from "./admin-task-platform-page";
 export { AdminAuditPage } from "./admin-audit-page";
 import { discoverLocalWorkspace, rememberedWorkspace, rememberWorkspace } from "../../lib/local-workspace";
 import brandLogo from "../../../../../../penguin/ui/aith-logo.svg?url";
@@ -50,6 +51,7 @@ const navIcons: Record<string, ReactNode> = {
   skills: <><path d="m12 3 2 5 5 2-5 2-2 5-2-5-5-2 5-2zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/></>,
   tools: <><path d="M14.7 6.3a4 4 0 0 0 5 5L21 21H3l1.3-9.7a4 4 0 0 0 5-5"/><path d="M9 3h6M12 3v4"/><circle cx="12" cy="15" r="2"/></>,
   mcp: <><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01M17 7.5h.01M17 16.5h.01"/></>,
+  task_platform: <><path d="M4 7h11M4 12h7M4 17h9"/><path d="m15 4 4 3-4 3"/><path d="M20 17H9"/><path d="m9 20-4-3 4-3"/></>,
   permissions: <><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></>,
   audit: <><path d="M7 3h10l3 3v15H4V3h3zM8 11h8M8 15h8M8 19h5"/></>,
 };
@@ -225,30 +227,23 @@ function LocalAdminWorkspaceEntry({ path, title }: { path: string; title: string
   </PageFrame>;
 }
 
-/** Central management keeps the administrator assistant on the central host. */
+/** The administrator console and user workspace share this server and its database. */
 export function AdminHostGate({ children }: { children: ReactNode }) {
   const { sessionVia } = useAuth();
   const [central, setCentral] = useState<boolean | null>(null);
-  const [adminOrigin, setAdminOrigin] = useState<string | null>(null);
   const [error, setError] = useState("");
   const location = useLocation();
   useEffect(() => { void controlRequest("/api/account-client/config").then(config => {
-    setCentral(config.central === true);
-    if (config.enabled && typeof config.origin === "string") {
-      try {
-        const url = new URL(config.origin);
-        if (url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) setAdminOrigin(url.origin);
-      } catch { /* Invalid management origin is ignored. */ }
-    }
+    setCentral(false);
   }).catch(cause => setError(cause.message)); }, []);
   if (error) return <p role="alert">{error}</p>;
   if (central === null) return <p className="p-6">正在连接管理服务…</p>;
-  if (!central && sessionVia === "desktop") return <div className="admin-web-only"><h1>管理后台仅在 Web 端开放</h1><p>请在浏览器访问管理后台。</p>{adminOrigin && <a href={new URL("/admin/overview", adminOrigin).href} target="_blank" rel="noopener noreferrer">打开 Web 管理后台 ↗</a>}</div>;
+  if (!central && sessionVia === "desktop") return <div className="admin-web-only"><h1>管理后台仅在 Web 端开放</h1><p>请在浏览器中访问本服务的 /admin 路径。</p><a href="/admin/overview">打开管理后台 ↗</a></div>;
   if (!central) return <>{children}</>;
   const section = location.pathname.split("/")[1] || "agents";
   if (section === "chat") return <CentralAssistantContext.Provider value>{children}</CentralAssistantContext.Provider>;
   const kind = (section === "publications" ? location.pathname.split("/")[2] : section) as ManagedKind;
-  return <AdminChrome>{section === "overview" ? <AdminOverviewPage /> : section === "users" ? <AdminAccountsPage /> : section === "roles" ? <AdminRolesPage /> : section === "menus" ? <AdminMenusPage /> : section === "permissions" ? <AdminPermissionsPage /> : section === "audit" ? <AdminAuditPage /> : section === "mcp" ? <AdminMcpPage /> : kind === "agents" ? (location.pathname.startsWith("/agents/") ? <CentralAgentSettingsPage /> : <CentralAgentsPage />) : kind === "plugins" ? <CentralPluginsPage /> : kind === "skills" ? <AdminSkillsPage central /> : section === "tools" ? <AdminToolsPage /> : /^\/channels\/?$/.test(location.pathname) ? <AdminChannelsPage /> : <PageFrame>未知管理模块。</PageFrame>}</AdminChrome>;
+  return <AdminChrome>{section === "overview" ? <AdminOverviewPage /> : section === "users" ? <AdminAccountsPage /> : section === "roles" ? <AdminRolesPage /> : section === "menus" ? <AdminMenusPage /> : section === "permissions" ? <AdminPermissionsPage /> : section === "audit" ? <AdminAuditPage /> : section === "mcp" ? <AdminMcpPage /> : section === "task_platform" ? <AdminTaskPlatformPage /> : kind === "agents" ? (location.pathname.startsWith("/agents/") ? <CentralAgentSettingsPage /> : <CentralAgentsPage />) : kind === "plugins" ? <CentralPluginsPage /> : kind === "skills" ? <AdminSkillsPage central /> : section === "tools" ? <AdminToolsPage /> : /^\/channels\/?$/.test(location.pathname) ? <AdminChannelsPage /> : <PageFrame>未知管理模块。</PageFrame>}</AdminChrome>;
 }
 
 export function AdminLayout() {

@@ -34,7 +34,7 @@ From **Agents → Project testing workflow**, an owner can initialize the ten bu
 
 ### Administrator publication extensions (2026-10-27)
 
-The `/admin` and `/user` route basenames share the upstream App, providers and page renderers. Local Web administration reuses AgentsPage, CreateAgentDialog, AgentSettingsPage, ModelsPage, PluginsPage and SkillsTab. AppLayout accepts optional navigation/toolbar slots; its runtime overlays, shortcuts and native update paths remain in place. The central identity-only deployment exposes accounts, grants and publication storage, and does not mount project/workload providers.
+The `/admin` and `/user` route basenames share one server process, one authentication store and one SQLite database. `/admin` exposes management pages and `/user` exposes the testing workspace; both use the same upstream App, providers and page renderers. Web administration reuses AgentsPage, CreateAgentDialog, AgentSettingsPage, ModelsPage, PluginsPage and SkillsTab. There is no identity-only or account-center deployment mode.
 
 Publication sources use explicit public-field projections, original skill archive export/import and versioned references to the native plugin library. Credentials, project snapshots, histories and workspaces are not publication DTOs. A small ManagedResourceSection within existing user pages shows authorized administrator configurations; it does not replace native kernel/plugin/model update checks. Published drafts/versions, audience checks and local application metadata are extension seams, not a new plugin installer.
 

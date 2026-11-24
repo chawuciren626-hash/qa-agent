@@ -15,7 +15,7 @@ describe("central login and public configuration routes", () => {
     let test: Awaited<ReturnType<typeof createTestApp>> | undefined;
     try {
       test = await createTestApp();
-      expect(await (await test.app.request("/api/account-client/config")).json()).toMatchObject({enabled:false,required:true});
+      expect(await (await test.app.request("/api/account-client/config")).json()).toMatchObject({enabled:false,central:false,required:true});
       expect((await test.app.request("/api/auth/claim?token=local")).headers.get("location")).toBe("/login");
       expect((await test.app.request("/api/auth/login", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({userId:"admin",password:test.adminPassword})})).status).toBe(503);
       expect((await test.app.request("/api/me")).status).toBe(503);
@@ -41,12 +41,12 @@ describe("central login and public configuration routes", () => {
     } finally { await test.cleanup(); }
   });
 
-  it("keeps the central assistant on an administrator-owned project", async () => {
+  it("serves administrator and user data through one full application instance", async () => {
     process.env.AITEST_ACCOUNT_CENTER = "1";
     const test = await createTestApp();
     try {
       const config = await test.app.request("/api/account-client/config");
-      expect(await config.json()).toMatchObject({ central: true });
+      expect(await config.json()).toMatchObject({ central: false });
       expect((await test.app.request("/api/control/access")).status).toBe(401);
       const login = await test.app.request("/api/auth/admin-login", {
         method: "POST", headers: { "content-type": "application/json" },
@@ -60,8 +60,8 @@ describe("central login and public configuration routes", () => {
       expect(((await access.json()) as { modules: string[] }).modules).toContain("agents");
       expect((await test.app.request("/api/projects", { headers: { cookie: cookie! } })).status).toBe(200);
       const projectHeaders = { cookie: cookie!, "content-type": "application/json" };
-      expect((await test.app.request("/api/projects", { method: "POST", headers: projectHeaders, body: JSON.stringify({ projectId: "other_project" }) })).status).toBe(403);
-      expect((await test.app.request("/api/projects/default_project/agents", { headers: { cookie: cookie! } })).status).toBe(404);
+      expect((await test.app.request("/api/projects", { method: "POST", headers: projectHeaders, body: JSON.stringify({ projectId: "other_project" }) })).status).toBe(201);
+      expect((await test.app.request("/api/projects/default_project/agents", { headers: { cookie: cookie! } })).status).toBe(200);
       expect((await test.app.request("/api/projects", { method: "POST", headers: projectHeaders, body: JSON.stringify({ projectId: "admin_agent_catalog" }) })).status).toBe(201);
       const agents = await test.app.request("/api/projects/admin_agent_catalog/agents", { headers: { cookie: cookie! } });
       expect(agents.status).toBe(200);

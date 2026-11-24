@@ -647,6 +647,9 @@ export class AccountClient {
     if (pending) return pending;
     const create = (async () => {
       const db = this.deps.db;
+      // 身份直通（去映射）：本地 principal = 中央 userId 原样，不再派生 acct_<哈希>。
+      // users 表降级为中央账号的本地 principal 缓存（会话/授权链仍走 users.findById），
+      // 不再承载独立账号体系语义；绑定表仍记录 origin↔remote 映射用于迁移与审计。
       const existing = db.prepare("SELECT local_id FROM account_center_bindings WHERE origin=? AND remote_id=?").get(this.cfg.origin,remote.userId);
       if (existing) {
         if (existing.local_id === "admin" && (!remote.isAdmin || remote.userId !== this.cfg.ownerUserId)) throw new HttpError(403,"owner_admin_required","中央账号不能认领本机管理员资料。");
@@ -654,7 +657,9 @@ export class AccountClient {
       }
       const owner = remote.userId === this.cfg.ownerUserId;
       if (owner && !remote.isAdmin) throw new HttpError(403,"owner_admin_required","绑定的本机管理员必须具有中央管理员权限。");
-      const id = owner ? "admin" : "acct_" + createHash("sha256").update(this.cfg.origin + "\n" + remote.userId).digest("hex").slice(0,24);
+      // owner 特例保留：ownerUserId 认领本机 admin 资料（引导管理员/离线恢复）；
+      // 其余账号一律以中央 userId 原样作为本地 principal。
+      const id = owner ? "admin" : remote.userId;
       if (!owner) {
         if (this.deps.users().findById(id)) throw new HttpError(409,"local_identity_collision","本地身份冲突，不能自动认领已有数据。");
         this.provisionalCookies.set(id,centralCookie);
@@ -663,7 +668,7 @@ export class AccountClient {
         // A local unusable random password is never a second sign-in credential.
         const row = this.deps.users().findById(id)!;
         this.deps.users().updatePassword(id,row.passwordHash,false);
-        this.deps.users().updateProfile(id,{displayName:remote.userId});
+        this.deps.users().updateProfile(id,{displayName:remote.displayName || remote.userId});
       }
       db.prepare("INSERT INTO account_center_bindings(origin,remote_id,local_id) VALUES (?,?,?)").run(this.cfg.origin,remote.userId,id);
       return id;
