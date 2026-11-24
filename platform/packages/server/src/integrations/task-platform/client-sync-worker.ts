@@ -135,6 +135,28 @@ export class ClientTaskSyncWorker {
     return await response.json() as { items: SyncItem[]; next_cursor: string | null; has_more: boolean };
   }
 
+  /**
+   * 镜像项目补建（首同步外键防线）：服务端同步项目 ID（sync_<产品线>_<hash>）在本机
+   * projects 无行时补建，使 platform_task_links.project_id 外键成立。幂等：
+   * 已存在（无论手工还是上次补建）不改动——不覆盖 owner、不动 project_management。
+   */
+  private ensureMirrorProject(projectId: string): void {
+    const exists = this.config.db
+      .prepare("SELECT 1 FROM projects WHERE project_id = ?")
+      .get(projectId);
+    if (exists) return;
+    this.config.db
+      .prepare("INSERT OR IGNORE INTO projects (project_id, owner_user_id, created_at) VALUES (?, ?, ?)")
+      .run(projectId, this.config.userId, this.now().toISOString());
+    // project_management 标记 sync 来源：项目列表"来源"展示与手工项目区分（服务端同款语义）。
+    this.config.db
+      .prepare(
+        `INSERT OR IGNORE INTO project_management (project_id, source_type, source_system_name)
+         VALUES (?, 'sync', 'sbkj-taskassignment')`,
+      )
+      .run(projectId);
+  }
+
   /** 镜像 upsert：按 server_link_id 定位（同库唯一），字段全量覆盖（服务端为准）。 */
   private upsertMirror(item: SyncItem): boolean {
     const existing = this.config.db
@@ -168,8 +190,11 @@ export class ClientTaskSyncWorker {
       return true;
     }
     const linkId = `ptl-sync-${item.server_link_id}`.slice(0, 64);
-    // 项目归属：镜像行挂接收人所在同步项目；project_id 采用服务端下发值（同库语义），
-    // 但本地项目主数据可能不存在——镜像行 project_id 保留服务端值，本地展示按 acct_user_id 过滤。
+    // 项目归属：platform_task_links.project_id 引用本机 projects（PRAGMA foreign_keys=ON），
+    // 服务端下发的 project_id 在本机可能不存在——先补建镜像项目行再写任务
+    // （INSERT OR IGNORE 幂等；owner=当前登录用户，project_management 记 sync 来源，
+    // 与服务端 bridge 建同步项目同款语义；显示名走 project_config，镜像项目只建行）。
+    this.ensureMirrorProject(item.project_id);
     this.config.db
       .prepare(
         `INSERT INTO platform_task_links (

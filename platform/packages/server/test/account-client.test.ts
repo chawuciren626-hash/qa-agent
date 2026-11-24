@@ -335,7 +335,8 @@ describe('central identity with full local application',()=>{
     const login=await loginUser(app!.app,'ordinary','central-test-password');
     const api=apiClient(app!.app,login.cookie);
     const me=await (await api.get('/api/me')).json() as {user:{userId:string;isAdmin:boolean}};
-    expect(me.user.userId).toMatch(/^acct_/);expect(me.user.isAdmin).toBe(false);
+    // 身份直通（去 acct_ 映射）：本地 principal = 中央 userId 原样。
+    expect(me.user.userId).toBe('ordinary');expect(me.user.isAdmin).toBe(false);
     expect((await api.get('/api/projects/default_project')).status).toBe(404);
     expect((await api.get('/api/account-client/api/admin/users')).status).toBe(403);
     expect((await api.get('/api/projects')).status).toBe(200);

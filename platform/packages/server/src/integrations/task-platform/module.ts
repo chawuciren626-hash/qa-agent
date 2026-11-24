@@ -212,6 +212,9 @@ export class TaskPlatformAdminRoutes {
     const runtime = this.runtime;
     const db = this.db as unknown as import("node:sqlite").DatabaseSync;
     const scheduler = runtime.getScheduler();
+    // 服务凭据激活：缺失时自动生成并持久化（settings.task_platform_service_key），
+    // 客户端本地服务持此 Key 调 /api/sync/v1；无 Key 则同步下发一律 401。
+    scheduler.ensureServiceKey();
     this.adminRoutes = taskPlatformAdminRoutes({
       scheduler,
       audit: (actor: string, action: string, summary: string) => {
