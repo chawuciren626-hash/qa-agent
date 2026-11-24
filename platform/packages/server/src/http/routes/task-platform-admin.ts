@@ -96,6 +96,20 @@ export function taskPlatformAdminRoutes(deps: TaskPlatformAdminDeps): Hono<AppEn
     return c.json({ cleared });
   });
 
+  /** 同步服务凭据（客户端本地服务配置用）；轮换后旧 Key 立即失效。 */
+  app.post("/service-key/rotate", async c => {
+    const key = deps.scheduler.rotateServiceKey();
+    deps.audit(c.var.user.userId, "task_platform_key_rotate", "同步服务凭据已轮换");
+    return c.json({ serviceKey: key });
+  });
+
+  /** 读取当前同步服务凭据（非轮换；无 Key 时自动生成，供客户端 client-sync.json 配置）。 */
+  app.get("/service-key", async c => {
+    const key = deps.scheduler.currentServiceKey();
+    deps.audit(c.var.user.userId, "task_platform_key_read", "读取同步服务凭据（客户端配置）");
+    return c.json({ serviceKey: key });
+  });
+
   return app;
 }
 

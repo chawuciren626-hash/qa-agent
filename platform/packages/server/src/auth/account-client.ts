@@ -42,7 +42,11 @@ export function readAccountClientConfig(root: string, env: NodeJS.ProcessEnv): A
 }
 
 type Binding = { remote: UserInfo; localId: string; cookie: string; expires: number; modules?:string[]; menuKeys?:string[]; resourceIds?:string[] };
-type Deps = { config: ServerConfig; db: DatabaseSync; auth: () => Auth; sessions: () => AuthSessions; users: () => Users; admin: () => Admin; streams: () => LiveStreams; fetch?: typeof fetch; localRequest?: (userId:string,request:Request)=>Promise<Response> };
+type Deps = { config: ServerConfig; db: DatabaseSync; auth: () => Auth; sessions: () => AuthSessions; users: () => Users; admin: () => Admin; streams: () => LiveStreams; fetch?: typeof fetch; localRequest?: (userId:string,request:Request)=>Promise<Response>;
+  /** 登录绑定成功后的回调（客户端扩展挂载点，如任务平台同步 worker 按 binding.localId 启动）。 */
+  onLoginBinding?: (localId: string, remoteUserId: string) => void;
+  /** 会话注销/失效后的回调（对应扩展停止）。 */
+  onLogoutBinding?: (localId: string) => void; };
 export class AccountClient {
   private readonly sessions = new Map<string, Binding>();
   private readonly checks = new Map<Binding, Promise<void>>();
@@ -94,6 +98,8 @@ export class AccountClient {
           .run(this.cookieSeal.seal(cookie), hash);
         this.sessions.set(hash, { remote, localId, cookie, expires: Math.min(expires, authExpires) });
         this.resourceSync.start(localId);
+        // 登录绑定恢复（含服务重启后的会话恢复）：通知扩展（客户端 sync worker 按用户启动）
+        this.deps.onLoginBinding?.(localId, remote.userId);
       } catch { deps.db.prepare("DELETE FROM account_center_sessions WHERE token_hash=?").run(hash); }
     }
   }
@@ -104,6 +110,8 @@ export class AccountClient {
   private drop(hash: string, binding: Binding) {
     this.guard.cancelUser(binding.localId);
     this.resourceSync.stop(binding.localId);
+    // 会话注销/失效：通知扩展停止（对应登录时的启动）
+    this.deps.onLogoutBinding?.(binding.localId);
     this.sessions.delete(hash);
     this.deps.db.prepare("DELETE FROM account_center_sessions WHERE token_hash=?").run(hash);
     this.deps.sessions().delete(hash);
@@ -700,6 +708,8 @@ export class AccountClient {
       .run(sessionTokenHash(token),this.cfg.origin,localId,JSON.stringify(user),this.cookieSeal.seal(cookie),new Date(Date.now()+this.deps.config.authSessionTtlMs).toISOString());
     setCookie(c,sessionCookieName(c.req.url,c.req.header("origin")!==undefined),token,cookieOptions(c,this.deps.config.authSessionTtlMs,this.deps.config.trustProxy));
     this.resourceSync.start(localId);
+    // 登录绑定成功：通知扩展（客户端 sync worker 按该用户启动增量拉取）
+    this.deps.onLoginBinding?.(localId, user.userId);
     const info=toUserInfo(this.deps.users().findById(localId)!);
     return c.json({user:{...info,passwordIsInitial:false}});
   }

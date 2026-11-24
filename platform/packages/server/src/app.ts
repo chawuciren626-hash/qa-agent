@@ -24,6 +24,7 @@ import type { HttpBindings } from "@hono/node-server";
 import { bodyLimit } from "hono/body-limit";
 import { bodyLimitBytes, toAttachmentLimits } from "./services/attachment-limits.js";
 import type { DatabaseSync } from "node:sqlite";
+import { ClientTaskSyncWorker, loadClientSyncConfig, type ClientTaskSyncWorker as SyncWorkerType } from "./integrations/task-platform/client-sync-worker.js";
 import type { Instance, ModuleTree } from "@prismshadow/penguin-core/kernel";
 import type { ServerConfig } from "./config.js";
 import { applyProxySettings, mergedNoProxy } from "./net/proxy.js";
@@ -522,6 +523,7 @@ export function createApp(boot: ServerBoot): Hono<AppEnv> {
   app.use("/api/*", sameOriginWrites(deps.config.trustProxy));
   app.use("/api/*", jsonOnlyWrites(deps.config.trustProxy));
 
+  const clientSyncWorkers = new Map<string, SyncWorkerType>();
   if (deps.config.accountClient) {
     const bridge = new AccountClient({ config: deps.config, db: boot.db,
       localRequest: (userId,request) => boot.tree.api<import("./http/app.js").Http>("HttpModule","http").fetchTrustedAs(userId,request),
@@ -530,6 +532,30 @@ export function createApp(boot: ServerBoot): Hono<AppEnv> {
       sessions: () => boot.tree.api<AuthSessions>("IdentityModule", "AuthSessions"),
       admin: () => boot.tree.api<Admin>("IdentityModule", "Admin"),
       streams: () => boot.tree.api<LiveStreams>("IdentityModule", "LiveStreams"),
+      // 客户端任务同步 worker（同步层阶段 B）：登录绑定成功后按用户启动增量拉取，
+      // 注销/失效停止。配置（服务端地址+凭据）从本地数据根 task-platform-sync/ 读取，
+      // 未配置则不启动（对接管理页完成配置后由部署写入）。
+      onLoginBinding: (localId) => {
+        try {
+          const syncConfig = loadClientSyncConfig(deps.config.root);
+          if (!syncConfig) return; // 未配置同步：静默跳过
+          const worker = new ClientTaskSyncWorker({
+            serverBaseUrl: syncConfig.serverBaseUrl,
+            serviceKey: syncConfig.serviceKey,
+            userId: localId,
+            db: boot.db as unknown as DatabaseSync,
+            intervalMs: 60_000,
+          });
+          worker.start();
+          clientSyncWorkers.set(localId, worker);
+        } catch (error) {
+          console.error("[task-platform] client sync worker start failed:", error);
+        }
+      },
+      onLogoutBinding: (localId) => {
+        const worker = clientSyncWorkers.get(localId);
+        if (worker) { worker.stop(); clientSyncWorkers.delete(localId); }
+      },
     });
     boot.tree.api<AuthState>("RuntimeModule", "AuthState").accountClient = bridge;
     app.use("*", bridge.middleware(token => deps.desktop?.redeemLoginToken(token) === true));

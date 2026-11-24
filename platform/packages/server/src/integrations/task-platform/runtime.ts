@@ -242,6 +242,18 @@ export class IngestionScheduler {
     return key;
   }
 
+  /** 轮换服务凭据（管理页操作；旧 Key 立即失效，客户端需更新）。 */
+  rotateServiceKey(): string {
+    const key = PlatformTaskSyncService.issueServiceKey();
+    this.configStore.set("task_platform_service_key", key);
+    return key;
+  }
+
+  /** 读取当前服务凭据（非轮换；客户端配置用）。无 Key 时自动生成（幂等，不失效既有 Key）。 */
+  currentServiceKey(): string {
+    return this.ensureServiceKey();
+  }
+
   /** 同步下发服务（面向客户端本地服务的增量下发/状态登记）。 */
   getSyncService(db: import("node:sqlite").DatabaseSync): PlatformTaskSyncService {
     const recipient = () => loadSettings(this.configStore).recipientUserId || null;
