@@ -524,11 +524,13 @@ function DevelopmentJudgmentSection({ pkg, baselineDigest, selfTestDigest, chang
   const attachments = pkg?.attachments ?? [];
   const designDocs = pkg?.schedule_design_documents ?? [];
   const regression = pkg?.regression_context;
-  // 老库回填前 packageDetail 为 null：回退 digest 展示（研发判断内容不丢）
+  // 老库回填前 packageDetail 为 null：回退 digest 展示（研发判断内容不丢——需求基准/自测摘要/变更正文）
+  const fallbackBaseline = baselineDigest as { final_content?: string; acceptance_criteria?: string[]; confirmed?: boolean } | null;
   const fallbackSelfTest = selfTestDigest as Record<string, unknown> | null;
   const fallbackChanges = changesDigest;
   const hasContent = Boolean(selfTest || changes.length || attachments.length || designDocs.length || regression ||
-    (fallbackSelfTest && Object.keys(fallbackSelfTest).length > 0) || fallbackChanges.length > 0);
+    (fallbackSelfTest && Object.keys(fallbackSelfTest).length > 0) || fallbackChanges.length > 0 ||
+    (fallbackBaseline && str(fallbackBaseline.final_content)));
   if (!hasContent) return null;
 
   const sectionEntries = (sections: Array<Record<string, unknown>> | undefined) =>
@@ -545,6 +547,17 @@ function DevelopmentJudgmentSection({ pkg, baselineDigest, selfTestDigest, chang
   return (
     <section className="qpt-dw-sec">
       <h3>研发判断 <span className="qpt-ai-tag">平台资料</span></h3>
+
+      {/* 需求基准（老库回退：packageDetail 缺失时 digest 里仍有确认基准正文） */}
+      {!selfTest && fallbackBaseline && str(fallbackBaseline.final_content) && (
+        <div className="qpt-sum-block">
+          <h4>需求基准（研发处理判断确认版）{fallbackBaseline.confirmed ? "" : " · 未确认"}</h4>
+          <p className="qpt-reason" style={{ whiteSpace: "pre-wrap" }}>{str(fallbackBaseline.final_content)}</p>
+          {Array.isArray(fallbackBaseline.acceptance_criteria) && fallbackBaseline.acceptance_criteria.length > 0 && (
+            <><h4>验收口径</h4><ul>{fallbackBaseline.acceptance_criteria.map((item, i) => <li key={i}>{item}</li>)}</ul></>
+          )}
+        </div>
+      )}
 
       {/* 正式开发节点：审核通过的自测提交记录（字段级） */}
       {(selfTest || fallbackSelfTest) && (
