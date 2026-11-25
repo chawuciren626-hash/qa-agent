@@ -1161,6 +1161,16 @@ def test_bootstrap_1010():
     assert probe_login('<input type="password" name="p"><div class="slider"></div>')["captcha_type"] == "slider"
     assert probe_login('<input type="password" name="p"><button>获取验证码</button>')["captcha_type"] == "sms"
     assert probe_login('<input type="password" name="p">')["captcha_type"] == "none"
+    # SPA：登录页由 JS 渲染、静态 HTML 无表单——不能断言"无验证码"（2026-11-25 用户实测）
+    spa_html = '<!doctype html><html><body><div id="app"></div><script src="/assets/app.js"></script></body></html>'
+    spa = probe_login(spa_html)
+    assert spa["is_login"] is not True and spa["captcha_type"] is None
+    # 前端骨架里只有"验证码"类关键词 → 疑似但类型未知，绝不回落 none
+    assert probe_login(spa_html, "if(x){msg:'请输入验证码'}")["captcha_type"] == "unknown"
+    # 骨架里的滑块/点选/短信特征按具体类型报
+    assert probe_login(spa_html, "geetest slider captcha verify")["captcha_type"] == "slider"
+    assert probe_login(spa_html, "点选文字验证 行为验证")["captcha_type"] == "click_select"
+    assert probe_login(spa_html, "获取短信验证码 sms captcha")["captcha_type"] == "sms"
     # 静态抓取拿不到控件 → 必须如实标未建档，不能假装已建档
     assert rep["pages"]["registered"] == 0 and rep["pages"]["total"] == 2
     assert r["maps"]["stats"]["pages_registered"] == 0

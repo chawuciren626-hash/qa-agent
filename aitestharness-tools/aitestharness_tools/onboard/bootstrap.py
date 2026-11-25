@@ -326,6 +326,9 @@ def probe_site(base_url: str, probe: Probe | None = None,
     return {
         "ok": True, "error": None,
         "html": html,
+        # 前端骨架/JS 文本（bundle + 内联脚本）：SPA 的登录表单与验证码由 JS 渲染，
+        # 静态 HTML 里看不到——验证码判定需要从这里补线索（只用于判定，不进报告）。
+        "assets_text": bundle_text[:4_000_000],
         "home": {"status": home["status"], "final_url": home["final_url"],
                  "bytes": home["bytes"]},
         "stack": detect_stack(bundle_text),
@@ -343,6 +346,26 @@ def probe_site(base_url: str, probe: Probe | None = None,
 
 _CAPTCHA_IMG = re.compile(r"captcha|verify|vcode|validate|yzm|验证码|checkcode", re.I)
 _SMS_HINT = ("获取验证码", "发送验证码", "获取短信", "重发", "重新获取", "发送短信")
+
+
+def _captcha_kind_in_assets(assets_text: str) -> str | None:
+    """从前端骨架/JS 文本里判定验证码（SPA 的登录页由 JS 渲染，静态 DOM 看不到）。
+
+    只在前端骨架证据命中时启用；命中但无法判定具体类型时返回 `unknown`（疑似），
+    决不返回 `none`——静态建档无法证明"没有验证码"。
+    """
+    blob = (assets_text or "").lower()
+    if not blob:
+        return None
+    if "geetest" in blob or "滑块" in blob or ("slider" in blob and ("captcha" in blob or "verify" in blob)):
+        return "slider"
+    if "点选" in blob or "click_select" in blob or "行为验证" in blob or "clickselect" in blob:
+        return "click_select"
+    if "短信验证码" in blob or "短信登录" in blob or ("sms" in blob and ("验证码" in blob or "captcha" in blob)):
+        return "sms"
+    if any(key in blob for key in ("验证码", "captcha", "verifycode", "verify_code", "vcode", "yzm", "checkcode")):
+        return "unknown"
+    return None
 
 
 def _captcha_kind(dom: dict, text: str) -> str | None:
@@ -364,11 +387,14 @@ def _captcha_kind(dom: dict, text: str) -> str | None:
     return None
 
 
-def probe_login(html: str) -> dict:
-    """从首页 HTML 探测登录表单与验证码类型（零 LLM，规则判定）。
+def probe_login(html: str, assets_text: str = "") -> dict:
+    """从首页 HTML（+前端骨架/JS 文本）探测登录表单与验证码类型（零 LLM，规则判定）。
 
     注意返回 `is_login: None` 的场景：iframe/canvas 内登录或登录在独立路由页，
     DOM 规则不适用。此时**不要**当作"没有登录"，否则后续会漏掉会话固化这一步。
+    同理，静态 HTML 看不到 JS 渲染的验证码：`captcha_type` 只有在前端骨架里找到
+    验证码线索，或登录表单确认且无线索时才会给出；找不到任何线索时为 None
+    （未确认），**不再**等同"无验证码"。
     """
     from ..exec.login import detect_captcha_type, detect_login_form
 
@@ -399,11 +425,22 @@ def probe_login(html: str) -> dict:
                "classes": sorted(classes)[:300],
                "text": body_text[:4000]}
     except Exception:                                  # bs4 缺失时降级正则
-        inputs = [{"type": (m.group(1) or "text"),
-                   "name": (m.group(2) or "")}
-                  for m in re.finditer(r'<input[^>]*type=["\']([^"\']*)["\'][^>]*'
-                                       r'(?:name=["\']([^"\']*)["\'])?', html or "", re.I)]
+        # 逐标签解析：属性顺序不固定（name 在 type 前/后都常见），整段一条正则会被
+        # 贪婪的 [^>]* 吃掉 name（username/password 字段名丢失，登录探测置信度下降）。
         raw = html or ""
+        inputs = []
+        for tag in re.finditer(r"<input\b[^>]*>", raw, re.I):
+            body = tag.group(0)
+            type_match = re.search(r'type=["\']([^"\']*)["\']', body, re.I)
+            name_match = re.search(r'name=["\']([^"\']*)["\']', body, re.I)
+            id_match = re.search(r'id=["\']([^"\']*)["\']', body, re.I)
+            placeholder_match = re.search(r'placeholder=["\']([^"\']*)["\']', body, re.I)
+            inputs.append({
+                "type": (type_match.group(1) if type_match else "text"),
+                "name": (name_match.group(1) if name_match else None),
+                "id": (id_match.group(1) if id_match else None),
+                "placeholder": (placeholder_match.group(1) if placeholder_match else None),
+            })
         cap_imgs = len([m for m in re.finditer(r"<img[^>]*>", raw, re.I)
                         if _CAPTCHA_IMG.search(m.group(0))])
         body_text = re.sub(r"<[^>]+>", " ", raw)[:4000]
@@ -421,12 +458,26 @@ def probe_login(html: str) -> dict:
     # 传给 detect_captcha_type 的必须是"净化"视图：本模块新增的 captcha_imgs/classes
     # 键名本身就含 captcha/img 字样，会把它自己的关键词匹配喂成假命中。
     safe = {k: dom[k] for k in ("inputs", "forms", "iframes", "canvas", "text") if k in dom}
-    captcha = _captcha_kind(dom, body_text) or detect_captcha_type(safe)
+    dom_captcha = _captcha_kind(dom, body_text) or detect_captcha_type(safe)
+    asset_captcha = _captcha_kind_in_assets(assets_text)
+    if dom_captcha != "none":
+        # DOM/正文里有明确验证码线索：采用（最可信）
+        captcha, captcha_source = dom_captcha, "dom"
+    elif det.get("is_login") is True:
+        # 登录表单已确认：DOM 未见验证码时，前端骨架有线索按骨架判（SPA），否则才敢说 none
+        captcha = asset_captcha or "none"
+        captcha_source = "assets" if asset_captcha else "none"
+    else:
+        # 静态 HTML 未见登录表单（SPA/独立登录页）：不能断言"无验证码"——
+        # 有骨架线索就报疑似类型，没有就是未确认（None → 前端显示"未确认"）。
+        captcha = asset_captcha
+        captcha_source = "assets" if asset_captcha else None
     return {"is_login": det.get("is_login"), "confidence": det.get("confidence"),
             "username_field": det.get("username_field"),
             "password_field": det.get("password_field"),
             "reason": det.get("reason"),
             "captcha_type": captcha,
+            "captcha_source": captcha_source,
             "captcha_imgs": cap_imgs,
             "inputs": len(dom["inputs"]), "forms": dom["forms"],
             "iframes": dom["iframes"], "canvas": dom["canvas"],
@@ -504,7 +555,7 @@ def bootstrap(project: str, env: str, url: str, openapi_url: str | None = None,
 
     tick(4, "running")
 
-    login = probe_login(site.get("html") or "")
+    login = probe_login(site.get("html") or "", site.get("assets_text") or "")
     if login.get("is_login") is None:
         warnings.append("登录表单未能在首页 DOM 中确认（iframe/canvas 或独立登录页）："
                         "请在探索阶段②用视觉模式补探，勿假定无登录")
@@ -515,8 +566,11 @@ def bootstrap(project: str, env: str, url: str, openapi_url: str | None = None,
         warnings.append(f"检测到验证码类型 `{login['captcha_type']}`："
                         "需在登录器中配置对应策略链，否则无法固化会话")
     elif login.get("captcha_type") == "unknown":
-        warnings.append("疑似存在验证码但类型未能识别（仅有 captcha 类关键词，"
+        warnings.append("疑似存在验证码但类型未能识别（前端骨架含验证码关键词，"
                         "无滑块/点选/短信特征）：需人工确认后配置策略链")
+    elif login.get("captcha_type") is None:
+        warnings.append("登录验证码未确认：静态建档不执行 JS，登录页由前端渲染时无法从 HTML "
+                        "观察验证码；请在探索阶段②用真实浏览器确认，勿据此认定无验证码")
 
     api = probe_openapi(url, p, explicit_url=openapi_url)
     if not api.get("api_count"):

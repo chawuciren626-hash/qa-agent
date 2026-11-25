@@ -412,7 +412,9 @@ export function ProjectEnvironmentsPage() {
                         </span>
                       </div>
                       <div className="qpm-fact">
-                        <b>{current.loginCaptcha ? CAPTCHA_LABEL[current.loginCaptcha] ?? current.loginCaptcha : "—"}</b>
+                        <b title={current.loginCaptcha ? undefined : "静态建档不执行 JS：登录页由前端渲染时无法从 HTML 观察验证码，需在探索阶段②用真实浏览器确认"}>
+                          {current.loginCaptcha ? CAPTCHA_LABEL[current.loginCaptcha] ?? current.loginCaptcha : "未确认"}
+                        </b>
                         <span>登录验证</span>
                       </div>
                     </div>
