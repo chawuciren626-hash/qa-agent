@@ -376,7 +376,7 @@ export function PlatformTasksPage() {
                               {analyzingThis ? "分析中…" : task.status === "pending_analysis" && !task.suggestedPriority ? "重试分析" : "重新分析"}
                             </button>
                           )}
-                          {task.status === "ready" && (
+                          {(task.status === "ready" || task.status === "impact_pending") && (
                             <button type="button" className="qpt-op qpt-op-main" disabled={starting === task.id} onClick={() => void doStart(task)}>
                               {starting === task.id ? "启动中…" : "开始测试"}
                             </button>

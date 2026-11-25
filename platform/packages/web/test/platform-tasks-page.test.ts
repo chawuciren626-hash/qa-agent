@@ -262,4 +262,15 @@ describe("platform tasks page", () => {
     expect(row.querySelector(".qpt-pri-from")?.textContent).toBe("AI");
     expect(row.querySelector(".qpt-pri")?.textContent).toContain("中");
   });
+
+  it("资料已更新（impact_pending）行提供可用的开始测试，不出现确认影响", async () => {
+    fixture.state.items = [{ ...fixture.platformReady, id: "ptl-impact", status: "impact_pending" }];
+    fixture.state.counts = { impact_pending: 1 };
+    const root = await renderPage();
+    const row = root.querySelectorAll("tbody tr")[0]!;
+    const start = Array.from(row.querySelectorAll("button")).find((b) => b.textContent === "开始测试");
+    expect(start).toBeTruthy();
+    expect(start!.disabled).toBe(false);
+    expect(row.textContent).not.toContain("确认影响");
+  });
 });

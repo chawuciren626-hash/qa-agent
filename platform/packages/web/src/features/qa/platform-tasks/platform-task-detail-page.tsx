@@ -280,9 +280,8 @@ export function PlatformTaskDetailPage() {
   const isLocal = t.source === "local";
   const s = detail.summary;
   const pkg = asPackageDetail(t.packageDetail);
-  // 开始测试可用 = ready / in_progress（打开会话）/ impact_pending（资料有新版本仍可开工，
-  // 用户流程没有"确认影响"操作环节）；pending_analysis 受 TLQ-1 闸禁用。
-  const canStart = t.status === "ready" || t.status === "in_progress" || t.status === "impact_pending";
+  // 操作入口：ready / impact_pending（资料有新版本仍可开工）提供"开始测试"；
+  // in_progress 只提示到列表进入阶段工作台（避免重复 /start 建会话）；pending_analysis 受 TLQ-1 闸禁用。
   const canAct = t.status !== "result_returned" && t.status !== "terminated";
 
   // 执行通道分组（B5-2）：类型 × 环境相同的运行归入同一通道。
@@ -323,9 +322,9 @@ export function PlatformTaskDetailPage() {
               </button>
             )}
             {t.status === "in_progress" && (
-              <button type="button" className="qpt-op qpt-op-main" disabled={starting} onClick={() => void doStart()}>
-                打开会话
-              </button>
+              // 不再提供"打开会话"：它复用同一个 /start 接口，重复点击会再建一个会话。
+              // 已开工任务从列表「任务详情」进入阶段工作台；详情页只做资料/分析/终止。
+              <span className="qpt-muted" title="从任务列表的「任务详情」进入阶段工作台">进行中 · 从列表进入任务详情</span>
             )}
             {t.status === "impact_pending" && (
               <button type="button" className="qpt-op qpt-op-main" disabled={starting} onClick={() => void doStart()}>

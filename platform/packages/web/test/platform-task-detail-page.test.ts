@@ -371,4 +371,16 @@ describe("platform task detail page", () => {
     await waitFor(() => fixture.state.terminateCalls === 1);
     promptSpy.mockRestore();
   });
+
+  it("进行中任务不提供「打开会话」（避免重复 /start 建会话）", async () => {
+    const inProgress = JSON.parse(JSON.stringify(fixture.detailWithPackage)) as TaskDetail;
+    inProgress.task.status = "in_progress";
+    inProgress.task.mainSessionId = "session-main-1";
+    const root = await renderDetail(inProgress);
+    const text = root.textContent ?? "";
+    expect(text).not.toContain("打开会话");
+    expect(text).toContain("从列表进入任务详情");
+    // 不再渲染可重复触发 start 的按钮
+    expect(Array.from(root.querySelectorAll("button")).some((b) => b.textContent === "打开会话")).toBe(false);
+  });
 });
