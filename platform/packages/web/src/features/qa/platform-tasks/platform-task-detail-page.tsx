@@ -74,6 +74,14 @@ const ATT_CATEGORY_LABEL: Record<string, string> = {
   development_judgment: "研发处理判断",
   requirement_clarification: "需求澄清材料",
   self_test_evidence: "自测凭证",
+  node_change_attachment: "变更附件",
+  status_result_image: "状态流转图片",
+  image: "图片",
+  attachment: "附件",
+  original_supplement_image: "反馈补充图片",
+  original_supplement_attachment: "反馈补充附件",
+  self_test_material: "自测材料",
+  self_test_screenshot: "自测截图",
   other: "其他",
 };
 
@@ -477,7 +485,7 @@ const TAB_SECTION_LABEL: Record<string, string> = {
   material_items: "节点提交材料",
 };
 
-/** ai_structured_result 的展示字段顺序与中文标签（任务平台"内容整理"页对齐）。 */
+/** ai_structured_result 的展示字段（只留业务语义字段；不回显模型流水字段与字段抽取明细）。 */
 const STRUCTURED_FIELD_ORDER: Array<[string, string]> = [
   ["title", "任务概括"],
   ["feedback_type", "反馈类型"],
@@ -485,13 +493,25 @@ const STRUCTURED_FIELD_ORDER: Array<[string, string]> = [
   ["product_line_name", "产品线"],
   ["product_section_name", "产品版块"],
   ["priority", "优先级"],
-  ["resolution_type", "解决方式"],
-  ["need_development", "是否需要开发"],
-  ["due_at", "计划截止"],
-  ["expected_online_at", "预计上线"],
   ["tags", "标签"],
   ["summary", "摘要"],
 ];
+
+/** 结构化字段里的枚举值中文化（任务平台回传的原值）。 */
+const STRUCTURED_VALUE_LABEL: Record<string, string> = {
+  bug: "Bug反馈",
+  requirement: "需求反馈",
+  data_fix: "数据修正",
+  high: "高",
+  medium: "中",
+  low: "低",
+};
+
+function structuredValueText(key: string, value: unknown): string {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean).join(" · ");
+  const text = stripRichText(String(value));
+  return STRUCTURED_VALUE_LABEL[text.toLowerCase()] ?? text;
+}
 
 /** 自测 sections 渲染（字段级；test_cases 类型渲染结构化用例卡，其余按 label+value）。 */
 function SelfTestSectionRows({ sections }: { sections: Array<Record<string, unknown>> | undefined }) {
@@ -550,26 +570,51 @@ function ChangeSectionRows({ sections }: { sections: Array<Record<string, unknow
   );
 }
 
-/** extracted_fields 字段抽取表（任务平台内容整理页的字段级明细；数组/字符串均支持）。 */
-function ExtractedFieldsTable({ fields }: { fields: Record<string, unknown> }) {
-  const entries = Object.entries(fields).filter(([, v]) => v !== null && v !== undefined && str(String(v)) !== "");
-  if (entries.length === 0) return null;
-  return (
-    <div className="qpt-extracted">
-      <h4>字段抽取明细</h4>
-      {entries.map(([key, value]) => (
-        <div key={key} className="qpt-change-field">
-          <small>{key}</small>
-          <p className="qpt-field-value">{Array.isArray(value) ? value.map((item) => (typeof item === "object" ? JSON.stringify(item) : String(item))).join("；") : stripRichText(String(value))}</p>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 /** digest 回退时原始反馈正文的可用性（baseline digest 里有 original_content）。 */
 function fallbackBaselineContent(baseline: Record<string, unknown> | null): boolean {
   return Boolean(baseline && str((baseline as { original_content?: string }).original_content));
+}
+
+type PackageAttachment = NonNullable<PackageDetail["attachments"]>[number];
+
+/**
+ * 附件归属阶段（按任务平台交接包的 node_code / file_category 划分，2026-11-25 实测对齐）：
+ * - node_code=submitted 或 original_supplement_* → 原始反馈（反馈人上传的截图/材料）；
+ * - self_testing / pm_testing / user_acceptance / self_test_* → 研发自测；
+ * - 其余（processing 工期评估文档、developing 变更材料等）→ 研发初判。
+ */
+function attachmentStage(att: PackageAttachment): "original" | "judgment" | "selftest" {
+  const node = str(att.node_code).toLowerCase();
+  const category = str(att.file_category).toLowerCase();
+  if (node === "submitted" || category === "original_supplement_image" || category === "original_supplement_attachment") {
+    return "original";
+  }
+  if (["self_testing", "pm_testing", "user_acceptance"].includes(node) || category.startsWith("self_test")) {
+    return "selftest";
+  }
+  return "judgment";
+}
+
+/** 附件清单（原始反馈/研发自测共用；二进制原件标注在任务平台查看）。 */
+function StageAttachmentList({ attachments }: { attachments: PackageAttachment[] }) {
+  if (attachments.length === 0) return null;
+  return (
+    <>
+      <ul className="qpt-att-list">
+        {attachments.map((att, i) => (
+          <li key={`${att.attachment_id ?? i}`} className="qpt-att-item">
+            <span className="qpt-att-name">{str(att.file_name) || "附件"}</span>
+            <small>
+              {ATT_CATEGORY_LABEL[str(att.file_category)] ?? (str(att.file_category) || "附件")}
+              {typeof att.file_size === "number" ? ` · ${Math.ceil(att.file_size / 1024)}KB` : ""}
+            </small>
+            {str(att.download_url) && <a href={str(att.download_url)} target="_blank" rel="noreferrer">下载</a>}
+          </li>
+        ))}
+      </ul>
+      <p className="qpt-sum-foot">文本类附件已自动同步进项目资料；截图等二进制原件请到任务平台查看（平台深链）。</p>
+    </>
+  );
 }
 
 /** 平台资料四 tab 容器（原始反馈/内容整理/研发初判/研发自测）。 */
@@ -580,9 +625,13 @@ function PlatformDataTabs({ pkg, digest }: {
   const [tab, setTab] = useState<"original" | "organized" | "judgment" | "selftest">("original");
 
   // ---- 各 tab 内容可用性（空 tab 仍显示并标"无"，点击后内容区提示"该阶段无资料"——与任务平台一致，tab 恒四枚）----
+  const allAttachments = pkg?.attachments ?? [];
+  const originalAttachments = allAttachments.filter((att) => attachmentStage(att) === "original");
+  const judgmentAttachments = allAttachments.filter((att) => attachmentStage(att) === "judgment");
+  const selfTestAttachments = allAttachments.filter((att) => attachmentStage(att) === "selftest");
   const original = pkg ? { content: str(pkg.original_content), rich: str(pkg.original_rich_content), supplements: pkg.supplements ?? [] } : null;
   const fallbackOriginal = digest.baseline as { original_content?: string } | null;
-  const hasOriginal = Boolean(original && (original.content || original.rich || original.supplements.length > 0)) ||
+  const hasOriginal = Boolean(original && (original.content || original.rich || original.supplements.length > 0 || originalAttachments.length > 0)) ||
     Boolean(!pkg && fallbackBaselineContent(digest.baseline));
 
   const structured = (pkg?.ai_structured_result ?? null) as Record<string, unknown> | null;
@@ -593,14 +642,14 @@ function PlatformDataTabs({ pkg, digest }: {
 
   const changes = pkg?.changes ?? [];
   const designDocs = pkg?.schedule_design_documents ?? [];
-  const attachments = pkg?.attachments ?? [];
+  const attachments = judgmentAttachments;
   const regression = pkg?.regression_context;
   const fallbackChanges = digest.changes;
   const hasJudgment = Boolean(changes.length || designDocs.length || attachments.length || regression || fallbackChanges.length > 0);
 
   const selfTest = pkg?.self_test ?? null;
   const fallbackSelfTest = digest.selfTest;
-  const hasSelfTest = Boolean(selfTest || (fallbackSelfTest && Object.keys(fallbackSelfTest).length > 0));
+  const hasSelfTest = Boolean(selfTest || (fallbackSelfTest && Object.keys(fallbackSelfTest).length > 0) || selfTestAttachments.length > 0);
 
   return (
     <section className="qpt-dw-sec">
@@ -630,7 +679,7 @@ function PlatformDataTabs({ pkg, digest }: {
 
       {tab === "original" && (
         <div className="qpt-tabpanel" role="tabpanel">
-          {original && (original.content || original.rich || original.supplements.length > 0) ? (
+          {original && (original.content || original.rich || original.supplements.length > 0 || originalAttachments.length > 0) ? (
             <>
               {(original.content || original.rich) && (
                 <div className="qpt-sum-block">
@@ -647,6 +696,12 @@ function PlatformDataTabs({ pkg, digest }: {
                       <p className="qpt-field-value">{stripRichText(str(sup.content))}</p>
                     </div>
                   ))}
+                </div>
+              )}
+              {originalAttachments.length > 0 && (
+                <div className="qpt-sum-block">
+                  <h4>附件资料（{originalAttachments.length} 件）</h4>
+                  <StageAttachmentList attachments={originalAttachments} />
                 </div>
               )}
             </>
@@ -672,28 +727,13 @@ function PlatformDataTabs({ pkg, digest }: {
                   <dl className="qpt-fgrid">
                     {STRUCTURED_FIELD_ORDER.map(([key, label]) => {
                       const value = structured[key];
-                      if (value === null || value === undefined || str(String(value)) === "") return null;
-                      const display = Array.isArray(value) ? value.map(String).join(" · ") : stripRichText(String(value));
+                      const display = value === null || value === undefined ? "" : structuredValueText(key, value);
+                      if (!display) return null;
                       return <div key={key}><dt>{label}</dt><dd style={{ whiteSpace: "pre-wrap" }}>{display}</dd></div>;
                     })}
                   </dl>
-                  {/* extracted_fields：任务平台侧字段抽取表（接口地址/请求方法/响应状态/高风险点等） */}
-                  {(() => {
-                    const extracted = structured.extracted_fields;
-                    return extracted && typeof extracted === "object"
-                      ? <ExtractedFieldsTable fields={extracted as Record<string, unknown>} />
-                      : null;
-                  })()}
-                  {/* 其余标量字段（enhanced_content/confidence/prompt_version 等）按 key 原样补齐，不丢字段 */}
-                  {Object.entries(structured)
-                    .filter(([key]) => !STRUCTURED_FIELD_ORDER.some(([k]) => k === key) && key !== "extracted_fields" && key !== "acceptance_criteria" && key !== "missing_fields")
-                    .filter(([, value]) => value !== null && value !== undefined && str(String(value)) !== "" && typeof value !== "object")
-                    .map(([key, value]) => (
-                      <div key={key} className="qpt-change-field">
-                        <small>{key}</small>
-                        <p className="qpt-field-value">{stripRichText(String(value))}</p>
-                      </div>
-                    ))}
+                  {/* 字段抽取明细、enhanced_content、confidence/provider/prompt_version 等
+                      属任务平台 AI 流水内部字段，不面向用户展示（2026-11-25 用户确认）。 */}
                 </div>
               )}
               {str(pkg?.ai_content) && (
@@ -773,20 +813,7 @@ function PlatformDataTabs({ pkg, digest }: {
               {attachments.length > 0 && (
                 <div className="qpt-sum-block">
                   <h4>变更与审核材料（{attachments.length} 件）</h4>
-                  <ul className="qpt-att-list">
-                    {attachments.map((att, i) => (
-                      <li key={`att-${i}`} className="qpt-att-item">
-                        <span className="qpt-att-name">{str(att.file_name) || "附件"}</span>
-                        <small>
-                          {ATT_CATEGORY_LABEL[str(att.file_category)] ?? (str(att.file_category) || "附件")}
-                          {att.node_code ? ` · ${att.node_code}` : ""}
-                          {typeof att.file_size === "number" ? ` · ${Math.ceil(att.file_size / 1024)}KB` : ""}
-                        </small>
-                        {str(att.download_url) && <a href={str(att.download_url)} target="_blank" rel="noreferrer">下载</a>}
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="qpt-sum-foot">文本类附件已自动同步进项目资料；截图等二进制原件请到任务平台查看。</p>
+                  <StageAttachmentList attachments={attachments} />
                 </div>
               )}
               {/* 回归上下文（新一轮抽测时） */}
@@ -841,6 +868,12 @@ function PlatformDataTabs({ pkg, digest }: {
                     {str(fallbackSelfTest.test_address) && <p className="qpt-field-value qpt-mono"><b>测试地址：</b>{str(fallbackSelfTest.test_address)}</p>}
                   </>
                 )
+              )}
+              {selfTestAttachments.length > 0 && (
+                <div className="qpt-field-block">
+                  <b>自测附件（{selfTestAttachments.length} 件）</b>
+                  <StageAttachmentList attachments={selfTestAttachments} />
+                </div>
               )}
             </div>
           ) : (

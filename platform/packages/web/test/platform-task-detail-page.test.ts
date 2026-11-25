@@ -4,9 +4,12 @@
  *
  * 2026-11-24 平台资料四 tab 结构（对齐任务平台任务详情页资料分区）：
  * - "平台资料"标题下恒四个 tab（原始反馈/内容整理/研发初判/研发自测），空 tab 标"无"；
- * - 每个 tab 字段级展示：原始反馈=正文+补充意见；内容整理=ai_structured_result
- *   字段表+extracted_fields 抽取明细+最终内容/验收口径；研发初判=三份文档+节点变更
- *   （sections 字段级）+附件+回归上下文；研发自测=13 个标准字段+需求反馈测试用例卡；
+ * - 每个 tab 字段级展示：原始反馈=正文+补充意见+反馈人上传的附件（node=submitted）；
+ *   内容整理=业务字段表+最终内容/验收口径（2026-11-25 起不再回显字段抽取明细与
+ *   enhanced_content/confidence/provider 等任务平台 AI 流水字段）；研发初判=三份文档+
+ *   节点变更（sections 字段级）+变更材料+回归上下文；研发自测=13 个标准字段+测试用例卡；
+ * - 附件按交接包 node_code 归阶段：submitted→原始反馈、processing/developing→研发初判、
+ *   self_testing/pm_testing→研发自测；
  * - 富文本残留清理（<ul><li> → 纯文本换行）；
  * - 老库回填前 packageDetail 为 null → 各 tab 用 digest 字段兜底（标"摘要回退"）。
  */
@@ -119,6 +122,9 @@ const fixture = vi.hoisted(() => {
     attachments: [
       { attachment_id: "att-1", file_name: "研发处理判断.md", file_category: "development_judgment", node_code: "developing", file_size: 4096, content_type: "text/markdown", download_url: null },
       { attachment_id: "att-2", file_name: "变更截图.png", file_category: "node_change_attachment", node_code: "developing", file_size: 20480, content_type: "image/png", download_url: null },
+      // 反馈人原始反馈里上传的截图（node submitted）：必须归 原始反馈 tab，不能落到研发初判
+      { attachment_id: "att-4", file_name: "粘贴截图_1.png", file_category: "image", node_code: "submitted", file_size: 42206, content_type: "image/png", download_url: null },
+      { attachment_id: "att-5", file_name: "粘贴截图_2.png", file_category: "image", node_code: "submitted", file_size: 64666, content_type: "image/png", download_url: null },
     ],
     schedule_design_documents: [
       { document_key: "technical_solution", file_name: "解决问题的技术方案说明.md", attachment_id: "att-3" },
@@ -256,22 +262,29 @@ describe("platform task detail page", () => {
     expect(tabLabels.some((t) => t.includes("研发初判"))).toBe(true);
     expect(tabLabels.some((t) => t.includes("研发自测"))).toBe(true);
 
-    // ① 原始反馈（默认 tab）：正文 + 补充意见
+    // ① 原始反馈（默认 tab）：正文 + 补充意见 + 反馈人上传的附件
     expect(text).toContain("反馈正文");
     expect(text).toContain("后台新增用户失败，无法完成用户创建");
     expect(text).toContain("补充意见（1 条）");
     expect(text).toContain("仅生产环境复现");
+    expect(text).toContain("附件资料（2 件）");
+    expect(text).toContain("粘贴截图_1.png");
+    expect(text).toContain("粘贴截图_2.png");
+    expect(text).not.toContain("变更与审核材料");
 
-    // ② 内容整理 tab：AI 结构化字段 + 抽取明细 + 最终内容 + 验收口径 + 需补充资料
+    // ② 内容整理 tab：只保留业务字段 + 最终内容/验收口径；不显示字段抽取明细/AI 流水字段
     await openTab(root, "内容整理");
     const organized = root.textContent ?? "";
     expect(organized).toContain("AI 结构化字段");
     expect(organized).toContain("任务概括");
     expect(organized).toContain("后台新增用户失败的修复回归");
-    expect(organized).toContain("字段抽取明细");
-    expect(organized).toContain("接口地址");
-    expect(organized).toContain("500 Internal Server Error");
-    expect(organized).toContain("同一租户内用户名唯一");
+    expect(organized).toContain("标签");
+    expect(organized).toContain("反馈类型");
+    expect(organized).not.toContain("字段抽取明细");
+    expect(organized).not.toContain("enhanced_content");
+    expect(organized).not.toContain("confidence");
+    expect(organized).not.toContain("接口地址");
+    expect(organized).not.toContain("500 Internal Server Error");
     expect(organized).toContain("最终内容（研发处理判断确认版）");
     expect(organized).toContain("具备 identity:manage 权限的管理员");
     expect(organized).toContain("验收口径");
@@ -279,7 +292,7 @@ describe("platform task detail page", () => {
     expect(organized).toContain("需补充资料");
     expect(organized).toContain("影响范围未标注");
 
-    // ③ 研发初判 tab：文档 + 节点变更记录（含字段级 sections）+ 材料 + 回归
+    // ③ 研发初判 tab：文档 + 节点变更记录（含字段级 sections）+ 变更材料 + 回归
     await openTab(root, "研发初判");
     const judgment = root.textContent ?? "";
     expect(judgment).toContain("研发处理判断资料 · 节点原提交文档（1 份）");
@@ -292,8 +305,10 @@ describe("platform task detail page", () => {
     // 富文本残留清理：<li> 转换行、无裸标签
     expect(judgment).toContain("修复用户创建时角色校验缺失");
     expect(judgment).not.toContain("<ul><li>");
+    // 变更材料只含研发阶段附件；反馈人的截图不在此 tab
     expect(judgment).toContain("变更与审核材料（2 件）");
     expect(judgment).toContain("研发处理判断.md");
+    expect(judgment).not.toContain("粘贴截图_1.png");
     expect(judgment).toContain("上轮抽测退回问题");
     expect(judgment).toContain("补充唯一性校验");
 
