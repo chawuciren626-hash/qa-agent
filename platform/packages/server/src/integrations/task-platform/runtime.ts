@@ -126,6 +126,8 @@ export class IngestionScheduler {
   private readonly store: TaskPlatformStore;
   private readonly bridge: PlatformTaskBridge;
   private readonly configStore: TaskPlatformConfigStore;
+  /** 库句柄（同步项目归属迁移用；可选，缺省跳过迁移）。 */
+  private readonly db: import("node:sqlite").DatabaseSync | null;
   /** 结果回传 outbox 调度器（C2）：接收端点入队 → 周期投递任务平台。enabled 时与拉取同启停。 */
   private outboxScheduler: ResultOutboxScheduler | null = null;
   /** 接收人候选提供者（接线层注入 Users 机制）；未注入时只返回 admin。 */
@@ -138,17 +140,47 @@ export class IngestionScheduler {
     configStore: TaskPlatformConfigStore;
     store: TaskPlatformStore;
     bridge: PlatformTaskBridge;
+    /** 同步项目归属迁移用（可选：单测/无库场景缺省时跳过迁移）。 */
+    db?: import("node:sqlite").DatabaseSync;
   }) {
     this.configStore = args.configStore;
     this.store = args.store;
     this.bridge = args.bridge;
+    this.db = args.db ?? null;
     this.settings = loadSettings(args.configStore);
+    // 启动兜底：接收人配置与既有同步项目 owner 可能不一致（配置写入早于本进程/上一实例
+    // 未及迁移）——幂等迁移到当前接收人，保证接收人切换后项目/任务立即可见。
+    if (this.db) this.transferSyncProjects(this.settings.recipientUserId || "admin");
     if (this.settings.enabled && this.settings.baseUrl && this.settings.apiKey) {
       this.service = buildIngestionService(this.settings, this.store, this.bridge);
       const pair = this.buildOutboxScheduler(this.settings);
       this.outboxScheduler = pair.scheduler;
       this.outboxDispatcher = pair.dispatcher;
       pair.scheduler.start();
+    }
+  }
+
+  /**
+   * 同步项目归属迁移（接收人切换）：source_type='sync' 的项目统一交给当前接收人，
+   * 使"后台配置推送给哪个用户"立即生效——新接收人在项目列表/任务列表直接看到既有
+   * 同步项目与任务（任务已入库，事件游标不回放也不需要重放）。手工项目不受影响。
+   * 幂等：重复调用只重复写同一 owner。目标用户不存在（已禁用/删号）时 FK 失败被吞，
+   * 保留原 owner（admin 仍可见），并记录日志。
+   */
+  transferSyncProjects(toUserId: string): number {
+    if (!this.db) return 0;
+    const target = toUserId.trim() || "admin";
+    try {
+      const result = this.db
+        .prepare(
+          `UPDATE projects SET owner_user_id = ?
+            WHERE project_id IN (SELECT project_id FROM project_management WHERE source_type = 'sync')`,
+        )
+        .run(target);
+      return Number((result as { changes?: number }).changes ?? 0);
+    } catch (error) {
+      console.error(`[task-platform] sync project ownership transfer to ${target} skipped:`, error instanceof Error ? error.message : error);
+      return 0;
     }
   }
 
@@ -207,8 +239,14 @@ export class IngestionScheduler {
 
   /** 更新配置；重启调度器使新配置生效。返回 masked 视图。 */
   applySettings(next: TaskPlatformSettings): { enabled: boolean; baseUrl: string; apiKeyMasked: string; pollIntervalMs: number; batchSize: number; recipientUserId: string } {
+    const previousRecipient = this.settings.recipientUserId;
     saveSettings(this.configStore, next);
     this.settings = next;
+    // 接收人切换：既有同步项目 owner 迁移到新接收人（否则新账号看不到任何项目/任务，
+    // 且下次建项目会撞上"已被其他用户占用"）。幂等，仅变更时执行。
+    if (next.recipientUserId !== previousRecipient) {
+      this.transferSyncProjects(next.recipientUserId || "admin");
+    }
     this.stop();
     this.service = null;
     // outbox 投递目标（baseUrl/apiKey）可能变化：停旧的心跳，配置齐时换新通道重启。

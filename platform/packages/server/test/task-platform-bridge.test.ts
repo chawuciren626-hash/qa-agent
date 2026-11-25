@@ -556,6 +556,26 @@ describe("sync project id derivation (slugify)", () => {
     expect(new Set(ids).size).toBe(3);
     expect(ids.every(id => /^[a-z][a-z0-9_]{1,63}$/.test(id))).toBe(true);
   });
+
+  it("derives an owner-prefixed project id for a non-admin recipient (project_id_prefix_required 修复)", async () => {
+    const { syncProjectIdForOwner, syncProjectId } = await import("../src/integrations/task-platform/module.js");
+    const lineId = "9eac166d-76a7-4b4e-9efe-ed18042c04be";
+    // admin：沿用全局命名空间形态（无连字符，SEMANTIC_ID_PATTERN）
+    const adminId = syncProjectIdForOwner({ userId: "admin", isAdmin: true }, "tenant-1", lineId);
+    expect(adminId).toBe(syncProjectId("tenant-1", lineId));
+    expect(adminId).toMatch(/^[a-z][a-z0-9_]{1,63}$/);
+    // 非 admin：必须 "<userId>-" 前缀 + 后缀 ^[a-z0-9_]+$，总长 ≤64（长用户名也不越界）
+    const memberId = syncProjectIdForOwner({ userId: "zhangsan", isAdmin: false }, "tenant-1", lineId);
+    expect(memberId.startsWith("zhangsan-")).toBe(true);
+    expect(/^[a-z0-9_]+$/.test(memberId.slice("zhangsan-".length))).toBe(true);
+    expect(memberId.length).toBeLessThanOrEqual(64);
+    const longUser = syncProjectIdForOwner({ userId: "a".repeat(32), isAdmin: false }, "tenant-1", lineId);
+    expect(longUser.length).toBeLessThanOrEqual(64);
+    expect(longUser.startsWith(`${"a".repeat(32)}-`)).toBe(true);
+    // 确定性：同 owner+tenant+line 恒定；不同 owner 不撞
+    expect(syncProjectIdForOwner({ userId: "zhangsan", isAdmin: false }, "tenant-1", lineId)).toBe(memberId);
+    expect(syncProjectIdForOwner({ userId: "lisi", isAdmin: false }, "tenant-1", lineId)).not.toBe(memberId);
+  });
 });
 
 describe("IngestionScheduler", () => {
@@ -596,5 +616,43 @@ describe("IngestionScheduler", () => {
     const { scheduler } = makeSchedulerHarness();
     scheduler.resetCursor();
     // 无异常即可；游标行为在传输层测试已覆盖
+  });
+
+  it("transferSyncProjects moves sync project ownership to the new recipient (接收人切换生效)", () => {
+    const db = makeDb();
+    const store = new SqliteTaskPlatformStore(db);
+    const { bridge } = makeBridge(db);
+    const configStore = new MemoryConfigStore();
+    // 预置：一个同步项目（admin 持有）+ 一个手工项目（不得被迁移）
+    db.prepare("INSERT INTO projects (project_id, owner_user_id, created_at) VALUES ('sync_gov_abc', 'admin', '2026-01-01T00:00:00Z')").run();
+    db.prepare("INSERT INTO project_management (project_id, source_type) VALUES ('sync_gov_abc', 'sync')").run();
+    db.prepare("INSERT INTO projects (project_id, owner_user_id, created_at) VALUES ('manual_proj', 'admin', '2026-01-01T00:00:00Z')").run();
+    db.prepare("INSERT INTO project_management (project_id, source_type) VALUES ('manual_proj', 'manual')").run();
+    const scheduler = new IngestionScheduler({ configStore, store, bridge, db });
+    // 启动时（构造器）已按默认 recipient 迁移一次（recipient 为空 → admin，owner 不变）
+    expect((db.prepare("SELECT owner_user_id FROM projects WHERE project_id='sync_gov_abc'").get() as { owner_user_id: string }).owner_user_id).toBe("admin");
+    // 直接调用迁移：同步项目转给新接收人，手工项目不动
+    const changed = scheduler.transferSyncProjects("zhangsan");
+    expect(changed).toBe(1);
+    expect((db.prepare("SELECT owner_user_id FROM projects WHERE project_id='sync_gov_abc'").get() as { owner_user_id: string }).owner_user_id).toBe("zhangsan");
+    expect((db.prepare("SELECT owner_user_id FROM projects WHERE project_id='manual_proj'").get() as { owner_user_id: string }).owner_user_id).toBe("admin");
+    // 幂等
+    expect(scheduler.transferSyncProjects("zhangsan")).toBe(1);
+  });
+
+  it("applySettings transfers sync projects when recipient changes", () => {
+    const db = makeDb();
+    const store = new SqliteTaskPlatformStore(db);
+    const { bridge } = makeBridge(db);
+    const configStore = new MemoryConfigStore();
+    db.prepare("INSERT INTO projects (project_id, owner_user_id, created_at) VALUES ('sync_gov_abc', 'admin', '2026-01-01T00:00:00Z')").run();
+    db.prepare("INSERT INTO project_management (project_id, source_type) VALUES ('sync_gov_abc', 'sync')").run();
+    const scheduler = new IngestionScheduler({ configStore, store, bridge, db });
+    // 同一接收人（空 → 空）不迁移
+    scheduler.applySettings({ enabled: false, baseUrl: "http://platform", apiKey: "k", pollIntervalMs: 60_000, batchSize: 10, recipientUserId: "" });
+    expect((db.prepare("SELECT owner_user_id FROM projects WHERE project_id='sync_gov_abc'").get() as { owner_user_id: string }).owner_user_id).toBe("admin");
+    // 切换接收人 → 同步项目归属迁移
+    scheduler.applySettings({ enabled: false, baseUrl: "http://platform", apiKey: "k", pollIntervalMs: 60_000, batchSize: 10, recipientUserId: "zhangsan" });
+    expect((db.prepare("SELECT owner_user_id FROM projects WHERE project_id='sync_gov_abc'").get() as { owner_user_id: string }).owner_user_id).toBe("zhangsan");
   });
 });

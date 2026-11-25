@@ -99,9 +99,11 @@ export class PlatformTaskBridgeComponent implements TaskPlatformBridgeProvider {
           const recipient = this.recipientResolver?.() || "admin";
           const owner = users.findById(recipient) ?? users.findById("admin");
           if (!owner) throw new Error("接收人用户不存在且 admin 缺失，无法创建平台同步项目");
-          // SEMANTIC_ID_PATTERN 要求 ^[a-z][a-z0-9_]{1,63}$（无连字符）：外部 ID 中的
-          // 连字符/其他字符统一映射为下划线，保证首次创建即合法（审阅意见 1）
-          const projectId = syncProjectId(args.externalTenantId, args.externalProjectId);
+          // 项目 ID 派生区分 owner 形态（ProjectService 命名空间规则）：
+          // - admin：sync_<slug>_<hash>（SEMANTIC_ID_PATTERN，无连字符）
+          // - 非 admin：必须 "<userId>-<suffix>"（suffix ^[a-z0-9_]+$，总长 ≤64）——
+          //   否则 createProject 抛 project_id_prefix_required，激活失败、项目/任务不到。
+          const projectId = syncProjectIdForOwner(owner, args.externalTenantId, args.externalProjectId);
           const existing = db.prepare("SELECT owner_user_id FROM projects WHERE project_id = ?")
             .get(projectId) as { owner_user_id: string } | undefined;
           if (existing && existing.owner_user_id !== owner.userId) {
@@ -148,6 +150,7 @@ export abstract class TaskPlatformSchedulerProvider {
 
 @Component()
 export class TaskPlatformRuntime implements TaskPlatformSchedulerProvider {
+  @Use() private readonly db!: Db;
   @Use() private readonly settings!: Settings;
   @Use() private readonly storeHolder!: TaskPlatformRepository;
   @Use() private readonly bridgeHolder!: TaskPlatformBridgeProvider;
@@ -161,6 +164,8 @@ export class TaskPlatformRuntime implements TaskPlatformSchedulerProvider {
       configStore: new SettingsConfigStore(this.settings),
       store,
       bridge,
+      // 接收人切换时迁移同步项目 owner（启动幂等 + applySettings 变更时执行）
+      db: this.db as unknown as import("node:sqlite").DatabaseSync,
     });
     // 推送接收人：bridge 建项目时读 settings.recipientUserId 做 owner；
     // admin 页下拉从启用账号列表选（Users 机制）。
@@ -271,4 +276,23 @@ export function slugify(value: string): string {
 export function syncProjectId(tenantId: string, productLineId: string): string {
   const hash = createHash("sha256").update(JSON.stringify([tenantId, productLineId])).digest("hex").slice(0, 16);
   return `sync_${slugify(productLineId).slice(0, 36)}_${hash}`;
+}
+
+/**
+ * 按项目 owner 派生同步项目 ID（ProjectService 的命名空间规则）：
+ * - admin：可直接占用全局命名空间 → sync_<slug>_<hash>（无连字符，SEMANTIC_ID_PATTERN）；
+ * - 非 admin：id 必须以 "<userId>-" 开头、后缀 ^[a-z0-9_]+$、总长 ≤ PROJECT_ID_MAX_LENGTH
+ *   （64）——用 "sync_<hash16>" 作后缀（21 字符）收口，避免长用户名越界；确定性派生
+ *   （同 owner+tenant+产品线恒定），项目映射仍以 task_platform_project_links 表为准。
+ * 修复：非 admin 接收人此前被 project_id_prefix_required 拒绝，导致激活失败、
+ * 项目与任务都不到（手动同步摘要 packages_failed +1）。
+ */
+export function syncProjectIdForOwner(
+  owner: { userId: string; isAdmin: boolean },
+  tenantId: string,
+  productLineId: string,
+): string {
+  if (owner.isAdmin) return syncProjectId(tenantId, productLineId);
+  const hash = createHash("sha256").update(JSON.stringify([tenantId, productLineId])).digest("hex").slice(0, 16);
+  return `${owner.userId}-sync_${hash}`;
 }
