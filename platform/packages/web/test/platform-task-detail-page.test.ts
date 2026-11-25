@@ -83,8 +83,12 @@ const fixture = vi.hoisted(() => {
       review_mode: "manual",
       approval_status: "approved",
       reviewed_at: "2026-11-20T06:04:00+08:00",
-      request_reason: "自测说明：已完成主流程回归",
+      // 任务平台在提交说明里落的是富文本，前端必须清标签（2026-11-25 用户反馈）
+      request_reason: "<p><strong>自测说明：</strong>已完成主流程回归</p>",
       sections: [
+        { key: "root_cause", label: "产生原因", value: "新增用户 session.flush() 未局部捕获 IntegrityError" },
+        { key: "solution", label: "解决方案", value: "DAO 层补充唯一性过滤，异常转业务错误" },
+        { key: "stable_reproduction", label: "是否能稳定复现", value: "能稳定复现" },
         { key: "access_url", label: "测试地址/访问地址", value: "https://local.console.gov-bid.com/bbiao-admin/register/user/index" },
         { key: "self_test_result", label: "自测结果", value: "测试通过" },
         { key: "affected_modules", label: "影响模块", value: "用户管理模块" },
@@ -107,8 +111,17 @@ const fixture = vi.hoisted(() => {
       related_links: ["http://task-platform:8000/self-test"],
     },
     changes: [
+      // 自测提交之前的变更 → 研发初判
       {
         node: "正式开发", node_code: "developing", batch: 1, sequence: 1,
+        content: "初始变更：补充模块说明",
+        sections: [{ key: "change_reason", label: "变更原因", value: "初始说明补充" }],
+        changed_at: "2026-11-20T00:30:00+08:00",
+        operator: "研发",
+      },
+      // 自测提交时/之后的变更 → 研发自测（任务平台"提交自测"动作产生的变更）
+      {
+        node: "正式开发", node_code: "developing", batch: 2, sequence: 1,
         content: "<ul><li><span>修复用户创建时角色校验缺失</span></li><li><span>补充错误提示文案</span></li></ul>",
         sections: [
           { key: "change_reason", label: "变更原因", value: "修复后端创建用户接口的角色校验缺陷" },
@@ -292,19 +305,19 @@ describe("platform task detail page", () => {
     expect(organized).toContain("需补充资料");
     expect(organized).toContain("影响范围未标注");
 
-    // ③ 研发初判 tab：文档 + 节点变更记录（含字段级 sections）+ 变更材料 + 回归
+    // ③ 研发初判 tab：处理判断节内提交材料 + 文档 + 自测提交前的变更 + 变更材料 + 回归
     await openTab(root, "研发初判");
     const judgment = root.textContent ?? "";
+    expect(judgment).toContain("研发处理判断内容 · 节内提交材料");
+    expect(judgment).toContain("产生原因");
+    expect(judgment).toContain("解决方案");
+    expect(judgment).toContain("能稳定复现");
     expect(judgment).toContain("研发处理判断资料 · 节点原提交文档（1 份）");
     expect(judgment).toContain("解决问题的技术方案说明.md");
     expect(judgment).toContain("节点变更记录（1 条）");
-    expect(judgment).toContain("第1批");
-    expect(judgment).toContain("变更原因"); // sections 字段中文标签
-    expect(judgment).toContain("修复后端创建用户接口的角色校验缺陷");
-    expect(judgment).toContain("影响范围");
-    // 富文本残留清理：<li> 转换行、无裸标签
-    expect(judgment).toContain("修复用户创建时角色校验缺失");
-    expect(judgment).not.toContain("<ul><li>");
+    expect(judgment).toContain("初始变更：补充模块说明");
+    // 自测提交之后的变更不归研发初判
+    expect(judgment).not.toContain("修复用户创建时角色校验缺失");
     // 变更材料只含研发阶段附件；反馈人的截图不在此 tab
     expect(judgment).toContain("变更与审核材料（2 件）");
     expect(judgment).toContain("研发处理判断.md");
@@ -316,7 +329,15 @@ describe("platform task detail page", () => {
     await openTab(root, "研发自测");
     const selftest = root.textContent ?? "";
     expect(selftest).toContain("提交审核材料（研发自测 · 审核通过）");
+    // 提交说明清理富文本标签（任务平台落的是 <p><strong>…）
     expect(selftest).toContain("自测说明：已完成主流程回归");
+    expect(selftest).not.toContain("<p><strong>");
+    expect(selftest).not.toContain("<strong>");
+    // 研发自测阶段的变更记录（自测提交时/之后）应在此 tab
+    expect(selftest).toContain("研发自测阶段变更记录（1 条）");
+    expect(selftest).toContain("修复用户创建时角色校验缺失");
+    expect(selftest).toContain("修复后端创建用户接口的角色校验缺陷");
+    expect(selftest).not.toContain("<ul><li>");
     expect(selftest).toContain("测试地址/访问地址");
     expect(selftest).toContain("https://local.console.gov-bid.com/bbiao-admin/register/user/index");
     expect(selftest).toContain("自测结果");

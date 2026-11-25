@@ -450,19 +450,27 @@ function LocalTaskSections({ detail }: { detail: TaskDetail }) {
 }
 
 // ---------------------------------------------------------------------------
-// 平台资料四 tab（2026-11-24 结构定稿，对齐任务平台任务详情页的资料分区）：
-//   ① 原始反馈  = original_content + original_rich_content + supplements（补充意见）
-//   ② 内容整理  = ai_structured_result（任务平台侧 AI 字段级全量）+ ai_content
-//               + confirmed_baseline（最终内容/验收口径/遗漏字段）
-//   ③ 研发初判  = schedule_design_documents（研发处理判断三份 md）+ 节点变更记录
-//               （changes[].sections 字段级）+ 包附件清单
-//   ④ 研发自测  = development_self_test（字段级 submission_sections 全量，含
-//               section_type=test_cases 的结构化测试用例 items）+ 审核信息
+// 平台资料四 tab（2026-11-25 结构修订，对齐任务平台任务详情页的资料分区）：
+//   ① 原始反馈  = original_content + original_rich_content + supplements + 反馈人附件
+//   ② 内容整理  = 业务结构化字段 + ai_content + confirmed_baseline
+//   ③ 研发初判  = 研发处理判断内容（节内提交材料：产生原因/解决方案/能否稳定复现）
+//               + schedule_design_documents（三份 md）+ 自测提交前的节点变更 + 附件
+//   ④ 研发自测  = development_self_test（提交说明+sections 全量+测试用例）+
+//               自测提交时/之后的节点变更 + 自测附件
+// 变更记录归属：以 self_test.submitted_at 为界——提交之后的变更属研发自测阶段，
+// 之前的属研发初判阶段（任务平台"提交自测"动作产生的变更记录即属自测）。
 // digest 回退：老库回填前 packageDetail 为 null，对应 tab 用 digest 字段兜底显示。
 // ---------------------------------------------------------------------------
 
+/** 研发处理判断"节内提交材料"的字段（任务平台研发处理判断节点展示的提交内容）。 */
+const JUDGMENT_SECTION_KEYS = new Set(["root_cause", "bug_cause", "solution", "stable_reproduction"]);
+
 /** 自测/变更 sections 的标准 key 中文标签（任务平台 allowed_keys 与自测提交口径对齐）。 */
 const TAB_SECTION_LABEL: Record<string, string> = {
+  root_cause: "产生原因",
+  bug_cause: "Bug 产生原因",
+  solution: "解决方案",
+  stable_reproduction: "是否能稳定复现",
   self_test_result: "自测结果",
   affected_modules: "影响模块",
   known_risks: "已知风险",
@@ -641,15 +649,28 @@ function PlatformDataTabs({ pkg, digest }: {
   );
 
   const changes = pkg?.changes ?? [];
+  // 变更归属：以自测提交时间为界——提交时/之后的变更（含"提交自测"动作产生的
+  // [正式开发] 变更记录）归研发自测；此前归研发初判。无提交时间（老包）一律归初判。
+  // 用 Date.parse 比较（包内时间可能是 +00:00 或 +08:00，不能按字符串比）。
+  const selfTestSubmittedAt = str(pkg?.self_test?.submitted_at);
+  const submittedMs = selfTestSubmittedAt ? Date.parse(selfTestSubmittedAt) : Number.NaN;
+  const isSelfTestChange = (c: { changed_at?: string | null }) => {
+    const at = c.changed_at ? Date.parse(String(c.changed_at)) : Number.NaN;
+    return Number.isFinite(submittedMs) && Number.isFinite(at) && at >= submittedMs;
+  };
+  const selfTestChanges = selfTestSubmittedAt ? changes.filter(isSelfTestChange) : [];
+  const judgmentChanges = selfTestSubmittedAt ? changes.filter((c) => !isSelfTestChange(c)) : changes;
   const designDocs = pkg?.schedule_design_documents ?? [];
   const attachments = judgmentAttachments;
   const regression = pkg?.regression_context;
   const fallbackChanges = digest.changes;
-  const hasJudgment = Boolean(changes.length || designDocs.length || attachments.length || regression || fallbackChanges.length > 0);
+  // 研发处理判断"节内提交材料"（产生原因/解决方案/能否稳定复现）
+  const judgmentSections = (pkg?.self_test?.sections ?? []).filter((sec) => JUDGMENT_SECTION_KEYS.has(str(sec.key)) && str(sec.value));
+  const hasJudgment = Boolean(judgmentSections.length || judgmentChanges.length || designDocs.length || attachments.length || regression || fallbackChanges.length > 0);
 
   const selfTest = pkg?.self_test ?? null;
   const fallbackSelfTest = digest.selfTest;
-  const hasSelfTest = Boolean(selfTest || (fallbackSelfTest && Object.keys(fallbackSelfTest).length > 0) || selfTestAttachments.length > 0);
+  const hasSelfTest = Boolean(selfTest || (fallbackSelfTest && Object.keys(fallbackSelfTest).length > 0) || selfTestChanges.length > 0 || selfTestAttachments.length > 0);
 
   return (
     <section className="qpt-dw-sec">
@@ -775,6 +796,18 @@ function PlatformDataTabs({ pkg, digest }: {
         <div className="qpt-tabpanel" role="tabpanel">
           {hasJudgment ? (
             <>
+              {/* 研发处理判断"节内提交材料"（产生原因/解决方案/能否稳定复现） */}
+              {judgmentSections.length > 0 && (
+                <div className="qpt-sum-block">
+                  <h4>研发处理判断内容 · 节内提交材料</h4>
+                  {judgmentSections.map((sec, i) => (
+                    <div key={i} className="qpt-field-block">
+                      <b>{str(sec.label) || TAB_SECTION_LABEL[str(sec.key)] || str(sec.key)}</b>
+                      <p className="qpt-field-value">{stripRichText(str(sec.value))}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
               {/* 研发处理判断文档（三份 md） */}
               {designDocs.length > 0 && (
                 <div className="qpt-sum-block">
@@ -789,11 +822,11 @@ function PlatformDataTabs({ pkg, digest }: {
                   </ul>
                 </div>
               )}
-              {/* 节点变更记录（含字段级 sections） */}
-              {(changes.length > 0 || fallbackChanges.length > 0) && (
+              {/* 研发初判阶段的节点变更记录（自测提交前的变更；提交之后归研发自测） */}
+              {(judgmentChanges.length > 0 || fallbackChanges.length > 0) && (
                 <div className="qpt-sum-block">
-                  <h4>节点变更记录（{changes.length || fallbackChanges.length} 条）</h4>
-                  {(changes.length > 0 ? changes : fallbackChanges.map((c) => ({
+                  <h4>节点变更记录（{judgmentChanges.length || fallbackChanges.length} 条）</h4>
+                  {(judgmentChanges.length > 0 ? judgmentChanges : fallbackChanges.map((c) => ({
                     node: str(c.node) || str(c.node_code),
                     batch: typeof c.batch === "number" ? c.batch : undefined,
                     content: str(c.content),
@@ -852,7 +885,9 @@ function PlatformDataTabs({ pkg, digest }: {
               </h4>
               {selfTest ? (
                 <>
-                  {selfTest.request_reason && <p className="qpt-field-value"><b>提交说明：</b>{selfTest.request_reason}</p>}
+                  {str(selfTest.request_reason) && (
+                    <p className="qpt-field-value"><b>提交说明：</b>{stripRichText(str(selfTest.request_reason))}</p>
+                  )}
                   <SelfTestSectionRows sections={selfTest.sections} />
                   {selfTest.related_links && selfTest.related_links.length > 0 && (
                     <p className="qpt-mono qpt-sum-foot">{selfTest.related_links.join(" · ")}</p>
@@ -868,6 +903,19 @@ function PlatformDataTabs({ pkg, digest }: {
                     {str(fallbackSelfTest.test_address) && <p className="qpt-field-value qpt-mono"><b>测试地址：</b>{str(fallbackSelfTest.test_address)}</p>}
                   </>
                 )
+              )}
+              {/* 研发自测阶段的节点变更记录（自测提交时/之后；含"提交自测"产生的变更） */}
+              {selfTestChanges.length > 0 && (
+                <div className="qpt-field-block">
+                  <b>研发自测阶段变更记录（{selfTestChanges.length} 条）</b>
+                  {selfTestChanges.map((c, i) => (
+                    <div key={i} className="qpt-section-row">
+                      <b>[{c.node || str(c.node_code) || "变更"}]{typeof c.batch === "number" ? ` 第${c.batch}批` : ""}{c.operator ? ` · ${c.operator}` : ""}{timeShort(c.changed_at) ? ` · ${timeShort(c.changed_at)}` : ""}</b>
+                      {str(c.content) && <p className="qpt-field-value">{stripRichText(str(c.content))}</p>}
+                      <ChangeSectionRows sections={c.sections as Array<Record<string, unknown>> | undefined} />
+                    </div>
+                  ))}
+                </div>
               )}
               {selfTestAttachments.length > 0 && (
                 <div className="qpt-field-block">
