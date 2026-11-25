@@ -157,6 +157,23 @@ test('handle lookup distinguishes interrupted, returned and pending; denied redi
   assert.equal(result.completion_verified,false);
 });
 
+test('a QA child that outlives its tool call exposes its handle even when the note follows prose',()=>{
+  const dispatch={agent:request.agent,at:request.dispatchedAt,dispatch_id:'dispatch-a',child_command_policy:'policy-a'};
+  const rows=trace();rows[0].payload.arguments={agent_id:request.agent,prompt:`${request.runId} dispatch-a policy-a`};
+  // Real background receipts append the marker to the same line as the child's own prose, and QA
+  // words it "continuing in background" rather than retained/running. Missing either form reported
+  // subagent_id:null, and the controller answered that by redispatching a brand-new child — the
+  // reported loss of the drafting context on revision.
+  rows[2].payload.output='已读取契约，现在分批写台账。 [QA subagent continuing in background with subagent_id subagent-bg12345; leave it running unattended: x]';
+  const background=recordedChildHandle(rows,dispatch,request.runId);
+  assert.equal(background.status,'recorded');
+  assert.equal(background.subagent_id,'subagent-bg12345');
+  rows[2].payload.output='[subagent running with subagent_id subagent-run678; use input_subagent to poll]';
+  assert.equal(recordedChildHandle(rows,dispatch,request.runId).subagent_id,'subagent-run678');
+  rows[2].payload.output='[QA subagent continuing in background with subagent_id subagent-aaa1; x] [QA subagent continuing in background with subagent_id subagent-bbb2; x]';
+  assert.equal(recordedChildHandle(rows,dispatch,request.runId).subagent_id,null);
+});
+
 test('QA retained handle is available on a normal completed finish so revision continues the same child',()=>{
   const dispatch={agent:request.agent,at:request.dispatchedAt,dispatch_id:'dispatch-a',child_command_policy:'policy-a'};
   const rows=trace();rows[0].payload.arguments={agent_id:request.agent,prompt:`${request.runId} dispatch-a policy-a`};

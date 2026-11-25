@@ -28,6 +28,11 @@ const platformActions={
   desktop_test_agent:['desktop_task']
 };
 
+// A denial whose message already carries the whole actionable instruction. Callers must not
+// append the generic "correct the request" suffix: on a state-level block it points the model at
+// the one thing that cannot work (rewording the request), which is what produced the retry storm.
+class DenialReason extends Error {}
+
 function parse(input) {
   return typeof input.arguments==='string'?JSON.parse(input.arguments):input.arguments;
 }
@@ -79,18 +84,23 @@ export function guardChildTool(root,input,{agentId,agentRoot}) {
           const manifest=JSON.parse(readFileSync(dataPath(root,'output/runs',runId,'manifest.json'),'utf8'));
           const stage=stages[agentId];
           const dispatch=manifest.orchestration?.events?.filter(e=>e.type==='dispatched' && e.stage===stage).at(-1);
-          if(manifest.stages?.[stage]?.status!=='in_progress' || !dispatch?.['parent-session-id']) throw new Error('Active professional dispatch required');
+          if(!dispatch?.['parent-session-id']) throw new DenialReason(`No retained dispatch for ${stage}; the controller must dispatch this stage before it can write anything`);
+          const stageStatus=manifest.stages?.[stage]?.status;
+          if(stageStatus==='awaiting_confirmation') throw new DenialReason(`${stage} is waiting for the user to confirm the delivered version. Do not retry this action: if the user asks for changes, the controller records the revision and this stage becomes revision_requested, which reopens writes`);
+          if(stageStatus==='completed') throw new DenialReason(`${stage} was already confirmed and delivered. A delivered stage is not reopened by retrying: tell the controller the exact change the user asked for so it records a revision request, which turns this stage into revision_requested`);
+          if(!['in_progress','revision_requested'].includes(stageStatus)) throw new DenialReason(`${stage} is ${stageStatus ?? 'unplanned'}; only an in-progress dispatch or a user-requested revision may write. Report this state to the controller instead of retrying`);
           const common=['read_source','run_status','validate_artifacts','extract_word','diagnose_task','run_stage_tool'];
           const own={api_execution:['api_task'],analysis:['api_task','generate_analysis','validate_analysis','diagnose_analysis','analysis_summary'],test_points:['api_task','draft_records','diagnose_test_points','export_test_points'],test_cases:['api_task','draft_records','diagnose_test_cases','export_test_cases'],execution:['browser_task','explore_url','prepare_execution_plan','validate_execution_prepare'],defects:['assess_evidence','normalize_defects'],report:['build_report_metrics','export_report']};
           const roleActions=platformActions[agentId] ?? own[stage];
-          if(![...common,...roleActions].includes(args.qa_request.action) || (args.qa_request.stage!==undefined && args.qa_request.stage!==stage)) throw new Error('Action belongs to another role; use this stage catalog');
+          if(![...common,...roleActions].includes(args.qa_request.action) || (args.qa_request.stage!==undefined && args.qa_request.stage!==stage)) throw new DenialReason(`${args.qa_request.action} is not a ${stage} action. Allowed here: ${[...common,...roleActions].join(', ')}. To read one action's field rules run the CLI itself: node scripts/project-action.mjs catalog --action=<name> — catalog is a CLI subcommand, never a qa_request action`);
           if(args.qa_request.action==='api_task' && stage!=='api_execution' && args.qa_request.operation?.type!=='inspect_contract') throw new Error('Design roles may only inspect API contracts');
           prepareInlineAction(root,args,{runId,parentSession:dispatch['parent-session-id']});
         }
         return {};
       }
-    } catch(error) {return {decision:'deny',reason:`QA shell redirect: This command was NOT executed. ${error.message}. Correct the structured request without user unlock.`};}
-    return {decision:'deny',reason:'QA shell redirect: This command was NOT executed. Use read_file with the supplied absolute engine/run paths for inspection; for test data lengths and integer money use diagnose_test_cases after saving the draft and task summary. Use the structured project-action entry for supported work. Correct the tool choice and continue without user approval, nested shells, helper scripts or repeated unchanged attempts.'};
+    } catch(error) {return {decision:'deny',reason:`QA shell redirect: This command was NOT executed. ${error.message}${error instanceof DenialReason?'':' Correct the structured request without user unlock.'}`};}
+    const diagnoseAction={analysis:'diagnose_analysis',test_points:'diagnose_test_points',test_cases:'diagnose_test_cases'}[stages[agentId]] ?? 'diagnose_task';
+    return {decision:'deny',reason:`QA shell redirect: This command was NOT executed. No shell pipelines, ls/grep/find or helper scripts. Inspect a single file with read_file at the supplied absolute path; see what a stage produced with run_status; read one action's field rules with node scripts/project-action.mjs catalog --action=<name>; confirm draft counts and integer money with ${diagnoseAction} after saving the draft and task summary. Use the structured project-action entry for supported work. Continue without user approval, and never repeat an unchanged command.`};
   }
   if(!['write_file','edit_file','apply_patch'].includes(input.tool_name)) return {};
   try {

@@ -40,6 +40,9 @@ export function summarizeRun(raw, runId) {
   const summary = { run_id: runId, manifest_sha256: createHash('sha256').update(raw).digest('hex'),
     recorded_status: manifest.status ?? null, derived_status: derived, consistency: issues.length ? 'review_required' : 'consistent', issues,
     scope: stages.filter(s => s.selected).map(s => s.id), stages,
+    // The run's registered deliverables, in manifest order. This is what a child needs instead of
+    // listing directories: `ls`/`grep` are not permitted shells, and read_file cannot enumerate.
+    artifacts: (manifest.artifacts ?? []).slice(),
     workflow_closed: !issues.length && !unfinished.length,
     next_action: issues.length ? 'review_manifest_inconsistency' : focus?.next_action ?? 'review_deliverables',
     focus_stage: focus?.id ?? null,

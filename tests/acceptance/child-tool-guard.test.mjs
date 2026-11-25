@@ -35,7 +35,6 @@ test('malformed action CLI is denied before execution, never recorded as a faile
     'node scripts/project-action.mjs execute --request=output/action-requests/a.json',
     'node scripts/project-action.mjs execute --controller-session=session-parent',
     'node scripts/project-action.mjs execute --controller-session=session-parent --request=a.json --request=b.json',
-    'node scripts/project-action.mjs catalog --stage=execution',
     'node scripts/project-action.mjs summary',
     'node scripts/project-action.mjs execute --controller-session=session-parent --request="a.json',
     'node scripts/project-action.mjs execute --controller-session=session-parent --request=a.json; echo wrong'
@@ -51,6 +50,28 @@ test('malformed action CLI is denied before execution, never recorded as a faile
   }
   assert.equal(parseActionInvocation('node "E:/engine space/scripts/project-action.mjs" execute --request="output/action-requests/a.json" --controller-session=session-parent').options.request,'output/action-requests/a.json');
   assert.equal(parseActionInvocation('node scripts/project-action.mjs catalog').action,'catalog');
+  // Filtered catalog is the only way a child can read one action's field rules without pulling the
+  // whole contract (59k, truncated) — the CLI already supported it; the contract must not block it.
+  assert.equal(parseActionInvocation('node scripts/project-action.mjs catalog --action=draft_records').options.action,'draft_records');
+  assert.equal(parseActionInvocation('node scripts/project-action.mjs catalog --stage=test_points').options.stage,'test_points');
+});
+
+test('a user-requested revision reopens the retained child; a delivered stage stays closed',()=>{
+  const f=fixture(),options={agentId:'test_point_agent',agentRoot:f.agentRoot};
+  const manifest=status=>JSON.stringify({stages:{test_points:{status}},orchestration:{events:[{type:'dispatched',stage:'test_points','parent-session-id':'session-parent'}]}});
+  const input={tool_name:'exec_command',session_id:f.session_id,arguments:{cmd:'node scripts/project-action.mjs execute --controller-session=session-parent --request=output/action-requests/rev.json',qa_request:{action:'draft_records',run_id:'run-a',stage:'test_points',operation:{type:'inspect'}}}};
+  writeFileSync(resolve(f.root,'output/runs/run-a/manifest.json'),manifest('revision_requested'));
+  assert.deepEqual(guardChildTool(f.root,input,options),{});
+  writeFileSync(resolve(f.root,'output/runs/run-a/manifest.json'),manifest('completed'));
+  const delivered=guardChildTool(f.root,input,options);
+  assert.equal(delivered.decision,'deny');
+  assert.match(delivered.reason,/revision request/);
+  // The old suffix sent the model back to reword the request, the one action that cannot work.
+  assert.doesNotMatch(delivered.reason,/Correct the structured request/);
+  writeFileSync(resolve(f.root,'output/runs/run-a/manifest.json'),manifest('awaiting_confirmation'));
+  const pending=guardChildTool(f.root,input,options);
+  assert.equal(pending.decision,'deny');
+  assert.match(pending.reason,/waiting for the user to confirm/);
 });
 
 function fixture() {

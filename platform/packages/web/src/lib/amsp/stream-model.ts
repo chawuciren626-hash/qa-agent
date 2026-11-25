@@ -2233,17 +2233,34 @@ function moveToSpawningCard(
   sub: StreamModel,
   prompt: string,
 ): void {
-  const from = model.items.find(
-    (item): item is ToolCallItem =>
-      item.kind === "tool_call" && item.subagentSessionId === sessionId,
-  );
-  if (!from) return;
+  const from =
+    model.items.find(
+      (item): item is ToolCallItem =>
+        item.kind === "tool_call" && item.subagentSessionId === sessionId,
+    ) ?? null;
+  // A background launch's card completes before its child's first prompt streams in, so bindSubagent
+  // found no open card and appended the child standalone — with no agentId and no description, which
+  // is why the graph shows a bare session id. Reconciling it onto its real card is the only moment
+  // the panel can learn who the child is and what it was asked to do.
+  const standaloneIndex =
+    from === null
+      ? model.items.findIndex((item) => item.kind === "subagent" && item.sessionId === sessionId)
+      : -1;
+  if (from === null && standaloneIndex < 0) return;
   const target = spawningCard(model, sessionId, prompt, sub.meta);
   if (target === null || target === from) return;
   const displacedId = target.subagentSessionId;
   const displaced = target.subagent;
   target.subagent = sub;
   target.subagentSessionId = sessionId;
+  if (from === null) {
+    // The card replaces the standalone item; whoever that card used to hold keeps a node of its own.
+    model.items.splice(standaloneIndex, 1);
+    if (displaced !== undefined && displacedId !== undefined) {
+      model.items.push({ kind: "subagent", id: nextId(model), sessionId: displacedId, model: displaced });
+    }
+    return;
+  }
   if (displaced !== undefined && displacedId !== undefined) {
     from.subagent = displaced;
     from.subagentSessionId = displacedId;

@@ -128,7 +128,10 @@ export function parseActionInvocation(command) {
     args.push(`--${flag[1]}=${flag[2] ?? flag[3] ?? flag[4]}`);
     rest=rest.slice(flag[0].length);
   }
-  const options=parseOptions(args,action==='execute'?['controller-session','request']:['controller-session']);
+  // catalog/help take the same filters project-action.mjs already implements (--action=, --stage=).
+  // Without them a child can only ask for the whole contract, whose output is large enough to be
+  // truncated — the field rules it needs then become unreachable and it falls back to grep.
+  const options=parseOptions(args,action==='execute'?['controller-session','request']:action==='summary'?['controller-session']:['controller-session','action','stage']);
   if(['execute','summary'].includes(action)) requireUsage(options['controller-session'],'Missing --controller-session=<parent-session>');
   if(action==='execute') requireUsage(options.request && !/^[\s]*[\[{]/.test(options.request),'Missing --request=<JSON-file>; use qa_request for the body');
   return {action,options};

@@ -39,6 +39,7 @@ import {
 } from "@prismshadow/penguin-ui";
 import { } from "../../api/endpoints";
 import { S } from "../../lib/strings";
+import { localizedAgent } from "../qa/stage-localization";
 import type { StreamModel } from "../../lib/amsp/stream-model";
 import type { PermissionPick } from "../../lib/permission-level";
 import { noteSessionSeen } from "../../lib/session-seen";
@@ -146,7 +147,10 @@ export function SubagentsView({
       return agent ? (agent.name?.length ? agent.name : agent.agentId) : session.agentId;
     }
     // Last-resort label is the short session id, not a generic word: two unknown children must stay distinguishable in the graph.
-    return resolveAgentLabel(node, agents, sessions) ?? shortSessionId(node.sessionId);
+    const resolved = resolveAgentLabel(node, agents, sessions);
+    // QA stage agents are registered under English ids (requirement_analysis_agent…) while every
+    // other surface names them by role; translate the id here rather than showing it raw.
+    return resolved === null ? shortSessionId(node.sessionId) : localizedAgent(resolved);
   };
 
   const isRoot = active !== null && active.origin.length === 0;
