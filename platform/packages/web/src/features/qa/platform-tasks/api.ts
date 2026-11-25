@@ -115,9 +115,11 @@ export function listTasks(projectId: string, includeTerminated = false): Promise
  * 全部项目的任务（列表页默认口径）。
  * 项目管理是独立模块：在里面点项目视图 / 环境 / 资料不会反向筛掉任务列表，
  * 所以列表按账号可访问的项目聚合，而不是按当前选中项目过滤。
+ * projectNames 由服务端随列表下发（项目配置名）：前端项目切换器未加载/缓存过期时，
+ * "所属项目"列仍显示名称而不是项目编号。
  */
-export function listAllTasks(includeTerminated = true): Promise<TaskListResponse & { projectIds: string[] }> {
-  return apiFetch<TaskListResponse & { projectIds: string[] }>(
+export function listAllTasks(includeTerminated = true): Promise<TaskListResponse & { projectIds: string[]; projectNames?: Record<string, string> }> {
+  return apiFetch<TaskListResponse & { projectIds: string[]; projectNames?: Record<string, string> }>(
     `/api/me/qa-platform-tasks${includeTerminated ? "?includeTerminated=true" : ""}`
   );
 }

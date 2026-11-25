@@ -16,7 +16,7 @@
  * 本地任务复用同一页面骨架（无平台资料板块）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useLocation, useNavigate, useParams } from "react-router";
 import { toastError, toastSuccess } from "@prismshadow/penguin-ui";
 import { useProject } from "../../../state/project";
 import {
@@ -159,8 +159,12 @@ function asPackageDetail(raw: Record<string, unknown> | null | undefined): Packa
 export function PlatformTaskDetailPage() {
   const { taskId } = useParams<{ taskId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const { currentProject } = useProject();
-  const projectId = currentProject?.projectId ?? null;
+  // 项目作用域：优先 URL 显式参数（跨项目列表点击"查看"时随链接带入），其次全局
+  // 当前项目。不再单纯依赖项目切换器状态——切换器未加载/缓存过期时详情页仍能打开。
+  const queryProjectId = new URLSearchParams(location.search).get("projectId");
+  const projectId = queryProjectId || currentProject?.projectId || null;
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [loadError, setLoadError] = useState("");
   const [analyzing, setAnalyzing] = useState(false);

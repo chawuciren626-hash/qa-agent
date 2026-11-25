@@ -436,6 +436,11 @@ export interface QaPlatformTaskGlobalDeps {
   db: PlatformTaskDb;
   /** 用户名下（拥有 + 被授权）的项目 id；跨项目查询的唯一作用域来源。 */
   accessibleProjectIds: (userId: string) => string[];
+  /**
+   * 项目显示名（projectConfig.getName）。跨项目列表按 id 聚合，前端项目切换器可能尚未
+   * 加载或缓存过期——由服务端随列表一并给出名称，避免"所属项目"列回落成项目编号。
+   */
+  projectName?: (projectId: string) => Promise<string | undefined>;
 }
 
 export function qaPlatformTasksGlobalRoutes(deps: QaPlatformTaskGlobalDeps): Hono<AppEnv> {
@@ -446,7 +451,12 @@ export function qaPlatformTasksGlobalRoutes(deps: QaPlatformTaskGlobalDeps): Hon
     const userId = c.var.user.userId;
     const includeTerminated = c.req.query("includeTerminated") === "true";
     const projectIds = deps.accessibleProjectIds(userId);
-    return c.json({ ...svc.listAcrossProjects(projectIds, includeTerminated), projectIds });
+    const projectNames: Record<string, string> = {};
+    if (deps.projectName) {
+      const names = await Promise.all(projectIds.map(async (id) => [id, await deps.projectName!(id)] as const));
+      for (const [id, name] of names) if (name) projectNames[id] = name;
+    }
+    return c.json({ ...svc.listAcrossProjects(projectIds, includeTerminated), projectIds, projectNames });
   });
   return app;
 }

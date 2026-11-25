@@ -77,6 +77,8 @@ export function PlatformTasksPage() {
   const [starting, setStarting] = useState<string | null>(null);
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
   const [retestTarget, setRetestTarget] = useState<TaskListItem | null>(null);
+  /** 服务端随列表下发的项目名（项目切换器未加载/缓存过期时的权威名称来源）。 */
+  const [serverProjectNames, setServerProjectNames] = useState<Record<string, string>>({});
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -84,6 +86,7 @@ export function PlatformTasksPage() {
       const data = await listAllTasks(true);
       setItems(data.items);
       setCounts(data.counts);
+      setServerProjectNames(data.projectNames ?? {});
       setLoadError("");
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "加载测试任务失败，请重试");
@@ -96,8 +99,9 @@ export function PlatformTasksPage() {
     void reload();
   }, [reload]);
 
-  /** 所属项目名：优先项目管理里的项目名，缺失时回落项目 id（不隐藏任务）。 */
+  /** 所属项目名：服务端下发名 → 项目切换器里的名 → 项目 id（不隐藏任务）。 */
   const projectNameOf = (projectId: string) => {
+    if (serverProjectNames[projectId]) return serverProjectNames[projectId];
     const found = projects.find((p) => p.projectId === projectId);
     return found ? projectDisplayName(found) : projectId;
   };
@@ -106,7 +110,7 @@ export function PlatformTasksPage() {
     const known = projects.map((p) => ({ id: p.projectId, name: projectDisplayName(p) }));
     const extra = [...new Set(items.map((i) => i.projectId))]
       .filter((id) => !known.some((k) => k.id === id))
-      .map((id) => ({ id, name: id }));
+      .map((id) => ({ id, name: serverProjectNames[id] ?? id }));
     return [...known, ...extra].sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
   })();
 
@@ -132,17 +136,18 @@ export function PlatformTasksPage() {
     if (currentProject?.projectId !== projectId) setCurrentProjectId(projectId);
   };
 
-  /** 查看：任务档案详情全页（浏览器前进后退/链接分享可用）。 */
+  /** 查看：任务档案详情全页。projectId 显式随查询参数传递——详情页不再依赖
+   * 全局"当前项目"（切换器未加载/缓存过期时也能打开）。 */
   const openDetail = (task: TaskListItem) => {
     focusProject(task.projectId);
-    navigate(`/qa/project/platform-tasks/${encodeURIComponent(task.id)}`);
+    navigate(`/qa/project/platform-tasks/${encodeURIComponent(task.id)}?projectId=${encodeURIComponent(task.projectId)}`);
   };
 
   /** 任务详情：进入该任务的阶段工作台（需求分析→…→测试报告）。 */
   const openStagePage = (task: TaskListItem) => {
     if (!task.mainSessionId) return;
     focusProject(task.projectId);
-    navigate(`/qa/project/tasks/${encodeURIComponent(task.mainSessionId)}`);
+    navigate(`/qa/project/tasks/${encodeURIComponent(task.mainSessionId)}?projectId=${encodeURIComponent(task.projectId)}`);
   };
 
   const doAnalyze = async (task: TaskListItem) => {

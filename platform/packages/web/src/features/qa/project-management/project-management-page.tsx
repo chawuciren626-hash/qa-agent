@@ -165,7 +165,7 @@ export function ProjectManagementPage() {
     if (pageSize !== 20) params.set("pageSize", String(pageSize));
     if (detailId) params.set("detail", detailId);
     const qs = params.toString();
-    window.history.replaceState(null, "", `${location.pathname}${qs ? `?${qs}` : ""}`);
+    window.history.replaceState(null, "", `${window.location.pathname}${qs ? `?${qs}` : ""}`);
   }, [keyword, sourceType, status, sort, page, pageSize, detailId, location.pathname]);
 
   /* 卸载时保存筛选/页码/滚动位置（B→A 返回恢复）。 */
@@ -259,13 +259,17 @@ export function ProjectManagementPage() {
     }
   }, [navigate, setCurrentProjectId]);
 
-  /** 去项目内资产页（视图/环境/资料）：先按同一套校验进入项目，再切路由。 */
+  /**
+   * 去项目内资产页（视图/环境/资料）：先切上下文并跳转，再后台校验 /enter。
+   * 导航不等待校验——历史上 /enter 失败（项目行来自迁移、目录/配置缺失等）会让点击
+   * 完全无反应；现在页面一定打开，服务端拒绝时以 toast 明确告知。
+   */
   const openProjectRoute = useCallback(async (project: ManagedProject, path: string) => {
     setEnteringId(project.projectId);
+    setCurrentProjectId(project.projectId);
+    navigate(path);
     try {
       await enterProject(project.projectId);
-      setCurrentProjectId(project.projectId);
-      navigate(path);
     } catch (e) {
       toastError(e instanceof Error ? e.message : "进入项目失败，请重试");
     } finally {

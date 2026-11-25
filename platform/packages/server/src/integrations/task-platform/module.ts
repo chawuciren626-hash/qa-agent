@@ -22,8 +22,10 @@ import {
 import type { ClassCtx, Opaque } from "@prismshadow/penguin-core/kernel";
 import type { Hono } from "hono";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
-import type { Db } from "../../hmr/capabilities.js";
+import type { Db, Paths } from "../../hmr/capabilities.js";
 import type { AppEnv } from "../../auth/middleware.js";
 import type { Settings } from "../../mechanisms/settings.js";
 import type { Users } from "../../mechanisms/identity.js";
@@ -151,6 +153,7 @@ export abstract class TaskPlatformSchedulerProvider {
 @Component()
 export class TaskPlatformRuntime implements TaskPlatformSchedulerProvider {
   @Use() private readonly db!: Db;
+  @Use() private readonly paths!: Paths;
   @Use() private readonly settings!: Settings;
   @Use() private readonly storeHolder!: TaskPlatformRepository;
   @Use() private readonly bridgeHolder!: TaskPlatformBridgeProvider;
@@ -179,6 +182,52 @@ export class TaskPlatformRuntime implements TaskPlatformSchedulerProvider {
       RUNTIME_USERS_REF.list().map(u => ({ userId: u.userId, displayName: u.displayName || u.userId, isAdmin: u.isAdmin }));
     if (this.settings.get("task_platform_autostart") !== "0") this.scheduler.start();
     effect(() => this.scheduler?.stop());
+    // 同步项目自愈（幂等）：历史迁移/旧版本创建的行可能在服务端数据根缺项目目录或
+    // .project_config.toml——表现为项目名回落成 sync_ 编号、项目视图/资料页加载不出。
+    // 按产品线展示名补建目录与名称配置（已有配置不覆盖），随后启动即可用。
+    this.repairSyncProjects();
+  }
+
+  /**
+   * 同步项目自愈：为 source_type='sync' 的项目补建目录与显示名配置。
+   * 名称来源优先级：task_platform_project_links.display_name（产品线名）→
+   * project_management.description 里的"产品线：xxx" → project_id 兜底。
+   * 只补缺（目录/配置文件不存在时），不改写已有配置，不触碰手工项目。
+   */
+  private repairSyncProjects(): void {
+    const db = this.db as unknown as import("node:sqlite").DatabaseSync;
+    let rows: Array<{ id: string; display_name: string | null; description: string | null }>;
+    try {
+      rows = db
+        .prepare(
+          `SELECT p.project_id AS id, l.display_name AS display_name, m.description AS description
+             FROM projects p
+             JOIN project_management m ON m.project_id = p.project_id
+             LEFT JOIN task_platform_project_links l ON l.project_id = p.project_id
+            WHERE m.source_type = 'sync'`,
+        )
+        .all() as Array<{ id: string; display_name: string | null; description: string | null }>;
+    } catch {
+      return; // 迁移前的旧库可能没有相关表：静默跳过
+    }
+    for (const row of rows) {
+      try {
+        const dir = path.join(this.paths.root, row.id);
+        fs.mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, ".project_config.toml");
+        if (fs.existsSync(file)) continue;
+        const fromDescription = /产品线[：:]\s*([^)）]+)/.exec(row.description ?? "")?.[1]?.trim();
+        const name = (row.display_name || fromDescription || row.id).trim();
+        const escaped = name.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        fs.writeFileSync(file, `name = "${escaped}"\n`, { encoding: "utf8", mode: 0o600 });
+      } catch (error) {
+        console.error(
+          "[task-platform] sync project repair skipped:",
+          row.id,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
   }
 
   getScheduler(): Opaque<"IngestionScheduler", IngestionScheduler> {

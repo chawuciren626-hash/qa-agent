@@ -88,6 +88,7 @@ import type {
 
 /** What this route group reaches — bound by its module (src/modules). */
 export interface SessionsRouteDeps {
+  localExecution?: import("../../services/local-execution-runtime.js").LocalExecutionRuntime;
   inheritPublication?: (projectId: string, agentId: string, sessionId: string, parentSessionId: string) => Promise<void>;
   db: KnowledgeDb;
   agentConfigService: AgentConfig;
@@ -749,11 +750,14 @@ export function agentSessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
       ["cli"] as const,
     );
     let workspace = optionalString(body, "workspace", { minLen: 1, label: "workspace" });
+    const execution = deps.localExecution?.identity(c.req.raw.headers);
+    if (workspace !== undefined && execution) throw new HttpError(400, "desktop_workspace_managed", "桌面会话使用本机安装配置中的工作区，请清空服务器工作区选项");
     if (workspace !== undefined) {
       // An explicitly specified Workspace must be an existing directory (never auto-created); reachability is determined by file permissions.
       workspace = await assertWorkspaceAllowed({ workspace });
     }
     const session = await deps.sessionService.createSession({
+      ...(execution ? { execution } : {}),
       projectId,
       agentId,
       userId: c.var.user.userId,
@@ -842,6 +846,7 @@ export function meSessionIndexRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
 /** Session-level entry point: /api/sessions/:sessionId/*. */
 export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+  if (deps.localExecution) app.route("/local-execution", deps.localExecution.routes());
 
   /** Look up ownership and check access (404 if the index has no such Session, or access is denied — never leaking existence). */
   const resolveSession = (c: Context<AppEnv>): SessionRow => {
@@ -1225,6 +1230,7 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
 
   app.post("/:sessionId/tasks", async (c) => {
     const row = resolveSession(c);
+    deps.localExecution?.assertRequest(row.sessionId, c.var.user.userId, deps.localExecution.identity(c.req.raw.headers));
     const projectState = deps.db.prepare("SELECT status FROM project_management WHERE project_id=?").get(row.projectId) as { status?: string } | undefined;
     if (projectState && projectState.status !== "active") throw new HttpError(409, "project_inactive", "项目已归档或停用，无法执行任务");
     const body = await readJson(c);
@@ -1972,6 +1978,7 @@ export class SessionApiRoutes {
     const sessionsRepo = this.sessionsRepo;
     const channels = this.channels as ChannelHub;
     const sessionsDeps = {
+      localExecution: this.authState.localExecution,
       inheritPublication: async (projectId: string, agentId: string, sessionId: string, parentSessionId: string) => {
         await this.authState.accountClient?.resolvePinnedDefinition(projectId, agentId, sessionId, parentSessionId);
       },
@@ -2062,6 +2069,8 @@ export class SessionApiRoutes {
     this.qaPlatformTasksRoutes = qaPlatformTasksGlobalRoutes({
       db: this.db,
       accessibleProjectIds: (userId) => access.accessibleProjectIds(userId),
+      // 名称随列表下发：前端项目切换器未加载/缓存过期时"所属项目"列仍显示名称而非编号
+      projectName: (projectId) => projectConfigService.getName(projectId),
     });
     this.agentConfigRoutes = agentConfigRoutes({
       agentConfigService,
