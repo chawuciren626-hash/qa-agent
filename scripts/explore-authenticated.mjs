@@ -184,7 +184,35 @@ async function discoverLoginConfig() {
   return validateLoginConfig(built);
 }
 
-const browser = await chromium.launch({ channel: process.env.QA_BROWSER_CHANNEL ?? 'chrome', headless: true });
+/**
+ * 拉起浏览器：默认用 Playwright 自带 chromium（安装目录 runtime/tools/browsers，
+ * 由 PLAYWRIGHT_BROWSERS_PATH 指过去）；显式 QA_BROWSER_CHANNEL 时用它；两者都失败
+ * 再退回系统 chrome。旧实现硬编码 channel:'chrome'——只装了 Playwright 浏览器、
+ * 没装系统 Chrome 的机器直接报 "Chromium distribution 'chrome' is not found"。
+ */
+async function launchExploreBrowser() {
+  const explicit = process.env.QA_BROWSER_CHANNEL;
+  const attempts = explicit
+    ? [{ headless: true, channel: explicit }]
+    : [{ headless: true }, { headless: true, channel: 'chrome' }];
+  let lastError = null;
+  for (const options of attempts) {
+    try {
+      return await chromium.launch(options);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  const hint = process.env.PLAYWRIGHT_BROWSERS_PATH
+    ? `（PLAYWRIGHT_BROWSERS_PATH=${process.env.PLAYWRIGHT_BROWSERS_PATH}）`
+    : "（未设置 PLAYWRIGHT_BROWSERS_PATH）";
+  throw new Error(
+    `无法启动浏览器${hint}：内置 chromium 与系统 chrome 均不可用。` +
+    `请确认安装目录 runtime/tools/browsers 存在，或执行 npx playwright install chromium。` +
+    `原始错误：${lastError instanceof Error ? lastError.message : String(lastError)}`,
+  );
+}
+const browser = await launchExploreBrowser();
 emit('step', { index: 2, name: '拉起浏览器', status: 'done', detail: '无头浏览器已启动' });
 const context = await browser.newContext({
   viewport: { width: 1440, height: 900 },

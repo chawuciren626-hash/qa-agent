@@ -1523,6 +1523,52 @@ export class ProjectConfigService implements ProjectConfigStore {
     }
   }
 
+  /**
+   * 一次性视觉补全（本项目 vision_model，缺省回退默认模型）：给一张图 + 一句提示，
+   * 返回模型纯文本。用于探索验证码自动识别等"无会话"的读图任务。
+   * 任何失败都返回 `{ok:false}`（无视觉模型/模型拒绝/超时），调用方须能退回人工。
+   */
+  async completeVisionOnce(
+    projectId: string,
+    prompt: string,
+    imageDataUrl: string,
+    opts?: { maxTokens?: number; requestTimeoutMs?: number },
+  ): Promise<UtilityCompletion> {
+    const global = await this.globalModelBlock(projectId);
+    const useGlobal = global !== undefined && asArray(global.models).length > 0;
+    const raw = useGlobal ? global! : await this.readRaw(projectId);
+    // 优先 vision_model；未配置时退回默认模型（若它不支持视觉，调用会失败并如实返回）
+    const ref = optRef(raw.vision_model) ?? (useGlobal ? firstModelRef(raw) : optRef(raw.default_model));
+    if (ref === undefined) {
+      return { ok: false, cause: "no_model", error: "the Project names no vision/default model" };
+    }
+    const entry = asArray(raw.models).find((m) => entryMatches(m, ref.provider, ref.model_id));
+    if (entry === undefined) {
+      return {
+        ok: false,
+        cause: "no_model",
+        error: `the model ${ref.provider}/${ref.model_id} has no entry in the Project config`,
+      };
+    }
+    try {
+      const llm = new GenerativeModel({
+        ...utilityCompletionConfig(ref.model_id, entry, providerTableOf(raw)[ref.provider]),
+        ...(opts?.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
+        ...(opts?.requestTimeoutMs !== undefined ? { requestTimeoutMs: opts.requestTimeoutMs } : {}),
+        ...this.requestApiKeyResolver(projectId, ref.provider, ref.model_id),
+      });
+      return await collectUtilityCompletion(
+        llm.streamGenerate({ newMessages: [userText(prompt), imageUrlMessage(imageDataUrl)] }),
+      );
+    } catch (err) {
+      return {
+        ok: false,
+        cause: "failed",
+        error: (err instanceof Error ? err.message : String(err)).slice(0, MAX_FAILURE_DETAIL),
+      };
+    }
+  }
+
   async testModel(projectId: string, req: ModelTestRequest): Promise<ModelTestResponse> {
     const raw = await this.readRaw(projectId);
     // Testable even if the model isn't in the config yet (validate before saving when adding a custom model): in that case all parameters come from the request body.

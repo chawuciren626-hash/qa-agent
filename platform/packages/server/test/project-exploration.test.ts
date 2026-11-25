@@ -310,6 +310,36 @@ describe("exploration dispatch", () => {
     await waitForStatus(deps, projectId, (view) => view?.status === "succeeded");
   });
 
+  it("auto-solves the captcha through the vision solver before parking for a human", async () => {
+    const projectId = await projectWithRegisteredEnv();
+    const answers: string[] = [];
+    let release!: () => void;
+    const run: ExplorationRun = (input) => {
+      let resolve!: (value: { ok: boolean; error: string | null }) => void;
+      const done = new Promise<{ ok: boolean; error: string | null }>((r) => { resolve = r; });
+      void (async () => {
+        const captcha = path.join(input.outDir, "shots", "captcha.png");
+        await fs.mkdir(path.dirname(captcha), { recursive: true });
+        await fs.writeFile(captcha, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+        input.onEvent({ kind: "captcha", status: "waiting", path: captcha, strategies: ["test_bypass_code"] });
+        release = () => resolve({ ok: true, error: null });
+      })();
+      return {
+        done,
+        answer: async (answer: string) => { answers.push(answer); },
+        abort: () => resolve({ ok: false, error: "操作员中止" }),
+      };
+    };
+    const deps = depsOf(projectId, { run, merge: mapsFixture, solveCaptcha: async () => "8k3d" });
+    startExploration(deps, projectId, "test", {});
+    // 视觉识别成功后：答案自动回填，轮次从 waiting_human 拉回 running（不需要人工）
+    const solved = await waitForStatus(deps, projectId, (view) => view?.status === "running" && answers.length > 0);
+    expect(answers).toEqual(["8k3d"]);
+    expect(solved.status).toBe("running");
+    release();
+    await waitForStatus(deps, projectId, (view) => view?.status === "succeeded");
+  });
+
   it("rejects a second dispatch while one is running", async () => {
     const projectId = await projectWithRegisteredEnv();
     let release!: () => void;

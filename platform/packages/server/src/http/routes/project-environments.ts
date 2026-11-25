@@ -64,6 +64,35 @@ export interface ProjectEnvironmentDeps {
   explorationMerge?: ExplorationMerge;
   /** 项目默认模型的一次性补全（探索后 LLM 知识分析走它）；unset 时摘要如实说明未配置。 */
   completeOnce?: (projectId: string, prompt: string, opts?: { maxTokens?: number; requestTimeoutMs?: number }) => Promise<UtilityCompletion>;
+  /** 一次性视觉补全（探索验证码自动识别走本项目 vision_model）；unset 时退回人工确认。 */
+  completeVision?: (projectId: string, prompt: string, imageDataUrl: string, opts?: { maxTokens?: number; requestTimeoutMs?: number }) => Promise<UtilityCompletion>;
+}
+
+/**
+ * 验证码视觉识别器：读探索脚本落盘的 captcha.png → 项目 vision_model 读图 → 只取
+ * 数字/字母答案（≤8 位）。识别失败/模型未配置返回 null，调用方保持人工确认流程。
+ */
+const CAPTCHA_VISION_PROMPT =
+  "这是一张登录页验证码图片。只输出验证码字符本身（数字或字母，不含空格与解释）；无法辨认时输出空字符串。";
+function captchaVisionSolver(
+  projectId: string,
+  completeVision: NonNullable<ProjectEnvironmentDeps["completeVision"]>,
+): (imagePath: string) => Promise<string | null> {
+  return async (imagePath: string): Promise<string | null> => {
+    try {
+      const bytes = await readFile(imagePath);
+      const dataUrl = `data:image/png;base64,${bytes.toString("base64")}`;
+      const result = await completeVision(projectId, CAPTCHA_VISION_PROMPT, dataUrl, {
+        maxTokens: 16,
+        requestTimeoutMs: 20_000,
+      });
+      if (!result.ok) return null;
+      const answer = result.text.replace(/[^0-9A-Za-z]/g, "").slice(0, 8);
+      return answer || null;
+    } catch {
+      return null;
+    }
+  };
 }
 
 export function projectEnvironmentsRoutes(deps: ProjectEnvironmentDeps): Hono<AppEnv> {
@@ -96,6 +125,11 @@ export function projectEnvironmentsRoutes(deps: ProjectEnvironmentDeps): Hono<Ap
     llmAnalysis: deps.completeOnce
       ? explorationKnowledgeAnalysis({ db: deps.db, completeOnce: deps.completeOnce })
       : null,
+    // 验证码自动识别：探索脚本把验证码截图落盘 → 服务端用项目 vision_model 读图回填，
+    // 不再默认把图片甩给人工确认（未配置视觉模型/识别失败才退回人工）。
+    solveCaptcha: deps.completeVision
+      ? captchaVisionSolver(projectId, deps.completeVision)
+      : undefined,
   });
 
   app.get("/", async (c) => {

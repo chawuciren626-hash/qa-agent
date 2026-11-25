@@ -151,6 +151,11 @@ export interface ExplorationDeps {
   knowledgeSync?: ExplorationKnowledgeSync | null;
   /** 探索成功后的 LLM 项目知识分析（项目默认模型）；缺省/未配置模型时摘要里如实说明。 */
   llmAnalysis?: ExplorationKnowledgeAnalysis | null;
+  /**
+   * 验证码自动识别：给验证码截图路径，返回答案（识别失败/未配置返回 null）。
+   * 配置后探索遇到图形验证码会先自动读图回填，不成才落人工确认。
+   */
+  solveCaptcha?: (imagePath: string) => Promise<string | null>;
 }
 
 export interface ExplorationMergeInput {
@@ -193,6 +198,8 @@ interface LiveJob {
   captchaPath: string | null;
   strategies: string[];
   finalizing?: boolean;
+  /** 正在自动识别验证码（防止同一张图重复调用视觉模型）。 */
+  autoSolving?: boolean;
 }
 const jobs = new Map<string, LiveJob>();
 
@@ -297,7 +304,7 @@ export function startExploration(
       sessionFile,
       configFile: loginConfig ? path.join(outDir, "login-config.json") : null,
       credsFile: path.join(outDir, "credentials.json"),
-      onEvent: (event) => recordEvent(deps.db, explorationId, job, event),
+      onEvent: (event) => recordEvent(deps, projectId, explorationId, job, event),
     });
   } catch (error) {
     finishExploration(deps, projectId, env, explorationId, {
@@ -483,7 +490,14 @@ function parseSteps(raw: string | null): ExplorationStep[] {
   });
 }
 
-function recordEvent(db: Db, explorationId: string, job: LiveJob, event: ExplorationEvent): void {
+function recordEvent(
+  deps: ExplorationDeps,
+  projectId: string,
+  explorationId: string,
+  job: LiveJob,
+  event: ExplorationEvent,
+): void {
+  const db = deps.db;
   try {
     if (event.kind === "step") {
       const row = db.prepare(`${SELECT} WHERE exploration_id=?`).get(explorationId) as unknown as ExplorationRow | undefined;
@@ -510,6 +524,33 @@ function recordEvent(db: Db, explorationId: string, job: LiveJob, event: Explora
       if (status) {
         db.prepare("UPDATE qa_environment_explorations SET status=?, updated_at=? WHERE exploration_id=?")
           .run(status, new Date().toISOString(), explorationId);
+      }
+      // 脚本本地策略链（测试码/算术识别）拿不下、落人工等待时：先用项目 vision_model
+      // 自动读图回填；识别成功则把轮次从 waiting_human 拉回 running，不再要求人工。
+      // 未配置视觉模型/识别失败/回填失败 → 保持人工确认，行为与原来一致。
+      if (event.status === "waiting" && event.path && deps.solveCaptcha && !job.autoSolving) {
+        job.autoSolving = true;
+        const imagePath = event.path;
+        void (async () => {
+          try {
+            const answer = await deps.solveCaptcha!(imagePath);
+            if (!answer) return; // 保留人工等待
+            await job.handle.answer(answer);
+            db.prepare(
+              "UPDATE qa_environment_explorations SET status='running', updated_at=? WHERE exploration_id=? AND status='waiting_human'",
+            ).run(new Date().toISOString(), explorationId);
+            recordEvent(deps, projectId, explorationId, job, {
+              kind: "captcha",
+              status: "auto_solved",
+              strategies: ["vision_model"],
+              path: imagePath,
+            });
+          } catch {
+            // 自动识别失败不是错误：人工确认入口仍然有效。
+          } finally {
+            job.autoSolving = false;
+          }
+        })();
       }
     }
   } catch {

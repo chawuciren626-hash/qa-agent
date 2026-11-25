@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import type {
   ProjectCreateResponse,
   ProjectUpdateResponse,
+  ProjectSummary,
   ProjectsResponse,
 } from "../../api/types.js";
 import type { AppEnv } from "../../auth/middleware.js";
@@ -24,7 +25,8 @@ import { membersRoutes } from "./members.js";
 import type { ProjectLifecycle } from "../../mechanisms/projects.js";
 import type { Machines } from "../../machines/service.js";
 import type { Db } from "../../hmr/capabilities.js";
-import type { ProjectRuns } from "../../services/project-service.js";
+import { userAssistantProjectId, type ProjectRuns } from "../../services/project-service.js";
+import { qaEnabled } from "../../services/qa-engine.js";
 import { managedProjectsRoutes } from "./managed-projects.js";
 import { projectEnvironmentsRoutes } from "./project-environments.js";
 
@@ -39,6 +41,8 @@ export interface ProjectsRouteDeps {
   machines: Pick<Machines, "syncConfigEverywhere">;
   /** 项目默认模型的一次性补全（探索后 LLM 知识分析走它）；unset 时摘要如实说明未配置。 */
   completeOnce?: (projectId: string, prompt: string, opts?: { maxTokens?: number; requestTimeoutMs?: number }) => Promise<UtilityCompletion>;
+  /** 一次性视觉补全（探索验证码自动识别走项目 vision_model）；unset 时退回人工。 */
+  completeVision?: (projectId: string, prompt: string, imageDataUrl: string, opts?: { maxTokens?: number; requestTimeoutMs?: number }) => Promise<UtilityCompletion>;
 }
 
 export function projectsRoutes(deps: ProjectsRouteDeps): Hono<AppEnv> {
@@ -51,12 +55,35 @@ export function projectsRoutes(deps: ProjectsRouteDeps): Hono<AppEnv> {
       root: deps.root,
       engineRoot: process.env.AITEST_ENGINE_ROOT,
       completeOnce: deps.completeOnce,
+      completeVision: deps.completeVision,
     }));
   }
 
   app.get("/", async (c) => {
-    const projects = await deps.projectService.listProjects(c.var.user.userId);
-    return c.json({ projects } satisfies ProjectsResponse);
+    const user = c.var.user;
+    let assistantProject: ProjectSummary | undefined;
+    if (qaEnabled && deps.db) {
+      const id = userAssistantProjectId(user.userId);
+      const existing = deps.db.prepare("SELECT purpose FROM project_management WHERE project_id=?").get(id) as { purpose: string | null } | undefined;
+      if (!existing) {
+        try {
+          await deps.projectService.createProject(user, id, "测试助手");
+        } catch (error) {
+          // Concurrent first reads may both try to provision the same runtime.
+          if (!(error instanceof Error && "code" in error && error.code === "project_exists")) throw error;
+        }
+        deps.db.prepare("INSERT OR IGNORE INTO project_management (project_id,purpose) VALUES (?,?)").run(id, "internal");
+      } else if (existing.purpose !== "internal") {
+        throw new Error(`Assistant runtime id is already used by a business project: ${id}`);
+      }
+      assistantProject = (await deps.projectService.listProjects(user.userId)).find((p) => p.projectId === id);
+    }
+    const projects = (await deps.projectService.listProjects(user.userId)).filter((p) => {
+      if (!deps.db) return p.projectId !== assistantProject?.projectId;
+      const meta = deps.db.prepare("SELECT purpose FROM project_management WHERE project_id=?").get(p.projectId) as { purpose: string | null } | undefined;
+      return meta?.purpose !== "internal";
+    });
+    return c.json({ projects, ...(assistantProject ? { assistantProject } : {}) } satisfies ProjectsResponse);
   });
 
   app.post("/", async (c) => {
@@ -127,6 +154,7 @@ export class ProjectAdminRoutes {
       root: this.paths.root,
       machines: this.machines,
       completeOnce: (projectId, prompt, opts) => this.projectConfig.completeOnce(projectId, prompt, opts),
+      completeVision: (projectId, prompt, imageDataUrl, opts) => this.projectConfig.completeVisionOnce(projectId, prompt, imageDataUrl, opts),
     });
     this.membersRoutes = membersRoutes({
       projectService: this.projectService,

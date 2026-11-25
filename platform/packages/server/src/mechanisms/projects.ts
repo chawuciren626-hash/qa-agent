@@ -227,6 +227,13 @@ export abstract class ProjectConfigStore {
     prompt: string,
     opts?: { maxTokens?: number; requestTimeoutMs?: number },
   ): Promise<UtilityCompletion>;
+  /** 一次性视觉补全（项目 vision_model；无会话的读图任务，如验证码自动识别）。 */
+  abstract completeVisionOnce(
+    projectId: string,
+    prompt: string,
+    imageDataUrl: string,
+    opts?: { maxTokens?: number; requestTimeoutMs?: number },
+  ): Promise<UtilityCompletion>;
 }
 
 export interface ModelPromotion {
