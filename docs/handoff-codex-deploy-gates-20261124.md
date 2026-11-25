@@ -126,3 +126,60 @@ node scripts/local-service.mjs status E:/AITestHarness/installed/installation.js
 - `docs/gate-audit-20261124.md` 不在发布白名单里，不会进安装副本——它只是仓库内文档。
 - 发布清单里 `scripts/hook-denial.mjs` 插在 `child-command-policy.mjs` 之后，不是严格字典序；
   `check-release-resources.mjs` 不校验排序，无需调整。
+
+## 9. 首轮部署未完成的现场核对（2026-11-25 09:20，只读实测）
+
+部署方回报"门禁部分只做了代码检查和部分回归，安装副本缺 `hook-denial.mjs`、运行清单未登记"。核对结果：
+**症状描述准确，但范围比他讲的更大——不是漏一个文件，是 `1dcd6cf` 整个提交没落地。**
+
+| 核对项 | 实测结果 |
+| --- | --- |
+| `app/engine/scripts/hook-denial.mjs` | 不存在 |
+| `aitest-source-runtime.json` → `engine_files` | 470 条，**无** `scripts/hook-denial.mjs` 键 |
+| `child-command-policy.mjs` / `controller-handoff.mjs` / `stage-evidence.mjs` / `structured-actions.mjs` / `delegation-guard.mjs` / `preparation-recovery.mjs` | 6 个哈希与源码全不一致（安装副本是旧版，连 `import` 都没有） |
+| `stage-handoff.mjs` / `record-orchestration-event.mjs` / `interrupted-report-recovery.mjs` | 3 个哈希与源码**一致** |
+
+后三者的哈希一致恰好定位了现状：它们是 `4df9a53` 改的，`1dcd6cf` 没再动。
+所以安装副本停在 **`4df9a53`**（刀一/二/三已生效），`1dcd6cf` + `cbc51f3` 完全没进安装环境。
+按交接清单 §6 第 1 条，`engine_files` 计数没从 470 变 471，就是"没部署"的判据，不需要再猜。
+
+### 9.1 同步是整体对齐，不能挑文件
+
+`deploy-engine-files.mjs` 的期望集合 = 源码发布策略全量（470 条），逐条比哈希后**整体换件**。
+按当前源码状态跑一次，会改 **24 个文件**，不是 7 个：
+
+| 归属 | 文件 | 说明 |
+| --- | --- | --- |
+| 本批次 | 6 个门禁脚本 + `scripts/hook-denial.mjs`（新增）+ `config/release-resources.json` | 交接清单 §1 的内容 |
+| 早前已提交、但安装副本一直没同步 | 14 个 `aitestharness-tools/aitestharness_tools/**`、`scripts/central-mcp.mjs`、`scripts/check-tool-contract.mjs`、`penguin/ui/workspace-ui.mjs` | 最后改动分别在 11-19 / 11-20 / 11-24，均已入库，属安装副本滞后 |
+
+同步后 `engine_files` 应为 **471**。看到 24 个换件不要当异常，也不要手工只拷 7 个——
+手工补拷的文件不受清单完整性校验，是漂移来源（脚本头注释已写明）。
+
+### 9.2 跑同步前必须先解决的阻塞
+
+`penguin/ui/workspace-ui.mjs` 在源码工作区是**未提交**状态（19 增 23 删，去掉 `default-workspace` 自动创建那一段）。
+`deploy-engine-files.mjs` 从源码工作树取文件，直接跑会把这个半成品一起打进安装副本，违反 runbook §4「固定源码，避免混入并发修改」。
+
+先落定该文件（提交，或 `git stash` 后在固定快照上部署），再执行同步。
+
+### 9.3 补齐步骤
+
+```powershell
+# 0. 确认源码快照含全部 6 个提交（缺 cbc51f3 会被 import 闭包断言拒掉）
+git merge-base --is-ancestor cbc51f3 HEAD && echo "snapshot ok"
+node scripts/check-release-resources.mjs     # 期望 allowlist_valid / 469 文件
+
+# 1. 暂停 → 同步 → 恢复
+node scripts/local-service.mjs pause  E:/AITestHarness/installed/installation.json
+node scripts/deploy-engine-files.mjs E:/AITestHarness/installed
+node scripts/local-service.mjs resume E:/AITestHarness/installed/installation.json
+
+# 2. 判据（两条都要，缺一条不算部署完成）
+#    a) engine_files = 471 且含 scripts/hook-denial.mjs
+#    b) 安装副本能真正加载新模块（import 期就会拉起 hook-denial）
+node -e "import('file:///E:/AITestHarness/installed/app/engine/scripts/child-command-policy.mjs').then(()=>console.log('import ok'))"
+```
+
+`import ok` 这一条是关键：清单登记对但文件缺失、或文件在但依赖闭包不完整，都会在这里立刻炸，
+比等真实任务跑到 handoff 才发现便宜得多。之后按 §6 第 5、6 条做现场复现。
