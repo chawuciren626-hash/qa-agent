@@ -33,6 +33,40 @@ function wasRedirectedBeforeExecution(rows,index,response,callId) {
   return denialCorroborated(rows,callId,STAGE_BOUNDARY_DENIAL);
 }
 
+// A permitted command can still fail before the process exists: the `--request` file is
+// resolved by the runtime, so a request that has not been written yet returns a bare
+// runtime error (`ENOENT … lstat '<path>'`) with status fatal and no action JSON. Nothing
+// ran, so the row is evidence of neither delivery nor failure — but parsed as if it were a
+// receipt it poisons every later handoff, and no allowed action can ever clear it.
+function neverLaunched(response) {
+  if(toolOutcome(response.payload)!=='fatal') return false;
+  const raw=String(response.payload.output ?? '').trim();
+  // Deliberately narrower than "fatal without JSON": a command that DID start can also fail
+  // without producing a receipt (a missing entry module, for instance), and that must stay a
+  // failure. Only the runtime's own path resolution - one bare line, no stack, no receipt -
+  // proves the process never existed.
+  return /^Error: E(?:NOENT|NOTDIR):[^\r\n]*\blstat\b[^\r\n]*$/.test(raw);
+}
+
+// A ledger key is `${run}:${action}:${stage}` and a request may or may not name the stage.
+// The same action therefore files `…:diagnose_test_cases:test_cases` when the request was
+// stage-scoped and `…:diagnose_test_cases:` when it was not, and an exact delete leaves one
+// of them open forever. Compare on (run, action) and treat an omitted stage as a wildcard;
+// two different named stages stay distinct.
+function gateIdentity(key) {
+  const parts=String(key ?? '').split(':');
+  if(parts.length<2 || !/^(?:run-[A-Za-z0-9-]+|unbound)$/.test(parts[0])) return String(key ?? '');
+  return `${parts[0]}:${parts[1]}:${(parts[2] ?? '').replace(/[a-f0-9-]{36}$/,'')}`;
+}
+function clearsPendingKey(pendingKey,receiptKey) {
+  if(pendingKey===receiptKey) return true;
+  const settled=gateIdentity(pendingKey), receipt=gateIdentity(receiptKey);
+  if(settled===receipt) return true;
+  const [settledRun,settledAction,settledStage]=settled.split(':');
+  const [receiptRun,receiptAction,receiptStage]=receipt.split(':');
+  return settledRun===receiptRun && settledAction===receiptAction && (!settledStage || !receiptStage);
+}
+
 function parseToolArguments(row) {
   try { return typeof row.payload.arguments === 'string' ? JSON.parse(row.payload.arguments) : row.payload.arguments; }
   catch { throw new Error(`Child ${row.payload?.name ?? 'tool'} arguments unreadable`); }
@@ -249,6 +283,7 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     if (allowRecovery && isCatalogLookup(args?.cmd) && backgroundCatalogWithoutOutput(rows,index,outputs[0])) continue;
     const response = terminalCommandOutput(rows, index, outputs[0], allowRecovery);
     if(allowRecovery && wasRedirectedBeforeExecution(rows,index,response,row.payload.tool_call_id)) continue;
+    if(allowRecovery && isControlledCommand(args?.cmd) && neverLaunched(response)) continue;
     if (!isControlledCommand(args?.cmd)) {
       // A denied detour never ran; a recorded failure here has no compliant repair path.
       if (requireControlledCommands && isDirectBypass(args?.cmd)) throw new Error('Child bypassed the controlled project entry; file existence cannot prove compliant delivery');
@@ -274,7 +309,14 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     try {
       // PenguinHarness may prepend shell-profile warnings to the single JSON response.
       result = typeof raw === 'string' ? JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1)) : raw;
-    } catch { throw new Error('Child runner response unreadable; review required'); }
+    } catch {
+      // Two very different situations used to share one message, and the misleading half made
+      // the controller believe a retry could help. A fatal command ran and died without a
+      // receipt: quote what it said. A completed command whose stdout was elided or garbled is
+      // a review problem, not a failure the child can fix by retrying.
+      if(toolOutcome(response.payload)==='fatal') throw new Error(`Child command failed; its terminal output is unreadable as a receipt: ${String(raw).trim().slice(0,300)}`);
+      throw new Error('Child runner response unreadable; review required');
+    }
     // One rule for every recorded correction: the action layer persisted a recovery
     // ledger entry and the receipt matches it. Its category is the contract; the error
     // prose is not, so a new correction kind never needs a new string comparison.
@@ -301,7 +343,8 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     if (!result || toolOutcome(response.payload) === 'fatal' || !['completed', 'ready', 'help'].includes(result.status) || (result.exit_code !== undefined && result.exit_code !== 0)) throw new Error('Child command failed or was rejected; cannot complete this dispatch after retry');
     if (pendingCatalog && isCatalogLookup(args?.cmd) && result.status === 'help') pendingCatalog = false;
     if (allowRecovery && result.status === 'completed' && result.action_receipt && verifyRecovery(result)) {
-      pending.delete(result.task_key); pending.delete('unbound:request:');
+      for(const key of [...pending]) if(clearsPendingKey(key,result.task_key)) pending.delete(key);
+      pending.delete('unbound:request:');
       const key = String(result.task_key ?? '');
       const validation = /^run-[A-Za-z0-9-]+:validate_artifacts:(?:analysis|test_points|test_cases|execution|api_execution|defects|report)(?:[a-f0-9-]{36})?$/.test(key) ||
         /^run-[A-Za-z0-9-]+:validate_analysis:(?:[a-f0-9-]{36})?$/.test(key);

@@ -8,7 +8,7 @@ import { draftStageFiles } from '../../scripts/draft-stage-revision.mjs';
 import { resolve } from 'node:path';
 import { mkdirSync, writeFileSync, readFileSync, symlinkSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { requestAnalysisRevision } from '../../scripts/analysis-revision.mjs';
-import { actionCatalog, actionCommand, executeAction, actionFailureSummary } from '../../scripts/structured-actions.mjs';
+import { actionCatalog, actionCommand, executeAction, actionFailureSummary, progressSeed } from '../../scripts/structured-actions.mjs';
 import { readControllerSession, withControllerSession } from '../../scripts/controller-command-session.mjs';
 import { verifyActionRecoveryReceipt } from '../../scripts/stage-evidence.mjs';
 import { executionInputs } from './safety-fixtures.mjs';
@@ -1733,4 +1733,33 @@ test('catalog and help accept an optional parent flag without changing session s
     assert.equal(result.status,0,result.stdout);assert.equal(JSON.parse(result.stdout).status,'help');
   }
   assert.equal(readControllerSession(root,f.id).status,'not_started');
+});
+
+test('diagnose accepts its own stage and names the field a request added',async()=>{
+  const f=fixture();
+  await f.execute({action:'create_run',run_id:f.run_id});
+  await f.execute({action:'plan_run',run_id:f.run_id,stages:['test_cases']});
+  // Every neighbouring action takes `stage`, so the controller passes it here too; it is now
+  // accepted at its own value instead of being reported as an unknown field.
+  const accepted=await f.execute({action:'diagnose_test_cases',run_id:f.run_id,stage:'test_cases'});
+  assert.doesNotMatch(String(accepted.error ?? ''),/Unknown action field/);
+  const mismatched=await f.execute({action:'diagnose_test_cases',run_id:f.run_id,stage:'test_points'});
+  assert.equal(mismatched.exit_code,2);
+  assert.match(mismatched.error,/only runs on test_cases/);
+  // A field that really is not accepted names itself and lists what is allowed.
+  const unknown=await f.execute({action:'diagnose_test_cases',run_id:f.run_id,child_session:'subagent-x'});
+  assert.equal(unknown.exit_code,2);
+  assert.match(unknown.error,/Unknown action field: child_session/);
+  assert.match(unknown.error,/accepts: run_id, stage/);
+});
+
+test('only deliverables count as progress for handoff and complete',()=>{
+  // A rewritten request must not launder an identical failure: the controller edited the same
+  // complete five times (adding child_session, rewording the recovery note) and the counter
+  // restarted every time. Drafts still compare their operation; other actions keep the request.
+  assert.equal(progressSeed({action:'handoff'},'request-a',()=>'draft-a'),null);
+  assert.equal(progressSeed({action:'complete'},'request-b',()=>'draft-b'),null);
+  assert.equal(progressSeed({action:'dispatch'},'request-c',()=>'draft-c'),'request-c');
+  assert.equal(progressSeed({action:'draft_records',operation:{type:'upsert',request_id:'r1'}},'request-d',()=>'draft-d'),'draft-d');
+  assert.equal(progressSeed(null,'request-e',()=>'draft-e'),'request-e');
 });

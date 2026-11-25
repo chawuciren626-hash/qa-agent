@@ -292,12 +292,13 @@ export function recordedChildHandle(rows, dispatch, runId) {
   const interrupted=toolOutcome(output)==='aborted';
   const ended={...absent,status:interrupted?'interrupted':toolOutcome(output)==='completed'?'returned':'failed',next_action:interrupted?'原工具已中断，没有可用原生句柄；需要宿主恢复原子会话，不等待旧回执，不重复派发。':'原工具已返回；使用resolve_child核对交付或失败，不反复等待。'};
   if(!['completed','aborted'].includes(toolOutcome(output))) return ended;
-  // Only use the host's returned running marker, never derive a handle from IDs. Two things broke
-  // this in practice: a QA child that outlives its tool call is marked
-  // "QA subagent continuing in background" (not retained|running), and the note is appended to the
-  // same line as the child's prose, so a `^|\n` anchor never matched it. Either miss left
-  // subagent_id:null and pushed the controller back to redispatching a brand-new child.
-  const matches = [...String(output.output).matchAll(/\[(?:QA subagent continuing in background|subagent (?:retained|running(?: in background)?)) with subagent_id (subagent-[A-Za-z0-9-]+);[^\]\r\n]*\]/g)];
+  // Only use the host's returned running marker, never derive a handle from IDs. The note's
+  // wording is the host's, not ours, and it keeps drifting: this run produced
+  // "[QA subagent continuing in background …]", "[subagent still running …]" (no semicolon)
+  // and "[subagent idle …; send a follow-up prompt …]". Enumerating prefixes missed two of
+  // the three, and an idle child is exactly the one a handoff is waiting for. So accept any
+  // bracketed note that names a handle, and refuse only when several different ones appear.
+  const matches = [...String(output.output).matchAll(/\[\s*(?:QA\s+)?subagent\b[^\]\r\n]*?\bwith subagent_id (subagent-[A-Za-z0-9-]+)[^\]\r\n]*\]/g)];
   const handles=[...new Set(matches.map(match=>match[1]))];
   if (handles.length !== 1) return ended;
   const subagent_id = handles[0];

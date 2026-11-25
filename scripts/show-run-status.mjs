@@ -1,8 +1,16 @@
 import { dataPath } from './directory-context.mjs';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { summarizeRun } from './run-status-summary.mjs';
 import { browserWaiting } from './browser-task-resume.mjs';
+
+// A resumed child loses the list of request files it already wrote, and `ls` is not a
+// permitted shell, so it used to recreate a file that already existed (and be refused for
+// a name conflict). Names only: contents stay behind read_file.
+function actionRequestNames(root) {
+  try { return readdirSync(dataPath(root, 'output/action-requests')).filter(name => /^[A-Za-z0-9._-]+\.json$/.test(name)).sort(); }
+  catch { return []; }
+}
 
 const [runId, ...extra] = process.argv.slice(2);
 try {
@@ -11,6 +19,7 @@ try {
   const project = JSON.parse(readFileSync(resolve(root, 'config/project.json'), 'utf8'));
   const raw = readFileSync(dataPath(root, project.run_root, runId, 'manifest.json'));
   const result=summarizeRun(raw,runId);
+  result.action_requests=actionRequestNames(root);
   try {
     const waiting=browserWaiting(root,runId,JSON.parse(raw));
     if(waiting) {

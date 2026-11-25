@@ -5,7 +5,7 @@ import { resolve, relative, isAbsolute, extname, basename } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { withControllerSession, readControllerSession, ControllerGateError } from './controller-command-session.mjs';
-import { assertParentSession, resolveDispatchedChild, resolveChildHandle, requiredArtifacts, readSession } from './stage-evidence.mjs';
+import { assertParentSession, resolveDispatchedChild, resolveChildHandle, requiredArtifacts } from './stage-evidence.mjs';
 import { runProjectCommand } from './command-runtime.mjs';
 import { CommandUsageError, safeInputName } from './command-contracts.mjs';
 import { writeJson, withRunLock, getRunContext, assertStageReady, assertDispatchScheduling, assertDesignMutable } from './orchestration-state.mjs';
@@ -47,6 +47,9 @@ import { apiTask, validateApiOperation } from './api-task.mjs';
 import { createApiSnapshotReport, verifySnapshotReport } from './api-snapshot.mjs';
 import { planTestTracks, testTrackStatus, validateTrackRequest, trackInstructions, assertTrackStage, assertSiblingResources, publishTrackDelivery, configureDelivery } from './test-tracks.mjs';
 
+// These three diagnose exactly one stage, so their `stage` is accepted but optional.
+const fixedDiagnosisStage = { diagnose_analysis: 'analysis', diagnose_test_points: 'test_points', diagnose_test_cases: 'test_cases' };
+
 const definitions = {
   run_stage_tool: ['run_id','stage','tool_id','payload','source_path'],
   stage_finalize: ['run_id','stage','tools'],
@@ -67,9 +70,9 @@ const definitions = {
   extract_word: ['run_id','path'],
   analysis_summary: ['run_id'],
   apply_analysis_feedback: ['run_id','text'],
-  diagnose_analysis: ['run_id'],
-  diagnose_test_points: ['run_id'],
-  diagnose_test_cases: ['run_id'],
+  diagnose_analysis: ['run_id','stage'],
+  diagnose_test_points: ['run_id','stage'],
+  diagnose_test_cases: ['run_id','stage'],
   prepare_execution_plan: ['run_id','profile','environment_config','changed_modules','changed_tags'], validate_execution_prepare: ['run_id','artifacts'],
   preview_revision: ['run_id','stage','reason'],
   read_source: ['run_id','path','start_line','end_line'],
@@ -211,9 +214,14 @@ export function actionCatalog(root, filter = null) {
 function validate(request) {
   requireInput(request && !Array.isArray(request) && typeof request === 'object', 'Request must be an object');
   requireInput(Object.hasOwn(definitions, request.action), 'Unknown action');
-  requireInput(Object.keys(request).every(k => k === 'action' || definitions[request.action].includes(k)), 'Unknown action field');
+  // Name the field: "Unknown action field" alone made the controller re-send the whole request to
+  // find out which key it had added, and every neighbouring action does accept `stage`.
+  const unknownField=Object.keys(request).find(key => key!=='action' && !definitions[request.action].includes(key));
+  requireInput(unknownField===undefined, `Unknown action field: ${unknownField}. ${request.action} accepts: ${definitions[request.action].join(', ')}. Remove the extra key; no action was launched.`);
   requireInput(/^run-[A-Za-z0-9-]+$/.test(request.run_id ?? ''), 'run_id must match ^run-[A-Za-z0-9-]+$: copy the creation result; no underscores, spaces or colons. For create_run only, omit run_id to generate it.');
   for (const key of definitions[request.action]) {
+    // `stage` is listed only as an accepted alias on the fixed-stage diagnoses; it stays optional.
+    if(key==='stage' && request[key]===undefined && fixedDiagnosisStage[request.action]) continue;
     if(key==='snapshot_path' && request[key]===undefined)continue;
     if(key==='tracks'){validateTrackRequest(request);continue;}
     if(key==='operation') {try {if(request.action==='api_task') validateApiOperation(request.operation); else if(request.action==='draft_records') validateDraftOperation(request.operation); else if(request.action==='android_task') validateAndroidOperation(request.operation); else if(request.action==='miniprogram_task') validateMiniprogramOperation(request.operation); else if(request.action==='desktop_task') validateDesktopOperation(request.operation); else validateBrowserOperation(request.operation);} catch(error){throw new CommandUsageError(error.message);} continue;}
@@ -228,6 +236,10 @@ function validate(request) {
     requireInput(['stages','skills','artifacts'].includes(key) ? Array.isArray(v) && v.length && v.every(s => typeof s === 'string' && s.trim() && !s.includes(',')) : typeof v === 'string' && v.trim(), `Invalid or missing ${key}`);
   }
   if (request.action === 'run_stage_tool') requireInput((request.payload === undefined) !== (request.source_path === undefined), 'run_stage_tool needs exactly one of payload or source_path');
+  // These three diagnose one fixed stage, so `stage` is accepted (every neighbouring action has
+  // it) but only at its own value; a mismatched stage is a wrong request, not a filter.
+  const diagnosisStage=fixedDiagnosisStage[request.action];
+  if(diagnosisStage && request.stage!==undefined) requireInput(request.stage===diagnosisStage, `${request.action} only runs on ${diagnosisStage}; omit stage or set it to ${diagnosisStage}`);
   if (request.mode !== undefined) requireInput(request.action === 'dispatch' && request.stage === 'execution' && ['prepare','browser','resume_browser'].includes(request.mode), 'dispatch.mode is optional: OMIT mode normally; use prepare for scripts, browser for lifecycle browser testing, or resume_browser after real human intervention. Do not use mode="default".');
   if(request.recovery!==undefined) requireInput(request.action==='handoff' && request.stage==='report' && request.recovery==='interrupted_report','Only report handoff supports interrupted_report recovery');
   if (request.review_mode !== undefined) requireInput(['auto','staged'].includes(request.review_mode), 'review_mode must be auto or staged');
@@ -421,7 +433,17 @@ function captureUserInputs(root,runId,session,agentRoot,rows) {
   writeJson(contextPath,context);
   return {...context,context_path:contextPath,word_extraction_templates:context.attachments.filter(entry=>/\.docx$/i.test(entry.path)).map(entry=>({action:'extract_word',run_id:runId,path:entry.path}))};
 }
-function artifactProgress(root, runId, stage, parent, agentRoot, action, sourcePath, cache = null) {
+// What counts as movement between two attempts of the same action. A draft compares its
+// operation (minus request_id, which only names the request file); handoff and complete compare
+// their deliverables only, so rewriting the request - or restating it to the child - is not
+// progress; every other action keeps its request text as the identity.
+export function progressSeed(parsed, requestHash, draftHash) {
+  if(parsed?.action==='draft_records' && parsed.operation && typeof parsed.operation==='object') return draftHash();
+  if(['handoff','complete'].includes(parsed?.action)) return null;
+  return requestHash;
+}
+
+function artifactProgress(root, runId, stage, action, sourcePath) {
   if (!runId || !stage) return null;
   try {
     const dir=runDirectory(root,runId),manifest=JSON.parse(readRunFile(dir,'manifest.json').data);
@@ -434,14 +456,12 @@ function artifactProgress(root, runId, stage, parent, agentRoot, action, sourceP
     const files=[...paths].sort().map(path=>{
       try {return [path,readRunFile(dir,path).sha256];} catch(error) {return [path,error.code ?? error.name];}
     });
-    let child=null;
-    if(['handoff','complete'].includes(action)) {
-      try {
-        const resolved=resolveDispatchedChild(root,runId,stage,parent,agentRoot,{cache});
-        child=hash(JSON.stringify(readSession(agentRoot ?? process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(),'.penguin/data/default_project/agents'),resolved.agent,resolved.child_session,cache)));
-      } catch { /* An unresolved return is unchanged progress, not completion evidence. */ }
-    }
-    return hash(JSON.stringify({dispatch:dispatch?.dispatch_id,files,child}));
+    // Only the deliverables count as progress. The child's transcript used to be part of this
+    // hash, which made every follow-up message to a child look like advancement: three identical
+    // handoff failures stayed at consecutive_same_failure=1 because the controller had asked the
+    // child to restate its result in between. A restatement is not progress, so the transcript
+    // stays out of the identity; whether the child returned is a verdict, not a movement.
+    return hash(JSON.stringify({dispatch:dispatch?.dispatch_id,files}));
   } catch {return null;}
 }
 
@@ -463,8 +483,11 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
   let parsed; let parseError;
   try { const raw=loadRequest(); const original=JSON.parse(raw);parsed=protectedInputs().protect(session,original);receipt.request_sha256=hash(JSON.stringify(parsed)===JSON.stringify(original)?raw:JSON.stringify(parsed)); receipt.action=typeof parsed?.action === 'string' && Object.hasOwn(definitions,parsed.action) ? parsed.action : null; }
   catch(error) { parseError=error; }
-  let progressHash=parsed?.action==='draft_records' && parsed.operation && typeof parsed.operation==='object'
-    ? hash(JSON.stringify({...parsed,operation:{...parsed.operation,request_id:undefined}})) : receipt.request_sha256;
+  // Handoff and completion are decided on deliverables, so the request text is not progress:
+  // the controller rewrote the same complete request five times (adding child_session, rewording
+  // the recovery note) and every rewrite reset the identical-failure counter. Those two actions
+  // therefore start from "no progress" and are measured by artifactProgress alone.
+  let progressHash=progressSeed(parsed,receipt.request_sha256,()=>hash(JSON.stringify({...parsed,operation:{...parsed.operation,request_id:undefined}})));
   if (parsed?.action === 'create_run' && !Object.hasOwn(parsed,'run_id')) {
     parsed={...parsed,run_id:`run-${randomUUID()}`};
     receipt.generated_run_id=parsed.run_id;
@@ -474,7 +497,7 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
   if(receipt.action==='read_source' && typeof parsed?.path==='string') receipt.read_path=parsed.path;
   // Controlled stage revision grants a new dispatch-local budget; old counters remain intact.
   const budgetStage = draftArtifactActions[receipt.action]?.stage ?? (['generate_analysis','validate_analysis','read_source'].includes(receipt.action) ? 'analysis' : ['validate_artifacts','handoff','complete','dispatch'].includes(receipt.action) ? parsed?.stage : null);
-  const artifactHash=artifactProgress(root,receipt.run_id,budgetStage,session,agentRoot,receipt.action,parsed?.path,stageSessions);
+  const artifactHash=artifactProgress(root,receipt.run_id,budgetStage,receipt.action,parsed?.path);
   if(artifactHash) progressHash=hash(JSON.stringify({request:progressHash,artifacts:artifactHash}));
   if(receipt.action==='handoff' && parsed?.stage==='execution') {
     try {

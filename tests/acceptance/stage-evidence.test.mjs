@@ -63,6 +63,24 @@ test('native truncated command output reads only the same session archive and pr
   save(resolve(archiveDir,'exec_command-missing.log'));assert.throws(()=>readSession(root,agent,id));
   const foreign=resolve(root,'foreign-archive');renameSync(archiveDir,foreign);symlinkSync(foreign,archiveDir,process.platform==='win32'?'junction':'dir');save(archive);assert.throws(()=>readSession(root,agent,id),/redirected/);
 });
+test('a receipt cut by the inline output window is still read back from its own archive',()=>{
+  const root=mkdtempSync(resolve(tmpdir(),'qa-truncated-window-')),agent=request.agent,id=request.childId;
+  const dir=resolve(root,agent,'traces/2026-10-09'),archiveDir=resolve(root,agent,'scratchpad',id,'truncated-tool-output');
+  mkdirSync(dir,{recursive:true});mkdirSync(archiveDir,{recursive:true});
+  const archive=resolve(archiveDir,'exec_command-1a2b3c4d5e6f7890.log');
+  // The engine keeps a head and tail window of the inline result and inserts a counting marker,
+  // so a large receipt arrives with its JSON cut in the middle; the archive holds the exact stdout.
+  const full=JSON.stringify({status:'completed',exit_code:0,execution_mode:'in_process',launches_child:false,action_receipt:'synthetic',result:{cases:Array.from({length:400},(_,i)=>({id:'TC-'+i,title:'x'.repeat(40)}))}});
+  writeFileSync(archive,full);
+  const windowed=full.slice(0,16000)+'\n[output truncated: kept first 8000 and last 8000 of '+full.length+' chars]\n'+full.slice(-8000)+'\n\n[output archived: '+archive+']';
+  const trace=resolve(dir,id+'_001.jsonl');
+  writeFileSync(trace,[{payload:{type:'tool_call',name:'exec_command',tool_call_id:'x',arguments:{cmd:'node project-action.mjs'}}},{payload:{type:'tool_call_output',tool_call_id:'x',stop_reason:'completed',output:windowed}}].map(JSON.stringify).join('\n'));
+  const rows=readSession(root,agent,id);
+  assert.equal(rows[1].payload.output,full);
+  assert.equal(rows[1].payload.archived_output_path,archive);
+  assert.doesNotThrow(()=>assertChildCommands(rows,{allowRecovery:true,requireControlledCommands:true}));
+  rmSync(root,{recursive:true,force:true});
+});
 test('archived failed command accepts a terminal exit marker only with a failed receipt',()=>{
   const root=mkdtempSync(resolve(tmpdir(),'qa-archived-failure-')),agent=request.agent,id=request.childId;
   const dir=resolve(root,agent,'traces/2026-10-09'),archiveDir=resolve(root,agent,'scratchpad',id,'truncated-tool-output');
@@ -170,6 +188,14 @@ test('a QA child that outlives its tool call exposes its handle even when the no
   assert.equal(background.subagent_id,'subagent-bg12345');
   rows[2].payload.output='[subagent running with subagent_id subagent-run678; use input_subagent to poll]';
   assert.equal(recordedChildHandle(rows,dispatch,request.runId).subagent_id,'subagent-run678');
+  // The same session also produced "[subagent still running …]" with no semicolon and
+  // "[subagent idle …; send a follow-up prompt …]" — the idle note appears exactly when the
+  // child has handed back and the controller is about to call handoff, so missing it forces a
+  // needless re-dispatch at the worst moment.
+  rows[2].payload.output='[subagent still running with subagent_id subagent-still901]';
+  assert.equal(recordedChildHandle(rows,dispatch,request.runId).subagent_id,'subagent-still901');
+  rows[2].payload.output='收口完成。 [subagent idle with subagent_id subagent-idle234; send a follow-up prompt to continue]';
+  assert.equal(recordedChildHandle(rows,dispatch,request.runId).subagent_id,'subagent-idle234');
   rows[2].payload.output='[QA subagent continuing in background with subagent_id subagent-aaa1; x] [QA subagent continuing in background with subagent_id subagent-bbb2; x]';
   assert.equal(recordedChildHandle(rows,dispatch,request.runId).subagent_id,null);
 });
@@ -600,6 +626,36 @@ test('a missing catalog entry path is resolved only by a later successful catalo
   assert.throws(() => assertChildCommands([...bad, ...pair('wrong', 'node "E:/engine/scripts/project-action.mjs" execute', JSON.stringify({ status: 'help' }), 'completed')], { allowRecovery: true }), /not corrected/);
   assert.throws(() => assertChildCommands(pair('bad', 'node "E:/run/scripts/project-action.mjs" execute', missing, 'fatal'), { allowRecovery: true }));
   assert.throws(() => assertChildCommands(pair('bad', 'node "E:/run/scripts/project-action.mjs" catalog', missing.replace('requireStack: []', "requireStack: ['dependency']"), 'fatal'), { allowRecovery: true }));
+});
+
+test('a command that never started is not a receipt and cannot poison the later handoff', () => {
+  const pair = (id, output, stop_reason = 'fatal', cmd = 'node scripts/project-action.mjs execute --controller-session=session-a --request=output/action-requests/fix2a.json') => [
+    { payload: { type: 'tool_call', name: 'exec_command', tool_call_id: id, arguments: { cmd } } },
+    { payload: { type: 'tool_call_output', tool_call_id: id, output, stop_reason } }
+  ];
+  const options = { allowRecovery: true, requireControlledCommands: true, verifyRecovery: () => true };
+  const validated = pair('validated', JSON.stringify({ status: 'completed', exit_code: 0, task_key: 'run-a:validate_artifacts:test_cases', action_receipt: 'receipt', execution_mode: 'in_process', launches_child: false }), 'completed');
+  // The runtime resolves --request before spawning. Executing a file the child had not written
+  // yet produced exactly this one-line fatal row, and demanding a receipt from it made every
+  // later handoff and complete fail with "Child runner response unreadable".
+  const neverStarted = pair('fix2a', "Error: ENOENT: no such file or directory, lstat 'E:\\ws\\output\\action-requests\\fix2a.json'");
+  assert.doesNotThrow(() => assertChildCommands([...neverStarted, ...validated], options));
+  // A process that did start keeps its failure: the discriminator is the runtime's own path error.
+  assert.throws(() => assertChildCommands([...pair('started', "Error: ENOENT: no such file or directory, open 'E:\\ws\\output\\action-requests\\fix2a.json'"), ...validated], options), /Child command failed/);
+  assert.throws(() => assertChildCommands([...pair('ran', 'Get-ChildItem: invalid /s'), ...validated], options), /Child command failed/);
+});
+
+test('a correction filed with a stage is cleared by the same action succeeding without one', () => {
+  const pair = (id, body, stop_reason = 'completed') => [
+    { payload: { type: 'tool_call', name: 'exec_command', tool_call_id: id, arguments: { cmd: 'node scripts/project-action.mjs execute --controller-session=session-a --request=output/action-requests/diag.json' } } },
+    { payload: { type: 'tool_call_output', tool_call_id: id, output: JSON.stringify(body), stop_reason } }
+  ];
+  const options = { allowRecovery: true, requireControlledCommands: true, verifyRecovery: () => true };
+  const rejected = { status: 'rejected', exit_code: 2, classification: 'input_rejected', action: 'diagnose_test_cases', task_key: 'run-a:diagnose_test_cases:test_cases', recovery: { category: 'read_correction', retry_allowed: true }, action_receipt: 'rejected' };
+  const passed = { status: 'completed', exit_code: 0, action: 'diagnose_test_cases', task_key: 'run-a:diagnose_test_cases:', action_receipt: 'passed', execution_mode: 'in_process', launches_child: false };
+  assert.doesNotThrow(() => assertChildCommands([...pair('diag', rejected, 'fatal'), ...pair('diag-ok', passed)], options));
+  // Two different named stages stay different corrections.
+  assert.throws(() => assertChildCommands([...pair('diag', rejected, 'fatal'), ...pair('diag-ok', { ...passed, task_key: 'run-a:diagnose_test_cases:test_points' })], options), /were not resolved/);
 });
 
 test('long controlled command requires a matching terminal process poll', () => {

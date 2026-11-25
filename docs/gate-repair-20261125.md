@@ -124,3 +124,124 @@
 - `preview_revision` 只回 `ineligible`，不指出出口；
 - `apply_analysis_feedback` 的 `exit 2` 被控制器误读为成功；
 - `qa-delegation-guard` 的拒绝文案不含"正确值是什么"。
+
+## 六、第二批核对：同一会话跑到测试用例阶段（截至 08:50，未部署）
+
+前提：安装副本仍是 `4df9a53`，第一节 1–6 项一条都没生效。本节只记**部署之后仍然会发生**的问题，
+不重复已修项。现场仍为 `session-2026-11-25-07-04-51-dc329d62`。
+
+### 1. 完成闸门被一条"根本没跑起来"的命令行永久卡死（P0）
+
+| 事实 | 值 |
+|---|---|
+| 毒化行 | `test_case_agent/…_002.jsonl` 08:22:08，`exec_command`，`status=fatal`，输出 `Error: ENOENT … lstat '…\d1fd3016-fix2a.json'` |
+| 成因 | 08:21:57 子会话先 `execute --request=…fix2a.json`，请求文件 08:22:29 才由 `write_file` 创建 |
+| 后果 | `child-command-policy.mjs` 对该行 `JSON.parse` 失败 → `Child runner response unreadable`；08:39:04 / 08:44:48 / 08:46:50 `handoff`、08:45:07 / 08:47:12 `complete` 全被拒；`qa-delegation-guard` 08:49:53 同样拒 |
+| 范围 | 全部子 trace 只有这 1 条 fatal；其余 30 余条 `aborted` 都是 hook 拒绝，已被正确跳过 |
+
+产物本身没问题：`design/test_cases.json` + `xlsx` 已生成，`validate_artifacts` 在 08:37:52 / 08:44:08
+两次 passed。卡的是**阶段登记**，不是交付物。
+
+修法：`status=fatal` 且只有一行 `Error: ENOENT/NOTDIR … lstat …`（没有堆栈、没有回执）说明进程没起来，
+不构成证据，跳过；"真跑过但失败"的（缺入口模块、`open` 失败等）仍然算失败，
+真正的交付证据由后面的 `completed` 回执与 `validate_artifacts` 提供。
+
+### 2. 这条毒化行从哪来：hook 10 秒超时后放行（P0 成因）
+
+`penguin/hooks/qa-stage-boundary/hooks.json` 写 `"timeout": 10`。08:22:07.957 该 hook
+`failed: timed out after 10s`（`tool_total_ms=11015`，真正执行只用了 145ms）→ 被杀 → 内联请求文件
+没写 → 命令照常执行 → 必然 ENOENT。
+
+hook 每次工具调用都会把整份子 trace 解析**两遍**（`bindChildHookContext` 一次、`currentRunId` 一次），
+测试用例子会话到后期是 3 个文件 1.6MB，10 秒余量本来就薄。
+
+修法：`timeout` 提到 60；闸门不再把"没启动"的行当回执（见第 1 条）；hook 侧复用同一份解析结果。
+
+> 补记：`project-action.mjs` 本来就把缺失请求文件转成 `Request JSON file does not exist …` 的
+> 明确回执（已有用例覆盖），那条裸 `ENOENT … lstat` 不是它打的——命令没走到 CLI 的读取分支。
+> 所以本条只修"超时太容易触发"和"闸门误读这种行"，不假设 CLI 需要改造。
+
+### 3. 恢复台账的键不归一（P1，跳过第 1 条后紧接着会撞上）
+
+- 被拒的 `diagnose_test_cases` 请求带了 `stage`，回执 `task_key = run-…:diagnose_test_cases:test_cases`；
+  成功的同名请求不带 `stage`，`task_key = run-…:diagnose_test_cases:`。
+- 守卫 `pending.delete(result.task_key)` 精确匹配 → `:test_cases` 这条永远清不掉。
+- 实测：`_003` 里该键被 `pending.add`，之后 `diagnose` 成功两次、`validate` 通过两次，仍未清除。
+
+修法：不改计数规则，改"什么算同一个键"——清账时按 `(run, action)` 比较，未写 stage 视为通配；
+两个不同的具名阶段仍算不同，不会被误清。
+
+### 4. `stalled` 实际上永远不会触发（P1）
+
+`recovery-policy.mjs` 的签名取 `progress_sha256`，而该值包含**子会话 trace 的哈希**。
+控制器每跟子会话说一句话，进度就"变了"，三次同一失败仍记成 1：
+
+```
+handoff:test_cases  failure_number=3  consecutive_same_failure=1  stalled=false   (三次 request_sha256 相同 e91a6fec)
+```
+
+所以 08:39–08:49 那 10 分钟是纯空转，最后靠模型自己写了"部分完成"收场。
+
+修法：把"什么算进度"收紧，而不是改计数规则——`artifactProgress` 不再把子会话 transcript 计入，
+`handoff`/`complete` 的请求文本也不再作为进度起点（`progressSeed`）。产物一变，计数照旧清零；
+只是"再跟子会话说一遍"不再算进展。
+
+### 5. 上一批的句柄正则只覆盖 5 种文案里的 1 种（P1，本批新发现）
+
+同一会话里引擎实际用过 5 种：
+
+```
+[QA subagent continuing in background with subagent_id X; …]      4 次  → 新正则命中
+[subagent idle with subagent_id X; send a follow-up prompt …]     2 次  → 未命中（前缀不在白名单）
+[subagent still running with subagent_id X]                       1 次  → 未命中（没有分号）
+```
+
+`idle` 恰好出现在子会话交回的那一刻（08:44:36 / 08:46:29），也就是准备 handoff 的时点。
+修法：改成"方括号内含 `with subagent_id subagent-…` 即视为句柄"，分号可选；多句柄仍返回 null。
+
+### 6. 零碎往返（P2，各浪费 1 次调用）
+
+- `diagnose_*` 的字段白名单只有 `run_id`，控制器多传 `stage` → `Unknown action field`（不说是哪个字段）。
+- 内联请求复用同名文件 → `Request filename conflicts; existing content was not overwritten`（没给"换个文件名"）。
+- `catalog` 命令同时带 `qa_request` → `qa_request requires one structured execute command`（没指向 CLI 子命令）。
+- 子会话续跑后想 `ls output/action-requests/` 被拒，`run_status.artifacts` 不含该目录。
+
+### 7. 本批落地的改动（分支 `fix/gate-repair-20261125` 第二次提交）
+
+| # | 文件 | 改动 |
+|---|---|---|
+| 1 | `scripts/child-command-policy.mjs` | `neverLaunched()`：`status=fatal` 且只有一行 `Error: ENOENT/NOTDIR … lstat …`（无堆栈、无回执）= 进程没起来，跳过；MODULE_NOT_FOUND、`open` 失败等"真跑过"的仍按失败处理 |
+| 1b | 同上 | JSON 解析失败按状态分文案：`fatal` → `Child command failed; its terminal output is unreadable as a receipt: <原文>`；`completed` 才叫 `response unreadable` |
+| 2 | `penguin/hooks/*/hooks.json` | 三个 `pre_tool_use` 超时 10 → 60 |
+| 3 | `scripts/child-command-policy.mjs` | `clearsPendingKey()`：按 `(run, action)` 比较，未写 stage 视为通配；两个不同 stage 仍算不同 |
+| 4 | `scripts/structured-actions.mjs` | `artifactProgress` 去掉子会话 transcript；新增并导出 `progressSeed()`，`handoff`/`complete` 不以请求文本计进度 |
+| 5 | `scripts/stage-evidence.mjs` | 句柄匹配改为"方括号内含 `with subagent_id subagent-…`"，分号可选，多句柄仍返回 null |
+| 6 | `scripts/structured-actions.mjs` | `diagnose_*` 接受 `stage`（须等于自身阶段）；`Unknown action field` 报出字段名与允许列表 |
+| 7 | `scripts/inline-action-request.mjs` | catalog/help/summary 带 `qa_request` 时明确指出"CLI 子命令、去掉 qa_request"；同名请求冲突给出"换个文件名" |
+| 8 | `scripts/show-run-status.mjs` | `run_status` 增 `action_requests`（仅文件名） |
+
+验证：`stage-evidence` 42/42（含 5 条新增：未启动行、键归一、`still running`/`idle` 句柄、截断回执可还原）、
+`efficiency-contracts` 9/9（新增 catalog 文案）、`structured-actions` 全量见提交说明。
+
+部署注意补充：hooks.json 会由 `scripts/sync-penguin-agents.mjs` 复制进每个 Agent 的
+`agent_state/hooks/`，只替换引擎目录不会改变已安装 Agent 的超时值，需要跑一次 `--apply` 同步
+（或重装）。
+
+### 8. 一条"看起来会卡"但实际不会的现象：截断回执
+
+现场 trace 里大量 `status=completed` 的 `exec_command` 输出长度恰为 16362，尾部形如
+
+```
+"]\n}\n\n[output archived: …/scratchpad/session-…/truncated-tool-output/exec_command-<hash>.log]"
+```
+
+即内联结果被 16000 字符上限切成"头尾窗口 + 计数标记"，JSON 在中途断开。**这不需要改门禁**：
+`readSession()`（`scripts/stage-evidence.mjs`，自 `eb633c4` 起）在读 trace 时就把
+`[output archived: <path>]` 展开成归档文件里的完整 stdout，并校验归档必须落在本子会话
+`scratchpad/<childId>/truncated-tool-output/` 下、文件名形如 `<tool>-<hash>.log`、未被重定向、
+不超过 8 MiB；任何一条不满足都抛错（fail-closed）。
+
+用现场真实 trace 复核：`test_case_agent` 881 行，8 条归档输出全部还原成功，
+`assertChildCommands` 在 `stage=test_cases` 下通过。上一轮"仍被拒"的判断来自探针脚本绕过了
+`readSession`、直接解析原始 jsonl，属于误判。本批只补了一条回归用例，锁住现场这个真实形态
+（头尾窗口 + `[output truncated: kept first …]` + 归档）不被后续改动破坏。

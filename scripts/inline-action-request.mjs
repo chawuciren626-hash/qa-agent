@@ -6,7 +6,13 @@ import { dataPath } from './directory-context.mjs';
 // Transport only: dispatch, authorization and action validation still run downstream.
 export function prepareInlineAction(root, args, { runId, parentSession } = {}) {
   const match=/^node(?:\.exe)?\s+(?:scripts[\\/])?project-action\.mjs\s+execute\s+(.+)$/.exec(String(args.cmd ?? '').trim());
-  if(!match || /[\r\n;&|`$<>]/.test(args.cmd)) throw new Error('qa_request requires one structured execute command');
+  if(!match || /[\r\n;&|`$<>]/.test(args.cmd)) {
+    // `catalog` is read-only help, not a structured action: it needs no qa_request at all.
+    // Saying only "one structured execute command" sent the model to execute --request with
+    // action=catalog, which is rejected by the action layer for a different reason.
+    if(/project-action\.mjs\s+(?:catalog|help|summary)\b/.test(String(args.cmd ?? ''))) throw new Error('catalog/help/summary are CLI subcommands, not structured actions: drop qa_request and run the command alone, e.g. node scripts/project-action.mjs catalog --action=<name>');
+    throw new Error('qa_request requires one structured execute command');
+  }
   const flags=match[1],request=/--request=(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s]+))/.exec(flags);
   const session=/--controller-session=([^\s]+)/.exec(flags);
   if(!request || !session || flags.replace(request[0],'').replace(session[0],'').trim()) throw new Error('Use exactly one parent controller-session and request path');
@@ -23,7 +29,7 @@ export function prepareInlineAction(root, args, { runId, parentSession } = {}) {
   try {writeFileSync(target,JSON.stringify(data,null,2)+'\n',{flag:'wx'});}
   catch(error) {
     if(error.code!=='EEXIST') throw error;
-    if(realpathSync(target)!==target || !isDeepStrictEqual(JSON.parse(readFileSync(target,'utf8')),data)) throw new Error('Request filename conflicts; existing content was not overwritten');
+    if(realpathSync(target)!==target || !isDeepStrictEqual(JSON.parse(readFileSync(target,'utf8')),data)) throw new Error(`Request filename ${request[1] ?? request[2] ?? request[3]} conflicts with an existing different request. Nothing was overwritten and no action was launched: choose a new filename (for example add a suffix) and leave the existing file unchanged`);
   }
   return target;
 }

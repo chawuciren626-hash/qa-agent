@@ -47,6 +47,10 @@ test('one-call transport preserves exact body, retries and path/run/parent bound
   const path=prepareInlineAction(root,args,options);assert.deepEqual(JSON.parse(readFileSync(path)),args.qa_request);
   assert.equal(prepareInlineAction(root,args,options),path);
   assert.throws(()=>prepareInlineAction(root,{...args,qa_request:{...args.qa_request,action:'other'}},options),/conflicts/);
+  assert.throws(()=>prepareInlineAction(root,{...args,qa_request:{...args.qa_request,action:'other'}},options),/choose a new filename/);
+  // catalog is read-only help: carrying a qa_request with it must point at the CLI form, not at
+  // "one structured execute command" (which sent the controller to execute --request=catalog).
+  assert.throws(()=>prepareInlineAction(root,{...args,cmd:'node scripts/project-action.mjs catalog --action=draft_records'},options),/CLI subcommands, not structured actions/);
   assert.throws(()=>prepareInlineAction(root,args,{...options,runId:'run-other'}),/run/);
   assert.throws(()=>prepareInlineAction(root,args,{...options,parentSession:'another'}),/parent/);
   assert.throws(()=>prepareInlineAction(root,{...args,cmd:args.cmd.replace('output/action-requests/request.json','../escape.json')},options),/direct|escapes/);
