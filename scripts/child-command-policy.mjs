@@ -2,7 +2,7 @@ import {toolOutcome} from './trace-outcome.mjs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { stageWriteRules, isControlledStageEvidence } from './stage-registry.mjs';
 import { isSafeArtifactAction } from './recovery-policy.mjs';
-import { STAGE_BOUNDARY_DENIAL, denialCorroborated } from './hook-denial.mjs';
+import { anyDenialCorroborated, isAnyHookDenial } from './hook-denial.mjs';
 
 export function childCommandPolicy(dispatchId, version = 3) {
   if (version === 3) return `QA_COMMAND_POLICY_V3 ${dispatchId}: 仅交付已分配阶段，校验和导出使用结构化动作。安全输入与草稿纠错不设固定次数；依据已记录的recovery修正原因，stalled=true时改变方法或返回已有结果和限制，不原样循环。不得要求用户技术解锁。保留真实证据，未解决的错误不得宣称完成。禁止重放结果未知的产品操作、绕过凭据或扩大范围，不自行批准阶段或直接编辑manifest。`;
@@ -30,7 +30,7 @@ export function isPermittedChildShell(command) {
 
 function wasRedirectedBeforeExecution(rows,index,response,callId) {
   if(toolOutcome(response.payload)!=='aborted') return false;
-  return denialCorroborated(rows,callId,STAGE_BOUNDARY_DENIAL);
+  return anyDenialCorroborated(rows,callId);
 }
 
 // A permitted command can still fail before the process exists: the `--request` file is
@@ -124,7 +124,7 @@ export function toolWasNotExecuted(rows,index) {
     const output=outputs[0];
     const decisions=rows.slice(index+1,rows.indexOf(output)).filter(row=>row.type==='event_msg' && row.payload?.type==='approval_decision' && row.payload.tool_call_id===call.tool_call_id);
     return toolOutcome(output.payload)==='aborted' &&
-      String(output.payload.output).startsWith(STAGE_BOUNDARY_DENIAL) &&
+      isAnyHookDenial(output.payload.output) &&
       decisions.length===1 && decisions[0].payload.decision==='deny';
   }
   if(outputs.length) return false;

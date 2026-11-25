@@ -123,3 +123,17 @@ test('F03: native read does not hide unknown reads, failed writes or failed cont
     ], options), /uncontrolled|failed/);
   }
 });
+// Seen on a live controller session: three calls were refused by the delegation guard, so
+// their output is the denial prose and not a receipt. Reading those rows as receipts made
+// every later handoff fail with "Child runner response unreadable" and left no action able
+// to close it - the refusal itself had to be recognised as "nothing ran".
+test('a controller call refused by the delegation guard never becomes an unreadable receipt',()=>{
+  const deniedCall=call('exec_command','denied',{cmd:'node scripts/project-action.mjs execute --request=output/action-requests/status-check.json'});
+  const deniedOutput=output('denied','Tool call denied by the qa-delegation-guard hook: QA controller boundary: Use one structured command, without shell composition.','aborted');
+  const decision={payload:{type:'approval_decision',tool_call_id:'denied',decision:'deny'}};
+  assert.doesNotThrow(()=>assertChildCommands([deniedCall,decision,deniedOutput],options));
+  // Without the host's own decision row the same wording is just text a command could print.
+  assert.throws(()=>assertChildCommands([deniedCall,deniedOutput],options),/unreadable/);
+  // A refusal neither delivers nor fails: it cannot stand in for a successful receipt.
+  assert.throws(()=>assertChildCommands([deniedCall,decision,deniedOutput],{...options,requireControlledCommands:false,allowRecovery:false}),/unreadable/);
+});

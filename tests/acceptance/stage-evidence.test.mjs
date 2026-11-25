@@ -482,9 +482,11 @@ test('any qa-stage-boundary hook denial reason is treated as denied before execu
     const output={payload:{type:'tool_call_output',tool_call_id:'denied-write',stop_reason:'aborted',output:reason}};
     assert.doesNotThrow(()=>assertChildCommands([call,decision,output],options),reason);
   }
-  // A different hook or a plain user message is not a stage-boundary denial.
-  const foreign={payload:{type:'tool_call_output',tool_call_id:'denied-write',stop_reason:'aborted',output:'Tool call denied by the qa-delegation-guard hook'}};
-  assert.throws(()=>assertChildCommands([call,decision,foreign],options),/stage ownership/);
+  // Any guard's refusal means the write never happened, whichever guard it was. What proves it
+  // is the host's own decision row: the same wording alone is text a command could print.
+  const foreign={payload:{type:'tool_call_output',tool_call_id:'denied-write',stop_reason:'aborted',output:'Tool call denied by the qa-delegation-guard hook: QA controller boundary'}};
+  assert.doesNotThrow(()=>assertChildCommands([call,decision,foreign],options));
+  assert.throws(()=>assertChildCommands([call,foreign],options),/stage ownership/);
 });
 
 test('malformed streamed write requires native evidence of rejection before execution',()=>{

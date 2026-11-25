@@ -38,3 +38,21 @@ export function denialCorroborated(rows, toolCallId, prefix) {
   return decisions.length === 1 && decisions[0].payload.decision === 'deny' &&
     isHookDenial(outputFor(rows, toolCallId)?.payload?.output, prefix);
 }
+
+// Both guards can refuse a call, and every consumer below asks the same question of
+// whichever one refused: `was it refused, and did nothing run?` Enumerating one prefix at a
+// call site made a qa-delegation-guard refusal look like an executed command that returned
+// unreadable output - a controller session with one such row could never close a handoff.
+export const HOOK_DENIALS = [STAGE_BOUNDARY_DENIAL, DELEGATION_DENIAL];
+
+export function isAnyHookDenial(output) {
+  return HOOK_DENIALS.some(prefix => isHookDenial(output, prefix));
+}
+
+export function anyDenialRecorded(rows, toolCallId) {
+  return HOOK_DENIALS.some(prefix => denialRecorded(rows, toolCallId, prefix));
+}
+
+export function anyDenialCorroborated(rows, toolCallId) {
+  return HOOK_DENIALS.some(prefix => denialCorroborated(rows, toolCallId, prefix));
+}
