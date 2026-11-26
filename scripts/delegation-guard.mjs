@@ -5,9 +5,8 @@ import { assertParentSession } from './stage-evidence.mjs';
 import { assertStageHistory } from './orchestration-state.mjs';
 import { readControllerSession, controllerCommandIsLive, permitsArtifactContinuation, permitsIndependentRunContinuation } from './controller-command-session.mjs';
 import { verifyDelegationBinding } from './delegation-binding.mjs';
-import { toolWasNotExecuted } from './child-command-policy.mjs';
 import { launchNeverStarted } from './launch-evidence.mjs';
-import { DELEGATION_DENIAL, denialRecorded } from './hook-denial.mjs';
+import { neverAttempted, promptTokens } from './dispatch-binding.mjs';
 
 export { launchNeverStarted };
 
@@ -30,7 +29,7 @@ export function guardDelegation(root,input,agentRoot) {
     const manifest=JSON.parse(readFileSync(dataPath(root, 'output/runs',runIds[0],'manifest.json'),'utf8'));
     const active=Object.entries(manifest.stages ?? {}).filter(([id,s])=>{
       const d=manifest.orchestration?.events?.filter(e=>e.type==='dispatched' && e.stage===id).at(-1);
-      return s.status==='in_progress' && d?.dispatch_id && prompt.split(/[^A-Za-z0-9-]+/).includes(d.dispatch_id);
+      return s.status==='in_progress' && d?.dispatch_id && promptTokens(prompt).includes(d.dispatch_id);
     });
     if (active.length!==1) throw new Error('Copy exactly one current dispatch ID; task identity, not the number of concurrent tasks, selects the child');
     const [stage]=active[0]; assertStageHistory(manifest,stage);
@@ -52,12 +51,11 @@ export function guardDelegation(root,input,agentRoot) {
     if (!safeContinuation && (restricted || state.status!=='ready' && !liveAction)) throw new Error('Controller is not ready; only a bound draft dispatch with verified termination may continue a stopped session');
     const prior=rows.some((row,index)=>{
       if (row.payload?.type!=='tool_call' || row.payload.name!=='run_subagent' || row.payload.tool_call_id===input.tool_call_id || Date.parse(row.timestamp)<Date.parse(dispatch.at)) return false;
-      if(toolWasNotExecuted(rows,index)) return false;
-      if(launchNeverStarted(rows,index)) return false;
-      // Native hook refusal is also prelaunch evidence, including malformed arguments.
-      const outputs=rows.slice(index+1).filter(r=>r.payload?.type==='tool_call_output' && r.payload.tool_call_id===row.payload.tool_call_id);
-      if(outputs.length===1 && rows.filter(r=>r.payload?.type==='tool_call' && r.payload.tool_call_id===row.payload.tool_call_id).length===1 &&
-        denialRecorded(rows,row.payload.tool_call_id,DELEGATION_DENIAL)) return false;
+      // Shared prelaunch vocabulary: native malformed refusal, channel 500 before launch,
+      // any host denial output — none of these ever ran, so none is a prior attempt.
+      if(neverAttempted(rows,index)) return false;
+      // Fail-closed direction unlike the binding count: an unreadable call MIGHT have been
+      // an attempt at this dispatch, and a duplicate spawn is worse than a blocked retry.
       let call; try {call=typeof row.payload.arguments==='string'?JSON.parse(row.payload.arguments):row.payload.arguments;} catch {return true;}
       if (!String(call?.prompt).includes(dispatch.dispatch_id)) return false;
       return true;

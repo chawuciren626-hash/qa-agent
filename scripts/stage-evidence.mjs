@@ -8,8 +8,10 @@ import { requiredArtifacts, stageRequiredArtifacts, assertArtifactContract, insp
 import { assertChildCommands, toolWasNotExecuted } from './child-command-policy.mjs';
 import { CommandUsageError } from './command-contracts.mjs';
 import { assertRecoveryDecisions } from './orchestration-state.mjs';
-import { DELEGATION_DENIAL, denialRecorded, isDenialOutput } from './hook-denial.mjs';
-import { launchNeverStarted } from './launch-evidence.mjs';
+import { isDenialOutput } from './hook-denial.mjs';
+import { parseActionReceipt } from './action-receipt.mjs';
+import { REQUEST_LIFECYCLE, assertRequestEnded } from './session-lifecycle.mjs';
+import { parseCallArgs, promptTokens, callTargetsDispatch, neverAttempted, dispatchPolicyMismatch } from './dispatch-binding.mjs';
 export { requiredArtifacts } from './artifact-contracts.mjs';
 
 // Eligibility only: completion still validates the child and artifacts under lock.
@@ -83,8 +85,8 @@ function verifiedParentArtifactCorrection(root,runId,stage,parentId,childId,agen
   const failures=childRows.flatMap(row=>{
     if(row.payload?.type!=='tool_call_output' || typeof row.payload.output!=='string') return [];
     try {
-      const result=JSON.parse(row.payload.output);
-      return result.task_key===key && result.exit_code!==0 && result.recovery?.category==='artifact_revision' &&
+      const result=parseActionReceipt(row.payload.output);
+      return result && result.task_key===key && result.exit_code!==0 && result.recovery?.category==='artifact_revision' &&
         verifyActionRecoveryReceipt(root,runId,parentId,dispatchAt,result) ? [row] : [];
     } catch {return [];}
   });
@@ -103,8 +105,8 @@ function verifiedParentArtifactCorrection(root,runId,stage,parentId,childId,agen
         if(receipt.action!=='validate_artifacts' || receipt.run_id!==runId || receipt.task_key!==key || receipt.status!=='completed' || receipt.exit_code!==0 ||
           receipt.host_binding?.session_id!==parentId || Date.parse(receipt.at)<=failedAt || !/^[a-f0-9-]{36}$/.test(basename(receipt.command_evidence ?? ''))) continue;
         const bound=parent.some(row=>row.payload?.type==='tool_call_output' && row.payload.tool_call_id===receipt.host_binding.tool_call_id && (()=>{
-          try {const result=JSON.parse(row.payload.output);return result.action_receipt===receiptPath && result.status==='completed' && result.exit_code===0 && result.command_id===basename(receipt.command_evidence);}
-          catch {return false;}
+          const result=parseActionReceipt(row.payload.output);
+          return Boolean(result) && result.action_receipt===receiptPath && result.status==='completed' && result.exit_code===0 && result.command_id===basename(receipt.command_evidence);
         })());
         if(!bound) continue;
         const dir=resolve(commandBase,basename(receipt.command_evidence));
@@ -204,8 +206,8 @@ export function findParentDispatch(parent, { runId, agent, childId, dispatchedAt
   for (const [index, row] of parent.entries()) {
     if (row.type !== 'model_msg' || row.payload?.type !== 'tool_call' || row.payload.name !== 'run_subagent') continue;
     if(parallel || dispatchId) {
-      let args;try {args=typeof row.payload.arguments==='string'?JSON.parse(row.payload.arguments):row.payload.arguments;} catch {continue;}
-      if(!dispatchId || args?.agent_id!==agent || !String(args.prompt).split(/[^A-Za-z0-9-]+/).includes(dispatchId)) continue;
+      const args=parseCallArgs(row);
+      if(!dispatchId || args?.agent_id!==agent || !promptTokens(args?.prompt).includes(dispatchId)) continue;
     }
     const outputs = (results.get(row.payload.tool_call_id) ?? []).filter(entry => entry.position > index);
     // Token-bearing tasks bind to the dispatch; legacy traces require global uniqueness.
@@ -224,7 +226,7 @@ export function findParentDispatch(parent, { runId, agent, childId, dispatchedAt
   if(retained) {
     const continuations=parent.filter(row=>{
       if(row.payload?.type!=='tool_call' || row.payload.name!=='input_subagent' || Date.parse(row.timestamp)<=Date.parse(call.outputs[0].output.timestamp)) return false;
-      try {const args=typeof row.payload.arguments==='string'?JSON.parse(row.payload.arguments):row.payload.arguments;return args?.subagent_id===retained[1];} catch {return false;}
+      return parseCallArgs(row)?.subagent_id===retained[1];
     });
     const latest=continuations.at(-1);
     if(latest) {
@@ -237,10 +239,8 @@ export function findParentDispatch(parent, { runId, agent, childId, dispatchedAt
   const failed=toolOutcome(returned)==='fatal' && /(?:^|\n)\[subagent failed:[^\r\n]*\](?: \[subagent idle[^\r\n]*\])?\s*$/.test(String(returned.output));
   const interrupted=toolOutcome(returned)==='aborted' && !isDenialOutput(returned.output);
   if (toolOutcome(returned) !== 'completed' && !(includeFailed && failed) && !(includeInterrupted && interrupted)) return null;
-  let args;
-  try { args = typeof call.row.payload.arguments === 'string' ? JSON.parse(call.row.payload.arguments) : call.row.payload.arguments; } catch { return null; }
-  if (args?.agent_id !== agent || typeof args.prompt !== 'string' || !args.prompt.split(/[^A-Za-z0-9-]+/).includes(runId)) return null;
-  if (dispatchId && !args.prompt.split(/[^A-Za-z0-9-]+/).includes(dispatchId)) return null;
+  const args = parseCallArgs(call.row);
+  if (!callTargetsDispatch(args, { runId, agent, dispatchId })) return null;
   if (commandPolicy && !args.prompt.includes(commandPolicy)) return null;
   const times = [dispatchedAt, call.row.timestamp, event.row.timestamp, call.outputs[0].output.timestamp].map(Date.parse);
   if (times.some(time => !Number.isFinite(time)) || times.some((time, i) => i > 0 && time < times[i - 1])) return null;
@@ -248,19 +248,14 @@ export function findParentDispatch(parent, { runId, agent, childId, dispatchedAt
 }
 
 export function matchingDispatchCalls(parent, runId, dispatch) {
-  return [...parent.entries()].filter(([index, row]) => {
+  return parent.filter((row, index) => {
     if (row.payload?.type !== 'tool_call' || row.payload.name !== 'run_subagent' || !(Date.parse(row.timestamp) >= Date.parse(dispatch.at))) return false;
-    // A call the channel answered 500 before any child existed is not a binding, even though
-    // the retry that followed it is. Counting both made a normally returned dispatch look
-    // ambiguous, and every downstream action refused it.
-    if (launchNeverStarted(parent, index)) return false;
-    const denied=denialRecorded(parent,row.payload.tool_call_id,DELEGATION_DENIAL);
-    if(denied) return false;
-    let args;
-    try { args = typeof row.payload.arguments === 'string' ? JSON.parse(row.payload.arguments) : row.payload.arguments; } catch { return false; }
-    const tokens = String(args?.prompt).split(/[^A-Za-z0-9-]+/);
-    return args?.agent_id === dispatch.agent && tokens.includes(runId) && (!dispatch.dispatch_id || tokens.includes(dispatch.dispatch_id));
-  }).map(([, row]) => row);
+    // A call that never ran (channel 500 before launch, host denial, native malformed
+    // refusal) is not a binding; counting one made a normally returned dispatch look
+    // ambiguous and every downstream action refused it.
+    if (neverAttempted(parent, index)) return false;
+    return callTargetsDispatch(parseCallArgs(row), { runId, agent: dispatch.agent, dispatchId: dispatch.dispatch_id });
+  });
 }
 
 export function resolveDispatchedChild(root, runId, stage, parentId, agentRoot = process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(), '.penguin/data/default_project/agents'), {includeFailed=false,includeInterrupted=false,cache=null}={}) {
@@ -268,36 +263,39 @@ export function resolveDispatchedChild(root, runId, stage, parentId, agentRoot =
   const manifest=JSON.parse(readRunFile(runDirectory(root,runId),'manifest.json').data);
   const dispatch=manifest.orchestration?.events?.filter(e=>e.type==='dispatched' && e.stage===stage).at(-1);
   if (!dispatch || dispatch['parent-session-id']!==parentId) throw new Error('No current dispatch owned by this parent');
-  if (matchingDispatchCalls(parent,runId,dispatch).length!==1) throw new CommandUsageError('Dispatch must bind exactly one child call; retries need failure and explicit recovery');
+  const attempts=matchingDispatchCalls(parent,runId,dispatch);
+  if (attempts.length!==1) throw new CommandUsageError('Dispatch must bind exactly one child call; retries need failure and explicit recovery');
   const candidates=[...new Set(parent.filter(r=>r.type==='event_msg' && r.payload?.type==='subagent').map(r=>r.payload.session_id))];
   const parallel=manifest.orchestration?.plan?.workflow_mode==='task' || (manifest.orchestration?.plan?.execution_branches?.length??0)>1;
   const owned=candidates.filter(childId=>{
     if(!parallel) return true;
-    try {return readSession(agentRoot,dispatch.agent,childId,cache).some(r=>r.payload?.type==='text' && r.payload.role==='user' && r.payload.text?.split(/[^A-Za-z0-9-]+/).includes(dispatch.dispatch_id) && r.payload.text.includes(dispatch.child_command_policy));} catch {return false;}
+    try {return readSession(agentRoot,dispatch.agent,childId,cache).some(r=>r.payload?.type==='text' && r.payload.role==='user' && promptTokens(r.payload.text).includes(dispatch.dispatch_id) && r.payload.text.includes(dispatch.child_command_policy));} catch {return false;}
   });
   const matches=owned.map(childId=>({childId,binding:findParentDispatch(parent,{runId,agent:dispatch.agent,childId,dispatchedAt:dispatch.at,dispatchId:dispatch.dispatch_id,commandPolicy:dispatch.child_command_policy,parallel,includeFailed,includeInterrupted})})).filter(m=>m.binding);
-  if (matches.length!==1) throw new CommandUsageError('No unique returned child for this dispatch; wait for the tool return, do not guess or scan directories');
+  if (matches.length!==1) {
+    if(matches.length===0 && dispatchPolicyMismatch(attempts[0],dispatch)) throw new CommandUsageError('The bound dispatch call prompt does not carry the registered command policy; copy delegation.prompt unchanged instead of rewording it');
+    throw new CommandUsageError('No unique returned child for this dispatch; wait for the tool return, do not guess or scan directories');
+  }
   const child=readSession(agentRoot,dispatch.agent,matches[0].childId,cache);
   const meta=child.find(r=>r.type==='session_meta')?.payload;
   if (meta?.session_id!==matches[0].childId || meta.source!=='subagent' || resolve(meta.agent_state ?? '')!==resolve(agentRoot,dispatch.agent,'agent_state') || !sessionWorkspaces(root,runDirectory(root,runId)).includes(resolve(meta.workspace ?? ''))) throw new Error('Resolved child identity or workspace mismatch');
   const failed=matches[0].binding.outcome==='failed';
-  const lifecycle=child.filter(row=>row.type==='event_msg' && ['request_begin','request_end','abort'].includes(row.payload?.type)).at(-1)?.payload;
+  const lifecycle=child.filter(row=>row.type==='event_msg' && [...REQUEST_LIFECYCLE,'abort'].includes(row.payload?.type)).at(-1)?.payload;
   const childInterrupted=lifecycle?.type==='abort' || (lifecycle?.type==='request_end' && lifecycle.status==='aborted');
   if(includeInterrupted && (matches[0].binding.outcome==='interrupted' || childInterrupted)) return {child_session:matches[0].childId,agent:dispatch.agent,dispatch_id:dispatch.dispatch_id,binding:matches[0].binding,completion_verified:false,outcome:'interrupted',continuation:recordedChildHandle(parent,dispatch,runId),next_action:'原调用已中断，不再等待旧回执；用户要求继续时，将补充输入送入原生续接句柄，不重新run_subagent。没有句柄时需要宿主恢复原会话；不得猜句柄、重派发或把中断记为完成。'};
   return {child_session:matches[0].childId,agent:dispatch.agent,dispatch_id:dispatch.dispatch_id,binding:matches[0].binding,completion_verified:false,...(failed?{outcome:'failed',next_action:'record_failed_dispatch',failure_template:{action:'fail',run_id:runId,stage,dispatch_id:dispatch.dispatch_id,reason:'Professional child returned an explicit failure; preserve its trace. No completion or execution retry authorized.'}}:{})};
 }
 
 export function recordedChildHandle(rows, dispatch, runId) {
-  const calls = [...rows.entries()].filter(([index, row]) => {
+  const calls = rows.filter((row, index) => {
     if(row.type !== 'model_msg' || row.payload?.type !== 'tool_call' || row.payload.name !== 'run_subagent') return false;
-    // Same rule as the binding count: a 500 that never launched must not hide the handle of
+    // Same rule as the binding count: a call that never ran must not hide the handle of
     // the retry that did, or resolve_child_handle reports "unavailable" for a live child.
-    if(launchNeverStarted(rows,index)) return false;
-    if(rows.some(r=>r.payload?.type==='tool_call_output' && r.payload.tool_call_id===row.payload.tool_call_id && isDenialOutput(r.payload.output))) return false;
-    let args; try { args = typeof row.payload.arguments === 'string' ? JSON.parse(row.payload.arguments) : row.payload.arguments; } catch { return false; }
-    return args?.agent_id === dispatch.agent && typeof args.prompt === 'string' &&
-      [runId, dispatch.dispatch_id].every(id => args.prompt.split(/[^A-Za-z0-9-]+/).includes(id)) && args.prompt.includes(dispatch.child_command_policy) && Date.parse(row.timestamp) >= Date.parse(dispatch.at);
-  }).map(([, row]) => row);
+    if(neverAttempted(rows, index)) return false;
+    const args = parseCallArgs(row);
+    return callTargetsDispatch(args, { runId, agent: dispatch.agent, dispatchId: dispatch.dispatch_id }) &&
+      args.prompt.includes(dispatch.child_command_policy) && Date.parse(row.timestamp) >= Date.parse(dispatch.at);
+  });
   const absent = { status: 'unavailable', subagent_id: null, completion_verified: false,
     next_action: '等待原工具返回；不要从dispatch_id或子会话ID推导句柄，不重复派发。正常结束的子任务使用handoff，人工登录等待使用宿主卡片续接原子会话，禁止重新派发。' };
   if (calls.length !== 1) return absent;
@@ -340,10 +338,8 @@ export function verifyStageEvidence(root, runId, manifest, options, agentRoot = 
   if (dispatch.dispatch_id && (options['dispatch-id'] !== dispatch.dispatch_id || parentId !== dispatch['parent-session-id'])) throw new Error('Completion does not belong to the current dispatch');
   const child = readSession(agentRoot, dispatch.agent, childId, cache);
   const parent = readSession(agentRoot, 'test_agent', parentId, cache);
-  if (dispatch.dispatch_id) {
-    const matchingCalls = matchingDispatchCalls(parent,runId,dispatch);
-    if (matchingCalls.length !== 1) throw new Error('Dispatch must bind exactly one child call; retries need failure and explicit recovery');
-  }
+  const matchingCalls = dispatch.dispatch_id ? matchingDispatchCalls(parent,runId,dispatch) : [];
+  if (dispatch.dispatch_id && matchingCalls.length !== 1) throw new Error('Dispatch must bind exactly one child call; retries need failure and explicit recovery');
   const meta = child.find(row => row.type === 'session_meta');
   if (meta?.payload.session_id !== childId || meta.payload.source !== 'subagent' || resolve(meta.payload.agent_state) !== resolve(agentRoot, dispatch.agent, 'agent_state')) throw new Error('Wrong child agent or session source');
   if (!sessionWorkspaces(root,runDirectory(root,runId)).includes(resolve(meta.payload.workspace))) throw new Error('Child workspace mismatch');
@@ -352,7 +348,9 @@ export function verifyStageEvidence(root, runId, manifest, options, agentRoot = 
   // below, so rewording the template must not strand runs dispatched under older wording.
   if (dispatch.child_command_policy && ![1,2,3].some(version=>dispatch.child_command_policy.startsWith(`QA_COMMAND_POLICY_V${version} ${dispatch.dispatch_id}:`))) throw new Error('Dispatch command policy differs from supported contract');
   const called = findParentDispatch(parent, { runId, agent: dispatch.agent, childId, dispatchedAt: dispatch.at, dispatchId: dispatch.dispatch_id, commandPolicy: dispatch.child_command_policy, parallel:manifest.orchestration?.plan?.workflow_mode==='task' || (manifest.orchestration?.plan?.execution_branches?.length??0)>1 });
-  if (!called) throw new Error('No matching parent dispatch response for this run');
+  if (!called) throw new Error(dispatchPolicyMismatch(matchingCalls[0],dispatch)
+    ? 'The bound dispatch call prompt does not carry the registered command policy; copy delegation.prompt unchanged instead of rewording it'
+    : 'No matching parent dispatch response for this run');
   const partialFailures=[];
   if (dispatch.child_command_policy) {
     if (!child.some(row => row.payload?.type === 'text' && row.payload.role === 'user' && row.payload.text?.includes(dispatch.child_command_policy))) throw new Error('Child did not receive the dispatch stop policy');
@@ -377,8 +375,7 @@ export function verifyStageEvidence(root, runId, manifest, options, agentRoot = 
   if (!child.some(row => row.payload?.type === 'text' && row.payload.role === 'user' && row.payload.text?.includes(runId))) throw new Error('Child task does not reference current run');
   const lastMessage = child.filter(row => row.type === 'model_msg' && row.payload?.role === 'assistant').at(-1);
   if (lastMessage?.payload.type !== 'text' || !lastMessage.payload.text?.trim() || Date.parse(lastMessage.timestamp) < Date.parse(dispatch.at)) throw new Error('Child has no completed response after dispatch');
-  const lastRequest = child.filter(row => row.type === 'event_msg' && ['request_begin', 'request_end'].includes(row.payload?.type)).at(-1);
-  if (lastRequest?.payload.type !== 'request_end' || lastRequest.payload.status !== 'completed') throw new Error('Child request is not complete');
+  assertRequestEnded(child, ['completed'], 'Child request is not complete');
   if (manifest.orchestration.events.some(e => e.evidence?.session_id === childId)) throw new Error('Child session already used to complete a stage');
   const artifacts = (options.artifacts ?? '').split(',').filter(Boolean);
   const preparation = options.stage === 'execution' && dispatch.mode === 'prepare';

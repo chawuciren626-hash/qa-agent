@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { readRunFile, runDirectory } from './design-quality.mjs';
 import { assertParentSession, resolveDispatchedChild, readSession } from './stage-evidence.mjs';
 import { browserLifecycle } from './browser-lifecycle.mjs';
+import { assertRequestEnded } from './session-lifecycle.mjs';
 
 export function nativeBrowserContinuation(rows, waitingAt) {
   const latest=rows.filter(r=>r.type==='model_msg' && r.payload?.role==='user' && r.payload?.type==='text' && r.payload.sender!=='harness' && typeof r.payload.text==='string' && r.payload.text.trim() && !/^\s*\[(?:Tool Result|System|Internal|Subagent)/i.test(r.payload.text)).at(-1);
@@ -34,7 +35,6 @@ export function assertBrowserResume(root,runId,manifest,parent,agentRoot=process
   if(!nativeBrowserContinuation(rows,waiting.waiting_at)) throw new Error('Wait for the actual user response confirming continuation; no technical unlock approval is needed');
   const child=resolveDispatchedChild(root,runId,'execution',parent,agentRoot);
   const trace=readSession(agentRoot,child.agent,child.child_session);
-  const end=trace.filter(r=>['request_begin','request_end'].includes(r.payload?.type)).at(-1);
-  if(end?.payload.type!=='request_end' || end.payload.status!=='completed') throw new Error('Previous browser child has not returned');
+  assertRequestEnded(trace, ['completed'], 'Previous browser child has not returned');
   return {resumes_dispatch_id:waiting.dispatch_id,human_kind:waiting.human_kind,child_session:child.child_session,waiting_command_id:waiting.waiting_command_id};
 }

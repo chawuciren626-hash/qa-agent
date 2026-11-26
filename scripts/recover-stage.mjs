@@ -7,6 +7,8 @@ import { readRunFile } from './design-quality.mjs';
 import { assertParentSession, readSession, requiredArtifacts } from './stage-evidence.mjs';
 import { stageRequiredArtifacts } from './artifact-contracts.mjs';
 import { normalizeInvalidation, assessStageArtifacts, describeStaleness } from './artifact-scope.mjs';
+import { assertRequestEnded } from './session-lifecycle.mjs';
+import { promptTokens } from './dispatch-binding.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const project = JSON.parse(readFileSync(resolve(root, 'config/project.json'), 'utf8'));
@@ -45,13 +47,12 @@ withRunLock(root, project, runId, () => {
   for (const [index, row] of parent.entries()) {
     if (row.payload?.type !== 'tool_call' || row.payload.name !== 'run_subagent' || Date.parse(row.timestamp) < Date.parse(dispatch.at)) continue;
     const call = typeof row.payload.arguments === 'string' ? JSON.parse(row.payload.arguments) : row.payload.arguments;
-    if (!String(call?.prompt).split(/[^A-Za-z0-9-]+/).includes(runId)) continue;
+    if (!promptTokens(call?.prompt).includes(runId)) continue;
     const end = parent.findIndex((item, position) => position > index && item.payload?.type === 'tool_call_output' && item.payload.tool_call_id === row.payload.tool_call_id);
     if (end < 0) throw new Error('Child call has no terminal tool response');
     for (const event of parent.slice(index + 1, end).filter(item => item.payload?.type === 'subagent')) {
       const child = readSession(agentRoot, call.agent_id, event.payload.session_id);
-      const last = child.filter(item => ['request_begin', 'request_end'].includes(item.payload?.type)).at(-1);
-      if (last?.payload.type !== 'request_end' || !['completed', 'interrupted', 'failed', 'cancelled', 'error'].includes(last.payload.status)) throw new Error('Child session is active or termination is unknown');
+      assertRequestEnded(child, ['completed', 'interrupted', 'failed', 'cancelled', 'error'], 'Child session is active or termination is unknown');
       children.push(event.payload.session_id);
     }
   }

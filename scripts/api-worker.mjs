@@ -7,6 +7,7 @@ import { executeApiPlan, redactApi } from './api-engine.mjs';
 import { protectedInputs } from './protected-inputs.mjs';
 import { applicationDataRoot } from './application-data.mjs';
 import { readSession } from './stage-evidence.mjs';
+import { CANCELLED_STATUSES } from './session-lifecycle.mjs';
 import { randomUUID } from 'node:crypto';
 import { ownProcessIdentity } from './process-identity.mjs';
 
@@ -18,7 +19,7 @@ export async function runApiWorker(privateDir) {
   const cancelled = () => {
     if(state.agent_root && Date.now()-checkedAt>1000) {
       checkedAt=Date.now();
-      try {parentCancelled=readSession(state.agent_root,'test_agent',state.owner).some(r=>Date.parse(r.timestamp)>=Date.parse(state.started_at) && r.payload?.type==='request_end' && ['cancelled','interrupted'].includes(r.payload.status));}catch{}
+      try {parentCancelled=readSession(state.agent_root,'test_agent',state.owner).some(r=>Date.parse(r.timestamp)>=Date.parse(state.started_at) && r.payload?.type==='request_end' && CANCELLED_STATUSES.includes(r.payload.status));}catch{}
     }
     if(parentCancelled)return true;
     if(existsSync(resolve(privateDir, 'cancel.json')) || existsSync(resolve(state.run_dir, 'execution/api/cancel.json'))) return true;

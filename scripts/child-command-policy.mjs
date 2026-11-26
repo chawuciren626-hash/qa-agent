@@ -3,6 +3,8 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import { stageWriteRules, isControlledStageEvidence } from './stage-registry.mjs';
 import { isSafeArtifactAction } from './recovery-policy.mjs';
 import { anyDenialCorroborated, isAnyHookDenial } from './hook-denial.mjs';
+import { parseActionReceipt } from './action-receipt.mjs';
+import { REQUEST_LIFECYCLE } from './session-lifecycle.mjs';
 
 export function childCommandPolicy(dispatchId, version = 3) {
   if (version === 3) return `QA_COMMAND_POLICY_V3 ${dispatchId}: 仅交付已分配阶段，校验和导出使用结构化动作。安全输入与草稿纠错不设固定次数；依据已记录的recovery修正原因，stalled=true时改变方法或返回已有结果和限制，不原样循环。不得要求用户技术解锁。保留真实证据，未解决的错误不得宣称完成。禁止重放结果未知的产品操作、绕过凭据或扩大范围，不自行批准阶段或直接编辑manifest。`;
@@ -77,10 +79,8 @@ function runnerErrorSuperseded(rows,index,result) {
   if(!/^(?:run-[A-Za-z0-9-]+|unbound)$/.test(run) || !action) return false;
   return rows.slice(index+1).some(row=>{
     if(row.payload?.type!=='tool_call_output' || typeof row.payload.output!=='string') return false;
-    let next;
-    try { next=JSON.parse(row.payload.output.slice(row.payload.output.indexOf('{'), row.payload.output.lastIndexOf('}')+1)); }
-    catch { return false; }
-    if(next.status!=='completed' || (next.exit_code!==undefined && next.exit_code!==0)) return false;
+    const next=parseActionReceipt(row.payload.output);
+    if(!next || next.status!=='completed' || (next.exit_code!==undefined && next.exit_code!==0)) return false;
     return gateIdentity(String(next.task_key ?? ''))===identity;
   });
 }
@@ -168,7 +168,7 @@ export function toolWasNotExecuted(rows,index) {
   // The host rejects malformed streamed arguments before tool dispatch. Missing
   // output alone is NOT proof: require the exact native parsing failure event.
   try { parseToolArguments(rows[index]); return false; } catch {}
-  const end=following.findIndex(row=>['request_begin','request_end'].includes(row.payload?.type));
+  const end=following.findIndex(row=>REQUEST_LIFECYCLE.includes(row.payload?.type));
   if(end<0) return false;
   const segment=following.slice(0,end+1);
   if(segment.some(row=>row.payload?.type==='hook' ||
@@ -347,11 +347,10 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
       pendingCatalog=false;
       continue;
     }
-    let result;
-    try {
-      // PenguinHarness may prepend shell-profile warnings to the single JSON response.
-      result = typeof raw === 'string' ? JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1)) : raw;
-    } catch {
+    // PenguinHarness may prepend shell-profile warnings to the single JSON response;
+    // the shared receipt parser owns that tolerance.
+    const result = parseActionReceipt(raw);
+    if (!result) {
       // Two very different situations used to share one message, and the misleading half made
       // the controller believe a retry could help. A fatal command ran and died without a
       // receipt: quote what it said. A completed command whose stdout was elided or garbled is

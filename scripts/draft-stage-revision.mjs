@@ -9,6 +9,7 @@ import { assertChildCommands } from './child-command-policy.mjs';
 import { readRunFile } from './design-quality.mjs';
 import { draftStages, stageRevisionBudget } from './recovery-policy.mjs';
 import { isIndependent, taskRequiredArtifacts } from './independent-task.mjs';
+import { requestEndStatus } from './session-lifecycle.mjs';
 import { stageWriteRules } from './stage-registry.mjs';
 import { inspectPreparationSafety, preparationDraftFiles } from './preparation-recovery.mjs';
 
@@ -52,9 +53,9 @@ export function inspectDraftRevision(root,runId,stage,parentId,reason,agentRoot=
   const child=readSession(agentRoot,dispatch.agent,childId);
   const meta=child.find(row=>row.type==='session_meta')?.payload;
   if (meta?.session_id!==childId || meta.source!=='subagent' || resolve(meta.agent_state ?? '')!==resolve(agentRoot,dispatch.agent,'agent_state') || !sessionWorkspaces(root,resolve(manifestPath,'..')).includes(resolve(meta.workspace ?? ''))) throw new Error('Child identity or workspace mismatch');
-  const end=child.filter(r=>['request_begin','request_end'].includes(r.payload?.type)).at(-1);
-  if (end?.payload.type!=='request_end' || (end.payload.status!=='completed' &&
-      !(stage!=='execution' && bound.outcome==='failed' && ['failed','fatal','rejected'].includes(end.payload.status)))) throw new Error('Child termination requires review');
+  const endStatus=requestEndStatus(child);
+  if (endStatus!=='completed' &&
+      !(stage!=='execution' && bound.outcome==='failed' && ['failed','fatal','rejected'].includes(endStatus))) throw new Error('Child termination requires review');
   assertChildCommands(child,{allowRecovery:true,allowUnresolvedRecovery:true,verifyRecovery:result=>verifyActionRecoveryReceipt(root,runId,parentId,dispatch.at,result)});
   const dir=resolve(manifestPath,'..');
   const preparation=stage==='execution'?inspectPreparationSafety(root,dir,runId,parentId,dispatch,child,parent):null;

@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { dataPath } from './directory-context.mjs';
 import { readRunFile } from './design-quality.mjs';
 import { STAGE_BOUNDARY_DENIAL, denialCorroborated } from './hook-denial.mjs';
+import { parseActionReceipt } from './action-receipt.mjs';
 
 const safeActions = new Set(['read_source', 'run_status', 'prepare_execution_plan', 'validate_execution_prepare', 'validate_artifacts']);
 const safeScripts = new Set(['select-test-cases.mjs', 'create-execution-plan.mjs', 'validate-artifacts.mjs', 'show-run-status.mjs', 'record-orchestration-event.mjs']);
@@ -45,7 +46,8 @@ export function inspectPreparationSafety(root, dir, runId, parentId, dispatch, c
     const args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments;
     assert(controlledAction(args?.cmd), 'Preparation command must use the controlled action entry');
     const raw = String(output.output);
-    const result = JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1));
+    const result = parseActionReceipt(raw);
+    assert(result, 'Preparation response is unreadable as an action receipt');
     if (/\s+catalog\s*$/.test(args.cmd)) {
       assert(result.status === 'help' && toolOutcome(output) === 'completed', 'Catalog lookup did not finish');
       continue;

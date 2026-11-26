@@ -9,6 +9,7 @@ import { assertArtifactContract, stageRequiredArtifacts } from './artifact-contr
 import { writeJson } from './orchestration-state.mjs';
 import { guardDelegation } from './delegation-guard.mjs';
 import { DELEGATION_DENIAL, denialRecorded } from './hook-denial.mjs';
+import { parseCallArgs, promptTokens } from './dispatch-binding.mjs';
 
 export function inspectHandoff(root,parentId,agentRoot,cache=null) {
   // This sweep walks every run and stage owned by one controller. Every check below
@@ -49,8 +50,8 @@ export function inspectHandoff(root,parentId,agentRoot,cache=null) {
           const calls=rows.filter(r=>{
             if(r.payload?.type!=='tool_call' || r.payload.name!=='run_subagent') return false;
             if(denialRecorded(rows,r.payload.tool_call_id,DELEGATION_DENIAL)) return false;
-            let args;try {args=typeof r.payload.arguments==='string'?JSON.parse(r.payload.arguments):r.payload.arguments;} catch {return false;}
-            return args?.agent_id===dispatch.agent && String(args.prompt).split(/[^A-Za-z0-9-]+/).includes(dispatch.dispatch_id);
+            const args=parseCallArgs(r);
+            return args?.agent_id===dispatch.agent && promptTokens(args?.prompt).includes(dispatch.dispatch_id);
           });
           if(!calls.some(call=>rows.some(r=>r.payload?.type==='tool_call_output' && r.payload.tool_call_id===call.payload.tool_call_id))) continue;
         }

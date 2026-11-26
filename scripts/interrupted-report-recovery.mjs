@@ -4,6 +4,8 @@ import { homedir } from 'node:os';
 import { readRunFile, runDirectory } from './design-quality.mjs';
 import { assertParentSession, readSession, recordedChildHandle, resolveDispatchedChild } from './stage-evidence.mjs';
 import { assertArtifactContract, stageRequiredArtifacts } from './artifact-contracts.mjs';
+import { toolOutcome } from './trace-outcome.mjs';
+import { parseActionReceipt } from './action-receipt.mjs';
 
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 const same = (a,b) => a && b && resolve(a) === resolve(b);
@@ -44,14 +46,15 @@ export function verifyInterruptedReportRecovery(root, runId, manifest, parentId,
     const binding=value.host_binding;
     const call=parent.find(r=>r.payload?.type==='tool_call' && r.payload.tool_call_id===binding.tool_call_id);
     const output=parent.find(r=>r.payload?.type==='tool_call_output' && r.payload.tool_call_id===binding.tool_call_id);
-    if(!call || !output || output.payload.status!=='completed' || !after(output.timestamp,exportCommand.finished_at)) return false;
+    if(!call || !output || toolOutcome(output.payload)!=='completed' || !after(output.timestamp,exportCommand.finished_at)) return false;
     let args,receipt,command,log;
     try {
       args=typeof call.payload.arguments==='string'?JSON.parse(call.payload.arguments):call.payload.arguments;
-      receipt=JSON.parse(output.payload.output);
+      receipt=parseActionReceipt(output.payload.output);
       command=json(resolve(value.command_evidence,'command.json'));
       log=json(resolve(value.command_evidence,'command.log'));
     } catch {return false;}
+    if(!receipt) return false;
     if(args?.qa_request?.action!=='validate_artifacts' || args.qa_request.run_id!==runId || args.qa_request.stage!=='report' || receipt.command_id!==command.command_id || receipt.status!=='completed' || receipt.exit_code!==0) return false;
     if(!same(receipt.action_receipt,resolve(auditDir,name)) || !same(receipt.evidence_dir,value.command_evidence) || !same(value.command_evidence,resolve(run,'../../command-runs',command.command_id))) return false;
     if(command.script!=='validate-artifacts.mjs' || command.status!=='completed' || command.result?.code!==0 || command.host_binding?.tool_call_id!==binding.tool_call_id || log.run_id!==runId || log.stage!=='report' || log.status!=='passed' || log.errors?.length) return false;
