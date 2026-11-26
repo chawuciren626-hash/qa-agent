@@ -1,6 +1,6 @@
 # 门禁续修部署说明（969b648 / 46278f4 / a54ef3d / 6729924）
 
-给 codex：这三个提交（外加一处同批补丁）是**同一个现场的连续四处收口问题**，只动 `scripts/`，
+给 codex：这几个提交（含一处同批补丁）是**同一个现场的连续四处收口问题**，只动 `scripts/`，
 不涉及 `platform/`，**不需要重建客户端或服务端，也不需要重启引擎进程**（引擎脚本与 hook 的
 `guard.mjs` 都是每次工具调用新起进程，文件替换后下一个调用即生效）。
 
@@ -34,7 +34,7 @@
 
 **不需要动的**：
 
-- `penguin/hooks/*/hooks.json`：这三个提交没有改它。上一批的 `timeout: 10 → 60` 已经同步到各 Agent
+- `penguin/hooks/*/hooks.json`：这批提交没有改它。上一批的 `timeout: 10 → 60` 已经同步到各 Agent
   （已核对 `installed/data/penguin/<acct>/agents/*/agent_state/hooks/qa-*/hooks.json` 为 `60`）。
 - `platform/`：无改动，不用重打 `pnpm build`，不用重装桌面端。
 - 数据库、运行中的 run：无 schema 变更。
