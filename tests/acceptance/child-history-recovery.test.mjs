@@ -196,3 +196,25 @@ test('a draft_records debt is closed by a successful stage validation, not by ot
     task_key:'run-abc:export_test_cases:test_cases',action_receipt:'E:/audit/2.json',result:{termination_confirmed:true}});
   assert.throws(()=>assertChildCommands([debtCall,output('debt',debt),validatedCall,output('validated',otherAction)],recoveryOptions),/Still open/);
 });
+// A diagnose debt is the same evidence shape: diagnose_* only inspects, persists nothing, and
+// its success can be structurally impossible mid-stage (diagnose_task:execution is gated on
+// browser artifacts that only exist after the grant and a real run). One successful
+// validate_artifacts for the same stage proves the inspected artifacts; other actions or a
+// different stage do not.
+test('a diagnose debt is closed by a successful stage validation, not by other actions',()=>{
+  const debt=JSON.stringify({status:'rejected',exit_code:2,classification:'input_rejected',action:'diagnose_task',
+    task_key:'run-abc:diagnose_task:execution',
+    recovery:{category:'input_correction',key:'run-abc:diagnose_task:execution',failure_number:1,retry_allowed:true,policy:'progress_based',stalled:false}});
+  const debtCall=call('exec_command','debt',{cmd:'node scripts/project-action.mjs execute --request=output/action-requests/d.json'});
+  const validated=JSON.stringify({status:'completed',exit_code:0,action:'validate_artifacts',script:'validate-artifacts.mjs',
+    task_key:'run-abc:validate_artifacts:execution',action_receipt:'E:/audit/3.json',result:{termination_confirmed:true}});
+  const validatedCall=call('exec_command','validated',{cmd:'node scripts/project-action.mjs execute --request=output/action-requests/e.json'});
+  const recoveryOptions={...options,verifyRecovery:result=>result.status==='completed'||result.recovery!=null};
+  assert.doesNotThrow(()=>assertChildCommands([debtCall,output('debt',debt),validatedCall,output('validated',validated)],recoveryOptions));
+  assert.throws(()=>assertChildCommands([debtCall,output('debt',debt)],recoveryOptions),/Still open/);
+  const wrongStage=JSON.stringify({...JSON.parse(validated),task_key:'run-abc:validate_artifacts:test_cases'});
+  assert.throws(()=>assertChildCommands([debtCall,output('debt',debt),validatedCall,output('validated',wrongStage)],recoveryOptions),/Still open/);
+  const otherAction=JSON.stringify({status:'completed',exit_code:0,action:'export_test_cases',script:'export-test-cases.mjs',
+    task_key:'run-abc:export_test_cases:execution',action_receipt:'E:/audit/4.json',result:{termination_confirmed:true}});
+  assert.throws(()=>assertChildCommands([debtCall,output('debt',debt),validatedCall,output('validated',otherAction)],recoveryOptions),/Still open/);
+});

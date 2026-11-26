@@ -5,6 +5,7 @@ import { isSafeArtifactAction } from './recovery-policy.mjs';
 import { anyDenialCorroborated, isAnyHookDenial } from './hook-denial.mjs';
 import { parseActionReceipt } from './action-receipt.mjs';
 import { REQUEST_LIFECYCLE } from './session-lifecycle.mjs';
+import { traceIndex, outputsAfter } from './trace-index.mjs';
 
 export function childCommandPolicy(dispatchId, version = 3) {
   if (version === 3) return `QA_COMMAND_POLICY_V3 ${dispatchId}: 仅交付已分配阶段，校验和导出使用结构化动作。安全输入与草稿纠错不设固定次数；依据已记录的recovery修正原因，stalled=true时改变方法或返回已有结果和限制，不原样循环。不得要求用户技术解锁。保留真实证据，未解决的错误不得宣称完成。禁止重放结果未知的产品操作、绕过凭据或扩大范围，不自行批准阶段或直接编辑manifest。`;
@@ -77,12 +78,12 @@ function runnerErrorSuperseded(rows,index,result) {
   const identity=gateIdentity(String(result.task_key ?? ''));
   const [run,action]=identity.split(':');
   if(!/^(?:run-[A-Za-z0-9-]+|unbound)$/.test(run) || !action) return false;
-  return rows.slice(index+1).some(row=>{
-    if(row.payload?.type!=='tool_call_output' || typeof row.payload.output!=='string') return false;
+  return [...traceIndex(rows).outputs.values()].some(list=>list.some(({row,position})=>{
+    if(position<=index || typeof row.payload.output!=='string') return false;
     const next=parseActionReceipt(row.payload.output);
     if(!next || next.status!=='completed' || (next.exit_code!==undefined && next.exit_code!==0)) return false;
     return gateIdentity(String(next.task_key ?? ''))===identity;
-  });
+  }));
 }
 
 // A ledger key is `${run}:${action}:${stage}` and a request may or may not name the stage.
@@ -153,13 +154,12 @@ function assertStageWrites(rows,options) {
 
 export function toolWasNotExecuted(rows,index) {
   const call=rows[index].payload;
-  const matches=rows.filter(row=>row.payload?.type==='tool_call' && row.payload.tool_call_id===call.tool_call_id);
+  const matches=traceIndex(rows).calls.get(call.tool_call_id) ?? [];
   if(!call.tool_call_id || matches.length!==1) return false;
-  const following=rows.slice(index+1);
-  const outputs=following.filter(row=>row.payload?.type==='tool_call_output' && row.payload.tool_call_id===call.tool_call_id);
+  const outputs=outputsAfter(rows,index,call.tool_call_id);
   if(outputs.length===1) {
-    const output=outputs[0];
-    const decisions=rows.slice(index+1,rows.indexOf(output)).filter(row=>row.type==='event_msg' && row.payload?.type==='approval_decision' && row.payload.tool_call_id===call.tool_call_id);
+    const output=outputs[0].row;
+    const decisions=rows.slice(index+1,outputs[0].position).filter(row=>row.type==='event_msg' && row.payload?.type==='approval_decision' && row.payload.tool_call_id===call.tool_call_id);
     return toolOutcome(output.payload)==='aborted' &&
       isAnyHookDenial(output.payload.output) &&
       decisions.length===1 && decisions[0].payload.decision==='deny';
@@ -168,6 +168,7 @@ export function toolWasNotExecuted(rows,index) {
   // The host rejects malformed streamed arguments before tool dispatch. Missing
   // output alone is NOT proof: require the exact native parsing failure event.
   try { parseToolArguments(rows[index]); return false; } catch {}
+  const following=rows.slice(index+1);
   const end=following.findIndex(row=>REQUEST_LIFECYCLE.includes(row.payload?.type));
   if(end<0) return false;
   const segment=following.slice(0,end+1);
@@ -204,7 +205,7 @@ function terminalCommandOutput(rows, index, initial, allowRecovery) {
     try { args = typeof call.payload.arguments === 'string' ? JSON.parse(call.payload.arguments) : call.payload.arguments; }
     catch { throw new Error('Child process poll arguments unreadable'); }
     if (args?.process_id !== processId) continue;
-    const outputs = rows.slice(i + 1).filter(row => row.payload?.type === 'tool_call_output' && row.payload.tool_call_id === call.payload.tool_call_id);
+    const outputs = outputsAfter(rows, i, call.payload.tool_call_id).map(entry => entry.row);
     if (outputs.length !== 1) throw new Error('Child process poll has unknown terminal response');
     const output = outputs[0];
     if (String(output.payload.output ?? '').trim() === `[process still running with process_id ${processId}]` && toolOutcome(output.payload) === 'completed') continue;
@@ -223,16 +224,19 @@ function backgroundCatalogWithoutOutput(rows, index, initial) {
   // Host messages arrive with a trailing newline on Windows; anchor the text, not the bytes.
   const match = String(initial.payload.output ?? '').trim().match(/^\[command running in background with process_id (proc-[A-Za-z0-9-]+); its completion will arrive as a user message — no need to poll\. Use input_command to interact \(kill: true stops it\)\]$/);
   if (!match || toolOutcome(initial.payload) !== 'completed') return false;
-  const polls = rows.slice(index + 1).filter(row => row.payload?.type === 'tool_call' && row.payload.name === 'input_command').filter(row => {
-    try { const args = parseToolArguments(row); return args.process_id === match[1] && args.kill !== true; }
-    catch { return false; }
-  });
+  const polls = [];
+  for (let i = index + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (row.payload?.type !== 'tool_call' || row.payload.name !== 'input_command') continue;
+    try { const args = parseToolArguments(row); if (args.process_id === match[1] && args.kill !== true) polls.push(row); }
+    catch { /* Unreadable poll arguments cannot prove a silent catalog. */ }
+  }
   if (!polls.length) return false;
   // "Silent" is a property of every poll, not of a poll count: checking twice to
   // confirm that a background catalog probe printed nothing must stay a no-match
   // instead of turning into an unresolved correction debt.
   return polls.every(poll => {
-    const outputs = rows.slice(index + 1).filter(row => row.payload?.type === 'tool_call_output' && row.payload.tool_call_id === poll.payload.tool_call_id);
+    const outputs = outputsAfter(rows, index, poll.payload.tool_call_id).map(entry => entry.row);
     if (outputs.length !== 1 || toolOutcome(outputs[0].payload) !== 'completed') return false;
     const text = String(outputs[0].payload.output ?? '').trim();
     return text === '' || text === '[no output]';
@@ -305,13 +309,13 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
   for (const [index, row] of rows.entries()) {
     if(allowRecovery && pendingReads.size && stageWriteBoundary && row.payload?.type==='tool_call' && row.payload.name==='read_file') {
       let args;try {args=parseToolArguments(row);} catch { /* A later valid native read may still correct this read-only detour. */ }
-      const outputs=rows.slice(index+1).filter(item=>item.payload?.type==='tool_call_output' && item.payload.tool_call_id===row.payload.tool_call_id);
-      const calls=rows.filter(item=>item.payload?.type==='tool_call' && item.payload.tool_call_id===row.payload.tool_call_id);
-      if(typeof args?.file_path==='string' && row.payload.tool_call_id && calls.length===1 && outputs.length===1 && toolOutcome(outputs[0].payload)==='completed') {
+      const outputs=outputsAfter(rows,index,row.payload.tool_call_id);
+      const calls=traceIndex(rows).calls.get(row.payload.tool_call_id) ?? [];
+      if(typeof args?.file_path==='string' && row.payload.tool_call_id && calls.length===1 && outputs.length===1 && toolOutcome(outputs[0].row.payload)==='completed') {
         const path=normalizeRunRelative(stageWriteBoundary.runDirectory,args.file_path,stageWriteBoundary.workspace);
         for(const read of pendingReads.values()) if(read.scope==='engine'
           ? stageWriteBoundary.engineDirectory && isAbsolute(args.file_path) && resolve(args.file_path)===resolve(stageWriteBoundary.engineDirectory,read.path)
-          : read.path===path) read.readAt=rows.indexOf(outputs[0]);
+          : read.path===path) read.readAt=outputs[0].position;
       }
     }
     if (row.payload?.type !== 'tool_call' || row.payload.name !== 'exec_command') continue;
@@ -319,7 +323,7 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     let args;
     try { args = typeof row.payload.arguments === 'string' ? JSON.parse(row.payload.arguments) : row.payload.arguments; }
     catch { throw new Error('Child command arguments unreadable'); }
-    const outputs = rows.slice(index + 1).filter(item => item.payload?.type === 'tool_call_output' && item.payload.tool_call_id === row.payload.tool_call_id);
+    const outputs = outputsAfter(rows, index, row.payload.tool_call_id).map(entry => entry.row);
     if (outputs.length !== 1) throw new Error('Child command has unknown terminal response; review required');
     if (allowRecovery && isCatalogLookup(args?.cmd) && backgroundCatalogWithoutOutput(rows,index,outputs[0])) continue;
     const response = terminalCommandOutput(rows, index, outputs[0], allowRecovery);
@@ -398,11 +402,17 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
         // A draft-composition debt is satisfied by evidence, not ceremony: draft_records output
         // is wholesale-validated, so one successful validate_artifacts for the same stage proves
         // the corrected draft even when the child fixed it with native file tools instead of
-        // re-filing the rejected request. Every other action still demands its own success.
+        // re-filing the rejected request. The same holds for diagnose debts: diagnose_* is a
+        // read-only inspection, so its failure persists nothing and its success may be
+        // structurally impossible in the current stage state (e.g. diagnose_task:execution
+        // before the browser grant, when only prepare artifacts exist). The verified stage
+        // validation is the evidence that the inspected artifacts are sound. Every other
+        // action still demands its own success.
         const [vRun,,vStage]=gateIdentity(key).split(':');
         for(const open of [...pending]) {
           const [pRun,pAction,pStage]=gateIdentity(open).split(':');
-          if(pRun===vRun && pAction==='draft_records' && (!pStage || pStage===vStage)) pending.delete(open);
+          if(pRun!==vRun || pStage && pStage!==vStage) continue;
+          if(pAction==='draft_records' || /^diagnose_(task|analysis|test_points|test_cases)$/.test(pAction)) pending.delete(open);
         }
       }
       if(result.script==='validate-artifacts.mjs' && validation && stageWriteBoundary) {
@@ -419,7 +429,7 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
   for(const key of pending) if(verifyExternalRecovery(key)) pending.delete(key);
   // Each open correction names what is still owed and the single action that clears it.
   // A refusal that cannot be turned into the next command is the defect this guards.
-  if (pending.size && !allowUnresolvedRecovery) throw new Error(`Recoverable errors were not resolved by a verified successful action. Still open: ${[...pending].join(', ')}. Re-run each recorded action and let it succeed; a different action does not clear these keys, except a draft_records debt, which one successful validate_artifacts for the same stage closes.`);
+  if (pending.size && !allowUnresolvedRecovery) throw new Error(`Recoverable errors were not resolved by a verified successful action. Still open: ${[...pending].join(', ')}. Re-run each recorded action and let it succeed; a different action does not clear these keys, except a draft_records or diagnose debt, which one successful validate_artifacts for the same stage closes.`);
   if(pendingReads.size && !allowUnresolvedRecovery) throw new Error(`Source read correction requires a matching native read and verified stage validation. Still open: ${[...pendingReads].map(([,read])=>read.path).join(', ')}. Read each exact path with the native reader, then run one successful validate_artifacts for this stage; revising a draft does not clear it.`);
   if (pendingUnkeyed.size && !allowUnresolvedRecovery) throw new Error(`A recorded correction was not followed by verified artifact validation. Still open: ${[...pendingUnkeyed].join(', ')}. Run validate_artifacts for this stage after the corrected attempt; re-dispatching does not clear it.`);
   if (pendingCatalog && !allowUnresolvedRecovery) throw new Error('Project action catalog lookup failure was not followed by a successful action or catalog help. Continue with a successful structured action; the catalog itself is read-only help.');
