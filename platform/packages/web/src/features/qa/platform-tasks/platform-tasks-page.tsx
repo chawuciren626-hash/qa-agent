@@ -308,7 +308,7 @@ export function PlatformTasksPage() {
                   <th className="qpt-c-pri">优先级</th>
                   <th className="qpt-c-ver">版本 / 轮次</th>
                   <th className="qpt-c-status">状态</th>
-                  <th className="qpt-ops-head">操作</th>
+                  <th className="qpt-c-ops qpt-ops-head">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -362,10 +362,10 @@ export function PlatformTasksPage() {
                       </td>
                       <td className="qpt-c-ver"><span className="qpt-mono">{versionText}</span></td>
                       <td className="qpt-c-status"><span className={`qpt-pill qpt-st-${task.status}`}>{STATUS_LABEL[task.status] ?? task.status}</span></td>
-                      <td>
+                      <td className="qpt-c-ops">
                         <div className="qpt-ops">
-                          <button type="button" className="qpt-op" onClick={() => openEdit(task)}>编辑</button>
-                          <button type="button" className="qpt-op" onClick={() => openDetail(task)}>查看</button>
+                          <button type="button" className="qpt-op qpt-op-ghost" onClick={() => openEdit(task)}>编辑</button>
+                          <button type="button" className="qpt-op qpt-op-ghost" onClick={() => openDetail(task)}>查看</button>
                           {task.status !== "result_returned" && task.status !== "terminated" && (
                             <button
                               type="button"

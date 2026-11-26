@@ -7,7 +7,10 @@
 .qpt-seg-n{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;font-size:12px}
 .qpt-term-toggle{margin-left:auto;display:inline-flex;align-items:center;gap:5px;font-size:12px;color:light-dark(#8f959e,#9ca3af);cursor:pointer}
 .qpt-loading{margin-top:18px;color:light-dark(#8f959e,#9ca3af);font-size:12.5px}
-.qpt-table{width:100%;border-collapse:collapse;margin-top:14px;background:light-dark(#fff,#1f2937)}
+/* table-layout:fixed —— auto 布局会把容器多余宽度平摊到每一列，
+   导致每列都比内容宽一截、文字贴左留出大片空白；固定布局后只有任务名称列
+   吸收剩余空间，其余列严格按设定宽度，列间距才是稳定的。 */
+.qpt-table{width:100%;min-width:1080px;table-layout:fixed;border-collapse:collapse;margin-top:14px;background:light-dark(#fff,#1f2937)}
 .qpt-table th{font-size:11px;font-weight:600;color:light-dark(#8f959e,#9ca3af);text-align:left;padding:8px 10px;border-bottom:1px solid light-dark(#e6e9ef,#374151);letter-spacing:.3px;white-space:nowrap}
 .qpt-table td{padding:11px 10px;border-bottom:1px solid light-dark(#eef0f4,#374151);vertical-align:middle;font-size:12.5px;color:light-dark(#1f2329,#f3f4f6)}
 .qpt-table tbody tr:hover td{background:light-dark(#fafbfc,#111827)}
@@ -35,15 +38,6 @@
 .qpt-st-impact_pending{background:light-dark(#fdf0e7,#431407);color:light-dark(#c05621,#fb923c)}
 .qpt-st-result_returned{background:light-dark(#e8f6ef,#052e16);color:light-dark(#2e9e6b,#4ade80)}
 .qpt-st-terminated{background:light-dark(#f2f3f5,#374151);color:light-dark(#8f959e,#9ca3af)}
-.qpt-ops{display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap}
-.qpt-ops-head{text-align:right}
-.qpt-op{padding:4px 10px;border:1px solid light-dark(#e6e9ef,#4b5563);border-radius:7px;background:light-dark(#fff,#1f2937);color:light-dark(#1f2329,#f3f4f6);font-size:12px;font-weight:600;cursor:pointer}
-.qpt-op:hover:not(:disabled){background:light-dark(#f1f3f6,#374151)}
-.qpt-op:disabled{color:light-dark(#c1c6cf,#6b7280);cursor:not-allowed}
-.qpt-op-accent{border-color:transparent;color:light-dark(#185fa5,#7cb1e8)}
-.qpt-op-accent:hover:not(:disabled){background:light-dark(#eaf2fb,#0f2740)}
-.qpt-op-main{background:light-dark(#185fa5,#1d4ed8);border-color:light-dark(#185fa5,#1d4ed8);color:#fff}
-.qpt-op-main:hover:not(:disabled){background:light-dark(#14508c,#1e40af)}
 .qpt-mask{position:fixed;inset:0;background:rgba(15,23,42,.32);z-index:60}
 .qpt-drawer{position:fixed;top:0;right:0;width:560px;max-width:92vw;bottom:0;background:light-dark(#fff,#1f2937);z-index:61;box-shadow:-8px 0 30px rgba(15,23,42,.14);display:flex;flex-direction:column}
 .qpt-dw-head{padding:16px 20px 12px;border-bottom:1px solid light-dark(#e6e9ef,#374151);display:flex;align-items:flex-start;gap:10px}
@@ -145,20 +139,46 @@
 .qpt-toolbar-count{margin-left:auto;font-size:12px;color:light-dark(#8f959e,#9ca3af);white-space:nowrap}
 .qpt-table-wrap{margin-top:12px;border:1px solid light-dark(#e6e9ef,#374151);border-radius:10px;overflow-x:auto;background:light-dark(#fff,#1f2937)}
 .qpt-table-wrap .qpt-table{margin-top:0}
-.qpt-c-no{width:158px}
-.qpt-c-name{min-width:280px}
-.qpt-c-project{width:176px}
-.qpt-c-pri{width:86px}
-.qpt-c-ver{width:136px}
-.qpt-c-status{width:110px}
-.qpt-table th{padding:10px 14px}
-.qpt-table td{padding:12px 14px}
+/* 列宽：除任务名称外全部定宽，名称列吸收剩余空间（min-width 由 .qpt-table 兜底，
+   窗口过窄时横向滚动而不是把名称挤成两三个字）。 */
+.qpt-c-no{width:150px}
+.qpt-c-name{width:auto}
+.qpt-c-project{width:150px}
+.qpt-c-pri{width:78px}
+.qpt-c-ver{width:116px}
+.qpt-c-status{width:104px}
+.qpt-c-ops{width:256px}
+.qpt-table th{padding:10px 12px}
+.qpt-table td{padding:11px 12px}
+/* 窄列一律不换行，超长省略，避免撑高行或把列挤开 */
+.qpt-c-no,.qpt-c-project,.qpt-c-pri,.qpt-c-ver,.qpt-c-status{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.qpt-c-name{padding-right:20px}
 .qpt-table tbody tr:last-child td{border-bottom:none}
 .qpt-c-name .qpt-title{font-weight:600;line-height:1.45}
 .qpt-c-name .qpt-title b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-weight:600}
 .qpt-project{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;padding:1px 8px;border-radius:6px;background:light-dark(#f2f4f7,#262f3d);color:light-dark(#4b5563,#d1d5db);font-size:11.5px}
 .qpt-pri-from{font-size:9.5px;font-weight:700;margin-left:4px;opacity:.6;letter-spacing:.3px}
 .qpt-m-error{margin:0;font-size:12.5px;color:light-dark(#b91c1c,#f87171)}
+
+/* 操作列：固定宽度 + 单行不折行 + 右对齐到列边界。
+   主操作（重新分析/开始测试/任务详情/发起复测）保留带边框按钮，
+   编辑/查看降级为无边框文字按钮——两档层级后按钮不再等宽堆积，
+   每行按钮都从右边界对齐，行与行之间的位置也稳定。
+   紧凑尺寸只作用于表格内，详情页头部那组按钮沿用原尺寸。 */
+.qpt-ops{display:flex;align-items:center;gap:6px;justify-content:flex-end}
+.qpt-ops-head{text-align:right}
+.qpt-table .qpt-ops{flex-wrap:nowrap;white-space:nowrap}
+.qpt-table .qpt-ops .qpt-op{flex:none;padding:3px 9px;font-size:11.5px;line-height:18px}
+.qpt-table .qpt-ops .qpt-op-ghost{padding:3px 6px}
+.qpt-op{padding:4px 10px;border:1px solid light-dark(#e6e9ef,#4b5563);border-radius:7px;background:light-dark(#fff,#1f2937);color:light-dark(#1f2329,#f3f4f6);font-size:12px;font-weight:600;white-space:nowrap;cursor:pointer}
+.qpt-op:hover:not(:disabled){background:light-dark(#f1f3f6,#374151)}
+.qpt-op:disabled{color:light-dark(#c1c6cf,#6b7280);cursor:not-allowed}
+.qpt-op-ghost{border-color:transparent;background:transparent;color:light-dark(#646a73,#9ca3af);padding:3px 6px;font-weight:500}
+.qpt-op-ghost:hover:not(:disabled){background:light-dark(#f1f3f6,#374151);color:light-dark(#1f2329,#f3f4f6)}
+.qpt-op-accent{border-color:transparent;color:light-dark(#185fa5,#7cb1e8)}
+.qpt-op-accent:hover:not(:disabled){background:light-dark(#eaf2fb,#0f2740)}
+.qpt-op-main{background:light-dark(#185fa5,#1d4ed8);border-color:light-dark(#185fa5,#1d4ed8);color:#fff}
+.qpt-op-main:hover:not(:disabled){background:light-dark(#14508c,#1e40af)}
 
 /* ------------------------------------------------------------------
    2026-11-24 详情全页：头部/平台资料四 tab/字段级展示。
