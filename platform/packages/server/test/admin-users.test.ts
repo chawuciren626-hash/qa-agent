@@ -33,6 +33,7 @@ describe("admin users backend", () => {
       (await api.post("/api/admin/users/norm/password", { password: "password-456" })).status,
     ).toBe(403);
     expect((await api.delete("/api/admin/users/norm")).status).toBe(403);
+    expect((await api.put("/api/admin/users/norm/status", { disabled: true })).status).toBe(403);
   });
 
   it("account creation: invalid username / short password 400; duplicate 409", async () => {
@@ -62,7 +63,10 @@ describe("admin users backend", () => {
     const frank = await provisionUser(t.app, "frank");
     expect(frank.user.userId).toBe("frank");
     const projects = await apiClient(t.app, frank.cookie).get("/api/projects");
-    expect(await projects.json()).toEqual({ projects: [] });
+    expect(await projects.json()).toEqual({
+      projects: [],
+      assistantProject: expect.objectContaining({ projectId: "frank-aitest_system_assistant", ownerUserId: "frank" }),
+    });
     const list = (await (await admin.get("/api/admin/users")).json()) as AdminUsersResponse;
     expect(list.users.map((u) => u.userId)).toContain("frank");
   });
@@ -98,6 +102,21 @@ describe("admin users backend", () => {
     await expect(loginUser(t.app, "rex", "password-123")).rejects.toThrow();
     const again = await loginUser(t.app, "rex", "password-456");
     expect(again.user.passwordIsInitial).toBe(true);
+  });
+
+  it("disabling a user revokes sessions and blocks login while preserving the account", async () => {
+    const rex = await provisionUser(t.app, "rex");
+    const rexApi = apiClient(t.app, rex.cookie);
+    expect((await admin.put("/api/admin/users/rex/status", { disabled: "yes" })).status).toBe(400);
+    expect((await admin.put("/api/admin/users/ghost/status", { disabled: true })).status).toBe(404);
+    expect((await admin.put("/api/admin/users/admin/status", { disabled: true })).status).toBe(409);
+    expect((await admin.put("/api/admin/users/rex/status", { disabled: true })).status).toBe(204);
+    expect((await rexApi.get("/api/me")).status).toBe(401);
+    await expect(loginUser(t.app, "rex", "password-123")).rejects.toThrow();
+    const users = (await (await admin.get("/api/admin/users")).json()) as AdminUsersResponse;
+    expect(users.users.find(user => user.userId === "rex")?.disabled).toBe(true);
+    expect((await admin.put("/api/admin/users/rex/status", { disabled: false })).status).toBe(204);
+    expect((await loginUser(t.app, "rex", "password-123")).user.userId).toBe("rex");
   });
 
   it("the admin resetting ITSELF chooses a known password: claimed, no first-login link", async () => {

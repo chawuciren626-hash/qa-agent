@@ -36,7 +36,9 @@ export interface AccountClientGate {
    */
   registerPlatformTaskState(userId: string, serverLinkId: string, status: string): Promise<{ applied: boolean; status: string; revision: number; reason: string | null } | null>;
 }
+import type { Opaque } from "@prismshadow/penguin-core/kernel";
 export interface AuthRuntimeState {
+  localExecution?: Opaque<"LocalExecutionRuntime", import("../services/local-execution-runtime.js").LocalExecutionRuntime>;
   centralAssistant?: Pick<import("../http/central-assistant.js").CentralAssistant, "definition">;
   accountClient?: AccountClientGate;
   /** The first-login link this boot printed, or null before one was minted. */

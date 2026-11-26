@@ -12,6 +12,7 @@ export interface UserRow {
   isAdmin: boolean;
   /** Still using the initial password (seeded / set by an admin); cleared to 0 once the user changes it. */
   passwordIsInitial: boolean;
+  disabled?: boolean;
   /** Nickname shown in place of the id; null = never set. */
   displayName: string | null;
   /** Avatar as a data URL; null = never set. */
@@ -25,6 +26,7 @@ function mapRow(r: Record<string, unknown>): UserRow {
     passwordHash: r.password_hash as string,
     isAdmin: (r.is_admin as number) === 1,
     passwordIsInitial: (r.password_is_initial as number) === 1,
+    disabled: (r.disabled as number) === 1,
     displayName: (r.display_name as string | null) ?? null,
     avatar: (r.avatar as string | null) ?? null,
     createdAt: r.created_at as string,
@@ -73,6 +75,10 @@ export class UsersRepo implements Users {
     this.db
       .prepare("UPDATE users SET password_hash = ?, password_is_initial = ? WHERE user_id = ?")
       .run(passwordHash, isInitial ? 1 : 0, userId);
+  }
+
+  setDisabled(userId: string, disabled: boolean): void {
+    this.db.prepare("UPDATE users SET disabled = ? WHERE user_id = ?").run(disabled ? 1 : 0, userId);
   }
 
   /**

@@ -76,6 +76,7 @@ export async function serviceStatus(config) {
 }
 export async function ensureLocalService(config) {
   config=resolve(config);const p=servicePaths(config);
+  if(p.layout.connection?.mode==='remote')throw Error('Remote client mode: the local business server is disabled. Open the desktop client to connect to the configured service.');
   if(existsSync(p.pause)||existsSync(resolve(p.layout.root,'.source-sync.lock'))||existsSync(resolve(p.layout.root,'.product-upgrade/active.json')))throw Error('本机服务已暂停维护，请先完成更新或恢复服务。');
   let status=await serviceStatus(config);if(status?.ready)return status;
   if(!status){
@@ -99,7 +100,9 @@ export async function pauseLocalService(config) {
   throw Error('本机服务未完全退出，已取消程序替换；不会强制结束任务。');
 }
 export async function resumeLocalService(config) {
-  const p=servicePaths(config);if(existsSync(p.pause))unlinkSync(p.pause);
+  const p=servicePaths(config);
+  if(p.layout.connection?.mode==='remote')throw Error('Remote client mode: the local business server is disabled.');
+  if(existsSync(p.pause))unlinkSync(p.pause);
   return ensureLocalService(config);
 }
 export async function withLocalServicePaused(config,operation) {
@@ -118,6 +121,7 @@ export function registerLocalService(config,{remove=false}={}) {
   if(process.platform!=='win32')throw Error('Automatic logon registration requires Windows');
   const p=servicePaths(config),startup=resolve(process.env.APPDATA,'Microsoft/Windows/Start Menu/Programs/Startup'),file=join(startup,`AITestHarness-${p.id}.vbs`);
   if(remove){if(existsSync(file))unlinkSync(file);return file;}
+  if(p.layout.connection?.mode==='remote')throw Error('Remote client mode: local business service autostart is disabled.');
   const command=`"${p.layout.paths.node}" "${resolve(p.layout.paths.engine,'scripts/local-service.mjs')}" start "${resolve(config)}"`;
   mkdirSync(startup,{recursive:true});
   writeFileSync(file,'Set shell = CreateObject("WScript.Shell")\r\nshell.Run "'+command.replaceAll('"','""')+'", 0, False\r\n','utf16le');
@@ -128,6 +132,7 @@ export function registerLocalService(config,{remove=false}={}) {
 
 async function supervise(config) {
   const p=servicePaths(config),{layout}=p;
+  if(layout.connection?.mode==='remote')return;
   if(existsSync(p.pause)||existsSync(resolve(layout.root,'.source-sync.lock'))||existsSync(resolve(layout.root,'.product-upgrade/active.json')))return;
   protectDirectory(p.dir);
   if(existsSync(resolve(layout.host_app,'aitest-source-runtime.json'))){

@@ -135,7 +135,7 @@ function RequireAuth({ admin = false }: { admin?: boolean }) {
   if(module && !allowedModule(user,module)) return <div className="p-6"><h1>没有此模块的访问权限</h1><p>请联系管理员调整授权。</p><a href="/user/chat">返回工作台</a></div>;
   if(admin && !user.isAdmin) return <div className="p-6"><h1>仅管理员可访问管理后台</h1><a href="/user/">返回用户端</a></div>;
   const workspace = (
-    <ProjectProvider scope={admin ? "admin" : "user"}>
+    <ProjectProvider scope={admin ? "admin" : "user"} assistantRoute={location.pathname === "/chat/new" || (location.pathname === "/chat" && new URLSearchParams(location.search).get("view") === "schedules")} chatRoute={location.pathname === "/chat" || location.pathname.startsWith("/chat/")}>
       <MachinesProvider>
         <SessionsProvider>
           <CompanyProvider>
@@ -161,11 +161,11 @@ function RequireAuthBare({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-/** Signed-in users start in the project view. */
+/** Signed-in users start on the independent test assistant entry. */
 function LoginRoute() {
   const { user } = useAuth();
   if (user === undefined) return null;
-  if (user) return <Navigate to="/qa/projects" replace />;
+  if (user) return <Navigate to="/chat/new" replace />;
   return <IntegratedAccountPage />;
 }
 
@@ -192,14 +192,14 @@ function RootFrame() {
 
 /**
  * 路由树：客户端（桌面壳与 web 同构）与完整平台共用同一棵树。
- * 登录默认进项目管理页（/qa/projects），点「进入」切到项目工作区（/qa/project）；
+ * 登录默认进入独立的测试助手（/chat/new）；项目管理与定时任务均为独立入口；
  * admin 以用户身份进入同一棵树（allowedModule 对 isAdmin 直接放行），管理后台保留在 /admin。
  */
 export function appRoutes(admin = false) {
   return createRoutesFromElements(
     <Route element={<RootFrame />}>
       <Route path="/login" element={admin ? <AdminLogin /> : <LoginRoute />} />
-      {/* /accounts（登录后账号中心仪表盘）已移除：登录直达 /qa/projects，
+      {/* /accounts（登录后账号中心仪表盘）已移除：登录直达测试助手，
           账号管理收敛到管理后台 /admin/users。 */}
       <Route
         path="/terminal"
@@ -226,7 +226,7 @@ export function appRoutes(admin = false) {
         />
       ))}
       <Route element={<RequireAuth admin={admin} />}>
-        <Route index element={<Navigate to={admin ? "/overview" : "/qa/projects"} replace />} />
+        <Route index element={<Navigate to={admin ? "/overview" : "/chat/new"} replace />} />
         {admin && <>
           <Route path="/overview" element={<AdminOverviewPage />} />
           <Route path="/chat/:sessionId?" element={<AdminAssistantPage />} />

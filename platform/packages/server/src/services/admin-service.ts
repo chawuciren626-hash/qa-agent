@@ -66,6 +66,7 @@ export class AdminService implements Admin {
       passwordHash: await this.hasher.hash(password),
       isAdmin: false,
       passwordIsInitial: true,
+      disabled: false,
       displayName: null,
       avatar: null,
       createdAt: this.clock.now().toISOString(),
@@ -91,6 +92,14 @@ export class AdminService implements Admin {
     const isSelfAdminReset = userId === ADMIN_USER_ID;
     this.users.updatePassword(userId, await this.hasher.hash(password), !isSelfAdminReset);
     this.signOutEverywhere(userId);
+  }
+
+  setDisabled(userId: string, disabled: boolean): void {
+    const target = this.users.findById(userId);
+    if (!target) throw new HttpError(404, "user_not_found", `User does not exist: ${userId}.`);
+    if (target.isAdmin) throw new HttpError(409, "cannot_disable_admin", "An administrator cannot be disabled.");
+    this.users.setDisabled(userId, disabled);
+    if (disabled) this.signOutEverywhere(userId);
   }
 
   /**

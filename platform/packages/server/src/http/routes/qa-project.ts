@@ -25,6 +25,14 @@ export function registerQaProjectRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps
   if (!qaEnabled || !deps.config) return;
   registerQaPersonalResources(app, deps);
   const root = deps.config.root;
+  const executeReview = async (c: any, sessionId: string, argv: string[], options: { env: NodeJS.ProcessEnv; cwd: string; windowsHide: boolean; timeout: number; maxBuffer: number }): Promise<{ stdout: string; stderr: string }> => {
+    const local = deps.authState?.localExecution;
+    if (local?.broker.binding(sessionId)) return local.action(sessionId, c.var.user.userId, c.req.raw.headers, "engineAction", {
+      script: path.basename(argv[0]!), argv: argv.slice(1),
+      environment: { QA_CASE_REVIEW: options?.env?.QA_CASE_REVIEW, QA_STAGE_FEEDBACK: options?.env?.QA_STAGE_FEEDBACK },
+    });
+    return execFileAsync(process.execPath, argv, { ...options, encoding: "utf8" });
+  };
   const caseReviewContext = async (c: any, owner: boolean) => {
     const projectId = requireValidId(c,"projectId");
     if (owner) deps.access.requireProjectOwner(c.var.user.userId,projectId);
@@ -90,7 +98,7 @@ export function registerQaProjectRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps
     try { body=JSON.parse(raw); } catch { throw new HttpError(400,"invalid_case","用例修改格式错误。"); }
     if (!body || typeof body!=="object" || !/^confirm-[A-Za-z0-9_-]+$/.test(body.confirmationId ?? "")) throw new HttpError(400,"invalid_case","审核记录无效。");
     try {
-      const {stdout}=await execFileAsync(process.execPath,[path.join(marker.engine_root,"scripts/update-case-review.mjs")],{
+      const {stdout}=await executeReview(c,sessionId,[path.join(marker.engine_root,"scripts/update-case-review.mjs")],{
         cwd:marker.engine_root,env:{...process.env,QA_DIRECTORY_CONTEXT:JSON.stringify(marker),QA_CASE_REVIEW:JSON.stringify({...body,sessionId,runId,actorId:c.var.user.userId})},windowsHide:true,timeout:150000,maxBuffer:64*1024,
       });
       c.header("Cache-Control","no-store");return c.json(JSON.parse(stdout));
@@ -164,7 +172,7 @@ export function registerQaProjectRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps
     if (marker.session_id !== sessionId || marker.session_root !== path.resolve(workspace) || marker.engine_root !== path.resolve(process.env.AITEST_ENGINE_ROOT ?? ""))
       throw new HttpError(409, "review_context_changed", "任务工作区绑定不一致，未执行审核。");
     try {
-      const { stdout } = await execFileAsync(process.execPath, [path.join(marker.engine_root, "scripts", "approve-design-stage.mjs"), runId, sessionId, stageId, confirmationId, c.var.user.userId], {
+      const { stdout } = await executeReview(c, sessionId, [path.join(marker.engine_root, "scripts", "approve-design-stage.mjs"), runId, sessionId, stageId, confirmationId, c.var.user.userId], {
         cwd: marker.engine_root, env: { ...process.env, QA_DIRECTORY_CONTEXT: JSON.stringify(marker) }, windowsHide: true, timeout: 15_000, maxBuffer: 64 * 1024,
       });
       c.header("Cache-Control", "no-store");
@@ -210,7 +218,7 @@ export function registerQaProjectRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps
     if (action === "retest" && typeof body?.retestRun === "string" && /^run-[A-Za-z0-9-]+$/.test(body.retestRun))
       argv.push("--retest-run=" + body.retestRun);
     try {
-      const { stdout } = await execFileAsync(process.execPath, argv, {
+      const { stdout } = await executeReview(c, sessionId, argv, {
         cwd: marker.engine_root, env: { ...process.env, QA_DIRECTORY_CONTEXT: JSON.stringify(marker) },
         windowsHide: true, timeout: 15_000, maxBuffer: 64 * 1024,
       });
@@ -288,7 +296,7 @@ export function registerQaProjectRoutes(app: Hono<AppEnv>, deps: AgentsRouteDeps
     if (marker.session_id !== sessionId || marker.session_root !== path.resolve(workspace) || marker.engine_root !== path.resolve(process.env.AITEST_ENGINE_ROOT ?? ""))
       throw new HttpError(409,"review_context_changed","任务工作区绑定不一致，未提交修改。");
     try {
-      const {stdout} = await execFileAsync(process.execPath,[path.join(marker.engine_root,"scripts","request-stage-revision.mjs"),runId,sessionId,stageId,confirmationId,c.var.user.userId],{
+      const {stdout} = await executeReview(c,sessionId,[path.join(marker.engine_root,"scripts","request-stage-revision.mjs"),runId,sessionId,stageId,confirmationId,c.var.user.userId],{
         cwd:marker.engine_root,env:{...process.env,QA_DIRECTORY_CONTEXT:JSON.stringify(marker),QA_STAGE_FEEDBACK:feedback},windowsHide:true,timeout:15_000,maxBuffer:64*1024,
       });
       c.header("Cache-Control","no-store"); return c.json(JSON.parse(stdout));

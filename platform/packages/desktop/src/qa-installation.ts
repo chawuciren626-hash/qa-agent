@@ -13,7 +13,9 @@ export function qaInstallation(env: NodeJS.ProcessEnv = process.env) {
   if (layout.layout !== "unified" || layout.paths.engine !== engine)
     throw new Error("AITestHarness installation engine mismatch");
   return {
+    paths: layout.paths as { node: string; python?: string; engine: string; workspaces: string; host_data: string },
     profile: layout.paths.desktop_profile as string,
+    connection: (layout.connection ?? null) as { mode: "remote"; origin: string } | null,
     env: {
       ...bridge.productEnvironment(layout, env),
       AITEST_ENGINE_ROOT: engine,

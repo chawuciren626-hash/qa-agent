@@ -17,8 +17,8 @@ export async function verifyProductInstallation(configPath) {
   if (doctor.status !== 'ready' || doctor.checks?.some(check => check.status !== 'ready')) throw Error('Installed product doctor is not ready');
   const service = inspect('status');
   if (service.status !== 'ready') throw Error(`Installed service is ${service.status}`);
-  const origin = `http://127.0.0.1:${service.port}`;
-  const page = await fetch(`${origin}/`, { signal: AbortSignal.timeout(5000) });
+  const origin = layout.connection?.origin ?? `http://127.0.0.1:${service.port}`;
+  const page = await fetch(`${origin}${layout.connection ? '/user/login' : '/'}`, { redirect: layout.connection ? 'error' : 'follow', signal: AbortSignal.timeout(5000) });
   const html = await page.text();
   if (!page.ok || !/<!doctype html>/i.test(html) || !/<html[\s>]/i.test(html)) throw Error('Installed frontend page unavailable');
   const assets = [...new Set([...html.matchAll(/(?:src|href)="([^"?#]+\.(?:js|css))(?:\?[^\"]*)?"/g)]
@@ -36,7 +36,9 @@ export async function verifyProductInstallation(configPath) {
   }
   return { status: 'passed', installationId: layout.installation_id, hostVersion: doctor.host_version,
     runtimeFiles: doctor.checks.find(check => check.id === 'host_version')?.verification?.files ?? null,
-    serviceVersion: service.version, frontend: 'loaded', assets };
+    serviceVersion: service.version ?? null, connectionMode: layout.connection?.mode ?? 'local',
+    origin: layout.connection?.origin ?? `http://localhost:${service.port}`,
+    ...(layout.connection ? { authenticated: false, scope: service.scope } : {}), frontend: 'loaded', assets };
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

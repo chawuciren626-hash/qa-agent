@@ -48,6 +48,10 @@ export function registerQaSessionRoutes(
 
   app.post("/:sessionId/files/open-deliverable", async (c) => {
     const row = resolveSession(c);
+    if (deps.localExecution?.broker.binding(row.sessionId)) {
+      await deps.localExecution.action(row.sessionId, c.var.user.userId, c.req.raw.headers, "openDeliverable", { path: c.req.query("path") ?? "" });
+      return c.body(null, 204);
+    }
     if (!deps.desktopMode || c.var.sessionVia !== "desktop")
       throw new HttpError(
         403,
@@ -76,11 +80,13 @@ export function registerQaSessionRoutes(
     return c.body(null, 204);
   });
 
-  app.get("/:sessionId/human-actions", (c) => {
+  app.get("/:sessionId/human-actions", async (c) => {
     const row = resolveSession(c);
     c.header("Cache-Control", "no-store");
     return c.json({
-      actions: human.listHumanActions(row.workspace, row.sessionId, agentRoot(row)),
+      actions: deps.localExecution?.broker.binding(row.sessionId)
+        ? await deps.localExecution.action(row.sessionId, c.var.user.userId, c.req.raw.headers, "humanActions", {})
+        : human.listHumanActions(row.workspace, row.sessionId, agentRoot(row)),
     });
   });
   app.post("/:sessionId/human-actions", async (c) => {
@@ -89,7 +95,7 @@ export function registerQaSessionRoutes(
     if (body.decision !== "continue" && body.decision !== "cancel")
       throw new HttpError(400, "invalid_decision", "Choose continue or cancel.");
     try {
-      return c.json(await answer(deps, row, body));
+      return c.json(await answer(deps, row, body, c.req.raw.headers));
     } catch {
       throw new HttpError(
         409,
@@ -100,7 +106,14 @@ export function registerQaSessionRoutes(
   });
 }
 
-async function answer(deps: SessionsRouteDeps, row: SessionRow, body: Record<string, unknown>) {
+async function answer(deps: SessionsRouteDeps, row: SessionRow, body: Record<string, unknown>, headers?: Headers) {
+  if (deps.localExecution?.broker.binding(row.sessionId)) {
+    if (!headers || !row.ownerUserId) throw new HttpError(409, "local_executor_required", "需要原本机执行端");
+    return deps.localExecution.action(row.sessionId, row.ownerUserId, headers, "humanAnswer", {
+      body, apiInstruction: continuationInstruction(String(body.decision), "api"),
+      browserInstruction: continuationInstruction(String(body.decision), "browser"),
+    });
+  }
   return qaEngineModule("browser-human-action").answerHumanAction({
     workspace: row.workspace,
     parent: row.sessionId,
@@ -122,24 +135,26 @@ export async function qaLoginConfirmation(
   deps: SessionsRouteDeps,
   row: SessionRow,
   text: string,
+  headers?: Headers,
 ): Promise<unknown | null> {
   if (!qaEnabled) return null;
   const human = qaEngineModule("browser-human-action");
   if (!human.isLoginConfirmation(text)) return null;
-  const actions = human
-    .listHumanActions(
+  const allActions = deps.localExecution?.broker.binding(row.sessionId) && headers && row.ownerUserId
+    ? await deps.localExecution.action(row.sessionId, row.ownerUserId, headers, "humanActions", {})
+    : human.listHumanActions(
       row.workspace,
       row.sessionId,
       path.resolve(deps.config.root, row.projectId, "agents"),
-    )
-    .filter((a: { kind: string }) => ["access", "captcha", "mfa"].includes(a.kind));
+    );
+  const actions = allActions.filter((a: { kind: string }) => ["access", "captcha", "mfa"].includes(a.kind));
   if (actions.length !== 1) return null;
   try {
     return await answer(deps, row, {
       run_id: actions[0].run_id,
       action_id: actions[0].action_id,
       decision: "continue",
-    });
+    }, headers);
   } catch {
     throw new HttpError(
       409,

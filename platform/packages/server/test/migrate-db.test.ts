@@ -7,7 +7,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { openDatabase } from "../src/db/database.js";
+import { openDatabase, openDatabaseReadOnly } from "../src/db/database.js";
 import { MIGRATIONS } from "../src/db/migrations/index.js";
 import { acquireServerLock, releaseServerLock } from "../src/lock.js";
 import { migrateDatabase } from "../src/migrate-db.js";
@@ -40,13 +40,21 @@ describe("migrateDatabase", () => {
     const dbPath = path.join(root, "web.db");
     const db = openDatabase(dbPath);
     db.close();
-    const before = fs.statSync(dbPath).mtimeMs;
+    const beforeDb = openDatabaseReadOnly(dbPath);
+    const before = beforeDb.prepare("SELECT name, applied_at FROM schema_migrations ORDER BY rowid").all();
+    beforeDb.close();
     const result = await migrateDatabase(root);
     expect(result).toMatchObject({ outcome: "current" });
     if (result.outcome !== "current") return;
     expect(result.ledger).toHaveLength(MIGRATIONS.length);
-    // Already-current does no work and writes nothing: the ledger is not rewritten.
-    expect(fs.statSync(dbPath).mtimeMs).toBe(before);
+    // SQLite may checkpoint on close, so assert the logical migration state instead of mtime.
+    const verify = openDatabaseReadOnly(dbPath);
+    try {
+      expect(verify.prepare("SELECT name, applied_at FROM schema_migrations ORDER BY rowid").all()).toEqual(before);
+      expect(verify.prepare("SELECT COUNT(*) AS n FROM users").get()).toEqual({ n: 0 });
+    } finally {
+      verify.close();
+    }
   });
 
   it("reapplies a ledger row that is missing (an older database) and reports it by name", async () => {

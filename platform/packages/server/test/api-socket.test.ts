@@ -7,14 +7,16 @@
  * arrives as frames and a cancel releases it, and that a malformed frame closes the socket
  * rather than being guessed at.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { serve } from "@hono/node-server";
 import type { Server as HttpServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 import { createTestApp, loginAdmin } from "./helpers.js";
 import type { TestApp } from "./helpers.js";
 import { attachTerminalWebSocket } from "../src/terminal/ws.js";
 import { apiSocketPath } from "../src/socket/ref.js";
+import { qaEnabled } from "../src/services/qa-engine.js";
 
 let t: TestApp;
 let port: number;
@@ -106,6 +108,67 @@ async function open(
 }
 
 const send = (ws: WebSocket, frame: Frame) => ws.send(JSON.stringify(frame));
+
+describe("desktop execution identity over the authenticated upgrade", () => {
+  it.skipIf(!qaEnabled)("rejects an unavailable desktop on both chat creation and task-list start without creating a remote session", async () => {
+    const project = "default_project";
+    const agentId = "placement_probe";
+    await t.deps.agentService.createAgent(project, agentId);
+    const model = vi.spyOn(t.deps.projectConfigService, "getDefaultModelRef").mockResolvedValue({ provider: "probe", model_id: "probe-model" });
+    const s = await open({ cookie, "x-aitest-execution-client": randomUUID(), "x-aitest-execution-proof": "a".repeat(64) });
+    if (!("ws" in s)) throw new Error("handshake refused");
+    const before = t.deps.db.prepare("SELECT count(*) AS n FROM sessions").get();
+    try {
+      send(s.ws, { id: 1, call: { method: "POST", path: `/api/projects/${project}/agents/${agentId}/sessions`, body: {} } });
+      expect(await s.next()).toMatchObject({ status: 400, body: { error: { code: "session_create_failed", message: "本机执行端鉴权失败" } } });
+      const created = await t.app.request(`/api/projects/${project}/agents/qa/platform-tasks/local`, {
+        method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ title: "Execution placement regression probe" }),
+      });
+      expect(created.status).toBe(201);
+      const task = (await created.json() as { task: { id: string } }).task;
+      send(s.ws, { id: 2, call: { method: "POST", path: `/api/projects/${project}/agents/qa/platform-tasks/${task.id}/start`, body: { agentId } } });
+      expect(await s.next()).toMatchObject({ status: 400, body: { error: { code: "session_create_failed", message: "本机执行端鉴权失败" } } });
+      expect(t.deps.db.prepare("SELECT count(*) AS n FROM sessions").get()).toEqual(before);
+    } finally { s.ws.close(); model.mockRestore(); }
+  });
+
+  it("preserves execution identity across the real upgrade and platform seam; frames cannot replace it", async () => {
+    const headers = { cookie, "x-aitest-execution-client": randomUUID(), "x-aitest-execution-proof": "a".repeat(64) };
+    const registered = await t.app.request("/api/sessions/local-execution/register", {
+      method: "POST", headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ platform: "win32", node: "C:/install/node.exe", python: "C:/install/python.exe", engine: "C:/install/engine", workspaces: "C:/install/workspaces" }),
+    });
+    expect(registered.status).toBe(200);
+    const s = await open(headers);
+    if (!("ws" in s)) throw new Error("handshake refused");
+    try {
+      send(s.ws, { id: 1, call: { method: "POST", path: "/api/sessions/local-execution/poll", body: { active: [] },
+        headers: { "x-aitest-execution-client": randomUUID(), "x-aitest-execution-proof": "b".repeat(64) } } });
+      expect(await s.next()).toMatchObject({ status: 200, body: { jobs: [], sessionControls: [] } });
+    } finally { s.ws.close(); }
+  });
+
+  it("does not accept execution credentials from frames on an ordinary browser socket", async () => {
+    const s = await open({ cookie });
+    if (!("ws" in s)) throw new Error("handshake refused");
+    try {
+      send(s.ws, { id: 1, call: { method: "POST", path: "/api/sessions/local-execution/poll", body: { active: [] },
+        headers: { "x-aitest-execution-client": randomUUID(), "x-aitest-execution-proof": "a".repeat(64) } } });
+      expect(await s.next()).toMatchObject({ status: 403, body: { error: { code: "local_executor_required" } } });
+    } finally { s.ws.close(); }
+  });
+
+  it("falls back to fresh HTTP identity for a desktop socket opened before worker readiness", async () => {
+    const s = await open({ cookie, "x-aitest-execution-client": "desktop-not-ready" });
+    if (!("ws" in s)) throw new Error("handshake refused");
+    try {
+      for (const [id, path] of [[1, "/api/projects/example/agents/test_agent/sessions"], [2, "/api/projects/example/agents/qa/platform-tasks/task/start"]] as const) {
+        send(s.ws, { id, call: { method: "POST", path, body: {} } });
+        expect(await s.next()).toMatchObject({ id, status: 421, body: { error: { code: "not_on_socket" } } });
+      }
+    } finally { s.ws.close(); }
+  });
+});
 
 describe("handshake", () => {
   it("refuses without a credential", async () => {

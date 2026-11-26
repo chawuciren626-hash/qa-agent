@@ -49,6 +49,8 @@ import { readJson, requireValidId } from "../validate.js";
 import { explorationKnowledgeSync } from "../../services/exploration-knowledge-sync.js";
 import { explorationKnowledgeAnalysis } from "../../services/exploration-knowledge-analysis.js";
 import type { UtilityCompletion } from "../../mechanisms/projects.js";
+import { desktopExploration } from "../../services/desktop-exploration.js";
+import type { LocalExecutionRuntime, ExecutionIdentity } from "../../services/local-execution-runtime.js";
 
 export interface ProjectEnvironmentDeps {
   db: Db;
@@ -66,6 +68,8 @@ export interface ProjectEnvironmentDeps {
   completeOnce?: (projectId: string, prompt: string, opts?: { maxTokens?: number; requestTimeoutMs?: number }) => Promise<UtilityCompletion>;
   /** 一次性视觉补全（探索验证码自动识别走本项目 vision_model）；unset 时退回人工确认。 */
   completeVision?: (projectId: string, prompt: string, imageDataUrl: string, opts?: { maxTokens?: number; requestTimeoutMs?: number }) => Promise<UtilityCompletion>;
+  /** Authenticated desktop execution bridge. Exploration must use this in remote mode. */
+  localExecution?: LocalExecutionRuntime | (() => LocalExecutionRuntime | undefined);
 }
 
 /**
@@ -97,6 +101,7 @@ function captchaVisionSolver(
 
 export function projectEnvironmentsRoutes(deps: ProjectEnvironmentDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+  const localExecution = () => typeof deps.localExecution === "function" ? deps.localExecution() : deps.localExecution;
   const scoped = (c: Context<AppEnv>) => {
     const projectId = requireValidId(c, "projectId");
     deps.projectService.requireProjectAccess(c.var.user.userId, projectId);
@@ -113,12 +118,14 @@ export function projectEnvironmentsRoutes(deps: ProjectEnvironmentDeps): Hono<Ap
     engineRoot: deps.engineRoot,
     run: deps.run,
   });
-  const explorationDeps = (projectId: string): ExplorationDeps => ({
+  const explorationDeps = (projectId: string, identity?: ExecutionIdentity, userId?: string): ExplorationDeps => ({
     db: deps.db,
     projectDir: projectDir(deps.root, projectId),
     engineRoot: deps.engineRoot,
-    run: deps.explorationRun,
-    merge: deps.explorationMerge,
+    run: deps.explorationRun ?? (localExecution() && identity && userId
+      ? desktopExploration(localExecution()!, userId, identity, projectDir(deps.root, projectId)).run : undefined),
+    merge: deps.explorationMerge ?? (localExecution() && identity && userId
+      ? desktopExploration(localExecution()!, userId, identity, projectDir(deps.root, projectId)).merge : undefined),
     // B1 联动：探索成功后把资产落成项目资料并触发知识构建（engine 未配置时联动
     // 失败会如实记进轮次摘要，不影响探索结论）。
     knowledgeSync: explorationKnowledgeSync({ db: deps.db, engineRoot: deps.engineRoot }),
@@ -200,7 +207,15 @@ export function projectEnvironmentsRoutes(deps: ProjectEnvironmentDeps): Hono<Ap
     const projectId = owned(c);
     const env = requireEnv(projectId, c.req.param("env") ?? "");
     const body = await readJson(c);
-    const exploration = startExploration(explorationDeps(projectId), projectId, env, {
+    const environment = findEnvironment(deps.db, projectId, env)!;
+    if (environment.status !== "registered") throw new HttpError(409, "environment_not_registered", "该环境尚未建档（或建档失败），先完成建档再派发探索");
+    const execution = localExecution();
+    const identity = execution?.identity(c.req.raw.headers);
+    // Production exploration must run on the signed-in desktop. Only explicit test
+    // injection may use the server-side runner; never silently fall back to the VM.
+    if (!execution && !deps.explorationRun) throw new HttpError(503, "local_executor_unavailable", "本机执行服务尚未初始化，无法启动探索");
+    if (execution && !identity) throw new HttpError(409, "local_executor_required", "请保持本机客户端在线后再启动探索");
+    const exploration = startExploration(explorationDeps(projectId, identity, c.var.user.userId), projectId, env, {
       targetUrl: body.targetUrl,
       loginUrl: body.loginUrl,
       username: body.username,

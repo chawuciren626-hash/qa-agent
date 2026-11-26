@@ -10,6 +10,14 @@ describe("managed projects", () => {
   it.runIf(Boolean(process.env.AITEST_ENGINE_ROOT))("lets an ordinary user load an empty project list and quick switch", async () => {
     test = await createTestApp();
     const user = apiClient(test.app, (await provisionUser(test.app, "empty_project_user")).cookie);
+    const runtimeResponse = await user.get("/api/projects");
+    expect(runtimeResponse.status, await runtimeResponse.clone().text()).toBe(200);
+    const runtime = await runtimeResponse.json() as { projects: unknown[]; assistantProject: { projectId: string } };
+    expect(runtime.projects).toEqual([]);
+    expect(runtime.assistantProject.projectId).toBe("empty_project_user-aitest_system_assistant");
+    const agents = await user.get(`/api/projects/${runtime.assistantProject.projectId}/agents`);
+    expect(agents.status).toBe(200);
+    expect((await agents.json() as { agents: { agentId: string }[] }).agents.map(a => a.agentId)).toContain("default_agent");
     const list = await user.get("/api/projects/managed?page=1&pageSize=20");
     expect(list.status, await list.clone().text()).toBe(200);
     expect(await list.json()).toEqual({ total: 0, page: 1, pageSize: 20, projects: [], canCreate: true });

@@ -124,7 +124,11 @@ export function attachTerminalWebSocket(server: HttpServer, deps: TerminalWebSoc
       .then((platform) => {
         if (apiSocket) {
           // No terminal lookup: the socket carries the whole API as the cookie's user.
-          const ref = apiSocketRef(authed.user.userId);
+          const clientId = req.headers["x-aitest-execution-client"];
+          const proof = req.headers["x-aitest-execution-proof"];
+          const ref = apiSocketRef(authed.user.userId, typeof clientId === "string" ? {
+            clientId, ...(typeof proof === "string" ? { proof } : {}),
+          } : undefined);
           return wss.handleUpgrade(req, socket, head, (ws) => {
             guard(ws);
             platform.api.attachStream?.(ws, ref, url, deps.log);

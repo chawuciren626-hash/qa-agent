@@ -65,6 +65,7 @@ export function toUserInfo(row: UserRow): UserInfo {
   return {
     userId: row.userId,
     isAdmin: row.isAdmin,
+    disabled: row.disabled,
     passwordIsInitial: row.passwordIsInitial,
     ...(row.displayName !== null ? { displayName: row.displayName } : {}),
     ...(row.avatar !== null ? { avatar: row.avatar } : {}),
@@ -149,6 +150,7 @@ export class AuthService implements Auth {
       passwordHash: await this.hasher.hash(password),
       isAdmin: true,
       passwordIsInitial: true,
+      disabled: false,
       displayName: null,
       avatar: null,
       createdAt: this.clock.now().toISOString(),
@@ -224,7 +226,7 @@ export class AuthService implements Auth {
     const ok = await verifyAccountPassword(password, row?.passwordHash ?? null, () =>
       this.loginDummyHash(),
     );
-    if (!row || !ok) {
+    if (!row || !ok || row.disabled) {
       this.loginFailures.set(userId, {
         failures: (failed?.failures ?? 0) + 1,
         lastFailureAt: this.clock.now().getTime(),
@@ -369,7 +371,7 @@ export class AuthService implements Auth {
       return null;
     }
     const user = this.users.findById(session.userId);
-    if (!user) return null;
+    if (!user || user.disabled) return null;
     const renewable = expiresAt - Date.parse(session.createdAt) >= this.sessionRenewMs;
     let renewed = false;
     if (renewable && expiresAt - now.getTime() < this.sessionRenewMs) {

@@ -54,6 +54,13 @@ export function adminUsersRoutes(deps: AdminRouteDeps): Hono<AppEnv> {
     return c.body(null, 204);
   });
 
+  app.put("/:userId/status", async (c) => {
+    const body = await readJson(c);
+    if (typeof body.disabled !== "boolean") throw new HttpError(400, "invalid_status", "disabled must be a boolean.");
+    deps.adminService.setDisabled(pathParam(c, "userId"), body.disabled);
+    return c.body(null, 204);
+  });
+
   app.delete("/:userId", async (c) => {
     await deps.adminService.deleteUser(pathParam(c, "userId"));
     return c.body(null, 204);

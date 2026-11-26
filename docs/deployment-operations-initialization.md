@@ -1,14 +1,16 @@
 # 部署、运维与标准数据初始化
 
+> 2026-11-24 客户端约定更新：远程客户端部署以 `remote-client-deployment-20261124.md` 为准。标准业务数据在统一服务端初始化；客户端直接连接 `/user`，不再启动另一套完整业务 Server 或初始化业务库。
+
 适用版本：main，标准数据基线 `2026.11.20.1`。已有环境的基线记录和发布历史保留。
 
 ## 1. 部署交付原则
 
 部署完成必须同时具备程序、数据库结构、标准数据、资源关联和运行配置。后台页面通过服务读取数据库；页面能打开或接口返回 200，不代表部署完成。
 
-标准定义随源码维护，部署时写入中央服务对应表。中央数据库是管理和授权的运行期依据。用户不需要首次使用向导来补齐产品自身的数据。首次使用的“开始使用”、角色就绪统计、示例任务、引导专用连接检查及浏览器完成标记已移除；正常模型配置、连接测试、任务场景和输入框保留。
+标准定义随源码维护，部署时写入本应用唯一数据库。管理后台与用户端运行在同一服务进程、同一 SQLite 数据库中；管理员配置、用户账号、项目和任务数据按表存放，不再部署独立账号中心或应用服务。用户不需要首次使用向导来补齐产品自身的数据。首次使用的“开始使用”、角色就绪统计、示例任务、引导专用连接检查及浏览器完成标记已移除；正常模型配置、连接测试、任务场景和输入框保留。
 
-初始化命令：`scripts/initialize-standard-data.mjs`。必须在中央服务所在机器、当前部署源码目录中运行，使用与应用一致的 Node.js 24 和构建产物。不要在 develop 的数据目录上运行 main 初始化。
+初始化命令：`scripts/initialize-standard-data.mjs`。必须在应用服务所在机器、当前部署源码目录中运行，使用与应用一致的 Node.js 24 和构建产物。不要在 develop 的数据目录上运行 main 初始化。
 
 ## 2. 标准数据与存储位置
 
@@ -19,9 +21,9 @@
 | 插件管理 | `platform/plugins/*/package.json` 中随版本交付的插件；4 个受信适配器 | `public_resources` 中记录插件名、版本、来源；分类写入 `public_plugin_categories` / `public_plugin_category_assignments`。登记插件不等于给所有 Agent 全局启用插件 |
 | 模型配置 | 服务端 `model-catalog/seed.ts` | `central_model_config` 加密保存渠道、模型目录、默认选择与折扣配置；模型条数随锁定版本变化，不在部署脚本另抄目录 |
 | 工具管理 | `central-tools.ts` 的标准工具定义 | `central_tools`、`central_tool_categories`、`central_tool_agents`；未实现工具保持停用，不把规划项标记为可执行 |
-| Agent 分类 | 中央服务内置阶段定义 | `public_agent_groups` / `public_agent_group_assignments` |
+| Agent 分类 | 应用内置阶段定义 | `public_agent_groups` / `public_agent_group_assignments` |
 | 菜单与权限 | `AdminSystemStore` 内置菜单和现有身份系统 | 11 个管理菜单落入 `public_admin_menus`，普通角色菜单落入 `public_role_menus`；内置管理员/普通用户身份仍由 `users.is_admin` 决定，不另建冲突的身份体系 |
-| 管理员助手 | 现有项目创建服务 | 创建 `admin_agent_catalog` 项目及 `default_agent`；项目表和项目目录由项目服务一起维护，模型配置来自中央模型目录 |
+| 管理员助手 | 现有项目创建服务 | 创建 `admin_agent_catalog` 项目及 `default_agent`；项目表和项目目录由项目服务一起维护，模型配置来自同一数据库的模型目录 |
 | 初始化记录 | 本次标准定义 | `standard_data_baselines` 记录资源逻辑标识、数据库 ID、初始内容哈希、基线版本和创建时间；写入动作进入管理审计表 |
 
 公共通用 Agent 标识为 `general_agent`；管理员助手项目中的入口标识为 `default_agent`。两者用途不同。
@@ -30,27 +32,33 @@
 
 ## 3. 首次部署步骤
 
-以下变量由部署配置提供。示例为 Linux shell；`SOURCE_ROOT` 是本次版本源码，`CENTRAL_HOME` 是本次中央服务的数据根目录，`CENTRAL_ORIGIN` 是其本机应用地址（默认使用 `http://localhost:端口`；`127.0.0.1` 可能被宿主保留为预览域，API 会拒绝访问）。
+以下变量由部署配置提供。示例为 Linux shell；`SOURCE_ROOT` 是本次版本源码，`APP_DATA_ROOT` 是唯一服务的数据根目录，`APP_ORIGIN` 是该服务的本机地址（例如 `http://localhost:18777`）。生产流量可以经反向代理映射到该服务，但 `/admin` 与 `/user` 必须落到同一个源站和同一服务进程。
 
 ```sh
 cd "$SOURCE_ROOT"
 # 按项目锁文件安装依赖并完成 core、server、cli、web 构建。
-# 首次启动中央服务，完成数据库建表和管理员账号配置；随后正常停止该中央服务。
-node scripts/initialize-standard-data.mjs seed "$CENTRAL_HOME"
-# 启动同一数据目录的中央服务，再执行：
-node scripts/initialize-standard-data.mjs complete "$CENTRAL_HOME" "$CENTRAL_ORIGIN"
-node scripts/initialize-standard-data.mjs check "$CENTRAL_HOME" "$CENTRAL_ORIGIN"
+# 首次启动应用服务，完成数据库建表和管理员账号配置；随后正常停止该服务。
+node scripts/initialize-standard-data.mjs seed "$APP_DATA_ROOT"
+# 启动同一数据目录的应用服务，再执行：
+node scripts/initialize-standard-data.mjs complete "$APP_DATA_ROOT" "$APP_ORIGIN"
+node scripts/initialize-standard-data.mjs check "$APP_DATA_ROOT" "$APP_ORIGIN"
 ```
 
 三个阶段必须纳入部署流水线，并检查退出码。任一步失败都不能报告“部署完成”。
 
-1. **seed：离线标准数据入库。** 数据库必须由中央服务正常创建。检测到锁文件对应进程仍存活时拒绝运行。按技能、插件、Agent 的顺序创建和发布资源，建立依赖版本，初始化模型目录、菜单及分类。资源发布、依赖、模型和菜单处于同一 SQLite 事务中，失败回滚。辅助服务建表和工具基础登记使用现有服务初始化逻辑，可能早于资源事务完成；失败后可修正原因再执行，不需要删库。
-2. **complete：在线完成助手项目。** 使用中央数据目录内的本机 `api-token` 调用正常项目创建接口，存在则保留；随后检查助手入口、模型目录、工具和标准资源。只接受本机回环地址，拒绝把本机凭据发给远程服务；不打印凭据。
+1. **seed：离线标准数据入库。** 数据库必须由应用服务正常创建。检测到锁文件对应进程仍存活时拒绝运行。按技能、插件、Agent 的顺序创建和发布资源，建立依赖版本，初始化模型目录、菜单及分类。资源发布、依赖、模型和菜单处于同一 SQLite 事务中，失败回滚。辅助服务建表和工具基础登记使用现有服务初始化逻辑，可能早于资源事务完成；失败后可修正原因再执行，不需要删库。
+2. **complete：在线完成助手项目。** 使用应用数据目录内的本机 `api-token` 调用正常项目创建接口，存在则保留；随后检查助手入口、模型目录、工具和标准资源。只接受本机回环地址，拒绝把本机凭据发给远程服务；不打印凭据。
 3. **check：复核。** 检查标准资源及发布状态、助手项目和入口、模型目录、工具目录；输出资源数量。此阶段不创建项目。正常服务读取模型时会同步助手运行配置，所以它不是严格的文件系统只读操作。
 
-中央启动需要 `AITEST_ACCOUNT_CENTER=1`。客户端使用 `AITEST_ACCOUNT_CENTER_ORIGIN` 指向中央服务，按部署已有账号绑定方式配置。`AITEST_ENGINE_ROOT` 必须指向本次部署的引擎，不能指到 develop；工具运行状态依赖这一配置。
+不再设置 `AITEST_ACCOUNT_CENTER`、`AITEST_ACCOUNT_CENTER_ORIGIN` 或账号绑定配置。服务使用唯一数据根目录中的 `web.db`；管理员登录 `/admin`，用户登录 `/user`，两者使用同一用户表和登录会话。`AITEST_ENGINE_ROOT` 必须指向本次部署的引擎，不能指到 develop；工具运行状态依赖这一配置。
 
-模型目录入库只说明配置项存在。管理员还需在模型配置中设置真实可用的渠道凭据或本地服务地址，选择默认模型并执行正常连接测试。中央助手使用中央配置；用户项目的模型权限和凭据遵循既有账号/项目配置机制，不会因为初始化自动获得中央密钥。
+### 既有双库环境收敛
+
+旧部署若分别存在业务库和账号/管理库，不得只把服务改为读取其中一个库，也不得直接删除另一库。先停止两个实例并分别做 SQLite 一致性备份，同时备份模型密钥、项目目录、数据根配置及工作区。以包含真实项目、会话和任务数据的业务库作为目标库，按表结构审计后迁入账号、管理资源、菜单权限、模型目录、技能/插件/工具发布记录及必要的身份映射；逐表核对主键冲突、外键、用户所有权、加密密钥引用和文件资源。完成迁移后在隔离副本上运行完整性检查、管理员/普通用户登录、项目访问和资源配置回归，确认后才切换唯一服务到目标库。源库保持只读备份，回退时恢复整套服务与对应数据库，不在新旧实例之间继续写入。
+
+本初始化脚本只负责向目标库补齐标准基线，不会合并双库，也不会自动重写已有用户或项目归属。双库存量迁移必须先生成可审阅的迁移映射和差异报告，再执行经验证的迁移程序；没有迁移报告时不得宣称已完成单库收敛。
+
+模型目录入库只说明配置项存在。管理员还需在模型配置中设置真实可用的渠道凭据或本地服务地址，选择默认模型并执行正常连接测试。管理员助手和用户项目均由同一服务提供模型能力；密钥不会因为初始化自动复制给其他用户。
 
 空库从仓库导入完整 Skill 归档。14 个 Skill 首发为 `V1.1.0`；Web 执行 Skill 首发为 `V1.0.1`，保留浏览器回执和人工验证后续接。版本标签用于管理后台显示，与新库内部从 `1` 开始的快照编号独立。Agent 在同一轮初始化中固定引用当前 Skill 和插件快照。全新环境只创建当前基线，不复制其他部署的历史版本。
 
@@ -68,15 +76,15 @@ node scripts/initialize-standard-data.mjs check "$CENTRAL_HOME" "$CENTRAL_ORIGIN
 ```sh
 cd "$SOURCE_ROOT"
 node --test tests/deployment/standard-data.test.mjs
-node scripts/initialize-standard-data.mjs check "$CENTRAL_HOME" "$CENTRAL_ORIGIN"
+node scripts/initialize-standard-data.mjs check "$APP_DATA_ROOT" "$APP_ORIGIN"
 ```
 
 工程测试覆盖：空库完整发布及依赖、稳定资源打包、重复执行不改变资源/模型、管理员修改保留、依赖缺失回滚、撤回资源不自动恢复。它们使用独立内存数据库，不使用真实任务数据。
 
 环境验收应记录：
 
-1. 后台各模块有实际数据库记录，Agent 11 个、技能 15 个，插件包含本版本内置库及 4 个受信适配器；模型、工具数量与当前构建定义一致。
-2. 管理员助手能进入 `admin_agent_catalog/default_agent`，模型列表来自中央配置；模型连通性单独测试。
+1. `/admin` 各模块与 `/user` 业务入口读取同一应用数据库；Agent 11 个、技能 15 个，插件包含本版本内置库及 4 个受信适配器；模型、工具数量与当前构建定义一致。
+2. 管理员助手能进入 `admin_agent_catalog/default_agent`，模型列表来自同一服务配置；模型连通性单独测试。
 3. 使用普通用户身份验证资源授权及任务入口，不以管理员能看到资源替代普通用户验收。
 4. 用户新建任务页面不再出现“开始使用”指引；任务场景、工作区选择、输入框可用。
 5. 重启服务后数据仍存在；再次初始化不产生重复记录和版本。
@@ -94,7 +102,7 @@ node scripts/initialize-standard-data.mjs check "$CENTRAL_HOME" "$CENTRAL_ORIGIN
 
 | 现象 | 检查与处理 |
 | --- | --- |
-| 后台全空 | 核对访问的是中央端口、数据根目录及数据库；检查部署是否执行 seed/complete，而不是要求用户补建标准记录 |
+| 后台全空 | 核对 `/admin`、服务数据根目录及唯一数据库；检查部署是否执行 seed/complete，而不是要求用户补建标准记录 |
 | 助手缺项目 | 执行 complete，检查项目创建接口与目录权限；不要直接手工插项目表 |
 | 模型列表为空 | 确认 `central_model_config` 是否已存在但被管理员清空；初始化会保留它，需管理员通过模型设置处理 |
 | 有模型但调用失败 | 在正常模型设置中检查凭据、地址、额度与默认选择；不重跑初始化覆盖配置 |
@@ -103,3 +111,6 @@ node scripts/initialize-standard-data.mjs check "$CENTRAL_HOME" "$CENTRAL_ORIGIN
 | 工具状态未生效 | 检查本次实例的 `AITEST_ENGINE_ROOT` 与 `config/tool-runtime-state.json`，确认没有指向其他部署 |
 
 部署记录应保存源码版本、未提交改动清单/校验值、构建结果、备份位置、seed/complete/check 输出和实际验收范围；不得包含明文凭据。
+## 远程客户端部署补充（2026-11-24）
+
+桌面客户端连接统一业务服务时，以 `remote-client-deployment-20261124.md` 为当前部署约定：`installation.json` 配置 `connection.mode=remote`，直接加载服务端 `/user`；不在客户端启动完整业务 Server、初始化另一套业务库或运行在线资源初始化。本文中的标准账号、Agent、Skill、工具和模型目录初始化应在统一服务端执行；旧本机模式的步骤不适用于远程客户端。本机执行代理接线须另行验收，不能把本机整套 Server 称为执行代理。

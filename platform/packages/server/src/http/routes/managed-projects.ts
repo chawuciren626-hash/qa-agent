@@ -127,7 +127,7 @@ export function managedProjectsRoutes(deps: ManagedDeps): Hono<AppEnv> {
     if (!["all", "manual", "sync"].includes(sourceType) || !["all", "active", "archived", "disabled"].includes(status) || !["activity", "created", "name"].includes(sort)) throw new HttpError(400, "invalid_filter", "筛选参数无效");
     const keyword = (params.keyword ?? "").trim().toLocaleLowerCase();
     let projects = (await Promise.all((await deps.projectService.listProjects(userId)).map(async p => projectView(deps, userId, p))));
-    projects = projects.filter(p => (sourceType === "all" || p.sourceType === sourceType) && (status === "all" || p.status === status) && (!keyword || p.name.toLocaleLowerCase().includes(keyword) || p.projectId.toLocaleLowerCase().includes(keyword) || p.externalProjectId?.toLocaleLowerCase().includes(keyword)));
+    projects = projects.filter(p => p.purpose !== "internal" && (sourceType === "all" || p.sourceType === sourceType) && (status === "all" || p.status === status) && (!keyword || p.name.toLocaleLowerCase().includes(keyword) || p.projectId.toLocaleLowerCase().includes(keyword) || p.externalProjectId?.toLocaleLowerCase().includes(keyword)));
     projects.sort((a, b) => Number(b.isPinned) - Number(a.isPinned) || (sort === "name" ? a.name.localeCompare(b.name, "zh-Hans-CN") : sort === "created" ? b.createdAt.localeCompare(a.createdAt) : (b.lastActivityAt ?? "").localeCompare(a.lastActivityAt ?? "")) || a.projectId.localeCompare(b.projectId));
     const pageProjects = await Promise.all(projects.slice((page - 1) * pageSize, page * pageSize).map(withRunCount));
     c.header("Cache-Control", "no-store");
@@ -137,7 +137,7 @@ export function managedProjectsRoutes(deps: ManagedDeps): Hono<AppEnv> {
   app.get("/quick-switch", async c => {
     const current = c.req.query("currentProjectId") ?? null;
     const userId = c.var.user.userId;
-    const projects = (await deps.projectService.listProjects(userId)).map(p => projectView(deps, userId, p)).filter(p => p.status === "active");
+    const projects = (await deps.projectService.listProjects(userId)).map(p => projectView(deps, userId, p)).filter(p => p.status === "active" && p.purpose !== "internal");
     projects.sort((a, b) => Number(b.projectId === current) - Number(a.projectId === current) || Number(b.isPinned) - Number(a.isPinned) || (b.lastVisitedAt ?? "").localeCompare(a.lastVisitedAt ?? "") || a.projectId.localeCompare(b.projectId));
     return c.json({ projects: projects.slice(0, 8) });
   });

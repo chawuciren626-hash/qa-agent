@@ -18,8 +18,7 @@ import {
   requireValidId,
 } from "../validate.js";
 import { Bind, Component, Use } from "@prismshadow/penguin-core/kernel";
-import type { Desktop } from "../../hmr/capabilities.js";
-import type { Paths } from "../../hmr/capabilities.js";
+import type { AuthState, Desktop, Paths } from "../../hmr/capabilities.js";
 import type { DesktopService } from "../../services/desktop-service.js";
 import { membersRoutes } from "./members.js";
 import type { ProjectLifecycle } from "../../mechanisms/projects.js";
@@ -29,6 +28,7 @@ import { userAssistantProjectId, type ProjectRuns } from "../../services/project
 import { qaEnabled } from "../../services/qa-engine.js";
 import { managedProjectsRoutes } from "./managed-projects.js";
 import { projectEnvironmentsRoutes } from "./project-environments.js";
+import type { LocalExecutionRuntime } from "../../services/local-execution-runtime.js";
 
 /** What this route group reaches — bound by its module (src/modules). */
 export interface ProjectsRouteDeps {
@@ -43,6 +43,7 @@ export interface ProjectsRouteDeps {
   completeOnce?: (projectId: string, prompt: string, opts?: { maxTokens?: number; requestTimeoutMs?: number }) => Promise<UtilityCompletion>;
   /** 一次性视觉补全（探索验证码自动识别走项目 vision_model）；unset 时退回人工。 */
   completeVision?: (projectId: string, prompt: string, imageDataUrl: string, opts?: { maxTokens?: number; requestTimeoutMs?: number }) => Promise<UtilityCompletion>;
+  localExecution?: LocalExecutionRuntime | (() => LocalExecutionRuntime | undefined);
 }
 
 export function projectsRoutes(deps: ProjectsRouteDeps): Hono<AppEnv> {
@@ -56,6 +57,7 @@ export function projectsRoutes(deps: ProjectsRouteDeps): Hono<AppEnv> {
       engineRoot: process.env.AITEST_ENGINE_ROOT,
       completeOnce: deps.completeOnce,
       completeVision: deps.completeVision,
+      localExecution: deps.localExecution,
     }));
   }
 
@@ -144,6 +146,7 @@ export class ProjectAdminRoutes {
   @Use() private readonly desktop!: Desktop;
   @Use() private readonly machines!: Machines;
   @Use() private readonly paths!: Paths;
+  @Use() private readonly authState!: AuthState;
   @Bind("project-admin.projects") projectsRoutes!: Hono<AppEnv>;
   @Bind("project-admin.members") membersRoutes!: Hono<AppEnv>;
   setup() {
@@ -155,6 +158,7 @@ export class ProjectAdminRoutes {
       machines: this.machines,
       completeOnce: (projectId, prompt, opts) => this.projectConfig.completeOnce(projectId, prompt, opts),
       completeVision: (projectId, prompt, imageDataUrl, opts) => this.projectConfig.completeVisionOnce(projectId, prompt, imageDataUrl, opts),
+      localExecution: () => this.authState.localExecution,
     });
     this.membersRoutes = membersRoutes({
       projectService: this.projectService,

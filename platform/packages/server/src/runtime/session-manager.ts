@@ -39,6 +39,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { qaEnabled, qaEngineModule, qaProtectInput } from "../services/qa-engine.js";
 import { loadTrustedLocalAdapters } from "../auth/trusted-local-adapters.js";
+import { LocalExecutionRuntime } from "../services/local-execution-runtime.js";
 import {
   createAgent,
   loadAgentState,
@@ -445,6 +446,8 @@ export interface UsageRecorderLike {
 }
 
 export interface SessionManagerDeps {
+  assertExecution?: (sessionId: string) => void;
+  inheritExecution?: (parent: string, child: string) => string | undefined;
   /** The in-memory state this manager works on (see agent-state.ts). Optional: a manager built without one — unit tests — gets an empty state of its own. */
   state?: AgentState;
   sessions: SessionIndex;
@@ -1131,6 +1134,7 @@ export class SessionManager {
    * running" rejection before doing it, instead of undoing it afterwards.
    */
   assertCanAcceptTask(sessionId: string, opts?: { queueIfBusy?: boolean }): void {
+    this.deps.assertExecution?.(sessionId);
     this.assertOpen();
     this.assertAgentNotDeleting(sessionId);
     this.assertSessionNotDeleting(sessionId);
@@ -1173,6 +1177,7 @@ export class SessionManager {
     input: AmspRecord[],
     opts?: { queueIfBusy?: boolean; recall?: RecallStore },
   ): Promise<{ sessionId: string; queued: boolean }> {
+    this.deps.assertExecution?.(sessionId);
     return this.withLock(sessionId, async () => {
       this.assertOpen();
       this.assertAgentNotDeleting(sessionId);
@@ -1271,6 +1276,7 @@ export class SessionManager {
       budget: number;
     },
   ): Promise<{ sessionId: string }> {
+    this.deps.assertExecution?.(sessionId);
     return this.withLock(sessionId, async () => {
       this.assertOpen();
       this.assertAgentNotDeleting(sessionId);
@@ -1483,6 +1489,7 @@ export class SessionManager {
 
   /** Manually compact the context: 409 if already running; compaction output also flows into the SSE channel. */
   async startCompact(sessionId: string): Promise<{ sessionId: string }> {
+    this.deps.assertExecution?.(sessionId);
     return this.withLock(sessionId, async () => {
       this.assertOpen();
       this.assertAgentNotDeleting(sessionId);
@@ -1541,6 +1548,7 @@ export class SessionManager {
     ref: ModelRefDto,
     mode?: "compact" | "in-place",
   ): Promise<{ sessionId: string; switched: boolean }> {
+    this.deps.assertExecution?.(sessionId);
     return this.withLock(sessionId, async () => {
       this.assertOpen();
       this.assertAgentNotDeleting(sessionId);
@@ -2555,7 +2563,7 @@ export class SessionManager {
     const childSid = msg.origin![msg.origin!.length - 1]!;
     if (children.has(childSid)) return null;
     const p = msg.payload as SessionMetaPayload;
-    const agentId = path.basename(path.dirname(p.agent_state));
+    const agentId = path.posix.basename(path.posix.dirname(p.agent_state.replaceAll("\\", "/")));
     if (!agentId || agentId === "." || agentId === "..") return null;
     // The forwarded session_meta records the source where it is decided (core's spawn site
     // writes `subagent`); it is narrowed like any meta read back, so the registry holds what
@@ -2564,6 +2572,7 @@ export class SessionManager {
     const source = normalizeSessionSource(p.source);
     this.deps.sources.set(childSid, source);
     const root = this.rootSessionOf(entry.sessionId);
+    const executionWorkspace = this.deps.inheritExecution?.(root, childSid);
     this.childRoots.set(childSid, root);
     const createdAt = this.now().toISOString();
     // A sub-session of an organization's Session is company mode's own as much as the desk
@@ -2580,7 +2589,7 @@ export class SessionManager {
       agentId,
       provider: p.provider,
       modelId: p.model_id,
-      workspace: p.workspace,
+      workspace: executionWorkspace ?? p.workspace,
       // A subagent's approvals are inherited from the parent Session; the index row is
       // inserted with defaults (matches the convention for Sessions discovered by the CLI).
       approvalMode: "allow-all",
@@ -2997,18 +3006,21 @@ export class SessionsModule {
       log,
       notifyProjectUsers,
     });
+    const localExecution = authState.localExecution ??= new LocalExecutionRuntime({
+      root: config.root, settings, sessions: sessionsRepo, assembly,
+    });
+    const coreLoader = this.sessionLoaders.create(config.root, sources, {
+      proxyEnv: env.proxyEnv, controlEnv: env.controlEnv, pathPrepend: env.pathPrepend,
+      confineSpawn: env.confineSpawn, assembly,
+    });
     const manager = new SessionManager({
+      assertExecution: id => localExecution.assertCurrent(id),
+      inheritExecution: (parent, child) => localExecution.inherit(parent, child),
       state: this.state,
       sessions: sessionsRepo,
       channels,
       root: config.root,
-      loader: this.sessionLoaders.create(config.root, sources, {
-        proxyEnv: env.proxyEnv,
-        controlEnv: env.controlEnv,
-        pathPrepend: env.pathPrepend,
-        confineSpawn: env.confineSpawn,
-        assembly,
-      }),
+      loader: { load: async row => await localExecution.load(row) ?? await coreLoader.load(row) },
       sources,
       recorder,
       errors,
@@ -3024,6 +3036,7 @@ export class SessionsModule {
       now: () => this.clock.now(),
     });
     const sessionService = new SessionService({
+      localExecution,
       root: config.root,
       sessions: sessionsRepo,
       manager,

@@ -26,6 +26,7 @@ import { ESM_CJS_BANNER } from "../../scripts/esm-cjs-banner.mjs";
 export default defineConfig({
   entry: {
     main: "src/main.ts",
+    "execution-worker": "src/execution-worker.ts",
     launcher: "src/launcher.ts",
     "pty-payload": "src/pty-payload.ts",
     server: "../server/dist/index.js",

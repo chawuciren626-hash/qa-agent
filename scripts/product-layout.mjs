@@ -3,6 +3,7 @@ import { dirname, resolve, basename, delimiter } from 'node:path';
 import { createHash } from 'node:crypto';
 import Ajv from 'ajv';
 import { assertPlainPath, within } from './application-data.mjs';
+import { remoteClientConnection } from './client-connection.mjs';
 
 const schema = JSON.parse(readFileSync(new URL('../schemas/product-installation.schema.json', import.meta.url), 'utf8'));
 const validate = new Ajv({allErrors: true}).compile(schema);
@@ -23,7 +24,9 @@ export function resolveProductLayout(value, configFile) {
       if(overlaps(p,program)) throw new Error(`Data directory overlaps program files: ${key}`);
     }
   }
+  const connection=remoteClientConnection(value.connection);
   const layout={version:1,installation_id:value.installation_id,layout:value.layout,root,project_id:value.project_id,paths,
+    ...(connection ? {connection} : {}),
     host_app:resolve(dirname(paths.host_executable),'resources/app'),agent_root:resolve(paths.host_data,value.project_id,'agents')};
   return {...layout,fingerprint:createHash('sha256').update(JSON.stringify(layout)).digest('hex')};
 }
@@ -49,12 +52,11 @@ export function productEnvironment(layout,env=process.env) {
   delete result.PENGUIN_PORT_FILE;
   delete result.PENGUIN_WEB_DB;
   delete result.PENGUIN_WEB_DIST;
-  const accountFile=resolve(layout.paths.host_data,'account-center.json');
-  if(existsSync(accountFile)) {
-    const account=JSON.parse(readFileSync(accountFile,'utf8'));
-    result.AITEST_ACCOUNT_CENTER_ORIGIN=account.origin;
-    result.AITEST_ACCOUNT_CENTER_OWNER=account.ownerUserId;
-  }
+  // The installed app has one identity store and one server. Never revive the retired
+  // external account-center deployment from inherited environment or old data-root files.
+  delete result.AITEST_ACCOUNT_CENTER;
+  delete result.AITEST_ACCOUNT_CENTER_ORIGIN;
+  delete result.AITEST_ACCOUNT_CENTER_OWNER;
   const sharedRuntimeFile=resolve(layout.paths.host_data,'shared-agent-runtime.json');
   if(existsSync(sharedRuntimeFile)) {
     const shared=JSON.parse(readFileSync(sharedRuntimeFile,'utf8'));

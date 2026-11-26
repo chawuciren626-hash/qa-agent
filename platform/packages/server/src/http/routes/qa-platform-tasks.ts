@@ -101,6 +101,8 @@ function deriveEnvName(db: AgentsRouteDeps["db"], projectId: string, baseUrl: st
 const PLATFORM_STAGES = ["analysis", "test_points", "test_cases", "execution", "defects", "report"];
 
 function precreatePlatformRun(deps: AgentsRouteDeps, sessionId: string, runId: string, scopeName: string): boolean {
+  // Desktop runtimes create their run through the installed stage tools; never spawn VM scripts for their mirror.
+  if (deps.authState?.localExecution?.broker.binding(sessionId)) return false;
   if (!qaEnabled || !/^run-[A-Za-z0-9-]+$/.test(runId)) return false;
   const engineRoot = process.env.AITEST_ENGINE_ROOT;
   if (!engineRoot) return false;

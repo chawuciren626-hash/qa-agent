@@ -60,6 +60,7 @@ import type { SessionIndex, SessionOrigins } from "../mechanisms/sessions.js";
 import type { ProjectConfigStore } from "../mechanisms/projects.js";
 import type { SandboxDimension, SandboxSettings } from "@prismshadow/penguin-core/plugin";
 import { aboveSandboxCeiling } from "./sandbox-ceiling.js";
+import { ADMIN_ASSISTANT_PROJECT_ID } from "../http/admin-management.js";
 
 /** A stored policy's network level as the composer names it. */
 function networkOf(policy: SandboxSettings): SessionSandbox["network"] {
@@ -216,6 +217,7 @@ export type SessionListPaging =
   { offset: number; limit: number } | { before: ActivityCursor; limit: number };
 
 export interface SessionServiceDeps {
+  localExecution?: import("./local-execution-runtime.js").LocalExecutionRuntime;
   root: string;
   sessions: SessionIndex;
   manager: SessionManager;
@@ -768,6 +770,7 @@ export class SessionService {
    * (idle).
    */
   async createSession(args: {
+    execution?: import("./local-execution-runtime.js").ExecutionIdentity;
     projectId: string;
     agentId: string;
     userId?: string;
@@ -798,6 +801,8 @@ export class SessionService {
      */
     client?: "web" | "cli" | "org" | "api" | "workbench";
   }): Promise<SessionInfo> {
+    args = { ...args, execution: args.projectId === ADMIN_ASSISTANT_PROJECT_ID ? undefined
+      : args.execution ?? this.deps.localExecution?.currentIdentity(args.userId) };
     if ((args.modelId === undefined) !== (args.provider === undefined)) {
       throw badRequest(
         "modelId and provider must be given together as a (provider, modelId) pair: specify both, or neither to use the Project's default model.",
@@ -833,7 +838,7 @@ export class SessionService {
       const pinned = await this.deps.pinPublishedSession!(args.userId!, args.projectId, args.agentId, publishedSessionId);
       if (!pinned) throw new HttpError(503, "shared_agent_unavailable", "The shared Agent has no published definition available to this user.");
     }
-    const agent = await createAgent({
+    const agent = args.execution ? null : await createAgent({
       root: this.deps.root,
       projectId: args.projectId,
       agentId: args.agentId,
@@ -845,7 +850,12 @@ export class SessionService {
     });
     let session;
     try {
-      session = await agent.createSession({
+      session = args.execution
+        ? await this.deps.localExecution!.create({
+            sessionId: publishedSessionId ?? formatSessionId(), projectId: args.projectId, agentId: args.agentId,
+            ownerUserId: args.userId, modelId, provider, thinkingLevel: args.thinkingLevel,
+          }, args.execution)
+        : await agent!.createSession({
         ...(publishedSessionId ? { sessionId: publishedSessionId } : {}),
         modelId,
         provider,
@@ -883,7 +893,9 @@ export class SessionService {
       agentId: args.agentId,
       provider: session.provider,
       modelId: session.modelId,
-      workspace: session.workspaceDir,
+      workspace: args.execution
+        ? path.join(this.deps.root, args.projectId, ".desktop-workspaces", session.sessionId)
+        : session.workspaceDir,
       ...(args.thinkingLevel !== undefined ? { thinkingLevel: args.thinkingLevel } : {}),
       approvalMode: this.startApproval(args.approvalMode, args.client),
       sandbox,

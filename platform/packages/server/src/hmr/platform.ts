@@ -865,6 +865,7 @@ export const platformImpl: Impl<PlatformApi, PlatformCtx> = {
           return http.fetchAs(userId, request);
         };
         serveApiSocket(ws, {
+          execution: ref.execution,
           fetch: entered,
           fetchStream: (request, answer) => entered(carryStreamAnswer(request, answer)),
           origin: `${url.protocol}//${url.host}`,

@@ -230,16 +230,8 @@ function LocalAdminWorkspaceEntry({ path, title }: { path: string; title: string
 /** The administrator console and user workspace share this server and its database. */
 export function AdminHostGate({ children }: { children: ReactNode }) {
   const { sessionVia } = useAuth();
-  const [central, setCentral] = useState<boolean | null>(null);
-  const [error, setError] = useState("");
   const location = useLocation();
-  useEffect(() => { void controlRequest("/api/account-client/config").then(config => {
-    setCentral(false);
-  }).catch(cause => setError(cause.message)); }, []);
-  if (error) return <p role="alert">{error}</p>;
-  if (central === null) return <p className="p-6">正在连接管理服务…</p>;
-  if (!central && sessionVia === "desktop") return <div className="admin-web-only"><h1>管理后台仅在 Web 端开放</h1><p>请在浏览器中访问本服务的 /admin 路径。</p><a href="/admin/overview">打开管理后台 ↗</a></div>;
-  if (!central) return <>{children}</>;
+  if (sessionVia === "desktop") return <div className="admin-web-only"><h1>管理后台仅在 Web 端开放</h1><p>请在浏览器中访问本服务的 /admin 路径。</p><a href="/admin/overview">打开管理后台 ↗</a></div>;
   const section = location.pathname.split("/")[1] || "agents";
   if (section === "chat") return <CentralAssistantContext.Provider value>{children}</CentralAssistantContext.Provider>;
   const kind = (section === "publications" ? location.pathname.split("/")[2] : section) as ManagedKind;

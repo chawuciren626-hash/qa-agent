@@ -1274,7 +1274,7 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
     }
     const parsed = parseTaskInput(body, limits);
     if (parsed.attachments.length === 0 && parsed.images.length === 0) {
-      const humanAction = await qaLoginConfirmation(deps, row, parsed.texts.join("\n"));
+      const humanAction = await qaLoginConfirmation(deps, row, parsed.texts.join("\n"), c.req.raw.headers);
       if (humanAction !== null)
         return c.json({ sessionId: row.sessionId, queued: false, humanAction }, 202);
     }
@@ -1347,6 +1347,10 @@ export function sessionsRoutes(deps: SessionsRouteDeps): Hono<AppEnv> {
       body,
       toAttachmentLimits(deps.serverSettingsRepo.getAttachmentLimitsMb()),
     );
+    // A new attachment must travel in the next execution bundle. Let the existing UI
+    // 409 fallback submit it as a normal queued input rather than steering a VM path.
+    if (files.length && deps.localExecution?.broker.binding(row.sessionId))
+      throw new HttpError(409, "not_running", "带附件的消息通过下一轮本机输入发送");
     // Any part can carry the message on its own: an image or a file with no caption is a
     // complete steering message, and so is plain text.
     if (!text && images.length === 0 && files.length === 0) {

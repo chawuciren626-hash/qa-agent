@@ -1186,16 +1186,17 @@ function createSectionsUI(deps) {
      项目资料页（SectionPage view=library）页头用它指回项目管理并在兄弟页横跳；
      引擎独立 UI 未注入时不渲染，行为与从前一致。 */
   function SectionPage({ view }) {
-    const { currentProject } = useProject(),
+    const { currentProject, projectsLoading } = useProject(),
       { user } = useAuth();
     R.useEffect(() => {
       document.title = `${view === "schedules" ? "定时任务" : "项目资料"} · AITestHarness`;
     }, [view]);
-    if (!currentProject)
+    if (view === "library" && !currentProject)
       return h("div", { className: "qa-page-empty" }, "正在加载工作空间…");
     const page = h(view === "schedules" ? Schedules : Library, {
-      key: `${currentProject.projectId}:${user?.userId}:${view}`,
-      projectId: currentProject.projectId,
+      key: `${currentProject?.projectId || "no-project"}:${user?.userId}:${view}`,
+      projectId: currentProject?.projectId || null,
+      projectsLoading,
     });
     if (view !== "library") return page;
     return ProjectBreadcrumb ? h("div", { className: "qa-section-with-crumbs" },
@@ -1241,7 +1242,7 @@ function createSectionsUI(deps) {
       "",
     ],
   ];
-  function Schedules({ projectId }) {
+  function Schedules({ projectId, projectsLoading }) {
     const { agents, currentAgent } = useProject();
     const [agent, setAgent] = R.useState(
       agents.find((a) => a.agentId === "test_agent")?.agentId ||
@@ -1249,9 +1250,11 @@ function createSectionsUI(deps) {
         agents[0]?.agentId ||
         "test_agent",
     );
-    const base = `/api/projects/${enc(projectId)}/agents/${enc(agent)}/schedules`;
+    const base = projectId
+      ? `/api/projects/${enc(projectId)}/agents/${enc(agent)}/schedules`
+      : null;
     const list = useLoad(base),
-      models = useLoad(`/api/projects/${enc(projectId)}/models`);
+      models = useLoad(projectId ? `/api/projects/${enc(projectId)}/models` : null);
     const [edit, setEdit] = R.useState(null),
       [remove, setRemove] = R.useState(null),
       [busy, setBusy] = R.useState(false),
@@ -1296,7 +1299,7 @@ function createSectionsUI(deps) {
         h(
           "div",
           { className: "qa-header-actions" },
-          h(
+          projectId && h(
             "select",
             {
               "aria-label": "查看智能体的定时任务",
@@ -1315,11 +1318,13 @@ function createSectionsUI(deps) {
             ),
           ),
           button("刷新", list.reload),
-          button("+ 新建", () => setEdit({}), true),
+          button("+ 新建", () => setEdit({}), true, { disabled: !projectId }),
         ),
       ),
       errorBox(error || list.error),
-      list.loading
+      !projectId
+        ? h("div", { className: "qa-page-empty" }, projectsLoading ? "正在加载定时任务…" : "定时任务暂时无法加载，请刷新页面")
+        : list.loading
         ? h("div", { className: "qa-page-empty" }, "正在加载定时任务…")
         : list.error
           ? button("重新加载", list.reload)
@@ -1417,8 +1422,8 @@ function createSectionsUI(deps) {
                 className: "qa-template-card",
                 "aria-label": title,
                 key: title,
-                onClick: () =>
-                  setEdit({ template: true, title, prompt, period }),
+                onClick: () => setEdit({ template: true, title, prompt, period }),
+                disabled: !projectId,
               },
               h(Icon, {
                 name: ["bolt", "plug", "globe", "book", "refresh", "box"][i],

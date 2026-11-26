@@ -77,6 +77,7 @@ import { APPROVAL_MODES } from "./approval-mode";
 import { adoptDockScope } from "../dock/dock-state";
 import { setDockConversation } from "../dock/dock-terminal";
 import { StartDashboard } from "./start-dashboard";
+import { usesQaDraft } from "./draft-surface";
 import { AdminAssistantDashboard } from "./admin-assistant-dashboard";
 import { QaHero } from "../qa/workspace-ui";
 import { qaBindProject } from "../../../../../../penguin/ui/workspace-ui.mjs";
@@ -206,7 +207,12 @@ export function DraftView({
   const [agentId, setAgentId] = useState<string | null>(fixedAgentId ?? cached.agentId ?? null);
   const [workspace, setWorkspace] = useState(cached.workspace ?? "");
   // Product presentation does not depend on the asynchronous Agent inventory.
-  const testingProject = !fixedAgentId && (accountClient || localAgents.some((agent) => agent.agentId === "test_agent"));
+  const testingProject = usesQaDraft({
+    pathname: location.pathname,
+    fixedAgentId,
+    accountClient: !!accountClient,
+    hasTestAgent: localAgents.some((agent) => agent.agentId === "test_agent"),
+  });
   const qaProjectId: string | null = location.state?.qaProjectId === undefined ? cached.qaProjectId ?? null : location.state.qaProjectId;
   /**
    * The machine that workspace is on (null = this one). Carried beside the path because a

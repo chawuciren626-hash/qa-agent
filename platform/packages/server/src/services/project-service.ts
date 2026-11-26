@@ -53,6 +53,11 @@ import type { AgentApi } from "../mechanisms/agent-api.js";
 /** The isolated QA Project used by the administrator assistant. */
 export const ADMIN_ASSISTANT_PROJECT = "admin_agent_catalog";
 
+/** Private runtime context for the user-facing assistant, outside business projects. */
+export function userAssistantProjectId(userId: string): string {
+  return userId === "admin" ? "admin_user_assistant" : `${userId}-aitest_system_assistant`;
+}
+
 /** Fallback timeout for waiting on runs to settle before deleting a Project. */
 const ABORT_SETTLE_TIMEOUT_MS = 5000;
 
@@ -168,7 +173,7 @@ export class ProjectService implements ProjectLifecycle {
     ) {
       throw new HttpError(409, "project_exists", `Project id is already taken: ${projectId}.`);
     }
-    const adminAssistantProject = projectId === ADMIN_ASSISTANT_PROJECT;
+    const adminAssistantProject = projectId === ADMIN_ASSISTANT_PROJECT || projectId === userAssistantProjectId(owner.userId);
     const shared = await this.sharedRolesReady(owner.userId, {
       requireDefaultAgent: adminAssistantProject,
     });

@@ -29,6 +29,7 @@ import { declined } from "../hmr/hono-seam.js";
 import { CALL_HEADERS, parseClientFrame } from "./frames.js";
 import type { CallFrame, ServerFrame } from "./frames.js";
 import { StreamAnswer } from "./stream-answer.js";
+import type { ApiSocketRef } from "./ref.js";
 
 /** Same cadence as the SSE heartbeat: a peer that answers no ping within two beats is gone. */
 export const HEARTBEAT_MS = 20_000;
@@ -66,6 +67,8 @@ function callable(path: string): boolean {
 }
 
 export interface ApiSocketDeps {
+  /** Trusted upgrade identity. Frame headers cannot replace it. */
+  execution?: ApiSocketRef["execution"];
   /** The platform's routes, entered as the socket's user (Http.fetchAs). */
   fetch: (request: Request) => Promise<Response>;
   /** The same routes, for a call that asks for an event stream: its answer rides the Request in (stream-answer.ts). */
@@ -155,13 +158,19 @@ export function serveApiSocket(ws: WebSocket, deps: ApiSocketDeps): void {
       reject(id, 404, "not_found", "Endpoint does not exist.");
       return;
     }
-    if (httpOnly(call.path)) {
+    // A socket opened before the worker was ready keeps its original handshake. Retry via
+    // HTTP so the desktop can inject its current identity instead of running on the server.
+    if (httpOnly(call.path) || (deps.execution && !deps.execution.proof)) {
       httpRequired(id);
       return;
     }
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(call.headers ?? {}))
       if (CALL_HEADERS.has(k)) headers[k] = v;
+    if (deps.execution) {
+      headers["x-aitest-execution-client"] = deps.execution.clientId;
+      headers["x-aitest-execution-proof"] = deps.execution.proof!;
+    }
     let body: string | undefined;
     if ("body" in call) {
       body = JSON.stringify(call.body);

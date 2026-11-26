@@ -93,6 +93,7 @@ import { originEnum } from "./steps/2026-11-22-origin-enum.js";
 import { taskPlatformEventRetry } from "./steps/2026-11-23-task-platform-event-retry.js";
 import { taskPlatformPackageBackfill } from "./steps/2026-11-23-task-platform-package-backfill.js";
 import { accountIdentityDirectMigration } from "./steps/2026-11-23-account-identity-direct.js";
+import { userDisabled } from "./steps/2026-11-24-user-disabled.js";
 
 export type { Migration } from "./migration.js";
 export { IrreversibleMigrationError, UnknownMigrationError, appliedMigrations } from "./runner.js";
@@ -151,6 +152,7 @@ export const MIGRATIONS: readonly Migration[] = [
   taskPlatformEventRetry,
   taskPlatformPackageBackfill,
   accountIdentityDirectMigration,
+  userDisabled,
 ];
 
 /**

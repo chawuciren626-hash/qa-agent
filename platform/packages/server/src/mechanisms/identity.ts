@@ -15,6 +15,7 @@ export abstract class Users {
   abstract list(): UserRow[];
   abstract count(): number;
   abstract updatePassword(userId: string, passwordHash: string, isInitial: boolean): void;
+  abstract setDisabled(userId: string, disabled: boolean): void;
   abstract updateProfile(
     userId: string,
     patch: { displayName?: string | null; avatar?: string | null },
@@ -72,5 +73,6 @@ export abstract class Admin {
   abstract listUsers(): UserInfo[];
   abstract createUser(userId: string, password: string): Promise<UserInfo>;
   abstract resetPassword(userId: string, password: string): Promise<void>;
+  abstract setDisabled(userId: string, disabled: boolean): void;
   abstract deleteUser(userId: string): Promise<void>;
 }

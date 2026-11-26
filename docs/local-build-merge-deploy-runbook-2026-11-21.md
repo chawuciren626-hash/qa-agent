@@ -1,5 +1,7 @@
 # 本机拉取、合并、验证与部署流程
 
+> 2026-11-24 客户端约定更新：远程客户端按 `remote-client-deployment-20261124.md` 和 `deploy-remote-client.mjs` 执行，取消本机业务服务自启。下文旧本机 Server/Web 同步流程仅供对应历史运行方式与恢复参考。
+
 适用日期：2026-11-21。适用对象：AITestHarness 本机源码和已安装运行副本的日常更新。本文依据当前脚本及最近三轮部署记录整理；执行时以目标提交中的脚本、安装配置和实际状态为准。
 
 ## 1. 流程与完成标准
@@ -15,12 +17,12 @@
 | 用途 | 当前本机位置 | 操作原则 |
 | --- | --- | --- |
 | 主源码仓库 | E:/AItestHarness | 与 ZCode 共用，构建期间可能继续变化 |
-| 本机安装目录 | D:/AITestHarness | 以 installation.json 解析实际布局 |
+| 本机安装目录 | E:/AITestHarness/installed | 以 installation.json 解析实际布局 |
 | 应用程序 | runtime/penguin/resources/app | server/main/migrate-db、web-dist 及完整性清单 |
 | 引擎 | app/engine | 通过引擎同步脚本和发布白名单管理 |
 | 数据与会话 | data/、workspaces/ | 保留用户数据，不用源码目录覆盖 |
 | 部署证据 | 源码目录 output/release/<本轮名称>/ | 构建日志、校验结果、备份路径、部署记录；不提交 Git |
-| 本机备份 | 当前为 D:/backups/ | 记录本轮脚本实际返回的绝对路径 |
+| 本机备份 | 当前为 E:/AITestHarness/backups/ | 记录本轮脚本实际返回的绝对路径 |
 
 以上绝对路径只描述本机运维环境，不能写死在通用运行时代码中。PenguinHarness 宿主继续保留，不用上游安装器覆盖受管理宿主。
 
@@ -125,8 +127,8 @@ node node_modules/vite/bin/vite.js build
 
 ~~~powershell
 # 在本轮固定源码目录执行
-node scripts/local-service.mjs status D:/AITestHarness/installation.json
-node scripts/local-service.mjs pause D:/AITestHarness/installation.json
+node scripts/local-service.mjs status E:/AITestHarness/installed/installation.json
+node scripts/local-service.mjs pause E:/AITestHarness/installed/installation.json
 ~~~
 
 只有官方 pause 成功、服务完全退出并产生维护标记，才替换程序。客户端仍连接、后台任务不允许停止或现状清单校验失败时，停止部署，保留当前程序；不强制杀进程或伪造维护标记。
@@ -149,21 +151,21 @@ node scripts/local-service.mjs pause D:/AITestHarness/installation.json
 
 ~~~powershell
 # 引擎有变化时，先同步引擎；无变化无需执行
-node scripts/deploy-engine-files.mjs D:/AITestHarness
+node scripts/deploy-engine-files.mjs E:/AITestHarness/installed
 
 # 同步应用构建产物
-node scripts/deploy-project-management-local.mjs D:/AITestHarness
+node scripts/deploy-project-management-local.mjs E:/AITestHarness/installed
 
 # 仅需同步角色指令时；先预览，再按实际账户/Agent根目录应用
 node scripts/sync-penguin-agents.mjs --target-root=<实际目标目录>
 node scripts/sync-penguin-agents.mjs --apply --target-root=<实际目标目录>
 
 # schema 有变化时；dataRoot 必须从安装配置解析
-node D:/AITestHarness/runtime/penguin/resources/app/dist/migrate-db.js <dataRoot> [dbPath]
+node E:/AITestHarness/installed/runtime/penguin/resources/app/dist/migrate-db.js <dataRoot> [dbPath]
 
 # 全部同步和必要迁移成功后恢复
-node scripts/local-service.mjs resume D:/AITestHarness/installation.json
-node scripts/local-service.mjs status D:/AITestHarness/installation.json
+node scripts/local-service.mjs resume E:/AITestHarness/installed/installation.json
+node scripts/local-service.mjs status E:/AITestHarness/installed/installation.json
 ~~~
 
 应用同步脚本当前只覆盖 dist/server.js、dist/migrate-db.js、dist/main.js 和 web-dist，并更新 aitest-source-runtime.json；它不自动同步引擎、全部 desktop dist、全部插件或执行数据库迁移。引擎同步脚本按发布策略补充/更新 engine_files，报告旧清单中不再受策略管理的项，本轮不会直接删掉这些旧项。
@@ -220,4 +222,7 @@ node scripts/local-service.mjs status D:/AITestHarness/installation.json
 | 平台任务账号模型回退及移除演示种子 | dc71084 | output/release/account-model-fallback-dc71084/deployment-record.md |
 | 探索快照归档跳过与恢复 | 0cd0c6a | output/release/snapshot-archive-0cd0c6a/deployment-record.md |
 
-这些轮次完成的是本机 D:/AITestHarness 更新，不应据此声称云端账号服务或另一台服务器已重建部署。云端如需更新，应另行确认目标环境、服务配置和发布方式，再执行对应的备份、发布与验收。
+这些轮次完成的是本机安装版更新，不应据此声称虚拟机或其他服务器也已更新。跨环境部署需分别确认目标、服务配置、备份、发布与验收；2026-11-24 虚拟机切换记录见 deployment-single-instance-20261124.md。
+## 当前客户端部署入口（2026-11-24）
+
+远程业务客户端按 `remote-client-deployment-20261124.md` 执行。使用 `deploy-remote-client.mjs` 进行检查、备份、受保护暂停和主进程/启动脚本同步，取消本机业务服务自启；不使用旧流程把 Server/Web 和业务库再部署为一套客户端实例。本文保留旧运行方式供历史恢复参考。服务端仍通过统一实例部署流程维护。

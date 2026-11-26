@@ -75,6 +75,9 @@ import { liveServerLock } from "@prismshadow/penguin-server/lock";
 import type { ServerLock } from "@prismshadow/penguin-server/lock";
 import { appIdentity, desktopDataRoot, resolveProfile } from "./app-identity.js";
 import { qaInstallation } from "./qa-installation.js";
+import { remoteSessionPartition } from "./remote-client.js";
+import { startRemoteExecution } from "./remote-execution-client.js";
+let remoteExecution: { close(): void } | null = null;
 import {
   createSignInGuard,
   desktopLoginMode,
@@ -222,6 +225,7 @@ function createWindow(url: string): void {
     ...titleBarWindowOptions(process.platform, nativeTheme.shouldUseDarkColors),
     ...(iconPath !== null ? { icon: iconPath } : {}),
     webPreferences: {
+      ...(qaInstall?.connection ? { partition: remoteSessionPartition(qaInstall.connection.origin) } : {}),
       // The window is a plain browser: no Node, no preload — the minimal attack surface.
       contextIsolation: true,
       nodeIntegration: false,
@@ -298,6 +302,27 @@ function createWindow(url: string): void {
   target.webContents.on("render-process-gone", () => reloadAfterRendererDeath(target));
   target.webContents.on("unresponsive", () => logLine("[shell] the window stopped responding"));
   target.webContents.on("responsive", () => logLine("[shell] the window responds again"));
+  if (qaInstall?.connection) {
+    const remoteOrigin = qaInstall.connection.origin;
+    target.webContents.on("did-fail-load", (_event, code, description, failedUrl, isMainFrame) => {
+      if (!isMainFrame || code === -3 || !isAppUrl(failedUrl, remoteOrigin)) return;
+      logLine(`[shell] remote service load failed (${code}): ${description}`);
+      if (process.env.PENGUIN_DESKTOP_SMOKE === "1") {
+        fatal("Remote service connection failed.", `${description} (${code})`);
+        return;
+      }
+      void dialog.showMessageBox(target, {
+        type: "error", title: app.name,
+        message: "无法连接远程服务",
+        detail: `服务地址：${remoteOrigin}\n请检查服务及网络连接。客户端不会切换到本机业务库。`,
+        buttons: ["重试", "退出"], defaultId: 0, cancelId: 1,
+      }).then(({ response }) => {
+        if (target.isDestroyed()) return;
+        if (response === 0) void target.loadURL(`${remoteOrigin}/user`);
+        else app.quit();
+      });
+    });
+  }
   armSmokeProbe(win);
   void win.loadURL(url);
 }
@@ -485,7 +510,7 @@ let attachedServer: ServerLock | null = null;
 const signInGuard = createSignInGuard();
 // The desktop shell signs into the same application data root as the /admin and /user
 // browser surfaces. The retired external account-center mode no longer changes login flow.
-const usesCentralAccounts = false;
+const usesCentralAccounts = qaInstall?.connection?.mode === "remote";
 const loginMode = desktopLoginMode(app.getPath("userData"), !usesCentralAccounts);
 
 /**
@@ -729,6 +754,16 @@ async function handleServerExit(dataRoot: string, code: number): Promise<void> {
 }
 
 async function boot(): Promise<void> {
+  if (qaInstall?.connection?.mode === "remote") {
+    // A business client must not start/attach a local server, mint a local admin
+    // session, or fall back to a different database when the service is offline.
+    appOrigin = qaInstall.connection.origin;
+    logLine(`[shell] remote business client: ${appOrigin}; local business server disabled`);
+    remoteExecution = await startRemoteExecution({ origin: appOrigin, profile: qaInstall.profile,
+      paths: qaInstall.paths, env: qaInstall.env, worker: path.join(import.meta.dirname, "execution-worker.js"), log: logLine });
+    createWindow(`${appOrigin}/user`);
+    return;
+  }
   // Explicit PENGUIN_HOME wins; otherwise the release profile shares the CLI's data root
   // and the dev profile takes the repo's dev root (the rule, and why, live in app-identity.ts).
   const dataRoot = desktopDataRoot({
@@ -839,6 +874,8 @@ if (!app.requestSingleInstanceLock()) {
     quitting = true;
   });
   app.on("will-quit", (event) => {
+    remoteExecution?.close();
+    remoteExecution = null;
     managedConnection?.close();
     managedConnection = null;
     // Nulling the tray keeps the second pass (after the stop) from destroying it twice.
@@ -924,6 +961,7 @@ function armSmokeProbe(target: BrowserWindow): void {
             url: target.webContents.getURL(),
             origin: appOrigin,
             embedded: server !== null,
+            connectionMode: qaInstall?.connection?.mode ?? "local",
           };
           const shot = process.env.PENGUIN_DESKTOP_SMOKE_SHOT;
           if (shot) {

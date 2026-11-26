@@ -1,0 +1,103 @@
+import { afterEach, describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fork } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import { createAgent, formatSessionId, saveProjectConfig, userText } from "@prismshadow/penguin-core";
+import { LocalExecutionRuntime } from "../src/services/local-execution-runtime.js";
+import { handleError } from "../src/http/errors.js";
+import type { AppEnv } from "../src/auth/middleware.js";
+
+const cleanup: (() => Promise<unknown>)[] = [];
+afterEach(async () => { for (const remove of cleanup.splice(0).reverse()) await remove(); });
+describe("desktop execution end to end", () => {
+  it("executes using the local Node, uploads byte-identical artifacts and traces, and keeps upstream credentials central", async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aitest-execution-")));
+    cleanup.push(() => fs.rm(root, { recursive: true, force: true }));
+    const centralRoot = path.join(root, "central"), localRoot = path.join(root, "desktop"), projectId = "bridge_project", agentId = "test_agent";
+    const app = new Hono<AppEnv>();
+    let expectedUpstreamKey = false;
+    app.post("/upstream/chat/completions", async c => {
+      expectedUpstreamKey = c.req.header("authorization") === "Bearer central-secret-not-for-desktop";
+      const body = await c.req.json();
+      const toolResults = body.messages.filter((message: any) => message.role === "tool");
+      const child = body.messages.some((message: any) => message.role === "user" && JSON.stringify(message.content).includes("CHILD_LOCAL_PROBE"));
+      const pending = /process running with process_id ([a-zA-Z0-9-]+)/.exec(JSON.stringify(toolResults.at(-1)?.content ?? ""));
+      const ran = !pending && (child ? toolResults.length > 0 : toolResults.some((message: any) => message.tool_call_id === "call_child"));
+      const browser = !child && process.env.AITEST_TEST_ENGINE ? `;const {chromium}=require(require('path').join(process.env.AITEST_TEST_ENGINE,'node_modules/@playwright/test'));const b=await chromium.launch({headless:true});const page=await b.newPage();await page.setContent('<title>local browser proof</title>');require('fs').writeFileSync('browser-proof.json',JSON.stringify({title:await page.title(),executable:chromium.executablePath()}));await b.close()` : "";
+      const command = `node -e "(async()=>{require('fs').writeFileSync('${child ? 'child' : 'local'}-proof.json',JSON.stringify({node:process.execPath,cwd:process.cwd(),platform:process.platform,python:process.env.QA_PYTHON?require('child_process').execFileSync(process.env.QA_PYTHON,['-c','import sys;print(sys.executable)'],{encoding:'utf8'}).trim():null}))${browser}})().catch(e=>{console.error(e);process.exit(1)})"`;
+      const delegate = !pending && !child && toolResults.length > 0 && !ran;
+      const args = pending ? { process_id: pending[1], yield_time_ms: 10000 } : delegate ? { prompt: "CHILD_LOCAL_PROBE", yield_time_ms: 10000 } : { cmd: command, yield_time_ms: 10000 };
+      const delta = ran ? { content: "local execution completed" } : { tool_calls: [{ index: 0, id: child ? "call_child_probe" : delegate ? "call_child" : "call_local_probe", type: "function", function: { name: pending ? "input_command" : delegate ? "run_subagent" : "exec_command", arguments: JSON.stringify(args) } }] };
+      const chunks = [{ choices: [{ index: 0, delta: { role: "assistant", ...delta }, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: ran ? "stop" : "tool_calls" }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } }];
+      return c.body(chunks.map(chunk => `data: ${JSON.stringify({ id: "chatcmpl-test", object: "chat.completion.chunk", created: 1, model: "fake-local-model", ...chunk })}\n\n`).join("") + "data: [DONE]\n\n", 200, { "content-type": "text/event-stream" });
+    });
+    const settings = new Map<string, string>(), rows = new Map<string, any>();
+    const runtime = new LocalExecutionRuntime({ root: centralRoot,
+      settings: { get: (key: string) => settings.get(key) ?? null, set: (key: string, value: string) => { settings.set(key, value); } } as any,
+      sessions: { findById: (id: string) => rows.get(id) ?? null } as any, assembly: {} });
+    app.use("/api/*", async (c, next) => { c.set("user", { userId: "alice" } as any); c.set("sessionVia", "password" as any); await next(); });
+    app.route("/api/sessions/local-execution", runtime.routes());
+    app.onError(handleError as any);
+    const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
+    await new Promise<void>(resolve => server.once("listening", resolve));
+    cleanup.push(() => new Promise<void>(resolve => { (server as import("node:http").Server).closeAllConnections(); server.close(() => resolve()); }));
+    const origin = `http://127.0.0.1:${(server.address() as any).port}`;
+    await saveProjectConfig(centralRoot, projectId, { models: [{ provider: "fake", model_id: "fake-local-model", client_type: "openai-chat", base_url: origin + "/upstream", api_key: "central-secret-not-for-desktop" }], default_model: { provider: "fake", model_id: "fake-local-model" } });
+    await createAgent({ root: centralRoot, projectId, agentId });
+    const hookDir = path.join(centralRoot, projectId, "agents", agentId, "agent_state", "hooks", "local_probe");
+    await fs.mkdir(hookDir, { recursive: true });
+    await fs.writeFile(path.join(hookDir, "hooks.json"), JSON.stringify({ user_prompt: [{ command: "probe.mjs", trigger: "host" }] }));
+    await fs.writeFile(path.join(hookDir, "probe.mjs"), 'process.stdout.write(JSON.stringify({context:JSON.stringify({node:process.execPath,cwd:process.cwd()})}));');
+    const identity = { clientId: randomUUID(), proof: "a".repeat(64) };
+    const workerPath = path.resolve(import.meta.dirname, "../../desktop/dist/execution-worker.js");
+    const node = process.env.AITEST_TEST_NODE ?? process.execPath;
+    const engine = process.env.AITEST_TEST_ENGINE ?? "";
+    const worker = fork(workerPath, [], { execPath: node, execArgv: [], stdio: ["ignore", "pipe", "pipe", "ipc"],
+      env: { ...process.env, AITEST_ENGINE_ROOT: engine, QA_APP_DATA_ROOT: path.join(root, "qa"), QA_WORKSPACE_ROOT: path.join(root, "workspaces"), PENGUIN_HOME: localRoot, PATH: path.dirname(node) + path.delimiter + process.env.PATH } });
+    let diagnostics = "";
+    worker.stderr!.on("data", chunk => { diagnostics += chunk; });
+    worker.on("message", (message: any) => { if (message.message) diagnostics += message.message + "\n"; });
+    cleanup.push(async () => { worker.send?.({ type: "stop" }); await new Promise<void>(resolve => { if (worker.exitCode !== null) resolve(); else worker.once("exit", () => resolve()); }); });
+    const ready = new Promise<void>((resolve, reject) => { worker.on("message", (message: any) => { if (message.type === "execution-ready") resolve(); if (message.type === "execution-fatal") reject(new Error(message.message)); }); worker.once("exit", code => reject(new Error(`worker ${code}: ${diagnostics}`))); });
+    worker.send({ type: "start", config: { origin, cookie: "test", ...identity, root: localRoot, engine: engine || root, workspaces: path.join(root, "workspaces"), python: process.env.QA_PYTHON ?? "test-python", userId: "alice" } });
+    await ready;
+    const sessionId = formatSessionId();
+    const proxy = await runtime.create({ sessionId, projectId, agentId, ownerUserId: "alice", provider: "fake", modelId: "fake-local-model" }, identity);
+    const mirror = path.join(centralRoot, projectId, ".desktop-workspaces", sessionId);
+    rows.set(sessionId, { sessionId, projectId, agentId, ownerUserId: "alice", provider: "fake", modelId: "fake-local-model", workspace: mirror });
+    proxy.setSubagentApprovalFallback(async () => "allow");
+    const hook = JSON.parse((await proxy.runUserPromptHook("local_probe", "probe")).context);
+    expect((await fs.realpath(hook.node)).toLowerCase()).toBe((await fs.realpath(node)).toLowerCase());
+    expect((await fs.realpath(hook.cwd)).toLowerCase()).toContain((await fs.realpath(localRoot)).toLowerCase());
+    const records: any[] = [];
+    for await (const record of proxy.run([userText("Create local-proof.json using Node, then report success.")], { signal: AbortSignal.timeout(40_000), approve: async () => "allow" })) records.push(record);
+    const bytes = await fs.readFile(path.join(mirror, "local-proof.json")).catch(() => { throw new Error(diagnostics + JSON.stringify(records.filter((record: any) => record.payload?.type === "tool_call_output" || record.payload?.type === "tool_call"))); });
+    const result = JSON.parse(bytes.toString());
+    expect(result.platform).toBe(process.platform);
+    expect(result.cwd.toLowerCase()).toContain((await fs.realpath(engine ? path.join(root, "workspaces") : localRoot)).toLowerCase());
+    expect((await fs.realpath(result.node)).toLowerCase()).toBe((await fs.realpath(node)).toLowerCase());
+    if (process.env.QA_PYTHON) expect((await fs.realpath(result.python)).toLowerCase()).toBe((await fs.realpath(process.env.QA_PYTHON)).toLowerCase());
+    expect(await fs.readFile(path.join(result.cwd, "local-proof.json"))).toEqual(bytes);
+    expect(expectedUpstreamKey).toBe(true);
+    expect(await fs.readFile(path.join(localRoot, projectId, ".project_config.toml"), "utf8")).not.toContain("central-secret-not-for-desktop");
+    const date = sessionId.slice(8, 18);
+    const traceDir = path.join(centralRoot, projectId, "agents", agentId, "traces", date);
+    const traces = await fs.readdir(traceDir);
+    expect(traces.some(name => name.startsWith(sessionId))).toBe(true);
+    expect(records.some((record: any) => record.payload?.name === "exec_command")).toBe(true);
+    expect(records.some((record: any) => record.payload?.name === "run_subagent")).toBe(true);
+    expect(await fs.readFile(path.join(mirror, "child-proof.json")).catch(() => { throw new Error(JSON.stringify(records.filter((record: any) => record.payload?.type === "tool_call_output" || record.payload?.type === "tool_call"))); })).toEqual(await fs.readFile(path.join(result.cwd, "child-proof.json")));
+    const childMeta = records.find(record => record.type === "session_meta" && record.origin?.length);
+    expect(childMeta).toBeTruthy();
+    expect(runtime.broker.binding(childMeta.payload.session_id)).toEqual(runtime.broker.binding(sessionId));
+    if (engine) {
+      const browser = JSON.parse(await fs.readFile(path.join(mirror, "browser-proof.json"), "utf8").catch(() => { throw new Error(JSON.stringify(records.filter((record: any) => record.payload?.type === "tool_call_output" || record.payload?.type === "tool_call"))); }));
+      expect(browser.title).toBe("local browser proof");
+      expect(browser.executable.toLowerCase()).toContain("aitestharness");
+    }
+  }, 90_000);
+});

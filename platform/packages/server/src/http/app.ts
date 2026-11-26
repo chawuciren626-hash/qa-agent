@@ -189,10 +189,11 @@ export class HttpModule {
     const authenticateToken = authMiddleware(this.auth, this.config.trustProxy, {
       apiTokenOnly: true,
     });
-    const once: MiddlewareHandler<AppEnv> = (c, next) =>
-      (c.var.user as AppEnv["Variables"]["user"] | undefined) === undefined
-        ? authenticate(c, next)
-        : next();
+    const once: MiddlewareHandler<AppEnv> = (c, next) => {
+      const entered = () => this.authState.localExecution
+        ? this.authState.localExecution.withRequest(c.var.user.userId, c.req.raw.headers, next) : next();
+      return (c.var.user as AppEnv["Variables"]["user"] | undefined) === undefined ? authenticate(c, entered) : entered();
+    };
     // A Remote cookie carries token authority too, but only an actual Bearer may exchange
     // credentials. An earlier user gate must not let that cookie skip this transport check.
     const tokenGate: MiddlewareHandler<AppEnv> = (c, next) =>

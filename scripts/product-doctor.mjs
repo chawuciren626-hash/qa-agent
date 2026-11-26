@@ -8,6 +8,7 @@ import {hostCompatibility} from './product-updates.mjs';
 import {productEnvironment} from './product-layout.mjs';
 import {checkProductDesktop} from './product-desktop-adapter.mjs';
 import {checkSourceRuntime} from './source-runtime.mjs';
+import {inspectRemoteService} from './client-connection.mjs';
 
 const json=file=>JSON.parse(readFileSync(file,'utf8').replace(/^\uFEFF/,''));
 export function inspectProduct(layout,{runtime=true,branding=true,platform=`${process.platform}-${process.arch}`}={}) {
@@ -18,13 +19,14 @@ export function inspectProduct(layout,{runtime=true,branding=true,platform=`${pr
   let hostVersion;
   const sourceMode=existsSync(resolve(layout.host_app,'aitest-source-runtime.json'));
   check('host_version',()=>{hostVersion=json(resolve(layout.host_app,'package.json')).version;if(sourceMode){const r=checkSourceRuntime(layout.host_app,layout.paths.engine);if(r.version!==hostVersion)throw Error('Source package version mismatch');return {status:'ready',mode:'source',verification:r};}const c=hostCompatibility(hostVersion,undefined,platform);return {status:c.status==='supported'?'ready':'not_ready',compatibility:c};});
-  if(sourceMode) check('qa_project',()=>({status:json(resolve(layout.paths.host_data,layout.project_id,'qa-project.json')).status==='ready'?'ready':'not_ready'}));
+  if(sourceMode && !layout.connection) check('qa_project',()=>({status:json(resolve(layout.paths.host_data,layout.project_id,'qa-project.json')).status==='ready'?'ready':'not_ready'}));
   if(!sourceMode && checks.find(c=>c.id==='engine')?.status==='ready' && checks.find(c=>c.id==='host_version')?.status==='ready') {
     check('runtime_patches',()=>{const r=installPenguinRuntime(layout.host_app,layout.paths.engine,'check');return {status:r.status==='installed'&&!r.changed?'ready':'not_ready',installation:r};});
     if(branding) check('desktop_branding',()=>{const r=existsSync(resolve(layout.host_app,'product-desktop.json'))?checkProductDesktop(layout.host_app):installDesktopBranding(layout.host_app,layout.paths.engine,'check');return {status:r.status==='installed'&&!r.changed?'ready':'not_ready',installation:r};});
     check('agents',()=>{const r=syncPenguinAgents(layout.paths.engine,layout.agent_root);return {status:r.status==='in_sync'?'ready':'not_ready',sync_status:r.status,changes:Array.isArray(r.changes)?r.changes.length:r.changes};});
   }
-  check('workspace_configuration',()=>{const c=json(resolve(layout.paths.engine,'config/session-workspaces.json'));return {status:c.enabled===true&&c.project_id===layout.project_id&&resolve(c.default_workspace)===layout.paths.workspaces?'ready':'not_ready',reason:'workspace_configuration_must_match_layout'};});
+  if(!layout.connection) check('workspace_configuration',()=>{const c=json(resolve(layout.paths.engine,'config/session-workspaces.json'));return {status:c.enabled===true&&c.project_id===layout.project_id&&resolve(c.default_workspace)===layout.paths.workspaces?'ready':'not_ready',reason:'workspace_configuration_must_match_layout'};});
+  if(layout.connection) check('business_connection',()=>({status:'ready',mode:'remote',origin:layout.connection.origin,local_business_server:false}));
   // Existing branding preserves Electron's original profile. Custom profiles need an explicit shell adapter.
   check('desktop_profile',()=>{if(sourceMode){checkSourceRuntime(layout.host_app,layout.paths.engine);return {status:'ready',scope:'source_installation_config'};}if(existsSync(resolve(layout.host_app,'product-desktop.json'))){checkProductDesktop(layout.host_app);return {status:'ready',scope:'product_desktop_adapter'};}return {status:layout.paths.desktop_profile===resolve(process.env.APPDATA??'.','PenguinHarness')?'ready':'not_ready',reason:'custom_profile_requires_desktop_adapter'};});
   check('node_version',()=>{const version=execFileSync(layout.paths.node,['--version'],{encoding:'utf8',windowsHide:true,timeout:5000}).trim();const [major,minor]=version.replace(/^v/,'').split('.').map(Number);const ready=layout.layout==='existing'?(major>20||major===20&&minor>=11):major>=24;return {status:ready?'ready':'not_ready',version,minimum:layout.layout==='existing'?'20.11 (QA tools; desktop bundles its own runtime)':'24 (product distribution)'};});
@@ -34,6 +36,7 @@ export function inspectProduct(layout,{runtime=true,branding=true,platform=`${pr
 }
 
 export async function inspectProductService(layout,{fetcher=fetch,processAlive=pid=>{try{process.kill(pid,0);return true;}catch{return false;}}}={}) {
+  if(layout.connection?.mode==='remote')return inspectRemoteService(layout.connection,{fetcher});
   const lockPath=resolve(layout.paths.host_data,'server.lock');
   if(!existsSync(lockPath))return {status:'not_running',read_only:true};
   let lock;

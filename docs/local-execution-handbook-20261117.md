@@ -1,5 +1,7 @@
 # 本地执行交接手册（云端 Agent → 本地 Agent，2026-11-17）
 
+> 历史手册：下文 18776/18777 双端口描述是 2026-11-17 的实查快照。2026-11-24 已切换为 `http://localhost:18777/admin` 与 `http://localhost:18777/user` 的单实例，18776 已退役；见 `deployment-single-instance-20261124.md`。
+
 > 背景：规划与验收由 Codex 负责，执行由 WorkBuddy、Qoder 等本地 Agent 按批次负责。本手册给**本地执行的 Agent**：拿到开工卡后按此开工。
 > 仓库：`https://github.com/chawuciren626-hash/qa-agent.git`。开工前以远端 `main` 为基线，核对本批次的依赖提交。
 > 本地机参考环境：Windows（`E:\AITestHarness\...`），Node + Python 双栈。

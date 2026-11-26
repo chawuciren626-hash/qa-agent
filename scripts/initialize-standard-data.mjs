@@ -141,11 +141,11 @@ export async function initializeStandardData(store, resources = standardManifest
   } catch (error) { db.exec('ROLLBACK'); throw error; }
 }
 
-/** Online phase uses normal project lifecycle. Never fabricates assistant directories or sessions. */
+/** Online phase uses the same full application and database as /admin and /user. */
 export async function completeInitialization(home, origin, checkOnly = false) {
   const url = new URL(origin);
   if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.username || url.password || url.pathname !== '/')
-    throw Error('Run on the central host with a loopback origin');
+    throw Error('Run against the application host with a loopback origin');
   const token = readFileSync(resolve(home, 'api-token'), 'utf8').trim();
   const request = async (path, method = 'GET', data) => {
     let res = await fetch(new URL(path, url), { method, redirect: 'manual', signal: AbortSignal.timeout(30000),
@@ -159,8 +159,6 @@ export async function completeInitialization(home, origin, checkOnly = false) {
     if (!res.ok) throw Error(`${method} ${path}: HTTP ${res.status}`);
     return res.json();
   };
-  const config = await request('/api/account-client/config');
-  if (config.central !== true) throw Error('Target is not the central administration service');
   const resources = (await request('/api/control/admin/resources')).resources;
   const manifest = standardManifest();
   for (const definition of manifest) {
@@ -186,19 +184,19 @@ export async function completeInitialization(home, origin, checkOnly = false) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [mode, homeArg, origin] = process.argv.slice(2);
-  if (!['seed', 'complete', 'check'].includes(mode) || !homeArg) throw Error('Usage: node scripts/initialize-standard-data.mjs seed|complete|check <central-home> [http://localhost:port]');
+  if (!['seed', 'complete', 'check'].includes(mode) || !homeArg) throw Error('Usage: node scripts/initialize-standard-data.mjs seed|complete|check <application-data-root> [http://localhost:port]');
   const home = resolve(homeArg);
   if (mode !== 'seed') {
-    if (!origin) throw Error('Central loopback origin required');
+    if (!origin) throw Error('Application loopback origin required');
     console.log(JSON.stringify(await completeInitialization(home, origin, mode === 'check'), null, 2));
   } else {
-    if (!existsSync(resolve(home, 'web.db'))) throw Error('Start central service once to provision database/admin, then stop it before seeding');
+    if (!existsSync(resolve(home, 'web.db'))) throw Error('Start the application once to provision its database/admin, then stop it before seeding');
     const { readServerLock } = await server('lock.js');
     const lock = readServerLock(home);
     if (lock) {
       let alive = true;
       try { process.kill(lock.pid, 0); } catch (error) { if (error.code === 'ESRCH') alive = false; else throw error; }
-      if (alive) throw Error('Central process is running. Stop it before offline initialization');
+      if (alive) throw Error('Application process is running. Stop it before offline initialization');
     }
     const { ControlStore } = await server('standard-data.js');
     const db = new DatabaseSync(resolve(home, 'web.db'));

@@ -64,6 +64,7 @@ export interface UserInfo {
   userId: string;
   /** Built-in admin (seeded at startup). */
   isAdmin: boolean;
+  disabled?: boolean;
   /** Still using the initial password (seeded/set by admin): frontend prompts the user to change it soon. */
   passwordIsInitial: boolean;
   /**
@@ -483,6 +484,8 @@ export interface ProjectSummary {
 
 export interface ProjectsResponse {
   projects: ProjectSummary[];
+  /** Private assistant runtime; excluded from the business project list. */
+  assistantProject?: ProjectSummary;
 }
 
 export interface ProjectCreateRequest {

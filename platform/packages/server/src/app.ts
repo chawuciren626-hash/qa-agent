@@ -524,6 +524,9 @@ export function createApp(boot: ServerBoot): Hono<AppEnv> {
   app.use("/api/*", jsonOnlyWrites(deps.config.trustProxy));
 
   const clientSyncWorkers = new Map<string, SyncWorkerType>();
+  // 本机服务模式专用的登录桥接 + 客户端同步 worker 装配。
+  // remote 客户端模式（安装配置 connection.mode="remote"）下本机业务服务不启动，
+  // 整个分支不执行——页面即远程服务的页面，业务数据只在远程库，无需本地镜像。
   if (deps.config.accountClient) {
     const bridge = new AccountClient({ config: deps.config, db: boot.db,
       localRequest: (userId,request) => boot.tree.api<import("./http/app.js").Http>("HttpModule","http").fetchTrustedAs(userId,request),
@@ -532,9 +535,9 @@ export function createApp(boot: ServerBoot): Hono<AppEnv> {
       sessions: () => boot.tree.api<AuthSessions>("IdentityModule", "AuthSessions"),
       admin: () => boot.tree.api<Admin>("IdentityModule", "Admin"),
       streams: () => boot.tree.api<LiveStreams>("IdentityModule", "LiveStreams"),
-      // 客户端任务同步 worker（同步层阶段 B）：登录绑定成功后按用户启动增量拉取，
-      // 注销/失效停止。配置（服务端地址+凭据）从本地数据根 task-platform-sync/ 读取，
-      // 未配置则不启动（对接管理页完成配置后由部署写入）。
+      // 客户端任务同步 worker（同步层阶段 B，仅本机服务模式）：登录绑定成功后按用户
+      // 启动增量拉取，注销/失效停止。配置（服务端地址+凭据）从本地数据根
+      // task-platform-sync/ 读取，未配置则不启动。
       onLoginBinding: (localId) => {
         try {
           const syncConfig = loadClientSyncConfig(deps.config.root);

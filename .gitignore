@@ -183,3 +183,8 @@ Thumbs.db
 .trae/
 .zcode/
 .workbuddy/
+
+# Remote desktop execution architecture and current deployment boundary
+!/docs/desktop-local-execution-bridge-20261125.md
+!/docs/remote-client-deployment-20261124.md
+!/docs/当前客户端直连服务端与本机职责清单-2026-11-25.md
