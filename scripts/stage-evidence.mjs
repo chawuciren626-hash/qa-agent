@@ -5,10 +5,10 @@ import { resolve, basename, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { readRunFile, runDirectory } from './design-quality.mjs';
 import { requiredArtifacts, stageRequiredArtifacts, assertArtifactContract, inspectStageArtifacts } from './artifact-contracts.mjs';
-import { assertChildCommands, childCommandPolicy, toolWasNotExecuted } from './child-command-policy.mjs';
+import { assertChildCommands, toolWasNotExecuted } from './child-command-policy.mjs';
 import { CommandUsageError } from './command-contracts.mjs';
 import { assertRecoveryDecisions } from './orchestration-state.mjs';
-import { DELEGATION_DENIAL, denialRecorded } from './hook-denial.mjs';
+import { DELEGATION_DENIAL, denialRecorded, isDenialOutput } from './hook-denial.mjs';
 import { launchNeverStarted } from './launch-evidence.mjs';
 export { requiredArtifacts } from './artifact-contracts.mjs';
 
@@ -74,6 +74,7 @@ export function verifyActionRecoveryReceipt(root, runId, parentId, dispatchedAt,
   if(result.action==='read_source' && (receipt.action!==result.action || receipt.error!==result.error || receipt.read_path!==result.read_path)) return false;
   const unboundRequest=receipt.run_id===null && (['input_correction','request_correction'].includes(receipt.recovery?.category) || (receipt.classification==='task_paused' && receipt.action===null && receipt.task_key==='unbound:request:'));
   if(result.classification==='task_paused' && (receipt.classification!==result.classification || receipt.error!==result.error)) return false;
+  if(receipt.recovery?.policy==='progress_based' && receipt.recovery.key!==receipt.task_key) return false;
   return receipt.session_id===parentId && (receipt.run_id===runId || unboundRequest) && receipt.run_id===result.run_id && Date.parse(receipt.at)>=Date.parse(dispatchedAt) && typeof receipt.task_key==='string' && receipt.status===result.status && receipt.exit_code===result.exit_code && receipt.task_key===result.task_key && JSON.stringify(receipt.recovery ?? null)===JSON.stringify(result.recovery ?? null);
 }
 
@@ -154,7 +155,13 @@ export function readSession(agentRoot, agent, id, cache = null) {
     if(!isAbsolute(archived[1]) || resolve(path,'..')!==base || !new RegExp(`^${name}-[a-z0-9-]+\\.log$`,'i').test(basename(path))) throw new Error('Archived command output belongs to another session or has an invalid path');
     if(realpathSync(base)!==base || realpathSync(path)!==path || !statSync(path).isFile() || statSync(path).size>8*1024*1024) throw new Error('Archived command output is redirected, invalid or too large');
     const full=readFileSync(path,'utf8');
-    if(!full.trim()) throw new Error('Archived command output is empty');
+    if(!full.trim()) {
+      // 归档文件存在但为空：远程执行桥回传（bridge-upload）曾把本机非空日志清空
+      // （VM 侧副本为空时的覆盖写）。内容已不可恢复，但一行坏归档不能毒死整条会话
+      // 的所有读取——保底降级为行内截断文本（不带归档展开），伪造防护不变：
+      // 路径形状、归属、重定向与非空校验仍然全数执行。
+      return row;
+    }
     if(name==='exec_command' && suffix) {
       let failed;
       try { const result=JSON.parse(full); failed=Number.isInteger(result.exit_code) && result.exit_code>0 && result.status!=='completed'; }
@@ -223,12 +230,12 @@ export function findParentDispatch(parent, { runId, agent, childId, dispatchedAt
     if(latest) {
       const results=parent.filter(row=>row.payload?.type==='tool_call_output' && row.payload.tool_call_id===latest.payload.tool_call_id);
       if(results.length!==1 || Date.parse(results[0].timestamp)<Date.parse(latest.timestamp)) return null;
-      if(String(results[0].payload.output).startsWith('Tool call denied') || String(results[0].payload.output).includes('[input_subagent error:')) return null;
+      if(isDenialOutput(results[0].payload.output) || String(results[0].payload.output).includes('[input_subagent error:')) return null;
       returned=results[0].payload;
     }
   }
   const failed=toolOutcome(returned)==='fatal' && /(?:^|\n)\[subagent failed:[^\r\n]*\](?: \[subagent idle[^\r\n]*\])?\s*$/.test(String(returned.output));
-  const interrupted=toolOutcome(returned)==='aborted' && !String(returned.output).startsWith('Tool call denied');
+  const interrupted=toolOutcome(returned)==='aborted' && !isDenialOutput(returned.output);
   if (toolOutcome(returned) !== 'completed' && !(includeFailed && failed) && !(includeInterrupted && interrupted)) return null;
   let args;
   try { args = typeof call.row.payload.arguments === 'string' ? JSON.parse(call.row.payload.arguments) : call.row.payload.arguments; } catch { return null; }
@@ -286,7 +293,7 @@ export function recordedChildHandle(rows, dispatch, runId) {
     // Same rule as the binding count: a 500 that never launched must not hide the handle of
     // the retry that did, or resolve_child_handle reports "unavailable" for a live child.
     if(launchNeverStarted(rows,index)) return false;
-    if(rows.some(r=>r.payload?.type==='tool_call_output' && r.payload.tool_call_id===row.payload.tool_call_id && String(r.payload.output).startsWith('Tool call denied'))) return false;
+    if(rows.some(r=>r.payload?.type==='tool_call_output' && r.payload.tool_call_id===row.payload.tool_call_id && isDenialOutput(r.payload.output))) return false;
     let args; try { args = typeof row.payload.arguments === 'string' ? JSON.parse(row.payload.arguments) : row.payload.arguments; } catch { return false; }
     return args?.agent_id === dispatch.agent && typeof args.prompt === 'string' &&
       [runId, dispatch.dispatch_id].every(id => args.prompt.split(/[^A-Za-z0-9-]+/).includes(id)) && args.prompt.includes(dispatch.child_command_policy) && Date.parse(row.timestamp) >= Date.parse(dispatch.at);
@@ -340,7 +347,10 @@ export function verifyStageEvidence(root, runId, manifest, options, agentRoot = 
   const meta = child.find(row => row.type === 'session_meta');
   if (meta?.payload.session_id !== childId || meta.payload.source !== 'subagent' || resolve(meta.payload.agent_state) !== resolve(agentRoot, dispatch.agent, 'agent_state')) throw new Error('Wrong child agent or session source');
   if (!sessionWorkspaces(root,runDirectory(root,runId)).includes(resolve(meta.payload.workspace))) throw new Error('Child workspace mismatch');
-  if (dispatch.child_command_policy && ![1,2,3].some(version=>dispatch.child_command_policy === childCommandPolicy(dispatch.dispatch_id,version))) throw new Error('Dispatch command policy differs from supported contract');
+  // Bind the stored policy to a supported version and this dispatch, not to the current
+  // wording: the full text is already anchored to the parent call and the child's receipt
+  // below, so rewording the template must not strand runs dispatched under older wording.
+  if (dispatch.child_command_policy && ![1,2,3].some(version=>dispatch.child_command_policy.startsWith(`QA_COMMAND_POLICY_V${version} ${dispatch.dispatch_id}:`))) throw new Error('Dispatch command policy differs from supported contract');
   const called = findParentDispatch(parent, { runId, agent: dispatch.agent, childId, dispatchedAt: dispatch.at, dispatchId: dispatch.dispatch_id, commandPolicy: dispatch.child_command_policy, parallel:manifest.orchestration?.plan?.workflow_mode==='task' || (manifest.orchestration?.plan?.execution_branches?.length??0)>1 });
   if (!called) throw new Error('No matching parent dispatch response for this run');
   const partialFailures=[];

@@ -642,7 +642,7 @@ test('a failed uncontrolled inspection fails closed even when a later inspection
     ...pair('read-good', 'Get-Content "E:////QAWorkspaces////run////input.md"', 'completed')
   ], { allowRecovery: true }), /Child command failed/);
 });
-test('a missing catalog entry path is resolved only by a later successful catalog', () => {
+test('a missing catalog entry path is resolved by a later successful catalog or business action', () => {
   const pair = (id, cmd, output, stop_reason) => [
     { payload: { type: 'tool_call', name: 'exec_command', tool_call_id: id, arguments: JSON.stringify({ cmd }) } },
     { payload: { type: 'tool_call_output', tool_call_id: id, output, stop_reason } }
@@ -651,8 +651,10 @@ test('a missing catalog entry path is resolved only by a later successful catalo
   const bad = pair('bad', 'node "E:/run/scripts/project-action.mjs" catalog', missing, 'fatal');
   const good = pair('good', 'node "E:/engine/scripts/project-action.mjs" catalog', JSON.stringify({ status: 'help' }), 'completed');
   assert.doesNotThrow(() => assertChildCommands([...bad, ...good], { allowRecovery: true }));
-  assert.throws(() => assertChildCommands(bad, { allowRecovery: true }), /not corrected/);
-  assert.throws(() => assertChildCommands([...bad, ...pair('wrong', 'node "E:/engine/scripts/project-action.mjs" execute', JSON.stringify({ status: 'help' }), 'completed')], { allowRecovery: true }), /not corrected/);
+  assert.throws(() => assertChildCommands(bad, { allowRecovery: true }), /catalog lookup failure/);
+  // A help response from a different action is not proof of recovery; a completed action is.
+  assert.throws(() => assertChildCommands([...bad, ...pair('wrong', 'node "E:/engine/scripts/project-action.mjs" execute', JSON.stringify({ status: 'help' }), 'completed')], { allowRecovery: true }), /catalog lookup failure/);
+  assert.doesNotThrow(() => assertChildCommands([...bad, ...pair('worked', 'node "E:/engine/scripts/project-action.mjs" execute', JSON.stringify({ status: 'completed', exit_code: 0, result: { termination_confirmed: true } }), 'completed')], { allowRecovery: true }));
   assert.throws(() => assertChildCommands(pair('bad', 'node "E:/run/scripts/project-action.mjs" execute', missing, 'fatal'), { allowRecovery: true }));
   assert.throws(() => assertChildCommands(pair('bad', 'node "E:/run/scripts/project-action.mjs" catalog', missing.replace('requireStack: []', "requireStack: ['dependency']"), 'fatal'), { allowRecovery: true }));
 });
@@ -700,4 +702,29 @@ test('long controlled command requires a matching terminal process poll', () => 
   assert.throws(() => assertChildCommands([command, started, ...waiting]), /no terminal response/);
   assert.throws(() => assertChildCommands([command, started, ...poll('wrong', '[process still running with process_id proc-other]')]), /failed|unreadable/);
   assert.throws(() => assertChildCommands([command, started, ...poll('failed', 'process failed', 'fatal')]), /unreadable|failed/);
+});
+test('an empty archived log degrades to the inline text for its row only and never poisons the session',()=>{
+  const root=mkdtempSync(resolve(tmpdir(),'qa-empty-archive-')),agent=request.agent,id=request.childId;
+  const dir=resolve(root,agent,'traces/2026-10-09'),archiveDir=resolve(root,agent,'scratchpad',id,'truncated-tool-output');
+  mkdirSync(dir,{recursive:true});mkdirSync(archiveDir,{recursive:true});
+  // 远程执行桥回传曾把本机非空日志清空（VM 侧副本为空时的覆盖写）：内容不可恢复，
+  // 但一行坏归档不能让 readSession 对整条会话抛错。保底降级为行内文本；伪造防护
+  // （路径形状/归属/重定向/非空大小上限）不变，空文件本身无法伪造回执。
+  const empty=resolve(archiveDir,'exec_command-1a2b3c4d5e6f7890.log');
+  const good=resolve(archiveDir,'exec_command-0a1b2c3d4e6f7890.log');
+  const receipt=JSON.stringify({status:'completed',exit_code:0,action_receipt:'synthetic'});
+  writeFileSync(empty,'');writeFileSync(good,receipt);
+  const trace=resolve(dir,`${id}_001.jsonl`);
+  writeFileSync(trace,[
+    {payload:{type:'tool_call',name:'exec_command',tool_call_id:'empty',arguments:{cmd:'node project-action.mjs'}}},
+    {payload:{type:'tool_call_output',tool_call_id:'empty',stop_reason:'completed',output:'{ truncated head\n[output archived: '+empty+']'}},
+    {payload:{type:'tool_call',name:'exec_command',tool_call_id:'good',arguments:{cmd:'node project-action.mjs'}}},
+    {payload:{type:'tool_call_output',tool_call_id:'good',stop_reason:'completed',output:'{ truncated head\n[output archived: '+good+']'}}
+  ].map(JSON.stringify).join('\n'));
+  const rows=readSession(root,agent,id);
+  assert.equal(rows[1].payload.output,'{ truncated head\n[output archived: '+empty+']');
+  assert.equal(rows[1].payload.archived_output_path,undefined);
+  assert.equal(rows[3].payload.output,receipt);
+  assert.equal(rows[3].payload.archived_output_path,good);
+  rmSync(root,{recursive:true,force:true});
 });
