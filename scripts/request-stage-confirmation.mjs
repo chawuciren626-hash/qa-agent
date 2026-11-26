@@ -13,17 +13,17 @@ const { manifestPath, manifest } = getRunContext(root, project, runId);
 const timestamp = new Date().toISOString();
 manifest.confirmations ??= [];
 if (manifest.confirmations.some((item) => item.stage === stage && item.status === "pending")) {
-  throw new Error(`${stage} 阶段已有待处理的确认请求，禁止重复创建。`);
+  throw new Error(`${stage} 阶段已有待处理的确认请求，禁止重复创建。等待用户对现有确认请求作出决定（resolve_confirmation），不要重复请求。`);
 }
 manifest.stages ??= {};
 manifest.orchestration ??= { events: [] };
 const stagePlan = getPlanStage(manifest, stage);
 const resultReview = stagePlan?.result_confirmation === 'after' && manifest.stages[stage]?.status === 'completed';
-if (!stagePlan?.selected || stagePlan.confirmation === "none" && !resultReview) throw new Error(`${stage} 阶段未配置人工确认。`);
+if (!stagePlan?.selected || stagePlan.confirmation === "none" && !resultReview) throw new Error(`${stage} 阶段未配置人工确认，无需确认请求，直接继续后续阶段。`);
 const expectedStatus = stagePlan.confirmation === "before" && !resultReview ? "planned" : "completed";
 const revisingBeforeExecution = stagePlan.confirmation === "before" && !resultReview && manifest.stages[stage]?.status === "revision_requested";
 if (manifest.stages[stage]?.status !== expectedStatus && !revisingBeforeExecution) {
-  throw new Error(`${stage} 阶段当前状态为 ${manifest.stages[stage]?.status ?? "未计划"}，不能在 ${stagePlan.confirmation} 时请求确认。`);
+  throw new Error(`${stage} 阶段当前状态为 ${manifest.stages[stage]?.status ?? "未计划"}，不能在 ${stagePlan.confirmation} 时请求确认。awaiting_confirmation 需先解决现有确认；revision_requested 需先派发返修；in_progress 需等待阶段完成。用 show-run-status 核对后再操作。`);
 }
 const confirmation = {
   id: `confirm-${stage}-${Date.now()}`,

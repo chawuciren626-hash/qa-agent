@@ -21,7 +21,7 @@ try {
       const controller=new AbortController(); const stop=()=>controller.abort();
       process.on('SIGINT',stop); process.on('SIGTERM',stop);
       try { result=await executeAction(root,options['controller-session'],()=>{
-        if (!options.request || /^[\s]*[\[{]/.test(options.request)) throw new Error('--request requires a JSON FILE path, not inline JSON. Write the request with the file tool, then pass --request=output/action-requests/<unique-name>.json');
+        if (!options.request || /^[\s]*[\[{]/.test(options.request)) throw new CommandUsageError('--request requires a JSON FILE path, not inline JSON. Write the request with the file tool, then pass --request=output/action-requests/<unique-name>.json');
         try { return readFileSync(dataPath(root,options.request)); }
         catch(error) {
           if(error.code==='ENOENT') throw new CommandUsageError(`Request JSON file does not exist (received path: ${JSON.stringify(options.request)}). First use write_file to save the intended action, wait for success, then execute the same --request path. Prefer --request=output/action-requests/<name>.json; for absolute paths use quoted forward slashes, e.g. --request="E:/workspace/output/action-requests/<name>.json". Bash strips unquoted Windows backslashes; correct the command path, do not recreate existing files or guess a replacement path. No action was launched. Do not guess contents, create another run or ask the user to unlock.`);

@@ -16,10 +16,14 @@ export class ArtifactSafetyError extends Error {
 
 // These actions operate on local evidence and artifacts, never on the product.
 // Dispatch (including preparation) and execute deliberately have no exemption.
+// Confirmation and revision actions only move manifest/confirmation state; a usage
+// or state error there is correctable input, not a product incident that latches
+// the controller session.
 export function isSafeArtifactAction(context) {
   return ['extract_word','generate_analysis','validate_analysis','validate_artifacts',
     'export_test_points','export_test_cases','assess_evidence','normalize_defects',
-    'build_report_metrics','export_report','handoff','complete'].includes(context?.action);
+    'build_report_metrics','export_report','handoff','complete',
+    'request_confirmation','resolve_confirmation','revise_stage'].includes(context?.action);
 }
 
 export function safeStoppedOperation(context) {

@@ -336,17 +336,27 @@ test('historical validation-only stop self-recovers while execution and unknown 
     } else await assert.rejects(operation,/Controller session stopped/);
   }
 });
-test('a missing execution confirmation with no dispatch recovers without replaying product work',async()=>{
+test('a missing execution confirmation is immediately correctable and legacy stopped states still recover',async()=>{
   const f=fixture(),runId=`run-${randomUUID()}`,dir=resolve(root,'output/command-runs',randomUUID());
   mkdirSync(dir,{recursive:true});mkdirSync(resolve(root,'output/runs',runId),{recursive:true});
   writeFileSync(resolve(root,'output/runs',runId,'manifest.json'),JSON.stringify({run_id:runId,stages:{execution:{status:'planned'}},confirmations:[],orchestration:{events:[]}}));
   writeFileSync(resolve(dir,'command.json'),JSON.stringify({script:'resolve-stage-confirmation.mjs',status:'failed',result:{code:1,termination_confirmed:true,termination:null,signal:null}}));
   writeFileSync(resolve(dir,'command.log'),'file:///synthetic/scripts/resolve-stage-confirmation.mjs:23\nError: 找不到 execution 阶段待处理的确认请求。\n');
+  // Confirmation actions only move manifest state: a confirmed-terminated failure is
+  // correctable input and must never latch the controller session.
   await withControllerSession(root,f.id,async()=>({status:'failed',exit_code:1,evidence_dir:dir,result:{termination_confirmed:true}}),{agentRoot:f.agentRoot,recoveryContext:{action:'resolve_confirmation',stage:'execution',run_id:runId}});
-  assert.equal(readControllerSession(root,f.id).status,'stopped');
+  const live=readControllerSession(root,f.id);
+  assert.equal(live.status,'ready');
+  assert.equal(live.events.at(-1).recovery.category,'artifact_revision');
+  assert.equal(live.events.at(-1).recovery.retry_allowed,true);
+  // Sessions already latched by the old classifier still recover from verified evidence.
+  const legacy=fixture();
+  const failure={status:'failed',exit_code:1,evidence_dir:dir,run_id:runId,stage:'execution',action:'resolve_confirmation'};
+  mkdirSync(resolve(root,'output/controller-command-sessions',legacy.id),{recursive:true});
+  writeFileSync(resolve(root,'output/controller-command-sessions',legacy.id,'state.json'),JSON.stringify({session_id:legacy.id,status:'stopped',failure,events:[{type:'command_failed',token:randomUUID(),at:new Date().toISOString(),failure}]}));
   let called=0;
-  await withControllerSession(root,f.id,async()=>{called++;return {status:'completed',exit_code:0};},{agentRoot:f.agentRoot,recoveryContext:{action:'dispatch',stage:'execution',run_id:runId}});
-  const state=readControllerSession(root,f.id);
+  await withControllerSession(root,legacy.id,async()=>{called++;return {status:'completed',exit_code:0};},{agentRoot:legacy.agentRoot,recoveryContext:{action:'dispatch',stage:'execution',run_id:runId}});
+  const state=readControllerSession(root,legacy.id);
   assert.equal(called,1);assert.equal(state.status,'ready');assert.equal(state.failure,null);
   assert.ok(state.events.some(event=>event.type==='missing_execution_confirmation_recovered'&&event.product_actions_replayed===false));
 });
@@ -508,7 +518,7 @@ test('requesting execution authorization before the prepare dispatch is correcte
   assert.match(String(result.error),/执行授权确认要求先有执行计划/);
   assert.equal(readControllerSession(root,f.id).status,'ready');
 });
-test('a missing execution plan crash self-recovers only when the execution stage is untouched',async()=>{
+test('a missing execution plan crash is immediately correctable; legacy recovery stays bound to an untouched execution stage',async()=>{
   const log="Error: ENOENT: no such file or directory, lstat 'E://run//execution//execution-plan.json'\n    at capture (file:///engine/scripts/execution-authorization.mjs:13:23)\n    at request-stage-confirmation.mjs:41:150\n";
   const build=()=>{
     const f=fixture(),runId=`run-${randomUUID()}`,dir=resolve(root,'output/command-runs',randomUUID());
@@ -517,11 +527,23 @@ test('a missing execution plan crash self-recovers only when the execution stage
     writeFileSync(resolve(dir,'command.log'),log);
     return {f,runId,dir};
   };
-  // 正例：执行阶段仍是 planned、无确认单、无事件 → 自动恢复
+  const latch=(f,runId,dir)=>{
+    const failure={status:'failed',exit_code:1,evidence_dir:dir,run_id:runId,stage:'execution',action:'request_confirmation'};
+    mkdirSync(resolve(root,'output/controller-command-sessions',f.id),{recursive:true});
+    writeFileSync(resolve(root,'output/controller-command-sessions',f.id,'state.json'),JSON.stringify({session_id:f.id,status:'stopped',failure,events:[{type:'command_failed',token:randomUUID(),at:new Date().toISOString(),failure}]}));
+  };
+  // 新失败：确认请求只读输入并写确认单，确认终止的崩溃是可纠正输入，不锁死会话。
+  const fresh=build();
+  writeFileSync(resolve(root,'output/runs',fresh.runId,'manifest.json'),JSON.stringify({run_id:fresh.runId,stages:{execution:{status:'planned'}},confirmations:[],orchestration:{events:[]}}));
+  await withControllerSession(root,fresh.f.id,async()=>({status:'failed',exit_code:1,evidence_dir:fresh.dir,result:{termination_confirmed:true}}),{agentRoot:fresh.f.agentRoot,recoveryContext:{action:'request_confirmation',stage:'execution',run_id:fresh.runId}});
+  const live=readControllerSession(root,fresh.f.id);
+  assert.equal(live.status,'ready');
+  assert.equal(live.events.at(-1).recovery.category,'artifact_revision');
+  assert.equal(live.events.at(-1).recovery.retry_allowed,true);
+  // 旧分类器遗留的锁死状态：执行阶段仍是 planned、无确认单、无事件 → 自动恢复
   const good=build();
   writeFileSync(resolve(root,'output/runs',good.runId,'manifest.json'),JSON.stringify({run_id:good.runId,stages:{execution:{status:'planned'}},confirmations:[],orchestration:{events:[]}}));
-  await withControllerSession(root,good.f.id,async()=>({status:'failed',exit_code:1,evidence_dir:good.dir,result:{termination_confirmed:true}}),{agentRoot:good.f.agentRoot,recoveryContext:{action:'request_confirmation',stage:'execution',run_id:good.runId}});
-  assert.equal(readControllerSession(root,good.f.id).status,'stopped');
+  latch(good.f,good.runId,good.dir);
   let called=0;
   await withControllerSession(root,good.f.id,async()=>{called++;return {status:'completed',exit_code:0};},{agentRoot:good.f.agentRoot,recoveryContext:{action:'dispatch',stage:'execution',run_id:good.runId}});
   const state=readControllerSession(root,good.f.id);
@@ -530,12 +552,12 @@ test('a missing execution plan crash self-recovers only when the execution stage
   // 反例一：执行阶段已被推进（in_progress）→ 恢复不触发，会话保持锁死
   const moved=build();
   writeFileSync(resolve(root,'output/runs',moved.runId,'manifest.json'),JSON.stringify({run_id:moved.runId,stages:{execution:{status:'in_progress'}},confirmations:[],orchestration:{events:[]}}));
-  await withControllerSession(root,moved.f.id,async()=>({status:'failed',exit_code:1,evidence_dir:moved.dir,result:{termination_confirmed:true}}),{agentRoot:moved.f.agentRoot,recoveryContext:{action:'request_confirmation',stage:'execution',run_id:moved.runId}});
+  latch(moved.f,moved.runId,moved.dir);
   await assert.rejects(()=>withControllerSession(root,moved.f.id,async()=>({status:'completed',exit_code:0}),{agentRoot:moved.f.agentRoot,recoveryContext:{action:'dispatch',stage:'execution',run_id:moved.runId}}),/Controller session stopped/);
   // 反例二：崩溃日志不含 execution-plan.json 的 ENOENT → 不恢复
   const other=build();
   writeFileSync(resolve(root,'output/runs',other.runId,'manifest.json'),JSON.stringify({run_id:other.runId,stages:{execution:{status:'planned'}},confirmations:[],orchestration:{events:[]}}));
   writeFileSync(resolve(other.dir,'command.log'),'Error: ENOENT: no such file or directory, lstat unrelated.json\n');
-  await withControllerSession(root,other.f.id,async()=>({status:'failed',exit_code:1,evidence_dir:other.dir,result:{termination_confirmed:true}}),{agentRoot:other.f.agentRoot,recoveryContext:{action:'request_confirmation',stage:'execution',run_id:other.runId}});
+  latch(other.f,other.runId,other.dir);
   await assert.rejects(()=>withControllerSession(root,other.f.id,async()=>({status:'completed',exit_code:0}),{agentRoot:other.f.agentRoot,recoveryContext:{action:'dispatch',stage:'execution',run_id:other.runId}}),/Controller session stopped/);
 });

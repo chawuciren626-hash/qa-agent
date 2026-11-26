@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { readRunFile, runDirectory } from './design-quality.mjs';
 import { withRunLock, writeJson } from './orchestration-state.mjs';
+import { CommandUsageError } from './command-contracts.mjs';
 
 const hash=data=>createHash('sha256').update(data).digest('hex');
 
@@ -17,7 +18,7 @@ export function publishAnalysisDraft(root,runId,output,parentId) {
     const revision = manifest.orchestration?.events?.filter(e => e.stage === 'analysis' && e.type === 'confirmation_resolved' && e.decision === 'revision_requested').at(-1);
     const revisionBeforeDispatch = revision?.revision_id && revision.revision_id === latest?.revision_id && manifest.orchestration.events.indexOf(revision) < manifest.orchestration.events.indexOf(dispatch);
     const confirmationAllowsDraft = !confirmations.length || (latest.status === 'revision_requested' && revisionBeforeDispatch && !confirmations.some(c => c.status === 'pending'));
-    if (!parentId || dispatch?.['parent-session-id']!==parentId || !dispatch.dispatch_id || manifest.stages?.analysis?.status!=='in_progress' || !confirmationAllowsDraft) throw new Error('Draft update requires the owning active analysis dispatch and no current confirmation; historical decisions require an explicit revision');
+    if (!parentId || dispatch?.['parent-session-id']!==parentId || !dispatch.dispatch_id || manifest.stages?.analysis?.status!=='in_progress' || !confirmationAllowsDraft) throw new CommandUsageError('Draft update requires the owning active analysis dispatch and no current confirmation; historical decisions require an explicit revision');
     const target=resolve(dir,'analysis/requirement_analysis.md');
     if (realpathSync(resolve(dir,'analysis'))!==resolve(realpathSync(dir),'analysis')) throw new Error('Analysis directory must not redirect writes');
     const ledger=readRunFile(dir,'analysis/requirement-ledger.json').data;
@@ -34,7 +35,7 @@ export function publishAnalysisDraft(root,runId,output,parentId) {
       if(!oldMarkdown.data.equals(before) || !recovery.files.some(f=>f.path===oldMarkdown.path.slice(recovery.archive.length+1) && f.sha256===oldMarkdown.sha256) || !recovery.files.some(f=>f.path==='analysis/requirement-ledger.json' && f.sha256===oldLedger.sha256)) throw new Error('Reviewed draft archive changed');
     }
     if (before && !reviewedBase) {
-      if (!existsSync(resolve(dir,index))) throw new Error('Existing analysis has no controlled generation snapshot; reviewed revision required');
+      if (!existsSync(resolve(dir,index))) throw new CommandUsageError('Existing analysis has no controlled generation snapshot; reviewed revision required');
       previous=JSON.parse(readRunFile(dir,index).data);
       if (previous.dispatch_id!==dispatch.dispatch_id || previous.parent_session!==parentId || previous.markdown_sha256!==hash(before) || !/^[a-f0-9-]{36}$/.test(previous.snapshot_id)) throw new Error('Existing analysis generation ownership or hash mismatch');
       const oldMarkdown=readRunFile(dir,`audit/analysis-generations/${previous.snapshot_id}/requirement_analysis.md`).data;

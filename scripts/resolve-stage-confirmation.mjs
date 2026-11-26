@@ -20,10 +20,10 @@ if (stage === 'analysis' && decision === 'revision_requested') {
 }
 const timestamp = new Date().toISOString();
 const confirmation = [...(manifest.confirmations ?? [])].reverse().find((item) => item.stage === stage && item.status === "pending");
-if (!confirmation) throw new Error(`找不到 ${stage} 阶段待处理的确认请求。`);
+if (!confirmation) throw new Error(`找不到 ${stage} 阶段待处理的确认请求：可能已被解决或尚未创建。用 show-run-status 核对 confirmations 后再决定下一步，不要原样重试。`);
 if (decision === 'approved' && (confirmation.kind === 'result' || stage !== 'execution' || manifest.orchestration?.plan?.workflow_mode==='task')) {
   const receipt = assertCompletedArtifacts(root, runId, manifest, stage);
-  if (!isDeepStrictEqual(receipt, confirmation.artifact_contract)) throw new Error('Artifact receipt changed since confirmation request');
+  if (!isDeepStrictEqual(receipt, confirmation.artifact_contract)) throw new Error('Artifact receipt changed since confirmation request; request a new confirmation with request_confirmation instead of approving the stale one');
 }
 if (stage === 'execution' && (confirmation.kind === 'authorization' || !confirmation.kind) && manifest.orchestration?.plan?.workflow_mode!=='task' && decision === 'approved' && confirmation.execution_snapshot?.sha256 !== executionSnapshot(root, runId).sha256) {
   throw new Error('Execution inputs changed after confirmation request; request revision and approval again.');
