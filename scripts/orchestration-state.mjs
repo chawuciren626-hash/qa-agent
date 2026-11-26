@@ -4,6 +4,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import { assertUnlinked } from './skill-resources.mjs';
 import { resolve } from "node:path";
+import { ownProcessIdentity, readProcessIdentity, compareProcessIdentity } from './process-identity.mjs';
 
 export const stageStatuses = new Set([
   "planned", "in_progress", "completed", "awaiting_confirmation",
@@ -45,44 +46,54 @@ function recoverManifestLock(root, runId, lock) {
       !/^[a-f0-9-]{36}$/.test(owner.token ?? '') || !Number.isFinite(Date.parse(owner.at))) {
     throw lockBusy('Manifest lock ownership cannot be verified; no automatic takeover');
   }
+  let absentReason = null;
   try { process.kill(owner.pid, 0); }
   catch (error) {
     if (error.code !== 'ESRCH') throw lockBusy('Manifest lock owner status is unknown; no automatic takeover');
-    const runDir = resolve(lock, '..');
-    assertUnlinked(directoryContext(root).session_root, resolve(runDir, 'manifest.json'));
-    const manifest = readJson(resolve(runDir, 'manifest.json'));
-    if (manifest.run_id !== runId) throw new Error('Manifest identity mismatch during lock recovery');
-    assertRunContext(root, manifest);
-    const auditDir = resolve(runDir, 'audit/manifest-lock-recovery');
-    assertUnlinked(directoryContext(root).session_root, auditDir);
-    mkdirSync(auditDir, { recursive: true });
-    const digest = createHash('sha256').update(raw).digest('hex');
-    const claim = resolve(auditDir, `${digest}.json`);
-    assertUnlinked(directoryContext(root).session_root, claim);
-    // Exactly one contender may remove these lock bytes. Keep the claim permanently:
-    // a second contender must never remove a replacement owner's lock.
-    const record = { version: 1, run_id: runId, status: 'claimed', at: new Date().toISOString(),
-      recovery_pid: process.pid, previous_lock: raw, previous_sha256: digest, reason: 'owner_process_absent',
-      product_actions_replayed: false };
-    try { writeFileSync(claim, JSON.stringify(record, null, 2) + '\n', { flag: 'wx' }); }
-    catch (error) {
-      if (error.code === 'EEXIST') throw lockBusy('Manifest lock recovery already claimed; no competing takeover or product replay');
-      throw error;
-    }
-    assertUnlinked(directoryContext(root).session_root, lock);
-    if (readFileSync(lock, 'utf8') !== raw) throw lockBusy('Manifest lock changed during recovery; preserved current owner');
-    unlinkSync(lock);
-    writeJson(claim, { ...record, status: 'lock_removed', removed_at: new Date().toISOString() });
-    return;
+    absentReason = 'owner_process_absent';
   }
-  throw lockBusy('Manifest lock owner is still running; no takeover regardless of lock age');
+  // Windows reuses PIDs aggressively: a live PID may belong to an unrelated process that
+  // inherited the dead owner's number, which used to strand the lock forever. The recorded
+  // start-time identity distinguishes the original owner from a replacement; only a verified
+  // replacement authorizes recovery. A verified LIVE owner is never taken over, however old
+  // the lock — age alone cannot prove the owner finished its write.
+  if (!absentReason && owner.process_identity) {
+    const current = owner.pid === process.pid ? ownProcessIdentity() : readProcessIdentity(owner.pid);
+    if (compareProcessIdentity(owner.process_identity, current) === 'replaced') absentReason = 'owner_process_replaced';
+  }
+  if (!absentReason) throw lockBusy('Manifest lock owner is still running; no takeover regardless of lock age');
+  const runDir = resolve(lock, '..');
+  assertUnlinked(directoryContext(root).session_root, resolve(runDir, 'manifest.json'));
+  const manifest = readJson(resolve(runDir, 'manifest.json'));
+  if (manifest.run_id !== runId) throw new Error('Manifest identity mismatch during lock recovery');
+  assertRunContext(root, manifest);
+  const auditDir = resolve(runDir, 'audit/manifest-lock-recovery');
+  assertUnlinked(directoryContext(root).session_root, auditDir);
+  mkdirSync(auditDir, { recursive: true });
+  const digest = createHash('sha256').update(raw).digest('hex');
+  const claim = resolve(auditDir, `${digest}.json`);
+  assertUnlinked(directoryContext(root).session_root, claim);
+  // Exactly one contender may remove these lock bytes. Keep the claim permanently:
+  // a second contender must never remove a replacement owner's lock.
+  const record = { version: 1, run_id: runId, status: 'claimed', at: new Date().toISOString(),
+    recovery_pid: process.pid, previous_lock: raw, previous_sha256: digest, reason: absentReason,
+    product_actions_replayed: false };
+  try { writeFileSync(claim, JSON.stringify(record, null, 2) + '\n', { flag: 'wx' }); }
+  catch (error) {
+    if (error.code === 'EEXIST') throw lockBusy('Manifest lock recovery already claimed; no competing takeover or product replay');
+    throw error;
+  }
+  assertUnlinked(directoryContext(root).session_root, lock);
+  if (readFileSync(lock, 'utf8') !== raw) throw lockBusy('Manifest lock changed during recovery; preserved current owner');
+  unlinkSync(lock);
+  writeJson(claim, { ...record, status: 'lock_removed', removed_at: new Date().toISOString() });
 }
 
 export function withRunLock(root, project, runId, operation) {
   if (!/^run-[A-Za-z0-9-]+$/.test(runId ?? '')) throw new Error('Invalid run ID');
   const lock = dataPath(root, project.run_root, runId, 'manifest.json.lock');
   assertUnlinked(directoryContext(root).session_root, lock);
-  const raw = JSON.stringify({ version: 2, run_id: runId, host: hostname(), token: randomUUID(), pid: process.pid, at: new Date().toISOString() });
+  const raw = JSON.stringify({ version: 2, run_id: runId, host: hostname(), token: randomUUID(), pid: process.pid, process_identity: ownProcessIdentity(), at: new Date().toISOString() });
   try { writeFileSync(lock, raw, { flag: 'wx' }); }
   catch (error) {
     if (error.code !== 'EEXIST') throw error;
@@ -224,11 +235,18 @@ export function assertDispatchScheduling(manifest, stageId, { resumeBrowser = fa
   if(active.length && !(manifest.orchestration?.plan?.execution_branches?.includes(stageId) && active.every(([id])=>id!==stageId && manifest.orchestration.plan.execution_branches.includes(id)))) throw new Error('Another lifecycle stage is active; continue the existing dispatch before scheduling this stage');
 }
 
+// Stage events that change the stage status. An event type missing from this map and
+// from the non-transition set below is an engineering fault, not a silent pass: the
+// previous fail-open let a new event type skip the status/audit consistency check.
+const STAGE_EVENT_STATUS = { dispatched: 'in_progress', completed: 'completed', preparation_completed: 'planned', failed: 'failed', blocked: 'blocked', stage_recovered: 'revision_requested', quality_revision_required: 'revision_requested', confirmation_requested: 'awaiting_confirmation', review_mode_continued: 'completed', stage_added_to_plan: 'planned' };
+// Stage-scoped audit events that deliberately leave the status untouched.
+const NON_TRANSITION_STAGE_EVENTS = new Set(['artifacts_invalidated']);
+
 export function assertStageHistory(manifest, stageId) {
-  const last = (manifest.orchestration?.events ?? []).filter(event => event.stage === stageId).at(-1);
+  const last = (manifest.orchestration?.events ?? []).filter(event => event.stage === stageId && !NON_TRANSITION_STAGE_EVENTS.has(event.type)).at(-1);
   if (!last) return;
-  const expected = { dispatched: 'in_progress', completed: 'completed', preparation_completed: 'planned', failed: 'failed', blocked: 'blocked', stage_recovered: 'revision_requested', quality_revision_required: 'revision_requested', confirmation_requested: 'awaiting_confirmation', review_mode_continued: 'completed' }[last.type]
-    ?? (last.type === 'stage_added_to_plan' ? 'planned' : null)
+  const expected = STAGE_EVENT_STATUS[last.type]
     ?? (last.type === 'confirmation_resolved' ? (last.decision === 'approved' ? (last.kind === 'authorization' || !last.kind && getPlanStage(manifest, stageId)?.confirmation === 'before' && !getPlanStage(manifest, stageId)?.result_confirmation ? 'planned' : 'completed') : last.decision === 'rejected' ? 'blocked' : 'revision_requested') : null);
-  if (expected && manifest.stages?.[stageId]?.status !== expected) throw new Error('Stage status differs from its latest audit event; refusing manual state override');
+  if (!expected) throw new Error(`Unknown stage event type "${last.type}"; stage status cannot be verified against its audit history`);
+  if (manifest.stages?.[stageId]?.status !== expected) throw new Error('Stage status differs from its latest audit event; refusing manual state override');
 }

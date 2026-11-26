@@ -7,6 +7,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { withRunLock } from '../../scripts/orchestration-state.mjs';
+import { ownProcessIdentity } from '../../scripts/process-identity.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const project = { run_root: 'output/runs' };
@@ -83,6 +84,24 @@ test('crash after commit preserves committed state and a rejected new operation 
   assert.equal(readFileSync(f.manifest, 'utf8'), before);
   assert.equal(existsSync(f.lock), false);
   assert.equal(recovery(f).length, 1);
+});
+
+test('a reused PID whose process identity was replaced no longer strands the lock', t => {
+  const identity = ownProcessIdentity();
+  if (!identity) return t.skip('process identity unavailable on this host');
+  const f = fixture();
+  const owner = { version: 2, run_id: f.id, host: hostname(), token: randomUUID(), pid: process.pid,
+    process_identity: { ...identity, process_start: '1' }, at: new Date().toISOString() };
+  writeFileSync(f.lock, JSON.stringify(owner));
+  let calls = 0;
+  f.run(() => calls++);
+  assert.equal(calls, 1);
+  assert.equal(existsSync(f.lock), false);
+  const records = recovery(f);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].reason, 'owner_process_replaced');
+  assert.equal(records[0].status, 'lock_removed');
+  assert.equal(records[0].product_actions_replayed, false);
 });
 
 test('legacy, corrupt, foreign-host and wrong-run locks remain intact', () => {

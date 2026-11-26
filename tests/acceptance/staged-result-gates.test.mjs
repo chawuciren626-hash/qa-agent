@@ -7,7 +7,7 @@ test('full lifecycle result review stays separate from execution authorization',
   const stages=workflowDefinition().stages.map(s=>({...s,selected:true}));
   const manifest={orchestration:{plan:{workflow_mode:'lifecycle',stages},events:[]},stages:{},confirmations:[]};
   for(const stage of stages) manifest.stages[stage.id]={status:'planned'};
-  for(const id of ['analysis','test_points','test_cases']) {
+  for(const id of ['analysis','test_points','test_cases','api_execution']) {
     manifest.stages[id].status='completed';
     manifest.confirmations.push({stage:id,kind:'result',status:'approved'});
   }
@@ -24,4 +24,18 @@ test('full lifecycle result review stays separate from execution authorization',
   manifest.orchestration.events.push({type:'confirmation_resolved',stage:'execution',decision:'approved',kind:'result'});
   assert.doesNotThrow(()=>assertStageHistory(manifest,'execution'));
   assert.equal(assertStageReady(manifest,'defects').id,'defects');
+});
+
+test('unknown stage events fail closed instead of silently skipping the history check', () => {
+  const manifest={orchestration:{events:[{type:'completed',stage:'execution'}]},stages:{execution:{status:'completed'}}};
+  assert.doesNotThrow(()=>assertStageHistory(manifest,'execution'));
+  manifest.orchestration.events.push({type:'brand_new_event',stage:'execution'});
+  assert.throws(()=>assertStageHistory(manifest,'execution'),/Unknown stage event type "brand_new_event"/);
+});
+
+test('non-transition stage events do not override the verified stage status', () => {
+  const manifest={orchestration:{events:[{type:'completed',stage:'execution'},{type:'artifacts_invalidated',stage:'execution'}]},stages:{execution:{status:'completed'}}};
+  assert.doesNotThrow(()=>assertStageHistory(manifest,'execution'));
+  manifest.stages.execution.status='planned';
+  assert.throws(()=>assertStageHistory(manifest,'execution'),/latest audit event/);
 });
