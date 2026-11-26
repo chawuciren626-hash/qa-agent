@@ -96,14 +96,26 @@ function gateIdentity(key) {
   if(parts.length<2 || !/^(?:run-[A-Za-z0-9-]+|unbound)$/.test(parts[0])) return String(key ?? '');
   return `${parts[0]}:${parts[1]}:${(parts[2] ?? '').replace(/[a-f0-9-]{36}$/,'')}`;
 }
-function clearsPendingKey(pendingKey,receiptKey) {
+function clearsPendingKey(pendingKey,receiptKey,sessionStage) {
   if(pendingKey===receiptKey) return true;
   const settled=gateIdentity(pendingKey), receipt=gateIdentity(receiptKey);
   if(settled===receipt) return true;
   const [settledRun,settledAction,settledStage]=settled.split(':');
   const [receiptRun,receiptAction,receiptStage]=receipt.split(':');
-  return settledRun===receiptRun && settledAction===receiptAction && (!settledStage || !receiptStage);
+  if(settledRun!==receiptRun || settledAction!==receiptAction) return false;
+  // A stage-less receipt is a wildcard only inside the child's own stage: a single-stage
+  // child session must not clear another stage's debt with an unscoped success. Callers
+  // that declare no session stage keep the legacy unscoped contract.
+  if(!receiptStage) return !settledStage || !sessionStage || settledStage===sessionStage;
+  return !settledStage;
 }
+
+// closure_policy per action: 'artifact-verified' debts close on one successful
+// validate_artifacts for the same stage — their output is wholesale-validated
+// (draft_records) or the action is a read-only inspection whose success can be
+// structurally impossible mid-stage (diagnose_*). Everything else is 'same-action':
+// only its own recorded success clears the debt.
+const CLOSURE_POLICY = { draft_records: 'artifact-verified', diagnose_task: 'artifact-verified', diagnose_analysis: 'artifact-verified', diagnose_test_points: 'artifact-verified', diagnose_test_cases: 'artifact-verified' };
 
 function parseToolArguments(row) {
   try { return typeof row.payload.arguments === 'string' ? JSON.parse(row.payload.arguments) : row.payload.arguments; }
@@ -306,6 +318,7 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
   const pendingReads = new Map();
   const pendingUnkeyed = new Set();
   let pendingCatalog = false;
+  let verifiedDelivery = false;
   for (const [index, row] of rows.entries()) {
     if(allowRecovery && pendingReads.size && stageWriteBoundary && row.payload?.type==='tool_call' && row.payload.name==='read_file') {
       let args;try {args=parseToolArguments(row);} catch { /* A later valid native read may still correct this read-only detour. */ }
@@ -392,27 +405,23 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     // ceremony that strands revisions. Another help/ready response alone proves nothing.
     if (pendingCatalog && (result.status === 'completed' || isCatalogLookup(args?.cmd) && result.status === 'help')) pendingCatalog = false;
     if (allowRecovery && result.status === 'completed' && result.action_receipt && verifyRecovery(result)) {
-      for(const key of [...pending]) if(clearsPendingKey(key,result.task_key)) pending.delete(key);
+      verifiedDelivery = true;
+      for(const key of [...pending]) if(clearsPendingKey(key,result.task_key,stageWriteBoundary?.stage)) pending.delete(key);
       pending.delete('unbound:request:');
       const key = String(result.task_key ?? '');
       const validation = /^run-[A-Za-z0-9-]+:validate_artifacts:(?:analysis|test_points|test_cases|execution|api_execution|defects|report)(?:[a-f0-9-]{36})?$/.test(key) ||
         /^run-[A-Za-z0-9-]+:validate_analysis:(?:[a-f0-9-]{36})?$/.test(key);
       if(result.script==='validate-artifacts.mjs' && validation) {
         pendingUnkeyed.clear();
-        // A draft-composition debt is satisfied by evidence, not ceremony: draft_records output
-        // is wholesale-validated, so one successful validate_artifacts for the same stage proves
-        // the corrected draft even when the child fixed it with native file tools instead of
-        // re-filing the rejected request. The same holds for diagnose debts: diagnose_* is a
-        // read-only inspection, so its failure persists nothing and its success may be
-        // structurally impossible in the current stage state (e.g. diagnose_task:execution
-        // before the browser grant, when only prepare artifacts exist). The verified stage
-        // validation is the evidence that the inspected artifacts are sound. Every other
-        // action still demands its own success.
+        // Typed closure: an artifact-verified debt is satisfied by evidence, not ceremony —
+        // the verified stage validation proves the corrected draft or inspected artifacts
+        // even when the child fixed them with native file tools instead of re-filing the
+        // rejected request. Every same-action debt still demands its own success.
         const [vRun,,vStage]=gateIdentity(key).split(':');
         for(const open of [...pending]) {
           const [pRun,pAction,pStage]=gateIdentity(open).split(':');
           if(pRun!==vRun || pStage && pStage!==vStage) continue;
-          if(pAction==='draft_records' || /^diagnose_(task|analysis|test_points|test_cases)$/.test(pAction)) pending.delete(open);
+          if(CLOSURE_POLICY[pAction]==='artifact-verified') pending.delete(open);
         }
       }
       if(result.script==='validate-artifacts.mjs' && validation && stageWriteBoundary) {
@@ -432,5 +441,8 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
   if (pending.size && !allowUnresolvedRecovery) throw new Error(`Recoverable errors were not resolved by a verified successful action. Still open: ${[...pending].join(', ')}. Re-run each recorded action and let it succeed; a different action does not clear these keys, except a draft_records or diagnose debt, which one successful validate_artifacts for the same stage closes.`);
   if(pendingReads.size && !allowUnresolvedRecovery) throw new Error(`Source read correction requires a matching native read and verified stage validation. Still open: ${[...pendingReads].map(([,read])=>read.path).join(', ')}. Read each exact path with the native reader, then run one successful validate_artifacts for this stage; revising a draft does not clear it.`);
   if (pendingUnkeyed.size && !allowUnresolvedRecovery) throw new Error(`A recorded correction was not followed by verified artifact validation. Still open: ${[...pendingUnkeyed].join(', ')}. Run validate_artifacts for this stage after the corrected attempt; re-dispatching does not clear it.`);
-  if (pendingCatalog && !allowUnresolvedRecovery) throw new Error('Project action catalog lookup failure was not followed by a successful action or catalog help. Continue with a successful structured action; the catalog itself is read-only help.');
+  // Catalog debt is read-only help: it blocks only while nothing has been delivered.
+  // A failed lookup after a verified delivery cannot invalidate that delivery, and
+  // demanding a literal repeat of the help call is ceremony that strands revisions.
+  if (pendingCatalog && !allowUnresolvedRecovery && !verifiedDelivery) throw new Error('Project action catalog lookup failure was not followed by a successful action or catalog help. Continue with a successful structured action; the catalog itself is read-only help.');
 }

@@ -218,3 +218,28 @@ test('a diagnose debt is closed by a successful stage validation, not by other a
     task_key:'run-abc:export_test_cases:execution',action_receipt:'E:/audit/4.json',result:{termination_confirmed:true}});
   assert.throws(()=>assertChildCommands([debtCall,output('debt',debt),validatedCall,output('validated',otherAction)],recoveryOptions),/Still open/);
 });
+
+test('a stage-less success clears only the child session\'s own stage debt',()=>{
+  const debt=JSON.stringify({status:'rejected',exit_code:2,classification:'input_rejected',action:'draft_records',
+    task_key:'run-abc:draft_records:test_cases',
+    recovery:{category:'input_correction',key:'run-abc:draft_records:test_cases',failure_number:1,retry_allowed:true,policy:'progress_based',stalled:false}});
+  const debtCall=call('exec_command','debt',{cmd:'node scripts/project-action.mjs execute --request=output/action-requests/d.json'});
+  const unscoped=JSON.stringify({status:'completed',exit_code:0,action:'draft_records',script:'draft-records.mjs',
+    task_key:'run-abc:draft_records:',action_receipt:'E:/audit/1.json',result:{termination_confirmed:true}});
+  const clearCall=call('exec_command','clear',{cmd:'node scripts/project-action.mjs execute --request=output/action-requests/c.json'});
+  const recoveryOptions={...options,verifyRecovery:result=>result.status==='completed'||result.recovery!=null};
+  const rows=[debtCall,output('debt',debt),clearCall,output('clear',unscoped)];
+  assert.doesNotThrow(()=>assertChildCommands(rows,{...recoveryOptions,stageWriteBoundary:{stage:'test_cases'}}));
+  assert.throws(()=>assertChildCommands(rows,{...recoveryOptions,stageWriteBoundary:{stage:'analysis'}}),/Still open/);
+});
+
+test('a read-only catalog failure after a verified delivery does not block the handoff',()=>{
+  const delivered=JSON.stringify({status:'completed',exit_code:0,action:'validate_artifacts',script:'validate-artifacts.mjs',
+    task_key:'run-abc:validate_artifacts:analysis',action_receipt:'E:/audit/1.json',result:{termination_confirmed:true}});
+  const deliveryCall=call('exec_command','deliver',{cmd:'node scripts/project-action.mjs execute --request=output/action-requests/v.json'});
+  const lookup=call('exec_command','catalog',{cmd:'node scripts/project-action.mjs catalog'});
+  const missing="Error: Cannot find module 'project-action.mjs'\n at Module.executeUserEntryPoint (run_main:1)\n code: 'MODULE_NOT_FOUND', requireStack: []\n[exit code: 1]";
+  const recoveryOptions={...options,verifyRecovery:result=>result.status==='completed'||result.recovery!=null};
+  assert.doesNotThrow(()=>assertChildCommands([deliveryCall,output('deliver',delivered),lookup,output('catalog',missing)],recoveryOptions));
+  assert.throws(()=>assertChildCommands([lookup,output('catalog',missing)],recoveryOptions),/catalog lookup failure/);
+});
