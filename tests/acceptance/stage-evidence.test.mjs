@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findParentDispatch, resolveDispatchedChild, recordedChildHandle, readSession, partialBrowserDelivery, partialBrowserFailureVerifier, draftHandoffReconciliation } from '../../scripts/stage-evidence.mjs';
+import { findParentDispatch, matchingDispatchCalls, resolveDispatchedChild, recordedChildHandle, readSession, partialBrowserDelivery, partialBrowserFailureVerifier, draftHandoffReconciliation } from '../../scripts/stage-evidence.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, renameSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -159,6 +159,33 @@ test('retained handle appended after streamed child text still binds its continu
   assert.equal(findParentDispatch([...rows,call],request),null);
   assert.equal(findParentDispatch(rows,request),null);
   assert.equal(findParentDispatch([...rows,call,output],request)?.tool_call_id,'call-a');
+});
+
+test('a channel 500 that never launched is not a second binding for the dispatch',()=>{
+  // Live controller, 2026-11-26: the first run_subagent was answered "执行通道 500" before any
+  // session existed, the retry was refused by the delegation guard, and a later retry returned
+  // normally. Every downstream action then failed with "Dispatch must bind exactly one child
+  // call" because both the dead call and the live one matched. The dead call is pre-launch
+  // evidence, not a binding - the same rule the guard already applied before allowing a retry.
+  const dispatch={agent:request.agent,at:request.dispatchedAt,dispatch_id:'dispatch-a',child_command_policy:'policy-a'};
+  const args=JSON.stringify({agent_id:request.agent,prompt:`${request.runId} dispatch-a policy-a`});
+  const rows=[
+    {timestamp:'2026-10-09T02:05:30.804Z',type:'model_msg',payload:{type:'tool_call',name:'run_subagent',tool_call_id:'call-500',arguments:args}},
+    {timestamp:'2026-10-09T02:05:30.900Z',type:'model_msg',payload:{type:'tool_call_output',tool_call_id:'call-500',status:'fatal',output:'[run_subagent error: 执行通道 500: {"error":{"code":"internal","message":"Internal server error."}}]'}},
+    {timestamp:'2026-10-09T02:05:40.000Z',type:'model_msg',payload:{type:'tool_call',name:'run_subagent',tool_call_id:'call-denied',arguments:args}},
+    {timestamp:'2026-10-09T02:05:40.100Z',type:'model_msg',payload:{type:'tool_call_output',tool_call_id:'call-denied',output:'Tool call denied by the qa-delegation-guard hook: QA delegation: This dispatch already has a child call'}},
+    {timestamp:'2026-10-09T02:06:00.000Z',type:'model_msg',payload:{type:'tool_call',name:'run_subagent',tool_call_id:'call-retry',arguments:args}},
+    {timestamp:'2026-10-09T02:06:00.100Z',type:'event_msg',payload:{type:'subagent',session_id:request.childId}},
+    {timestamp:'2026-10-09T02:20:00.000Z',type:'model_msg',payload:{type:'tool_call_output',tool_call_id:'call-retry',stop_reason:'completed',output:'收口完成。 [subagent idle with subagent_id subagent-retry77; send a follow-up prompt to continue]'}}
+  ];
+  assert.deepEqual(matchingDispatchCalls(rows,request.runId,dispatch).map(row=>row.payload.tool_call_id),['call-retry']);
+  assert.equal(findParentDispatch(rows,request)?.tool_call_id,'call-retry');
+  assert.equal(recordedChildHandle(rows,dispatch,request.runId).subagent_id,'subagent-retry77');
+  // A 500 that did reach a child is not pre-launch evidence: that dispatch stays ambiguous.
+  const half=[...rows.slice(0,2),
+    {timestamp:'2026-10-09T02:05:31.000Z',type:'event_msg',payload:{type:'subagent',session_id:request.childId}},
+    ...rows.slice(4)];
+  assert.equal(matchingDispatchCalls(half,request.runId,dispatch).length,2);
 });
 
 test('handle lookup distinguishes interrupted, returned and pending; denied redispatch is ignored',()=>{

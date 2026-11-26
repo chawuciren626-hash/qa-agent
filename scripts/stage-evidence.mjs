@@ -9,6 +9,7 @@ import { assertChildCommands, childCommandPolicy, toolWasNotExecuted } from './c
 import { CommandUsageError } from './command-contracts.mjs';
 import { assertRecoveryDecisions } from './orchestration-state.mjs';
 import { DELEGATION_DENIAL, denialRecorded } from './hook-denial.mjs';
+import { launchNeverStarted } from './launch-evidence.mjs';
 export { requiredArtifacts } from './artifact-contracts.mjs';
 
 // Eligibility only: completion still validates the child and artifacts under lock.
@@ -240,16 +241,19 @@ export function findParentDispatch(parent, { runId, agent, childId, dispatchedAt
 }
 
 export function matchingDispatchCalls(parent, runId, dispatch) {
-  const results=toolResultsById(parent);
-  return parent.filter(row => {
+  return [...parent.entries()].filter(([index, row]) => {
     if (row.payload?.type !== 'tool_call' || row.payload.name !== 'run_subagent' || !(Date.parse(row.timestamp) >= Date.parse(dispatch.at))) return false;
+    // A call the channel answered 500 before any child existed is not a binding, even though
+    // the retry that followed it is. Counting both made a normally returned dispatch look
+    // ambiguous, and every downstream action refused it.
+    if (launchNeverStarted(parent, index)) return false;
     const denied=denialRecorded(parent,row.payload.tool_call_id,DELEGATION_DENIAL);
     if(denied) return false;
     let args;
     try { args = typeof row.payload.arguments === 'string' ? JSON.parse(row.payload.arguments) : row.payload.arguments; } catch { return false; }
     const tokens = String(args?.prompt).split(/[^A-Za-z0-9-]+/);
     return args?.agent_id === dispatch.agent && tokens.includes(runId) && (!dispatch.dispatch_id || tokens.includes(dispatch.dispatch_id));
-  });
+  }).map(([, row]) => row);
 }
 
 export function resolveDispatchedChild(root, runId, stage, parentId, agentRoot = process.env.PENGUIN_AGENT_ROOT ?? resolve(homedir(), '.penguin/data/default_project/agents'), {includeFailed=false,includeInterrupted=false,cache=null}={}) {
@@ -277,12 +281,16 @@ export function resolveDispatchedChild(root, runId, stage, parentId, agentRoot =
 }
 
 export function recordedChildHandle(rows, dispatch, runId) {
-  const calls = rows.filter(row => row.type === 'model_msg' && row.payload?.type === 'tool_call' && row.payload.name === 'run_subagent').filter(row => {
+  const calls = [...rows.entries()].filter(([index, row]) => {
+    if(row.type !== 'model_msg' || row.payload?.type !== 'tool_call' || row.payload.name !== 'run_subagent') return false;
+    // Same rule as the binding count: a 500 that never launched must not hide the handle of
+    // the retry that did, or resolve_child_handle reports "unavailable" for a live child.
+    if(launchNeverStarted(rows,index)) return false;
     if(rows.some(r=>r.payload?.type==='tool_call_output' && r.payload.tool_call_id===row.payload.tool_call_id && String(r.payload.output).startsWith('Tool call denied'))) return false;
     let args; try { args = typeof row.payload.arguments === 'string' ? JSON.parse(row.payload.arguments) : row.payload.arguments; } catch { return false; }
     return args?.agent_id === dispatch.agent && typeof args.prompt === 'string' &&
       [runId, dispatch.dispatch_id].every(id => args.prompt.split(/[^A-Za-z0-9-]+/).includes(id)) && args.prompt.includes(dispatch.child_command_policy) && Date.parse(row.timestamp) >= Date.parse(dispatch.at);
-  });
+  }).map(([, row]) => row);
   const absent = { status: 'unavailable', subagent_id: null, completion_verified: false,
     next_action: '等待原工具返回；不要从dispatch_id或子会话ID推导句柄，不重复派发。正常结束的子任务使用handoff，人工登录等待使用宿主卡片续接原子会话，禁止重新派发。' };
   if (calls.length !== 1) return absent;
