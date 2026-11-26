@@ -263,6 +263,23 @@ describe("platform tasks page", () => {
     expect(row.querySelector(".qpt-pri")?.textContent).toContain("中");
   });
 
+  it("任务名称超 10 个字截断加省略号，完整名称走悬停面板", async () => {
+    const root = await renderPage();
+    // 「gov 用户端登录优化」11 个字：表格里只留前 10 个字 + 省略号
+    const readyName = root.querySelectorAll("tbody tr")[1]!.querySelector(".qpt-name")!;
+    expect(readyName.querySelector('[aria-hidden="true"]')?.textContent).toBe("gov 用户端登录优…");
+    // 完整名称同时留在面板数据里，读屏也能读到（sr-only）
+    expect(readyName.getAttribute("data-tooltip")).toBe("gov 用户端登录优化");
+    expect(readyName.hasAttribute("data-tooltip-extra")).toBe(true);
+    expect(readyName.querySelector(".qpt-sr")?.textContent).toBe("gov 用户端登录优化");
+    // 10 个字以内原样显示，不挂面板也不留 sr-only（避免重复朗读）
+    fixture.state.items = [{ ...fixture.localTask, title: "登录页文案核对" }];
+    const shortRoot = await renderPage();
+    const shortName = shortRoot.querySelectorAll("tbody tr")[0]!.querySelector(".qpt-name")!;
+    expect(shortName.textContent).toBe("登录页文案核对");
+    expect(shortName.hasAttribute("data-tooltip")).toBe(false);
+  });
+
   it("资料已更新（impact_pending）行提供可用的开始测试，不出现确认影响", async () => {
     fixture.state.items = [{ ...fixture.platformReady, id: "ptl-impact", status: "impact_pending" }];
     fixture.state.counts = { impact_pending: 1 };

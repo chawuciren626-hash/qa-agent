@@ -63,6 +63,24 @@ function shortTaskNo(task: TaskListItem): string {
   return raw.length > limit ? `${raw.slice(0, limit - 1)}…` : raw;
 }
 
+/** 任务名称列最多显示几个字（超出即截断，完整名称走悬停面板）。 */
+const TITLE_MAX_CHARS = 10;
+
+/**
+ * 列表里的任务名称：超过 {@link TITLE_MAX_CHARS} 个字就截断加省略号。
+ *
+ * 名称列只用来一眼认出是哪条任务，长标题在固定列宽里会把行撑成两行、把相邻列挤歪；
+ * 完整名称挂在单元格的悬停面板（`data-tooltip` + `data-tooltip-extra`，由全局
+ * `TooltipLayer` 统一渲染）。按字符而不是按宽度截断，所以最后一截不会被半个字切开：
+ * `Array.from` 按码位切，emoji 与中文都不会截断在代理对中间。
+ */
+function shortTitle(title: string): { text: string; clipped: boolean } {
+  const chars = Array.from(title.trim());
+  return chars.length > TITLE_MAX_CHARS
+    ? { text: `${chars.slice(0, TITLE_MAX_CHARS).join("")}…`, clipped: true }
+    : { text: title.trim(), clipped: false };
+}
+
 export function PlatformTasksPage() {
   const navigate = useNavigate();
   const { projects, currentProject, setCurrentProjectId } = useProject();
@@ -321,6 +339,7 @@ export function PlatformTasksPage() {
                     task.packageVersion != null ? `v${task.packageVersion}` : "",
                     task.roundNo != null ? `第 ${task.roundNo} 轮` : "",
                   ].filter(Boolean).join(" · ") || "—";
+                  const name = shortTitle(task.title);
                   return (
                     <tr key={`${task.projectId}:${task.id}`}>
                       <td className="qpt-c-no">
@@ -334,7 +353,19 @@ export function PlatformTasksPage() {
                       <td className="qpt-c-name">
                         <div className="qpt-title">
                           {task.edited && <span className="qpt-edit-dot" title="本地补充字段已编辑" />}
-                          <b>{task.title}</b>
+                          {/* 名称截断后完整值只剩悬停面板一处：`data-tooltip-extra` 让面板
+                              在被截断的可见文字上也照常打开（默认规则是「屏幕上已写全就不弹」）。 */}
+                          <b
+                            className="qpt-name"
+                            {...(name.clipped ? { "data-tooltip": task.title, "data-tooltip-extra": true } : {})}
+                          >
+                            {name.clipped ? (
+                              <>
+                                <span aria-hidden="true">{name.text}</span>
+                                <span className="qpt-sr">{task.title}</span>
+                              </>
+                            ) : name.text}
+                          </b>
                           {task.edited && <span className="qpt-edit-tag">已编辑</span>}
                         </div>
                         <div className="qpt-sub">

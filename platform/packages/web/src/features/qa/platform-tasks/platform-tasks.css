@@ -155,7 +155,11 @@
 .qpt-c-name{padding-right:20px}
 .qpt-table tbody tr:last-child td{border-bottom:none}
 .qpt-c-name .qpt-title{font-weight:600;line-height:1.45}
-.qpt-c-name .qpt-title b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-weight:600}
+/* 名称在渲染前已按 10 个字截断（shortTitle），这里只保证单行、不换行撑高行；
+   text-overflow 是兜底：窗口极窄时被压缩仍出省略号，而不是把字挤掉。 */
+.qpt-c-name .qpt-title b.qpt-name{flex:0 1 auto;min-width:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 截断掉的名称后半段：视觉上不占位，读屏仍读到完整名称（可访问名不因截断而残缺）。 */
+.qpt-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .qpt-project{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;padding:1px 8px;border-radius:6px;background:light-dark(#f2f4f7,#262f3d);color:light-dark(#4b5563,#d1d5db);font-size:11.5px}
 .qpt-pri-from{font-size:9.5px;font-weight:700;margin-left:4px;opacity:.6;letter-spacing:.3px}
 .qpt-m-error{margin:0;font-size:12.5px;color:light-dark(#b91c1c,#f87171)}
