@@ -152,3 +152,45 @@ test('a call the user interrupted is not an unreadable receipt',()=>{
     output('print','[interrupted: tool aborted by user]','completed')],options),/unreadable/);
   assert.throws(()=>assertChildCommands(interrupted,{requireControlledCommands:true}),/unreadable/);
 });
+
+// A runner_error rejection is the action layer's own infrastructure failure (a harness
+// archived-output write race on the live controller), not a correction debt: it files no
+// recovery ledger, so nothing could ever clear it and one transient row poisoned every
+// later handoff. It stops being evidence only when the child demonstrably recovered.
+test('a runner_error rejection is superseded by a later success of the same task, never waved through',()=>{
+  const poisoned=JSON.stringify({status:'rejected',exit_code:2,classification:'runner_error',action:'validate_artifacts',
+    task_key:'run-abc:validate_artifacts:test_casesd',error:'Archived command output is empty'});
+  const recovered=JSON.stringify({status:'completed',exit_code:0,action:'validate_artifacts',
+    task_key:'run-abc:validate_artifacts:test_casesd',result:{termination_confirmed:true}});
+  const poisonedCall=call('exec_command','poison',{cmd:'node scripts/project-action.mjs execute --request=output/action-requests/v.json'});
+  const healedCall=call('exec_command','healed',{cmd:'node scripts/project-action.mjs execute --request=output/action-requests/w.json'});
+  assert.doesNotThrow(()=>assertChildCommands([poisonedCall,output('poison',poisoned),healedCall,output('healed',recovered)],options));
+  assert.throws(()=>assertChildCommands([poisonedCall,output('poison',poisoned)],options),/failed or was rejected/);
+  const otherTask=JSON.stringify({status:'completed',exit_code:0,action:'export_test_cases',
+    task_key:'run-abc:export_test_cases:test_casesd',result:{termination_confirmed:true}});
+  assert.throws(()=>assertChildCommands([poisonedCall,output('poison',poisoned),healedCall,output('healed',otherTask)],options),/failed or was rejected/);
+  const failedRetry=JSON.stringify({status:'completed',exit_code:1,action:'validate_artifacts',
+    task_key:'run-abc:validate_artifacts:test_casesd',result:{termination_confirmed:true}});
+  assert.throws(()=>assertChildCommands([poisonedCall,output('poison',poisoned),healedCall,output('healed',failedRetry)],options),/failed or was rejected/);
+});
+// A draft_records correction debt means "the corrected draft must be verified", not "re-file
+// the rejected request": the child may legitimately have fixed the draft with native file
+// tools, and draft_records output is wholesale-validated afterwards. One successful
+// validate_artifacts for the same stage therefore closes the debt; other actions do not.
+test('a draft_records debt is closed by a successful stage validation, not by other actions',()=>{
+  const debt=JSON.stringify({status:'rejected',exit_code:2,classification:'input_rejected',action:'draft_records',
+    task_key:'run-abc:draft_records:test_cases',
+    recovery:{category:'input_correction',key:'run-abc:draft_records:test_cases',failure_number:1,retry_allowed:true,policy:'progress_based',stalled:false}});
+  const debtCall=call('exec_command','debt',{cmd:'node scripts/project-action.mjs execute --request=output/action-requests/d.json'});
+  const validated=JSON.stringify({status:'completed',exit_code:0,action:'validate_artifacts',script:'validate-artifacts.mjs',
+    task_key:'run-abc:validate_artifacts:test_cases',action_receipt:'E:/audit/1.json',result:{termination_confirmed:true}});
+  const validatedCall=call('exec_command','validated',{cmd:'node scripts/project-action.mjs execute --request=output/action-requests/e.json'});
+  const recoveryOptions={...options,verifyRecovery:result=>result.status==='completed'||result.recovery!=null};
+  assert.doesNotThrow(()=>assertChildCommands([debtCall,output('debt',debt),validatedCall,output('validated',validated)],recoveryOptions));
+  assert.throws(()=>assertChildCommands([debtCall,output('debt',debt)],recoveryOptions),/Still open/);
+  const wrongStage=JSON.stringify({...JSON.parse(validated),task_key:'run-abc:validate_artifacts:execution'});
+  assert.throws(()=>assertChildCommands([debtCall,output('debt',debt),validatedCall,output('validated',wrongStage)],recoveryOptions),/Still open/);
+  const otherAction=JSON.stringify({status:'completed',exit_code:0,action:'export_test_cases',script:'export-test-cases.mjs',
+    task_key:'run-abc:export_test_cases:test_cases',action_receipt:'E:/audit/2.json',result:{termination_confirmed:true}});
+  assert.throws(()=>assertChildCommands([debtCall,output('debt',debt),validatedCall,output('validated',otherAction)],recoveryOptions),/Still open/);
+});

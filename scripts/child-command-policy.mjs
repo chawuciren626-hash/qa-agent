@@ -63,6 +63,28 @@ function hostInterrupted(response) {
   return HOST_INTERRUPTS.includes(String(response.payload.output ?? '').trim());
 }
 
+// A runner_error rejection is the action layer's own infrastructure failure (for example a
+// harness archived-output write race: the log file exists but its content flushes later),
+// not a correction debt and not a delivery. It files no recovery ledger, so no allowed
+// action can ever clear it, and one transient row would poison every later handoff for
+// that dispatch. It stops being evidence once the child demonstrably recovered - a later
+// completed receipt for the same gated task identity. Only positive evidence counts: a
+// runner_error that was never followed by a success still blocks, as it should.
+function runnerErrorSuperseded(rows,index,result) {
+  if(result?.status!=='rejected' || result.classification!=='runner_error') return false;
+  const identity=gateIdentity(String(result.task_key ?? ''));
+  const [run,action]=identity.split(':');
+  if(!/^(?:run-[A-Za-z0-9-]+|unbound)$/.test(run) || !action) return false;
+  return rows.slice(index+1).some(row=>{
+    if(row.payload?.type!=='tool_call_output' || typeof row.payload.output!=='string') return false;
+    let next;
+    try { next=JSON.parse(row.payload.output.slice(row.payload.output.indexOf('{'), row.payload.output.lastIndexOf('}')+1)); }
+    catch { return false; }
+    if(next.status!=='completed' || (next.exit_code!==undefined && next.exit_code!==0)) return false;
+    return gateIdentity(String(next.task_key ?? ''))===identity;
+  });
+}
+
 // A ledger key is `${run}:${action}:${stage}` and a request may or may not name the stage.
 // The same action therefore files `…:diagnose_test_cases:test_cases` when the request was
 // stage-scoped and `…:diagnose_test_cases:` when it was not, and an exact delete leaves one
@@ -356,6 +378,7 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     }
     // A verified partial browser delivery preserves failed commands; it never turns them into passes.
     if(allowRecovery && verifyPartialBrowserFailure(result,row)) continue;
+    if(allowRecovery && runnerErrorSuperseded(rows,index,result)) continue;
     if (!result || toolOutcome(response.payload) === 'fatal' || !['completed', 'ready', 'help'].includes(result.status) || (result.exit_code !== undefined && result.exit_code !== 0)) throw new Error('Child command failed or was rejected; cannot complete this dispatch after retry');
     if (pendingCatalog && isCatalogLookup(args?.cmd) && result.status === 'help') pendingCatalog = false;
     if (allowRecovery && result.status === 'completed' && result.action_receipt && verifyRecovery(result)) {
@@ -364,7 +387,18 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
       const key = String(result.task_key ?? '');
       const validation = /^run-[A-Za-z0-9-]+:validate_artifacts:(?:analysis|test_points|test_cases|execution|api_execution|defects|report)(?:[a-f0-9-]{36})?$/.test(key) ||
         /^run-[A-Za-z0-9-]+:validate_analysis:(?:[a-f0-9-]{36})?$/.test(key);
-      if(result.script==='validate-artifacts.mjs' && validation) pendingUnkeyed.clear();
+      if(result.script==='validate-artifacts.mjs' && validation) {
+        pendingUnkeyed.clear();
+        // A draft-composition debt is satisfied by evidence, not ceremony: draft_records output
+        // is wholesale-validated, so one successful validate_artifacts for the same stage proves
+        // the corrected draft even when the child fixed it with native file tools instead of
+        // re-filing the rejected request. Every other action still demands its own success.
+        const [vRun,,vStage]=gateIdentity(key).split(':');
+        for(const open of [...pending]) {
+          const [pRun,pAction,pStage]=gateIdentity(open).split(':');
+          if(pRun===vRun && pAction==='draft_records' && (!pStage || pStage===vStage)) pending.delete(open);
+        }
+      }
       if(result.script==='validate-artifacts.mjs' && validation && stageWriteBoundary) {
         for(const [readKey,read] of pendingReads) {
           const prefix=`${read.run}:validate_artifacts:${stageWriteBoundary.stage}`;
@@ -379,7 +413,7 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
   for(const key of pending) if(verifyExternalRecovery(key)) pending.delete(key);
   // Each open correction names what is still owed and the single action that clears it.
   // A refusal that cannot be turned into the next command is the defect this guards.
-  if (pending.size && !allowUnresolvedRecovery) throw new Error(`Recoverable errors were not resolved by a verified successful action. Still open: ${[...pending].join(', ')}. Re-run each recorded action and let it succeed; a different action does not clear these keys.`);
+  if (pending.size && !allowUnresolvedRecovery) throw new Error(`Recoverable errors were not resolved by a verified successful action. Still open: ${[...pending].join(', ')}. Re-run each recorded action and let it succeed; a different action does not clear these keys, except a draft_records debt, which one successful validate_artifacts for the same stage closes.`);
   if(pendingReads.size && !allowUnresolvedRecovery) throw new Error(`Source read correction requires a matching native read and verified stage validation. Still open: ${[...pendingReads].map(([,read])=>read.path).join(', ')}. Read each exact path with the native reader, then run one successful validate_artifacts for this stage; revising a draft does not clear it.`);
   if (pendingUnkeyed.size) throw new Error(`A recorded correction was not followed by verified artifact validation. Still open: ${[...pendingUnkeyed].join(', ')}. Run validate_artifacts for this stage after the corrected attempt; re-dispatching does not clear it.`);
   if (pendingCatalog) throw new Error('Project action catalog lookup failure was not corrected. Repeat the catalog lookup until its help response succeeds; no other action clears it.');
