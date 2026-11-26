@@ -409,15 +409,20 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
       for(const key of [...pending]) if(clearsPendingKey(key,result.task_key,stageWriteBoundary?.stage)) pending.delete(key);
       pending.delete('unbound:request:');
       const key = String(result.task_key ?? '');
+      // validate_execution_prepare is the prepare-mode form of the execution stage
+      // validation (same validate-artifacts.mjs script, --mode=prepare); its task key
+      // carries an empty stage suffix, so map it back to execution below.
       const validation = /^run-[A-Za-z0-9-]+:validate_artifacts:(?:analysis|test_points|test_cases|execution|api_execution|defects|report)(?:[a-f0-9-]{36})?$/.test(key) ||
-        /^run-[A-Za-z0-9-]+:validate_analysis:(?:[a-f0-9-]{36})?$/.test(key);
+        /^run-[A-Za-z0-9-]+:validate_analysis:(?:[a-f0-9-]{36})?$/.test(key) ||
+        /^run-[A-Za-z0-9-]+:validate_execution_prepare:(?:[a-f0-9-]{36})?$/.test(key);
       if(result.script==='validate-artifacts.mjs' && validation) {
         pendingUnkeyed.clear();
         // Typed closure: an artifact-verified debt is satisfied by evidence, not ceremony —
         // the verified stage validation proves the corrected draft or inspected artifacts
         // even when the child fixed them with native file tools instead of re-filing the
         // rejected request. Every same-action debt still demands its own success.
-        const [vRun,,vStage]=gateIdentity(key).split(':');
+        const [vRun,vAction,vStageRaw]=gateIdentity(key).split(':');
+        const vStage=vStageRaw || (vAction==='validate_execution_prepare'?'execution':'');
         for(const open of [...pending]) {
           const [pRun,pAction,pStage]=gateIdentity(open).split(':');
           if(pRun!==vRun || pStage && pStage!==vStage) continue;
@@ -438,7 +443,7 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
   for(const key of pending) if(verifyExternalRecovery(key)) pending.delete(key);
   // Each open correction names what is still owed and the single action that clears it.
   // A refusal that cannot be turned into the next command is the defect this guards.
-  if (pending.size && !allowUnresolvedRecovery) throw new Error(`Recoverable errors were not resolved by a verified successful action. Still open: ${[...pending].join(', ')}. Re-run each recorded action and let it succeed; a different action does not clear these keys, except a draft_records or diagnose debt, which one successful validate_artifacts for the same stage closes.`);
+  if (pending.size && !allowUnresolvedRecovery) throw new Error(`Recoverable errors were not resolved by a verified successful action. Still open: ${[...pending].join(', ')}. Re-run each recorded action and let it succeed; a different action does not clear these keys, except a draft_records or diagnose debt, which one successful validate_artifacts for the same stage closes (for the execution stage, validate_execution_prepare counts as well).`);
   if(pendingReads.size && !allowUnresolvedRecovery) throw new Error(`Source read correction requires a matching native read and verified stage validation. Still open: ${[...pendingReads].map(([,read])=>read.path).join(', ')}. Read each exact path with the native reader, then run one successful validate_artifacts for this stage; revising a draft does not clear it.`);
   if (pendingUnkeyed.size && !allowUnresolvedRecovery) throw new Error(`A recorded correction was not followed by verified artifact validation. Still open: ${[...pendingUnkeyed].join(', ')}. Run validate_artifacts for this stage after the corrected attempt; re-dispatching does not clear it.`);
   // Catalog debt is read-only help: it blocks only while nothing has been delivered.
