@@ -276,8 +276,12 @@ function recordedCorrection(result,{allowRecovery,allowUnresolvedRecovery,verify
   // 1) still correctable, 2) a request-level debt, 3) progress-based exhaustion,
   // 4) a legacy exhausted receipt kept alive only by the explicit unresolved-draft path.
   const correctable=recovery.retry_allowed===true;
+  // A stalled receipt is only honored under its own task key: the fallback above exists
+  // for legacy labels, but progress-based exhaustion must not be transplantable onto a
+  // different debt by rewriting recovery.key.
   const stalled=recovery.retry_allowed===false && recovery.stalled===true && recovery.policy==='progress_based' &&
-    Number.isInteger(recovery.failure_number) && recovery.failure_number>=3 && filed===result.task_key &&
+    Number.isInteger(recovery.failure_number) && recovery.failure_number>=3 && recovery.key===result.task_key &&
+    filed===result.task_key &&
     (result.classification!=='correction_stalled' || result.status==='rejected' && result.exit_code===2);
   const legacy=allowUnresolvedRecovery && recovery.retry_allowed===false && Number.isInteger(recovery.failure_number) && recovery.failure_number>=3;
   if(!correctable && !requestLevel && !stalled && !legacy) return null;
@@ -380,7 +384,10 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     if(allowRecovery && verifyPartialBrowserFailure(result,row)) continue;
     if(allowRecovery && runnerErrorSuperseded(rows,index,result)) continue;
     if (!result || toolOutcome(response.payload) === 'fatal' || !['completed', 'ready', 'help'].includes(result.status) || (result.exit_code !== undefined && result.exit_code !== 0)) throw new Error('Child command failed or was rejected; cannot complete this dispatch after retry');
-    if (pendingCatalog && isCatalogLookup(args?.cmd) && result.status === 'help') pendingCatalog = false;
+    // Catalog is read-only discovery help. A later successful business action proves the
+    // child moved past the lookup failure; demanding a literal repeat of the help call is
+    // ceremony that strands revisions. Another help/ready response alone proves nothing.
+    if (pendingCatalog && (result.status === 'completed' || isCatalogLookup(args?.cmd) && result.status === 'help')) pendingCatalog = false;
     if (allowRecovery && result.status === 'completed' && result.action_receipt && verifyRecovery(result)) {
       for(const key of [...pending]) if(clearsPendingKey(key,result.task_key)) pending.delete(key);
       pending.delete('unbound:request:');
@@ -415,6 +422,6 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
   // A refusal that cannot be turned into the next command is the defect this guards.
   if (pending.size && !allowUnresolvedRecovery) throw new Error(`Recoverable errors were not resolved by a verified successful action. Still open: ${[...pending].join(', ')}. Re-run each recorded action and let it succeed; a different action does not clear these keys, except a draft_records debt, which one successful validate_artifacts for the same stage closes.`);
   if(pendingReads.size && !allowUnresolvedRecovery) throw new Error(`Source read correction requires a matching native read and verified stage validation. Still open: ${[...pendingReads].map(([,read])=>read.path).join(', ')}. Read each exact path with the native reader, then run one successful validate_artifacts for this stage; revising a draft does not clear it.`);
-  if (pendingUnkeyed.size) throw new Error(`A recorded correction was not followed by verified artifact validation. Still open: ${[...pendingUnkeyed].join(', ')}. Run validate_artifacts for this stage after the corrected attempt; re-dispatching does not clear it.`);
-  if (pendingCatalog) throw new Error('Project action catalog lookup failure was not corrected. Repeat the catalog lookup until its help response succeeds; no other action clears it.');
+  if (pendingUnkeyed.size && !allowUnresolvedRecovery) throw new Error(`A recorded correction was not followed by verified artifact validation. Still open: ${[...pendingUnkeyed].join(', ')}. Run validate_artifacts for this stage after the corrected attempt; re-dispatching does not clear it.`);
+  if (pendingCatalog && !allowUnresolvedRecovery) throw new Error('Project action catalog lookup failure was not followed by a successful action or catalog help. Continue with a successful structured action; the catalog itself is read-only help.');
 }

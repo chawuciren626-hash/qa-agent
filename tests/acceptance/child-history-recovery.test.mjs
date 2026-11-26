@@ -12,7 +12,9 @@ test('catalog recovery accepts Node 24 entry errors and archived help, never arc
   const help='{ "status": "help", "actions": {\n[truncated]\n}\n[output archived: scratchpad/catalog.log]';
   const recovered=[lookup,output('catalog',missing),call('exec_command','fixed',{cmd:'node scripts/project-action.mjs catalog'}),output('fixed',help)];
   assert.doesNotThrow(()=>assertChildCommands(recovered,options));
-  assert.throws(()=>assertChildCommands(recovered.slice(0,2),options),/not corrected/);
+  assert.throws(()=>assertChildCommands(recovered.slice(0,2),options),/catalog lookup failure/);
+  // A successful business action also proves the child moved past the read-only lookup failure.
+  assert.doesNotThrow(()=>assertChildCommands([...recovered.slice(0,2),call('exec_command','execute',{cmd:'node scripts/project-action.mjs execute'}),output('execute',success)],options));
   assert.throws(()=>assertChildCommands([call('exec_command','execute',{cmd:'node scripts/project-action.mjs execute'}),output('execute',help)],options),/unreadable/);
   assert.throws(()=>assertChildCommands([lookup,output('catalog',help,'fatal')],options),/unreadable/);
 });

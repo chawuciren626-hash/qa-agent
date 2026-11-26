@@ -49,6 +49,14 @@ export function isAnyHookDenial(output) {
   return HOOK_DENIALS.some(prefix => isHookDenial(output, prefix));
 }
 
+// The host writes one fixed prefix for every refusal source: user, policy, or any
+// pre-tool-use hook. Callers that only need "nothing ran" use this wider predicate;
+// the hook-specific ones above additionally attribute the refusal to our guards.
+export const DENIAL_PREFIX = 'Tool call denied';
+export function isDenialOutput(output) {
+  return String(output ?? '').startsWith(DENIAL_PREFIX);
+}
+
 export function anyDenialRecorded(rows, toolCallId) {
   return HOOK_DENIALS.some(prefix => denialRecorded(rows, toolCallId, prefix));
 }

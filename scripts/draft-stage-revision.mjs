@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { sessionWorkspaces } from './directory-context.mjs';
 import { getRunContext, withRunLock, writeJson, recomputeRunStatus, assertStageHistory, assertRecoveryDecisions, currentStageDecision, stageDependencyScope, assertDesignMutable } from './orchestration-state.mjs';
 import { assertParentSession, readSession, resolveDispatchedChild, requiredArtifacts, verifyActionRecoveryReceipt } from './stage-evidence.mjs';
-import { assertChildCommands, childCommandPolicy } from './child-command-policy.mjs';
+import { assertChildCommands } from './child-command-policy.mjs';
 import { readRunFile } from './design-quality.mjs';
 import { draftStages, stageRevisionBudget } from './recovery-policy.mjs';
 import { isIndependent, taskRequiredArtifacts } from './independent-task.mjs';
@@ -44,7 +44,7 @@ export function inspectDraftRevision(root,runId,stage,parentId,reason,agentRoot=
   if (approved) throw new Error('Already approved content requires user revision decision');
   const events=manifest.orchestration?.events ?? [];
   const dispatch=events.filter(e=>e.type==='dispatched' && e.stage===stage).at(-1);
-  if (!dispatch || ![2,3].some(version=>dispatch.child_command_policy===childCommandPolicy(dispatch.dispatch_id,version)) || dispatch['parent-session-id']!==parentId) throw new Error('Automatic revision requires a current owned V2/V3 dispatch');
+  if (!dispatch || ![2,3].some(version=>dispatch.child_command_policy?.startsWith(`QA_COMMAND_POLICY_V${version} ${dispatch.dispatch_id}:`)) || dispatch['parent-session-id']!==parentId) throw new Error('Automatic revision requires a current owned V2/V3 dispatch');
   if(stage==='execution' && (dispatch.mode!=='prepare' || current.mode!=='prepare' || !['failed','blocked','in_progress'].includes(current.status))) throw new Error('Execution recovery requires a preparation-only dispatch, never actual or unknown product execution');
   const parent=assertParentSession(root,runId,parentId,agentRoot);
   const bound=resolveDispatchedChild(root,runId,stage,parentId,agentRoot,{includeFailed:stage!=='execution'});
