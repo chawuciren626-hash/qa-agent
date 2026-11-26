@@ -203,7 +203,8 @@ test('controller instructions bind role and task while allowing localized displa
   assert.match(prompt,/派发对象由引擎生成，你原样转交/);
   assert.match(prompt,/不改写、不追加业务目标/);
   assert.match(prompt,/短指令已登记过绑定，合同由队员自己读/);
-  assert.match(prompt,/没起来[\s\S]{0,12}必须真的再派一次/);
+  assert.match(prompt,/没起来[\s\S]{0,12}确实没派成就重试/);
+  assert.match(prompt,/返工\/补充要回到原队员会话/);
 });
 
 test('shared runtime commands do not infer PowerShell from Windows',()=>{
