@@ -3,6 +3,7 @@
 > 范围：`installed/app/engine/scripts/`（源 `scripts/`）+ `penguin/hooks/` 的全部交付门禁。
 > 依据：2026-11-25/26 两天 6 起现场事故的逐层排查与修复（提交 `969b648` / `46278f4` / `a54ef3d` / `6729924` / `25f5907` / `4d5f17e`）。
 > 读者：平台维护者（codex）、后续要优化门禁的任何人。
+> 2026-11-26 补充：§7 源码级审查——累赘与僵硬清单、一处防篡改漏洞、路线图修订；§8 分支实施记录。
 
 ---
 
@@ -106,4 +107,118 @@ assertChildCommands(rows):
 - 直接调 `inspectStageHandoff` 等门禁函数：root 必须是引擎根（`installed/app/engine`）+ 环境变量 `QA_DIRECTORY_CONTEXT`（含 project_id）；output 走 session_root，`config/test-delivery-template.json` 只在引擎根存在。
 - trace 位置：`installed/data/penguin/execution-cache/<hash>/<project>/agents/<agent>/traces/<date>/`；回执：workspace `output/action-audit/<session>/`。
 - 运行副本同步：`installed/app/engine/scripts/`，备份 `.backup-20261126-batchN/`，去 CR 后 sha256 比对；脚本每次调用新起进程，不重启。
-- 已知基线红：`child-recovery-receipts` #3、`delegation-stopped` 全红（safe-delete 锁超时），与门禁改动无关。
+- 已知基线红：`child-recovery-receipts` #3、`delegation-stopped` 全红（safe-delete 锁超时）。**§7.3 更正：#3 不是噪声，是真实防篡改漏洞的信号；delegation-stopped 是环境问题，非代码回归。**
+
+---
+
+## 7. 源码级审查补充（2026-11-26）：累赘与僵硬
+
+> 来源：同日全量源码审查（六层核心约 2500 行精读 + 301 脚本 throw 统计 + 基线红 #3 实跑复现）。
+> 本节补充 §4 病灶清单、修订 §5 路线图。所有行号已逐一核实。
+> 总判断：门禁的判定逻辑没有判错过，严格本身不是问题（正向证据 / 防篡改 / 人工批准是产品核心价值）；
+> 问题是**累赘**（可收敛的意外复杂）与**僵硬**（严格但无出口）。灵活化的方向不是放松证据要求，而是给失败分级。
+
+### 7.1 累赘：应收敛的意外复杂
+
+六层串行是**本质复杂**——在宿主不给结构化保证的前提下手工搭跨父子会话、归档、manifest 的分布式证据链，砍层数只会让证据链断。以下是**意外复杂**，纯累赘：
+
+**规模修正**：按 `throw new` 重计，201/301 个脚本、1178 处（§1 的 192 为旧口径）；普通 Error 1052 处，`CommandUsageError` 仅 **57 处（15 个文件）**。C 层豁免/跳过路径实际 **9~10 条**（§3 计 6），含 backgroundCatalog、归档 catalog 预览、handoff_correction 跳过、partialBrowser 等。
+
+**四族散落判据**（P1 统一分类器的完整范围）：
+
+| 族 | canonical | 散落点 | 风险 |
+|---|---|---|---|
+| request_end 终止白名单 | 无（四份互不一致） | `recover-stage.mjs:54` 认 5 种状态；`draft-stage-revision.mjs:55` 认组合条件；`browser-task-resume.mjs:38` 只认 completed；`api-worker.mjs:21` 只认 cancelled/interrupted | 同一宿主终止事件，四个门禁四种判定，漂移风险最高 |
+| 回执解析 | `child-command-policy.mjs:349` 括号截取+归档容错 | `preparation-recovery.mjs:48` 逐字重复；`interrupted-report-recovery.mjs:51` 裸 `JSON.parse`（宿主归档前后缀即碎）、`:47` 裸 `payload.status` 绕过 `toolOutcome` 双版本语义 | 宿主输出形态一变，散点各自碎 |
+| B 层绑定判据 | 无（三套并行） | `matchingDispatchCalls`（agent+runId+dispatchId token，**不查策略文本**）≠ `findParentDispatch`（要求策略全文包含）≠ `delegation-guard.mjs:61` prior（只查 dispatchId，解析失败 `catch{return true}` 直接算 prior） | token 对但策略文本差的调用被计为绑定、下一步却报 "No matching parent dispatch response"，错误信息不暴露真实原因——排障黑洞 |
+| 拒绝判定 | `hook-denial.mjs` decision 行+前缀双信号 | `stage-evidence.mjs:226,231,289` 裸 `startsWith('Tool call denied')` | 两套机制回答同一个问题，新 hook 拒绝形态只改一处会漏 |
+
+**宿主字符串无共享常量**：marker 全部内联字面量（`recordedChildHandle` 注释自认宿主措辞 "keeps drifting"），宿主升级需散弹式修改。应收进版本化适配模块（仿 `trace-outcome.mjs` 的 status/stop_reason 双版本思路）。
+
+**错误类型误用清单**（本可纠正 → 死锁，机制见 7.2 R1）：
+
+| 位置 | 性质 | 备注 |
+|---|---|---|
+| `project-action.mjs:24` | inline JSON 用法错误用普通 Error | 同文件 `:27` ENOENT 却正确用了 CommandUsageError，纯不一致 |
+| `resolve-stage-confirmation.mjs:13,23,44` | 用法/状态错误 | `:23` 即 §5 P1 #2 点名的"无 pending 提示"；经子脚本执行 → script_failure → 非 safe 动作 → stopped |
+| `request-stage-confirmation.mjs:10,16,22,26` | 用法/状态错误 | 同上链路 |
+| `analysis-draft.mjs:20,37` | 调用者可纠正状态 | in-process 抛出 → runner_error → stopped |
+| `draft-stage-revision.mjs:91,99` | 资格检查后的并发/边界守卫 | 资格类 throw 已被 `:76/:86` 捕获转 ineligible（设计正确），这两处漏网 |
+
+注：`artifact-contracts.mjs` 的 assert→普通 Error **不算误用**——validate_artifacts 属 safe-artifact 动作，按结果分类（`recovery-policy.mjs:104-106`），与错误类型无关。
+
+### 7.2 僵硬：严格但无出口
+
+本周 6 起事故全是"判得对但没出口"。僵硬有三类：
+
+**R1 失败不分级（病灶 2 只修了一半）**
+
+- 1178 处 throw 全是 fatal，没有 retry / correct / halt 分级。
+- `runnerErrorSuperseded` 只救"后来成功"的 runner_error；**没有后继成功的 runner_error 仍永久毒死**。而 `structured-actions.mjs:1214` 把所有非 CommandUsageError 兜底成 runner_error——错误类型治理是这里的治本。
+- **类型误用 → 会话级死锁链**（比病灶 3 严重一个量级）：普通 Error → `classifyRecoverable` 返回 null（非 safe-artifact 动作）→ `controller-command-session.mjs:358` `state.status='stopped'` → 整个控制器会话停摆，只剩受限续接。现场"父任务三次 CLI 用法错误、子任务 30 分钟试错"的代价就是这条链。病灶 3（文案）治标，类型治理治本。
+
+**R2 仪式代替证据（病灶 4 的新实例）**
+
+- **目录债**：`child-command-policy.mjs:335,419` `pendingCatalog`——只读 catalog 查询 MODULE_NOT_FOUND 后必须重跑 catalog 成功才解锁，validate 全过、产物全对也清不掉。与 draft_records 完全同构，`4d5f17e` 未覆盖。只读帮助类债务根本不该阻塞交付。
+- **策略全文精确匹配 = 隐形版本锁**：`stage-evidence.mjs:343`、`draft-stage-revision.mjs:47` 用当前代码重新生成 V2/V3 全文并精确比对 manifest 旧串。今后任何文案微调（哪怕一个词）毒死所有在途派发——与事故 6 同形态，触发源却是自己的引擎升级；按日常同步部署模式这是活风险。测试只锚前缀（`runtime-reliability.test.mjs:17`），拦不住。绑定应只认 `QA_COMMAND_POLICY_V<n> <uuid>` 前缀，正文进契约文件（P2 #4 的更硬理由）。
+- **通配清债**：`clearsPendingKey` 省略 stage 视为通配——无 stage 的成功回执可清同 run 同动作任意 stage 的债。当前单阶段子会话下风险受限，类型化时应显式约束。
+
+**R3 预算与锁的僵硬**
+
+- **超时错配**：`qa-delegation-guard/hooks.json` 给 stop hook 60s，`stage-handoff.mjs:79` 每条内部命令允许 120s、最多两条。长 trace 下宿主先杀 hook，commit 对账没机会跑，表现为随机 handoff 失败噪声（下次 stop 可恢复，但排障成本高）。
+- **两处 O(n²)**：`child-tool-guard.mjs:47` 子会话每条带 qa_request 的命令全量重读自己不断增长的 trace；`assertChildCommands` 对每条 exec 行做 `rows.slice(index+1)` 全扫描，`runnerErrorSuperseded` 还 JSON.parse 后续所有输出。父 trace 已有 `toolResultsById` 索引，子 trace 没有同等待遇。
+- **PID 复用死锁**：`orchestration-state.mjs:78` "owner 进程还在就绝不接管，无论锁多旧"。Windows PID 复用激进，死 owner 的 PID 被无关进程复用后锁永久卡死，无锁龄出口。会话锁已有 `ownProcessIdentity` 比对，manifest 锁没有。
+- **扩音器后缀**：`stage-handoff.mjs:73` `HandoffInputError` 给所有失败追加约 5 句通用长文，具体原因被淹没——拒绝文案的反模式，与"带下一步"目标背道而驰。
+
+### 7.3 两类之外、但必须修订路线图的发现
+
+**S1 防篡改漏洞（基线红 #3 的真正根因，应从 P2 提前到 P1）**
+
+两段代码合谋：`child-command-policy.mjs:270` legacy 回退（`recovery.key` 不匹配 `run-`/`unbound:` 前缀时回退用 `result.task_key` 当债键）+ `stage-evidence.mjs:77` `verifyActionRecoveryReceipt` 只比对回执↔结果字段全等、**不校验 recovery.key 与 task_key 的内部一致性**。把 `recovery.key` 篡改成 `'foreign'`（两侧一致）即可通过验证、被当成合法 stalled 债、由后续同任务 success 清偿。实跑 `child-recovery-receipts.test.mjs:80`：10 个篡改变异 9 个正常抛错，唯独这一个逃逸。**这是证据链"防篡改"承诺上的洞，§5 P2 #5"基线清零"对此项必须修订：修代码不修测试。**
+
+**delegation-stopped 全红是环境问题**：sandbox 的 safe-delete shim 批量删除阈值（50）拦截清理 → 锁残留 EEXIST → `controller-command-session.mjs` 5000ms 锁等待预算耗尽。已知解法 `CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD=1000000`。另：该测试 fixture 直接写仓库 `output/` 且无清理钩子，应补。
+
+**assertStageHistory fail-open**：`orchestration-state.mjs:230` 未知事件类型映射为 null → 静默放行，与全局 fail-closed 哲学相反；新增事件类型忘配映射时无信号。
+
+### 7.4 路线图修订（对 §5 的补丁）
+
+**P1 增补**：
+1. 修 S1：删 legacy 回退或加 key↔task_key 一致性校验，让基线 #3 变绿（防篡改修复，不是基线卫生）。
+2. S3 最小版：绑定判定只认 `QA_COMMAND_POLICY_V<n> <uuid>` 前缀，全文比对降级为 warning——先拆版本锁，正文分离放 P2。
+3. 统一分类器范围扩至 7.1 四族：`parseActionReceipt` / `classifyChildTermination`（四份白名单合一，调用方传策略）/ `classifyDispatchBinding`（B 层三套合一）/ 拒绝判定统一走 hook-denial；宿主字符串收进共享常量。
+4. throw 文案审计优先修 7.1 误用清单里"会打成 stopped"的那批，而非全部 1178 处。
+5. delegation-stopped 用环境变量修环境，fixture 补清理。
+
+**P2 增补**：
+6. **错误类型治理（治本 R1）**：用法/状态类错误迁 `CommandUsageError`，加 CI lint（调用者-facing 脚本禁止裸 Error 表达可纠正错误）。
+7. `closure_policy` 类型化覆盖 `pendingCatalog`（只读债不阻塞交付）与通配清债约束。
+8. **性能与超时对齐**：子 trace 建 tool_call_id 索引；hook 内命令预算 < hook 超时；`currentRunId` 增量读或缓存。
+9. 锁恢复加 PID 复用防护（`ownProcessIdentity`）+ 锁龄上限出口。
+
+**P3 增补**：
+10. **宿主适配层**：所有宿主字符串/事件格式判据集中到版本化适配模块，宿主升级只改一处——本周 6 起事故里 4 起的根因形态（宿主输出漂移）在结构上被隔离。
+
+**明确不做的（补充一条）**：
+- 不为消灭基线红而放宽断言——#3 的红是代码漏洞的信号。
+
+**一句话结论**：门禁没有判错过，但证据边界靠字符串匹配宿主散文、可纠正性靠错误类型却只有约 5% 的 throw 用对了类型、防篡改有一个 legacy 回退洞。P1 修 S1/S3 + 统一分类器，P2 做错误类型治理——两步可消灭本周 6 起事故中 5 起的根因形态。
+
+## 8. 实施记录（fix/gates-p1-20261126 分支，2026-11-26）
+
+按用户授权（不合理设计可删改；重复返修/跨阶段返修不得卡死流程）落地 P1 主体：
+
+**已实施**：
+- **S1 防篡改**：stalled 回执必须 `recovery.key===task_key` 原文一致（legacy 回退只服务 correctable/legacy 路径）；`verifyActionRecoveryReceipt` 增加 progress_based 键一致性校验。基线红 #3 转绿。
+- **S3 版本锁拆除**：`stage-evidence`/`draft-stage-revision` 的策略绑定改为 `QA_COMMAND_POLICY_V<n> <dispatchId>:` 前缀；全文仍锚定父派发调用与子接收行，模板改词不再搁浅旧 run。
+- **返修解卡（R1/D1）**：`request_confirmation`/`resolve_confirmation`/`revise_stage` 纳入 `isSafeArtifactAction`——只动 manifest/确认单的动作，其失败是可纠正输入而非产品事故，不再打成 stopped；`pendingUnkeyed`/`pendingCatalog` 终局 throw 补 `allowUnresolvedRecovery` 守卫，与 pending/pendingReads 一致，返修路径不再被未决债务锁死。
+- **pendingCatalog 仪式债放宽**：后续成功业务动作（completed）或成功 catalog help 即可清债，不再要求字面重跑 help；单独 help/ready 响应仍不算恢复证据。
+- **错误类型迁移（局部）**：`project-action.mjs` 内联 JSON 拒绝、`analysis-draft.mjs` 两处所有权/快照状态拒绝迁 `CommandUsageError`（进程内可纠正分类）。
+- **拒绝判定统一（四族之一）**：`hook-denial.mjs` 增 `isDenialOutput`（宿主固定前缀，覆盖 user/policy/任意 hook），`stage-evidence` 三处裸 `startsWith` 收编。
+- **确认脚本拒绝文案**：重复确认、无确认配置、状态不符、找不到待处理确认、产物回执变化——均附下一步动作，避免总控原样重试。
+- **测试卫生**：delegation-stopped fixture 补 per-fixture 清理；`run-engineering-tests` 子进程默认抬高 safe-delete 阈值。
+- 既有 WIP（执行授权顺序颠倒进程内拒绝 + 旧 stopped 状态自恢复）已先行提交（ddcb5e6/3e0c517/5f82a33）；本分支把对应测试改写为"新失败立即可纠正 + 遗留锁死状态仍可恢复"双层断言。
+- 注：`stage-evidence.mjs`/`stage-evidence.test.mjs` 的本批改动被并行会话随 `a2c45cf`（空归档降级）一并提交；其依赖的 `hook-denial.mjs` `isDenialOutput` 导出由本分支随后的门禁层提交补齐。
+
+**保留不动**：`assertDesignMutable` 执行后设计冻结（有 new run/reuse_design 正路，非死锁）；`recover-stage` 的 blocked/failed+审批门槛；全文锚定与恰好一次派发绑定。
+
+**遗留 → P2**：`parseActionReceipt`/`classifyChildTermination`/`classifyDispatchBinding` 三族统一、错误类型 CI lint、性能/超时对齐、PID 复用防护、宿主适配层。
