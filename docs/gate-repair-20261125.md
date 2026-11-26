@@ -291,3 +291,15 @@ handoff:test_cases  failure_number=3  consecutive_same_failure=1  stalled=false 
 - 另：20:32 那一轮 `request_end` 之后没有 `hook`、也没有 `task_end`（同一会话在 19:15 也出现过一次），
   按 trace 语义"未闭合的 task_begin = 没走到结尾"，客户端据此把该步渲染成运行中。
   属于 `platform/packages/core` 的 Session 生命周期，尚未定位到具体抛出点，单列待查。
+
+### 附：`preview_revision` 的"不合格"不再只说一句 "not eligible"
+
+```
+{"status":"ineligible","reason":"Stage is not eligible for controller revision",
+ "next_action":"report_revision_ineligible"}
+```
+
+现场控制器拿到这句后只能自己猜原因，多花了一次调用才发现要走 `apply_analysis_feedback`。
+`draft-stage-revision.mjs` 现在按状态给出下一步：`awaiting_confirmation` → 先解决待确认
+（新信息属于需求变更，走 `apply_analysis_feedback`）；`revision_requested` → 已有一份修订
+在开，续跑那个派发；`planned` → 先派发；`skipped` → 本次计划跳过。

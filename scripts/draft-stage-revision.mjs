@@ -24,7 +24,18 @@ export function inspectDraftRevision(root,runId,stage,parentId,reason,agentRoot=
   assertDesignMutable(manifest,stage);
   const current=manifest.stages?.[stage];
   assertStageHistory(manifest,stage);
-  if (!['in_progress','blocked','failed','completed'].includes(current?.status)) throw new Error('Stage is not eligible for controller revision');
+  // The status itself is the instruction: a controller that is told only "not eligible" reads the
+  // run status again and guesses (seen live: one wasted round trip before it filed the user's
+  // new information as analysis feedback, which was the only path open to it).
+  if (!['in_progress','blocked','failed','completed'].includes(current?.status)) {
+    const next={
+      awaiting_confirmation:`Stage ${stage} is awaiting_confirmation: resolve the pending confirmation decision first. New user information about the requirements is not a revision of this stage - file it with apply_analysis_feedback so the affected stages are revised from the source.`,
+      revision_requested:`Stage ${stage} is revision_requested: a revision is already open - resume its dispatch instead of opening a second one.`,
+      planned:`Stage ${stage} is planned: dispatch it before revising; there is no draft to revise yet.`,
+      skipped:`Stage ${stage} is skipped in this run's plan: nothing to revise.`
+    }[current?.status];
+    throw new Error(next ?? `Stage ${stage} is ${current?.status ?? 'not started'} and cannot be revised by the controller right now`);
+  }
   assertRecoveryDecisions(manifest,stage);
   const taskMode=manifest.orchestration?.plan?.workflow_mode==='task';
   if (Object.entries(manifest.stages).some(([id,s])=>id!==stage && s.status==='in_progress' &&
