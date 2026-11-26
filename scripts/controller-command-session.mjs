@@ -126,6 +126,29 @@ function recoverMissingExecutionConfirmation(root,state) {
     return true;
   } catch {return false;}
 }
+function recoverMissingExecutionPlan(root,state) {
+  const failure=state.failure;
+  if(state.status!=='stopped' || failure?.status!=='failed' || failure.exit_code!==1 || failure.stage!=='execution' || failure.action!=='request_confirmation' || !/^run-[A-Za-z0-9-]+$/.test(failure.run_id ?? '')) return false;
+  if(state.events.some(event=>['browser_failure_closed','browser_failure_recovered_partial','review_accepted','validation_stop_recovered','missing_execution_confirmation_recovered','missing_execution_plan_recovered'].includes(event.type) && event.previous_failure)) return false;
+  const latest=state.events.filter(event=>event.type==='command_failed').at(-1);
+  if(JSON.stringify(latest?.failure)!==JSON.stringify(failure)) return false;
+  try {
+    const base=realpathSync(dataPath(root,'output'));
+    const dir=realpathSync(failure.evidence_dir);
+    if(!/^command-runs\/[a-f0-9-]{36}$/.test(relative(base,dir).replaceAll('\\','/'))) return false;
+    const recordPath=resolve(dir,'command.json'),logPath=resolve(dir,'command.log');
+    if(realpathSync(recordPath)!==recordPath || realpathSync(logPath)!==logPath) return false;
+    const recordBytes=readFileSync(recordPath),logBytes=readFileSync(logPath);
+    const command=JSON.parse(recordBytes),log=logBytes.toString('utf8');
+    if(command.script!=='request-stage-confirmation.mjs' || command.status!=='failed' || command.result?.code!==1 || command.result?.termination_confirmed!==true || command.result.termination || command.result.signal ||
+      !log.includes('ENOENT') || !log.includes('execution-plan.json') || !log.includes('request-stage-confirmation.mjs')) return false;
+    const manifest=JSON.parse(readFileSync(dataPath(root,'output/runs',failure.run_id,'manifest.json'),'utf8'));
+    if(manifest.stages?.execution?.status!=='planned' || (manifest.confirmations ?? []).some(item=>item.stage==='execution') || (manifest.orchestration?.events ?? []).some(item=>item.stage==='execution')) return false;
+    state.events.push({type:'missing_execution_plan_recovered',at:new Date().toISOString(),previous_failure:failure,evidence:{command_sha256:digest(recordBytes),log_sha256:digest(logBytes)},run_id:failure.run_id,product_actions_replayed:false});
+    state.status='ready';state.failure=null;
+    return true;
+  } catch {return false;}
+}
 function recoverExitedController(root,state) {
   if(state.status!=='running' || !ownerHasExited(state.owner_pid,state.owner_identity)) return false;
   const prior={token:state.token,owner_pid:state.owner_pid,owner_identity:state.owner_identity,active_action:state.active_action,started_at:state.command_started_at};
@@ -281,6 +304,7 @@ export async function withControllerSession(root, id, operation, { diagnostic = 
     if(recoverExitedController(root,state)) {delete state.sha256;writeJson(path,state);}
     if(recoverValidationStop(root,state)) {delete state.sha256;writeJson(path,state);}
     if(recoverMissingExecutionConfirmation(root,state)) {delete state.sha256;writeJson(path,state);}
+    if(recoverMissingExecutionPlan(root,state)) {delete state.sha256;writeJson(path,state);}
     if (state.status === 'running') throw new ControllerGateError('Controller command is running or interrupted; inspect before recovery', 'session_running');
     assertCorrectionProgress(state,recoveryContext);
     if (state.status === 'stopped') {

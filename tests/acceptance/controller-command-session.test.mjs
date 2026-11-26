@@ -498,3 +498,42 @@ test('stopped session permits failure closure attempt but rejects completion and
   assert.equal(complete.status,2); assert.match(complete.stdout,/Controller session stopped/);
   assert.equal(readControllerSession(root,f.id).sha256,before.sha256);
 });
+test('requesting execution authorization before the prepare dispatch is corrected in-process and never latches the session',async()=>{
+  const f=fixture(),runId=`run-${randomUUID()}`;
+  mkdirSync(resolve(root,'output/runs',runId),{recursive:true});
+  writeFileSync(resolve(root,'output/runs',runId,'manifest.json'),JSON.stringify({run_id:runId,stages:{execution:{status:'planned'}},confirmations:[],orchestration:{plan:{workflow_mode:'lifecycle'},events:[]}}));
+  const request=()=>Buffer.from(JSON.stringify({action:'request_confirmation',run_id:runId,stage:'execution'}));
+  await assert.rejects(()=>executeAction(root,f.id,request,{agentRoot:f.agentRoot}),/执行授权确认要求先有执行计划/);
+  assert.equal(readControllerSession(root,f.id).status,'ready');
+});
+test('a missing execution plan crash self-recovers only when the execution stage is untouched',async()=>{
+  const log="Error: ENOENT: no such file or directory, lstat 'E://run//execution//execution-plan.json'\n    at capture (file:///engine/scripts/execution-authorization.mjs:13:23)\n    at request-stage-confirmation.mjs:41:150\n";
+  const build=()=>{
+    const f=fixture(),runId=`run-${randomUUID()}`,dir=resolve(root,'output/command-runs',randomUUID());
+    mkdirSync(dir,{recursive:true});mkdirSync(resolve(root,'output/runs',runId),{recursive:true});
+    writeFileSync(resolve(dir,'command.json'),JSON.stringify({script:'request-stage-confirmation.mjs',status:'failed',result:{code:1,termination_confirmed:true,termination:null,signal:null}}));
+    writeFileSync(resolve(dir,'command.log'),log);
+    return {f,runId,dir};
+  };
+  // 正例：执行阶段仍是 planned、无确认单、无事件 → 自动恢复
+  const good=build();
+  writeFileSync(resolve(root,'output/runs',good.runId,'manifest.json'),JSON.stringify({run_id:good.runId,stages:{execution:{status:'planned'}},confirmations:[],orchestration:{events:[]}}));
+  await withControllerSession(root,good.f.id,async()=>({status:'failed',exit_code:1,evidence_dir:good.dir,result:{termination_confirmed:true}}),{agentRoot:good.f.agentRoot,recoveryContext:{action:'request_confirmation',stage:'execution',run_id:good.runId}});
+  assert.equal(readControllerSession(root,good.f.id).status,'stopped');
+  let called=0;
+  await withControllerSession(root,good.f.id,async()=>{called++;return {status:'completed',exit_code:0};},{agentRoot:good.f.agentRoot,recoveryContext:{action:'dispatch',stage:'execution',run_id:good.runId}});
+  const state=readControllerSession(root,good.f.id);
+  assert.equal(called,1);assert.equal(state.status,'ready');assert.equal(state.failure,null);
+  assert.ok(state.events.some(e=>e.type==='missing_execution_plan_recovered'&&e.product_actions_replayed===false));
+  // 反例一：执行阶段已被推进（in_progress）→ 恢复不触发，会话保持锁死
+  const moved=build();
+  writeFileSync(resolve(root,'output/runs',moved.runId,'manifest.json'),JSON.stringify({run_id:moved.runId,stages:{execution:{status:'in_progress'}},confirmations:[],orchestration:{events:[]}}));
+  await withControllerSession(root,moved.f.id,async()=>({status:'failed',exit_code:1,evidence_dir:moved.dir,result:{termination_confirmed:true}}),{agentRoot:moved.f.agentRoot,recoveryContext:{action:'request_confirmation',stage:'execution',run_id:moved.runId}});
+  await assert.rejects(()=>withControllerSession(root,moved.f.id,async()=>({status:'completed',exit_code:0}),{agentRoot:moved.f.agentRoot,recoveryContext:{action:'dispatch',stage:'execution',run_id:moved.runId}}),/Controller session stopped/);
+  // 反例二：崩溃日志不含 execution-plan.json 的 ENOENT → 不恢复
+  const other=build();
+  writeFileSync(resolve(root,'output/runs',other.runId,'manifest.json'),JSON.stringify({run_id:other.runId,stages:{execution:{status:'planned'}},confirmations:[],orchestration:{events:[]}}));
+  writeFileSync(resolve(other.dir,'command.log'),'Error: ENOENT: no such file or directory, lstat unrelated.json\n');
+  await withControllerSession(root,other.f.id,async()=>({status:'failed',exit_code:1,evidence_dir:other.dir,result:{termination_confirmed:true}}),{agentRoot:other.f.agentRoot,recoveryContext:{action:'request_confirmation',stage:'execution',run_id:other.runId}});
+  await assert.rejects(()=>withControllerSession(root,other.f.id,async()=>({status:'completed',exit_code:0}),{agentRoot:other.f.agentRoot,recoveryContext:{action:'dispatch',stage:'execution',run_id:other.runId}}),/Controller session stopped/);
+});

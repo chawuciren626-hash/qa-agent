@@ -977,6 +977,15 @@ export async function executeAction(root,session,loadRequest,{agentRoot,signal}=
         const manifest=JSON.parse(readRunFile(runDirectory(root,parsed.run_id),'manifest.json').data);
         if(manifest.stages?.analysis?.status==='in_progress') env.QA_CONTROLLER_SESSION=session;
       }
+      // 授权确认的执行快照（execution-authorization.mjs）要求 execution/execution-plan.json 已存在。
+      // 计划由执行准备派发生成；顺序颠倒时必须在进程内拒绝（可纠正，会话保持 ready），
+      // 否则子脚本 ENOENT 崩溃会以 script_failure 落成不可恢复失败并锁死控制器会话。
+      if (parsed.action === 'request_confirmation' && parsed.stage === 'execution') {
+        const execManifest = JSON.parse(readRunFile(runDirectory(root, parsed.run_id), 'manifest.json').data);
+        if (execManifest.stages?.execution?.status === 'planned' && execManifest.orchestration?.plan?.workflow_mode !== 'task' &&
+            !existsSync(resolve(runDirectory(root, parsed.run_id), 'execution/execution-plan.json')))
+          throw new CommandUsageError('执行授权确认要求先有执行计划：execution/execution-plan.json 尚未生成。先派发执行准备（prepare 模式，仅生成执行计划与环境草稿，不含产品操作），完成后再请求执行授权确认。不要重试确认请求，不要请用户解锁。');
+      }
       const output=await runProjectCommand(root,{kind:'node',...command,signal,env});
       if (output.status !== 'completed' && ['validate_artifacts', 'validate_analysis'].includes(parsed.action)) {
         try {
