@@ -1,5 +1,5 @@
-import { isAbsolute, relative, resolve } from 'node:path';
-import { readFileSync, readdirSync } from 'node:fs';
+import { isAbsolute, relative, resolve, dirname } from 'node:path';
+import { readFileSync, readdirSync, statSync, openSync, readSync, closeSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dataPath, directoryContext } from './directory-context.mjs';
 import { isPermittedChildShell } from './child-command-policy.mjs';
 import { guardSensitiveRead } from './sensitive-file-guard.mjs';
@@ -44,15 +44,57 @@ function patchTargets(args) {
   return paths;
 }
 
-function currentRunId(agentRoot,agentId,sessionId) {
+// Every guarded tool call re-derives the bound run_id from the child's own trace,
+// which grows for the whole session. The engine-side cache (not writable through any
+// child-permitted path) keeps per-file scan state so an append-only trace is read
+// incrementally; an unchanged file is not re-read at all. Any doubt falls back to a
+// full read, and a cache write failure never changes the verdict.
+function promptRunIds(text) {
+  return [...text.matchAll(/\brun_id=(run-[A-Za-z0-9-]+)\b/g)].map(match=>match[1]);
+}
+function currentRunId(root,agentRoot,agentId,sessionId) {
   const date=/^session-(\d{4}-\d{2}-\d{2})-/.exec(sessionId)?.[1];
   if(!date) throw new Error('invalid child session ID');
   const dir=resolve(agentRoot,agentId,'traces',date);
-  const rows=readdirSync(dir).filter(name=>name.startsWith(`${sessionId}_`) && name.endsWith('.jsonl')).sort().flatMap(name=>readFileSync(resolve(dir,name),'utf8').split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line)));
-  const prompts=rows.filter(row=>row.payload?.type==='text' && row.payload.role==='user').map(row=>row.payload.text ?? '').join('\n');
-  const ids=[...new Set([...prompts.matchAll(/\brun_id=(run-[A-Za-z0-9-]+)\b/g)].map(match=>match[1]))];
-  if(ids.length!==1) throw new Error('child prompt must identify exactly one run_id');
-  return ids[0];
+  const names=readdirSync(dir).filter(name=>name.startsWith(`${sessionId}_`) && name.endsWith('.jsonl')).sort();
+  const cacheFile=dataPath(root,'output/hook-cache',agentId,`${sessionId}.json`);
+  let cache=null;
+  try { const value=JSON.parse(readFileSync(cacheFile,'utf8')); if(value?.version===1 && value.session_id===sessionId && value.files) cache=value; } catch {}
+  const files={}, ids=new Set();
+  for(const name of names) {
+    const path=resolve(dir,name), stat=statSync(path), prior=cache?.files?.[name];
+    let tail, fileIds;
+    if(prior && prior.size===stat.size && prior.mtimeMs===stat.mtimeMs) {
+      tail=prior.tail ?? ''; fileIds=prior.ids ?? [];
+    } else {
+      let text;
+      if(prior && stat.size>prior.size && stat.mtimeMs!==prior.mtimeMs) {
+        const fd=openSync(path,'r'), buffer=Buffer.alloc(stat.size-prior.size);
+        try { readSync(fd,buffer,0,buffer.length,prior.size); } finally { closeSync(fd); }
+        text=(prior.tail ?? '')+buffer.toString('utf8');
+        fileIds=[...(prior.ids ?? [])];
+      } else { text=readFileSync(path,'utf8'); fileIds=[]; }
+      const lines=text.split(/\r?\n/);
+      tail=lines.pop() ?? '';
+      if(tail) {
+        // A final line without a trailing newline is complete when it parses; only an
+        // unparseable remainder is a line still being appended, rescanned on the next call.
+        try { JSON.parse(tail); lines.push(tail); tail=''; } catch {}
+      }
+      const found=new Set(fileIds);
+      for(const line of lines) {
+        if(!line) continue;
+        const row=JSON.parse(line);
+        if(row.payload?.type==='text' && row.payload.role==='user') for(const id of promptRunIds(row.payload.text ?? '')) found.add(id);
+      }
+      fileIds=[...found];
+    }
+    files[name]={size:stat.size,mtimeMs:stat.mtimeMs,tail,ids:fileIds};
+    for(const id of fileIds) ids.add(id);
+  }
+  try { mkdirSync(dirname(cacheFile),{recursive:true}); writeFileSync(cacheFile,JSON.stringify({version:1,session_id:sessionId,files})); } catch {}
+  if(ids.size!==1) throw new Error('child prompt must identify exactly one run_id');
+  return [...ids][0];
 }
 
 function runRelative(root,target,runId) {
@@ -80,7 +122,7 @@ export function guardChildTool(root,input,{agentId,agentRoot}) {
       if(isPermittedChildShell(args?.cmd)) {
         if(/project-action\.mjs/i.test(args.cmd)) parseActionInvocation(args.cmd);
         if(args.qa_request!==undefined) {
-          const runId=currentRunId(agentRoot,agentId,input.session_id);
+          const runId=currentRunId(root,agentRoot,agentId,input.session_id);
           const manifest=JSON.parse(readFileSync(dataPath(root,'output/runs',runId,'manifest.json'),'utf8'));
           const stage=stages[agentId];
           const dispatch=manifest.orchestration?.events?.filter(e=>e.type==='dispatched' && e.stage===stage).at(-1);
@@ -106,7 +148,7 @@ export function guardChildTool(root,input,{agentId,agentRoot}) {
   try {
     const stage=stages[agentId];
     if(!stage) throw new Error(`unknown professional role ${agentId}`);
-    const runId=currentRunId(agentRoot,agentId,input.session_id);
+    const runId=currentRunId(root,agentRoot,agentId,input.session_id);
     const args=parse(input);
     const targets=input.tool_name==='apply_patch'?patchTargets(args):[args?.file_path];
     for(const target of targets) {

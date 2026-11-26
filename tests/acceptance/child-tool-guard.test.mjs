@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { guardChildTool } from '../../scripts/child-tool-guard.mjs';
@@ -156,6 +156,20 @@ test('patch targets are checked independently and cannot mix stages',()=>{
   const mixed='*** Begin Patch\n*** Add File: output/runs/run-a/report/test_report.md\n+# report\n*** Add File: output/runs/run-a/design/test_cases.json\n+[]\n*** End Patch';
   assert.deepEqual(guardChildTool(f.root,{tool_name:'apply_patch',session_id:f.session_id,arguments:{patch:allowed}},options),{});
   assert.equal(guardChildTool(f.root,{tool_name:'apply_patch',session_id:f.session_id,arguments:{patch:mixed}},options).decision,'deny');
+});
+
+test('run_id cache follows append-only trace growth and still rejects a second run',()=>{
+  const f=fixture(),options={agentId:'test_point_agent',agentRoot:f.agentRoot};
+  writeFileSync(resolve(f.root,'output/runs/run-a/manifest.json'),JSON.stringify({stages:{test_points:{status:'in_progress'}},orchestration:{events:[{type:'dispatched',stage:'test_points','parent-session-id':'session-parent'}]}}));
+  const input={tool_name:'exec_command',session_id:f.session_id,arguments:{cmd:'node scripts/project-action.mjs execute --controller-session=session-parent --request=output/action-requests/a.json',qa_request:{action:'draft_records',run_id:'run-a',stage:'test_points',operation:{type:'inspect'}}}};
+  assert.deepEqual(guardChildTool(f.root,input,options),{});
+  assert.ok(existsSync(resolve(f.root,'output/hook-cache/test_point_agent',`${f.session_id}.json`)));
+  const trace=resolve(f.agentRoot,'test_point_agent/traces/2026-10-14',`${f.session_id}_001.jsonl`);
+  appendFileSync(trace,'\n'+JSON.stringify({payload:{type:'text',role:'user',text:'run_id=run-a continued'}})+'\n');
+  assert.deepEqual(guardChildTool(f.root,input,options),{});
+  appendFileSync(trace,JSON.stringify({payload:{type:'text',role:'user',text:'run_id=run-b other'}})+'\n');
+  const denied=guardChildTool(f.root,input,options);
+  assert.equal(denied.decision,'deny');assert.match(denied.reason,/exactly one run_id/);
 });
 
 test('platform executors own the execution stage and only their own action',()=>{

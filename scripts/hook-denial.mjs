@@ -12,6 +12,8 @@
 //
 // Both take the canonical prefix from here, so a reworded reason breaks in one place
 // instead of silently reclassifying every denial as an executed command.
+import { traceIndex } from './trace-index.mjs';
+
 export const STAGE_BOUNDARY_DENIAL = 'Tool call denied by the qa-stage-boundary hook';
 export const DELEGATION_DENIAL = 'Tool call denied by the qa-delegation-guard hook';
 
@@ -20,10 +22,10 @@ export function isHookDenial(output, prefix) {
 }
 
 const decisionsFor = (rows, toolCallId) =>
-  rows.filter(row => row?.payload?.type === 'approval_decision' && row.payload.tool_call_id === toolCallId);
+  (traceIndex(rows).decisions.get(toolCallId) ?? []).map(entry => entry.row);
 
 const outputFor = (rows, toolCallId) =>
-  rows.find(row => row?.payload?.type === 'tool_call_output' && row.payload.tool_call_id === toolCallId);
+  traceIndex(rows).outputs.get(toolCallId)?.[0]?.row;
 
 export function denialRecorded(rows, toolCallId, prefix) {
   if (!toolCallId) return false;

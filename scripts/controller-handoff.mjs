@@ -125,6 +125,11 @@ function resumeUnlaunchedDispatch(root,parentId,agentRoot,cache=null) {
 
 // Host bookkeeping only: never approve, repair artifacts, dispatch or run tests.
 export async function reconcileHandoff(root,parentId,agentRoot) {
+  // The host kills this stop hook at 60s (qa-delegation-guard/hooks.json), while each
+  // internal handoff command allows 120s. Cap the total below the hook timeout so a
+  // slow handoff is interrupted with a receipt inside the hook instead of the host
+  // killing the process mid-commit and leaving the next stop to reconcile blindly.
+  const signal=AbortSignal.timeout(55000);
   // One snapshot for one hook decision: every check below reads the same parent trace.
   const sessions=new Map();
   try {
@@ -132,7 +137,7 @@ export async function reconcileHandoff(root,parentId,agentRoot) {
     if (!next) return resumeUnlaunchedDispatch(root,parentId,agentRoot,sessions);
     const {executeAction}=await import('./structured-actions.mjs');
     const request=next.request.action==='fail'?next.request:{action:'handoff',run_id:next.request.run_id,stage:next.request.stage,artifacts:next.request.artifacts ?? stageRequiredArtifacts(root,next.request.run_id,next.request.stage)};
-    const result=await executeAction(root,parentId,()=>JSON.stringify(request),{agentRoot});
+    const result=await executeAction(root,parentId,()=>JSON.stringify(request),{agentRoot,signal});
     if(result.status!=='completed') return {decision:'stop',reason:`Stage handoff incomplete: ${result.error ?? result.status}. No approval or downstream dispatch performed.`,handoff_receipt:result.action_receipt};
     if(request.action==='fail') return {decision:'stop',reason:'Professional child failed; stage failure recorded. No completion, approval or retry performed.',handoff_receipt:result.action_receipt};
     const awaiting=result.data?.stage_status==='awaiting_confirmation';
