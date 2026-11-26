@@ -251,6 +251,7 @@
     "scripts/defect-severity.mjs",
     "scripts/delegation-binding.mjs",
     "scripts/delegation-guard.mjs",
+    "scripts/launch-evidence.mjs",
     "scripts/delegation-task-brief.mjs",
     "scripts/delivery-evidence.mjs",
     "scripts/delivery-presentation.mjs",
