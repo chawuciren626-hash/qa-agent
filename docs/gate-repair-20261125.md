@@ -303,3 +303,22 @@ handoff:test_cases  failure_number=3  consecutive_same_failure=1  stalled=false 
 `draft-stage-revision.mjs` 现在按状态给出下一步：`awaiting_confirmation` → 先解决待确认
 （新信息属于需求变更，走 `apply_analysis_feedback`）；`revision_requested` → 已有一份修订
 在开，续跑那个派发；`planned` → 先派发；`skipped` → 本次计划跳过。
+
+## 九、第四批（2026-11-26 09:55，`6729924`）：用户中断也有同一个收口死结
+
+09:08 用户中断了一次**已放行**的 `exec_command`，trace 留下宿主占位符
+`[interrupted: tool aborted by user]`（`status=aborted`、`decision=allow`）。它不是回执，
+但门禁按"执行过 → 输出必须能解析"处理，于是每次 handoff 都报 `Child runner response
+unreadable`，且没有任何动作能清掉这一行——中断一次，这个 run 就再也推进不了。同类还有
+trace 回放补的 `[interrupted: process exited before the tool finished]`。
+
+修法：`hostInterrupted()` 只认这两个宿主字符串 + `aborted` 状态，且只在 `allowRecovery`
+路径跳过；命令自己打印同样的字样仍算"没有回执"，严格路径仍 fail-closed。
+
+复验同一父会话 759 行：改前 `plain` / `+unresolved` 都报 unreadable；改后 `plain` 只剩
+真实恢复债，`+unresolved` PASS。测试：`child-history-recovery` 10/10、
+`stage-evidence` + `child-tool-guard` 51/51。
+
+同一时段还确认了两件事：执行通道 500 在 09:25:46 之后停止，09:40:50 控制器重试
+`run_subagent` 成功起了 `subagent-2956bef3`（`46278f4` 的放行在真实流量上验证通过）；
+部署说明见 `docs/deploy-gate-20261126.md`。
