@@ -30,7 +30,9 @@ export function prepareTestWorkspace(engine) {
   settings.default_workspace=resolve(base,'workspaces');
   writeFileSync(resolve(root,'config/session-workspaces.json'),JSON.stringify(settings,null,2));
   symlinkSync(realpathSync(resolve(engine,'node_modules')),resolve(root,'node_modules'),'junction');
-  const env={...process.env,TEMP:resolve(base,'temp'),TMP:resolve(base,'temp'),TMPDIR:resolve(base,'temp'),QA_APP_DATA_ROOT:resolve(base,'app-data'),PENGUIN_AGENT_ROOT:resolve(base,'agents'),PYTHONDONTWRITEBYTECODE:'1'};
+  // Sandboxed hosts intercept bulk deletion above a low default threshold; fixture
+  // cleanup then fails and leaves controller locks that poison later tests.
+  const env={...process.env,CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD:process.env.CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD ?? '1000000',TEMP:resolve(base,'temp'),TMP:resolve(base,'temp'),TMPDIR:resolve(base,'temp'),QA_APP_DATA_ROOT:resolve(base,'app-data'),PENGUIN_AGENT_ROOT:resolve(base,'agents'),PYTHONDONTWRITEBYTECODE:'1'};
   delete env.QA_DIRECTORY_CONTEXT;
   delete env.NODE_TEST_CONTEXT;
   for(const key of ['QA_BASE_URL','QA_RUN_DIR','QA_TEST_DIR','QA_CONTROLLER_SESSION','QA_CONFIRMATION_SOURCE_JSON','QA_TASK_COMMAND_ID','QA_EXECUTION_COMMAND_ID']) delete env[key];

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { executeAction } from '../../scripts/structured-actions.mjs';
 import { guardDelegation } from '../../scripts/delegation-guard.mjs';
@@ -11,14 +11,22 @@ import { inspectHandoff, reconcileHandoff } from '../../scripts/controller-hando
 const root=resolve(import.meta.dirname,'../..');
 const roles={defects:['defect_analysis_agent','bug-reporting'],report:['test_report_agent','test-report-writing'],execution:['automation_execution_agent','playwright-execution']};
 
-async function fixture() {
+async function fixture(t) {
   const parent=`session-2026-10-20-00-00-00-${randomUUID().replaceAll('-','')}`;
   const agentRoot=resolve(root,'output/acceptance',`delegation-stopped-${randomUUID()}`);
+  // Fixtures write into the repo output/ when run directly; remove every owned path
+  // so a failed assertion cannot leave a controller lock that poisons the next run.
+  const cleanup=[agentRoot,resolve(root,'output/controller-command-sessions',parent),resolve(root,'output/action-audit',parent)];
+  t.after(()=>{for(const path of cleanup) rmSync(path,{recursive:true,force:true});});
   const traces=resolve(agentRoot,'test_agent/traces/2026-10-20');mkdirSync(traces,{recursive:true});
   const file=resolve(traces,`${parent}_001.jsonl`);
   const rows=[{type:'session_meta',payload:{session_id:parent,agent_state:resolve(agentRoot,'test_agent/agent_state'),workspace:root}}];
   const save=()=>writeFileSync(file,rows.map(JSON.stringify).join('\n'));save();
-  const send=request=>executeAction(root,parent,()=>JSON.stringify(request),{agentRoot});
+  const send=async request=>{
+    const result=await executeAction(root,parent,()=>JSON.stringify(request),{agentRoot});
+    if(request.action==='create_run' && result.run_id) cleanup.push(resolve(root,'output/runs',result.run_id));
+    return result;
+  };
   const created=await send({action:'create_run'});assert.equal(created.exit_code,0,JSON.stringify(created));
   const runId=created.run_id;
   for(const request of [
@@ -48,8 +56,8 @@ async function fixture() {
   return {parent,agentRoot,runId,dispatch,stop,gate,append,send,returnChild};
 }
 
-test('stopped controller dispatches and delegates bound defects/report work while retaining the product fault',async()=>{
-  const f=await fixture();
+test('stopped controller dispatches and delegates bound defects/report work while retaining the product fault',async t=>{
+  const f=await fixture(t);
   const execution=await f.dispatch('execution');assert.equal(execution.exit_code,0,JSON.stringify(execution));
   await f.stop({status:'timeout',exit_code:124,result:{termination_confirmed:true,termination:'timeout'}});
   const failure=readControllerSession(root,f.parent).failure;
@@ -66,9 +74,9 @@ test('stopped controller dispatches and delegates bound defects/report work whil
   assert.equal((await f.dispatch('execution')).classification,'session_stopped');
 });
 
-test('bound draft delegation refuses unknown termination and an outstanding live command',async()=>{
+test('bound draft delegation refuses unknown termination and an outstanding live command',async t=>{
   for(const live of [false,true]) {
-    const f=await fixture(),draft=await f.dispatch('report');assert.equal(draft.exit_code,0,JSON.stringify(draft));
+    const f=await fixture(t),draft=await f.dispatch('report');assert.equal(draft.exit_code,0,JSON.stringify(draft));
     let evidence_dir;
     if(live) {
       evidence_dir=resolve(root,'output/runs',f.runId,'audit/commands',randomUUID());mkdirSync(evidence_dir,{recursive:true});
@@ -82,8 +90,8 @@ test('bound draft delegation refuses unknown termination and an outstanding live
   }
 });
 
-test('native unexecuted malformed delegation does not poison another bound draft; unknown malformed calls still block',async()=>{
-  const f=await fixture();
+test('native unexecuted malformed delegation does not poison another bound draft; unknown malformed calls still block',async t=>{
+  const f=await fixture(t);
   await f.stop({status:'failed',exit_code:1,result:{termination_confirmed:true}});
   const draft=await f.dispatch('report');assert.equal(draft.exit_code,0,JSON.stringify(draft));
   const callId='native-malformed';
@@ -100,8 +108,8 @@ test('native unexecuted malformed delegation does not poison another bound draft
   assert.equal(f.gate(draft.delegation).decision,'deny');
 });
 
-test('an unlaunched dispatch is reminded once per turn instead of staying poisoned forever',async()=>{
-  const f=await fixture();
+test('an unlaunched dispatch is reminded once per turn instead of staying poisoned forever',async t=>{
+  const f=await fixture(t);
   await f.stop({status:'timeout',exit_code:124,result:{termination_confirmed:true}});
   const draft=await f.dispatch('report');assert.equal(draft.exit_code,0,JSON.stringify(draft));
   // Two reminders in one turn, then the hook stops the loop instead of repeating forever.
@@ -121,8 +129,8 @@ test('an unlaunched dispatch is reminded once per turn instead of staying poison
   assert.match(resumed.input,/run_subagent/);
 });
 
-test('stop hook resumes a bound draft and commits a verified partial report without clearing the product fault',async()=>{
-  const f=await fixture();
+test('stop hook resumes a bound draft and commits a verified partial report without clearing the product fault',async t=>{
+  const f=await fixture(t);
   await f.stop({status:'timeout',exit_code:124,result:{termination_confirmed:true}});
   const failure=readControllerSession(root,f.parent).failure;
   const draft=await f.dispatch('report');assert.equal(draft.exit_code,0,JSON.stringify(draft));
@@ -152,8 +160,8 @@ test('stop hook resumes a bound draft and commits a verified partial report with
   assert.deepEqual(JSON.parse(readFileSync(resolve(dir,'manifest.json'))),manifest);
 });
 
-test('stop hooks reject missing failure proof and unknown termination; ready execution never infers completion',async()=>{
-  const f=await fixture(),draft=await f.dispatch('report');assert.equal(draft.exit_code,0,JSON.stringify(draft));
+test('stop hooks reject missing failure proof and unknown termination; ready execution never infers completion',async t=>{
+  const f=await fixture(t),draft=await f.dispatch('report');assert.equal(draft.exit_code,0,JSON.stringify(draft));
   const path=resolve(root,'output/controller-command-sessions',f.parent,'state.json');
   const baseline=JSON.parse(readFileSync(path));
   for(const failure of [undefined,{status:'timeout'},{status:'failed',termination_confirmed:false}]) {
@@ -171,8 +179,8 @@ test('stop hooks reject missing failure proof and unknown termination; ready exe
   assert.equal(manifest.stages.execution.status,'in_progress');
 });
 
-test('another run retains normal execution dispatch permission without releasing the stopped run',async()=>{
-  const f=await fixture();
+test('another run retains normal execution dispatch permission without releasing the stopped run',async t=>{
+  const f=await fixture(t);
   await f.stop({status:'timeout',exit_code:124,result:{termination_confirmed:true}});
   const original=readControllerSession(root,f.parent).failure;
   f.append([{type:'model_msg',payload:{type:'text',role:'user',text:'New independent synthetic execution task; preserve the previous task failure.'}}]);
@@ -192,8 +200,8 @@ test('another run retains normal execution dispatch permission without releasing
   assert.equal((await f.dispatch('execution')).classification,'session_stopped');
 });
 
-test('missing historical manifests do not stop a fully committed current delivery; missing active run still stops',async()=>{
-  const f=await fixture(),draft=await f.dispatch('report');
+test('missing historical manifests do not stop a fully committed current delivery; missing active run still stops',async t=>{
+  const f=await fixture(t),draft=await f.dispatch('report');
   assert.equal(draft.exit_code,0,JSON.stringify(draft));
   const dir=resolve(root,'output/runs',f.runId);
   const files={
