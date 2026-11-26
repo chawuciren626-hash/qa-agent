@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, unlinkSync
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { captureDelegationBinding, verifyDelegationBinding } from '../../scripts/delegation-binding.mjs';
-import { guardDelegation } from '../../scripts/delegation-guard.mjs';
+import { guardDelegation, launchNeverStarted } from '../../scripts/delegation-guard.mjs';
 
 test('session identifiers cannot be used as resumable subagent handles',()=>{
   for(const subagent_id of ['session-2026-10-19-18-19-37-0520cd3a','dispatch-a','',null]) {
@@ -92,4 +92,25 @@ test('bound resources cannot escape the dispatch directory or redirect through a
 test('unavailable contract or modified receipt parameters fail closed without changing recorded authority',t=>{
   const f=fixture(t);f.receipt.delegation.prompt+=' new goal';f.save();assert.throws(()=>f.verify(),/receipt changed/);
   const g=fixture(t);unlinkSync(g.contractPath);assert.throws(()=>g.verify(),/ENOENT/);
+});
+// Seen live: `run_subagent` reached the execution channel, the channel answered 500 before any
+// session existed, and the retry was then refused as "this dispatch already has a child call".
+// A dispatch that never started must stay retryable, and only positive evidence may say so.
+test('a dispatch launch the channel refused before spawning stays retryable',()=>{
+  const call={payload:{type:'tool_call',name:'run_subagent',tool_call_id:'launch'}};
+  const failed={payload:{type:'tool_call_output',tool_call_id:'launch',status:'fatal',output:'[run_subagent error: 执行通道 500: {"error":{"code":"internal","message":"Internal server error."}}]'}};
+  assert.equal(launchNeverStarted([call,failed],0),true);
+  // A child that really was registered blocks a second one, whatever the call returned.
+  assert.equal(launchNeverStarted([call,failed,{payload:{type:'subagent',session_id:'session-x'}}],0),false);
+  assert.equal(launchNeverStarted([call,failed,{origin:['session-parent'],payload:{type:'session_meta',session_id:'session-x'}}],0),false);
+  // Ordinary failures after a real launch, a different envelope, and a retry with its own child
+  // are not prelaunch evidence.
+  assert.equal(launchNeverStarted([call,{payload:{type:'tool_call_output',tool_call_id:'launch',stop_reason:'completed',output:'child returned'}}],0),false);
+  assert.equal(launchNeverStarted([call,{payload:{type:'tool_call_output',tool_call_id:'launch',status:'fatal',output:'Error: spawn failed'}}],0),false);
+  const next={payload:{type:'tool_call',name:'run_subagent',tool_call_id:'launch-2'}};
+  const spawned={payload:{type:'subagent',session_id:'session-y'}};
+  assert.equal(launchNeverStarted([call,failed,next,spawned],0),true);
+  // Missing or duplicated output proves nothing either way.
+  assert.equal(launchNeverStarted([call],0),false);
+  assert.equal(launchNeverStarted([call,failed,{payload:{type:'tool_call_output',tool_call_id:'launch',status:'fatal',output:'[run_subagent error: again]'}}],0),false);
 });

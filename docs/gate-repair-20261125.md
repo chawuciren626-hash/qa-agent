@@ -245,3 +245,49 @@ handoff:test_cases  failure_number=3  consecutive_same_failure=1  stalled=false 
 `assertChildCommands` 在 `stage=test_cases` 下通过。上一轮"仍被拒"的判断来自探针脚本绕过了
 `readSession`、直接解析原始 jsonl，属于误判。本批只补了一条回归用例，锁住现场这个真实形态
 （头尾窗口 + `[output truncated: kept first …]` + 归档）不被后续改动破坏。
+
+## 七、第三批（2026-11-26）：派发被通道 500 打断后不能永久占位
+
+现场（`session-2026-11-25-07-04-51-dc329d62`，09:04 用户补充"万能验证码 1688"之后）：
+
+```
+01:05:51 dispatch  analysis（登记成功，dispatch_id 50f33288，stage → in_progress）
+01:06:17 run_subagent → [run_subagent error: 执行通道 500: internal]   status=fatal
+01:06:29 run_subagent 重试 → 拒绝：This dispatch already has a child call …      status=aborted
+01:07:10 resolve_child  → rejected：No unique returned child for this dispatch
+01:07:55 第三次 run_subagent → 同一句拒绝
+01:08:28 resolve_child_handle → [interrupted: tool aborted by user]
+```
+
+`delegation-guard.mjs` 的 `prior` 判据把"调用过 `run_subagent`"等同于"已经有了子调用"，
+但这次调用根本没到子会话——执行通道在会话创建前就 500 了，父会话里既没有 `subagent`
+也没有 `session_meta`。结果：派发登记在，子会话不存在，重试被守卫拒，控制器只能在
+`run_subagent` 与 `resolve_child*` 之间来回。
+
+修法：新增导出 `launchNeverStarted(rows,index)`，只有同时满足三条才算"从未启动"——
+恰好一条输出、`toolOutcome=fatal`、输出是工具自己的失败信封 `[run_subagent error: …`，
+且到下一次 `run_subagent` 之间没有任何 `subagent` / origin `session_meta`。
+`prior` 与 `resumeUnlaunchedDispatch` 里的同一判据都因此自动放行。
+半成功的启动（子会话已登记）仍然会挡住第二次派发，防重复派生的语义没动。
+
+现场复验（同一份派发对象）：HEAD 版 `deny`（already has a child call），修复后 `{}`。
+已同步到运行副本 `installed/app/engine/scripts/delegation-guard.mjs`，备份在
+`installed/app/engine/scripts/.backup-20261126-guard/`。
+
+测试：`delegation-binding` 10/10（新增 1 条，含"已登记子会话仍拦""非失败信封不算""缺/重复输出不算"）、
+`stage-recovery` 14/14。
+
+### 另一条，同一个现场但不在门禁里
+
+- 09:01 用户通过 test_cases 确认；09:04 补充说明触发 `apply_analysis_feedback`，引擎按
+  "补充信息影响上游"把 analysis 重开、test_points/test_cases 置为 `quality_revision_required`。
+  这是设计行为，不是卡死。
+- 从 08:54 起 `desktop.log` 每约 1.7 秒一条
+  `[executor] execution-error: 执行通道 500`（已 400+ 次），对应
+  `POST /api/sessions/local-execution/events`。本机执行端推送事件失败，界面收不到新状态，
+  就一直停在上一帧（截图里那句"运行中 743s"就是这么来的）。该路由里唯一会抛裸
+  `Error`（→500）的是 `receiveFile` 的轨迹归属校验，其余都是 `HttpError`。
+  这一条属于服务端实例，需要看 VM 里那台业务服务的日志，不是引擎脚本能修的。
+- 另：20:32 那一轮 `request_end` 之后没有 `hook`、也没有 `task_end`（同一会话在 19:15 也出现过一次），
+  按 trace 语义"未闭合的 task_begin = 没走到结尾"，客户端据此把该步渲染成运行中。
+  属于 `platform/packages/core` 的 Session 生命周期，尚未定位到具体抛出点，单列待查。
