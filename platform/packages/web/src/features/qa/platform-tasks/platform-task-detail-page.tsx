@@ -168,11 +168,12 @@ export function PlatformTaskDetailPage() {
   const { taskId } = useParams<{ taskId: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  const { currentProject } = useProject();
+  const { currentProject, assistantProject } = useProject();
   // 项目作用域：优先 URL 显式参数（跨项目列表点击"查看"时随链接带入），其次全局
-  // 当前项目。不再单纯依赖项目切换器状态——切换器未加载/缓存过期时详情页仍能打开。
+  // 当前项目，最后回退服务端为账号自动创建的内部助手项目（零项目账号从书签/直链
+  // 打开详情时仍有落点）。不再单纯依赖项目切换器状态——切换器未加载/缓存过期时详情页仍能打开。
   const queryProjectId = new URLSearchParams(location.search).get("projectId");
-  const projectId = queryProjectId || currentProject?.projectId || null;
+  const projectId = queryProjectId || currentProject?.projectId || assistantProject?.projectId || null;
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [loadError, setLoadError] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
@@ -253,8 +254,8 @@ export function PlatformTaskDetailPage() {
       <main className="qpm-page">
         <div className="qpm-scroll">
           <div className="qpm-empty-card">
-            <p className="qpm-empty-title">还没有进入项目</p>
-            <p className="qpm-empty-sub">任务按项目隔离，先在顶部项目切换器中选择项目。</p>
+            <p className="qpm-empty-title">任务空间尚未就绪</p>
+            <p className="qpm-empty-sub">正在准备你的独立测试空间，请稍后重试；或先在顶部项目切换器中选择项目。</p>
             <button type="button" className="qpm-btn-main" onClick={() => navigate("/qa/projects")}>去项目管理</button>
           </div>
         </div>

@@ -20,8 +20,11 @@ import { createHash } from "node:crypto";
 import { Bind, Component, Use } from "@prismshadow/penguin-core/kernel";
 import { Hono } from "hono";
 import type { AppEnv } from "../../auth/middleware.js";
+import { normalizePenguinGoOrigin } from "../../config.js";
 import { Config } from "../../hmr/capabilities.js";
+import { ModelBalances } from "../../services/model-balance.js";
 import { badRequest, readJson } from "../validate.js";
+import { parseModelTestRequest } from "./models.js";
 import type { Access } from "../../mechanisms/projects.js";
 import type { ProjectConfigStore } from "../../mechanisms/projects.js";
 import type { RawTable } from "../../services/project-config-service.js";
@@ -39,6 +42,8 @@ export interface UserModelRoutesDeps {
   root: string;
   projectConfigService: ProjectConfigStore;
   access: Access;
+  /** Trusted server configuration, never a caller's endpoint (Penguin Go balance reads). */
+  penguinGoOrigin?: string;
 }
 
 const recordPath = (root: string, userId: string): string =>
@@ -92,6 +97,13 @@ export async function readUserModelRef(
 
 export function userModelRoutes(deps: UserModelRoutesDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+
+  /** The balance reader and its 60 s cache; the user id plays the project slot (cache key only). */
+  const balances = new ModelBalances({
+    penguinGoOrigin: deps.penguinGoOrigin,
+    groupKey: (ownerUserId, provider) =>
+      deps.projectConfigService.getUserGroupBalanceKey(ownerUserId, provider),
+  });
 
   const readRecord = async (userId: string): Promise<UserModelRecord | null> =>
     readUserModelRecord(deps.root, userId);
@@ -155,6 +167,31 @@ export function userModelRoutes(deps: UserModelRoutesDeps): Hono<AppEnv> {
     return c.json(await deps.projectConfigService.modelViewOfRaw(record?.models ?? { models: [] }));
   });
 
+  /**
+   * 连通性测试（登录用户即可，不依赖任何项目）：凭据从该用户的共享模型记录读，
+   * 请求体可带未保存的草稿值（apiKey / baseUrl / clientType），语义与项目级
+   * POST /api/projects/:p/models/test 完全一致。不写 channel-health：那是按
+   * projectId 组织的运行期事实，设置页的探测不针对任何项目。
+   */
+  app.post("/test", async (c) => {
+    const req = parseModelTestRequest(await readJson(c));
+    return c.json(await deps.projectConfigService.testUserModel(c.var.user.userId, req));
+  });
+
+  /**
+   * 组余额（登录用户即可，不依赖任何项目）：服务端拿该用户共享模型记录里供应商组的
+   * 存储密钥向供应商发起查询（明文密钥不出服务进程），语义与项目级
+   * GET /api/projects/:p/models/balance 一致。`force=1` 跳过 60 秒缓存。
+   */
+  app.get("/balance", async (c) => {
+    const provider = c.req.query("provider") ?? "";
+    if (provider === "" || provider.length > 64) {
+      throw badRequest("provider must name a model group.");
+    }
+    const answer = await balances.read(c.var.user.userId, provider, c.req.query("force") === "1");
+    return c.json(answer);
+  });
+
   return app;
 }
 
@@ -184,6 +221,7 @@ export class UserModelRoutes {
       root: this.config.root,
       projectConfigService: this.projectConfig,
       access: this.access,
+      penguinGoOrigin: this.config.penguinGoOrigin ?? normalizePenguinGoOrigin(undefined),
     });
   }
 }

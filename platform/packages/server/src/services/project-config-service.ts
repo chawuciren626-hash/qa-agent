@@ -1569,8 +1569,13 @@ export class ProjectConfigService implements ProjectConfigStore {
     }
   }
 
-  async testModel(projectId: string, req: ModelTestRequest): Promise<ModelTestResponse> {
-    const raw = await this.readRaw(projectId);
+  async testModel(
+    projectId: string,
+    req: ModelTestRequest,
+    /** 用户级探测（testUserModel）传入：数据从用户共享模型记录读，不碰项目 TOML。 */
+    options?: { raw?: RawTable },
+  ): Promise<ModelTestResponse> {
+    const raw = options?.raw ?? await this.readRaw(projectId);
     // Testable even if the model isn't in the config yet (validate before saving when adding a custom model): in that case all parameters come from the request body.
     const entry = asArray(raw.models).find((m) => entryMatches(m, req.provider, req.modelId)) ?? {};
     // Fast mode follows the form draft like baseUrl (the frontend always sends the current
@@ -1655,6 +1660,27 @@ export class ProjectConfigService implements ProjectConfigStore {
         message: (err instanceof Error ? err.message : String(err)).slice(0, 300),
       };
     }
+  }
+
+  /**
+   * 用户级连通性测试（设置页用，不依赖任何项目）。
+   *
+   * 凭据与条目从该用户的共享模型记录（`<root>/.account-models/<hash>.json`，即
+   * readSharedModels 那份「全局单一真相源」）读取；请求体可带未保存的草稿值
+   * （apiKey / baseUrl / clientType），与项目级 /test 的 draft 语义完全一致。
+   *
+   * 为什么不直接调 testModel(pseudoId)：探测的凭据解析在 raw 之上，但 ModelScope 的
+   * 动态取钥（requestApiKeyResolver → modelScopeAuth.ensureFresh）按 projectId 找
+   * token 元数据——伪 id 没有项目记录。所以解析上下文用该用户第一个 owner 项目
+   * （有则 ModelScope 刷新照常工作），没有项目才退到伪 id（纯 BYOK key 场景不受影响）。
+   * 记录缺失或损坏时按「空配置」处理：只用请求体里的值探测，与新建项目行为一致。
+   */
+  async testUserModel(ownerUserId: string, req: ModelTestRequest): Promise<ModelTestResponse> {
+    const shared = await this.readSharedModels(ownerUserId).catch(() => null);
+    const raw: RawTable = shared?.models ?? {};
+    const owned = this.projects?.listByOwner(ownerUserId).map((row) => row.projectId) ?? [];
+    const resolverProjectId = owned[0] ?? USER_MODEL_VIEW_KEY;
+    return this.testModel(resolverProjectId, req, { raw });
   }
 
   /**
@@ -2508,6 +2534,23 @@ export class ProjectConfigService implements ProjectConfigStore {
    */
   async getGroupBalanceKey(projectId: string, provider: string): Promise<string | undefined> {
     const raw = await this.readRaw(projectId);
+    const group = providerTableOf(raw)[provider];
+    if (group?.api_key !== undefined) return group.api_key;
+    const vendorClient = vendorClientType(provider);
+    if (providerInfo(provider)?.balance === undefined || vendorClient === undefined) {
+      return undefined;
+    }
+    const envKey = clientEnvKey(vendorClient, group?.base_url);
+    return envKey !== undefined ? process.env[envKey]?.trim() || undefined : undefined;
+  }
+
+  /**
+   * 用户级余额取钥（/api/user-models/balance 用）：与 getGroupBalanceKey 同一条规则，只是
+   * 数据源换成该用户的共享模型记录（.account-models）——零项目账号也能查组余额。
+   */
+  async getUserGroupBalanceKey(ownerUserId: string, provider: string): Promise<string | undefined> {
+    const shared = await this.readSharedModels(ownerUserId).catch(() => null);
+    const raw: RawTable = shared?.models ?? {};
     const group = providerTableOf(raw)[provider];
     if (group?.api_key !== undefined) return group.api_key;
     const vendorClient = vendorClientType(provider);

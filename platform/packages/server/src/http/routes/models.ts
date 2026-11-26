@@ -310,6 +310,42 @@ function parseModelsUpdate(body: Record<string, unknown>): ModelsUpdateRequest {
   return req;
 }
 
+/** Validate a POST /test body (the project-level route and the user-level /api/user-models/test share it). */
+export function parseModelTestRequest(body: Record<string, unknown>): ModelTestRequest {
+  const req: ModelTestRequest = {
+    provider: requireString(body, "provider", { minLen: 1, maxLen: 64 }),
+    modelId: requireString(body, "modelId", { minLen: 1, maxLen: 200 }),
+  };
+  if (body.apiKey !== undefined) {
+    if (typeof body.apiKey !== "string") throw badRequest("apiKey must be a string.");
+    if (body.apiKey) req.apiKey = body.apiKey;
+  }
+  if (body.clearApiKey !== undefined) {
+    if (typeof body.clearApiKey !== "boolean") throw badRequest("clearApiKey must be a boolean.");
+    req.clearApiKey = body.clearApiKey;
+  }
+  if (body.speed !== undefined) {
+    if (typeof body.speed !== "boolean") throw badRequest("speed must be a boolean.");
+    req.speed = body.speed;
+  }
+  // null = explicit clear (test against the draft, don't fall back to the stored value); empty string is treated as null.
+  if (body.baseUrl !== undefined) {
+    if (body.baseUrl !== null && typeof body.baseUrl !== "string") {
+      throw badRequest("baseUrl must be a string or null.");
+    }
+    req.baseUrl = body.baseUrl ? body.baseUrl : null;
+  }
+  if (body.clientType !== undefined) {
+    if (typeof body.clientType !== "string") throw badRequest("clientType must be a string.");
+    if (body.clientType) req.clientType = body.clientType;
+  }
+  if (body.fastMode !== undefined) {
+    if (typeof body.fastMode !== "boolean") throw badRequest("fastMode must be a boolean.");
+    req.fastMode = body.fastMode;
+  }
+  return req;
+}
+
 export function modelsRoutes(deps: ModelsRouteDeps | ModelCatalogRouteDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   /** The balance reader and its 60 s cache, one per route group. */
@@ -432,38 +468,7 @@ export function modelsRoutes(deps: ModelsRouteDeps | ModelCatalogRouteDeps): Hon
   app.post("/test", async (c) => {
     const projectId = requireValidId(c, "projectId");
     deps.access.requireProjectOwner(c.var.user.userId, projectId);
-    const body = await readJson(c);
-    const req: ModelTestRequest = {
-      provider: requireString(body, "provider", { minLen: 1, maxLen: 64 }),
-      modelId: requireString(body, "modelId", { minLen: 1, maxLen: 200 }),
-    };
-    if (body.apiKey !== undefined) {
-      if (typeof body.apiKey !== "string") throw badRequest("apiKey must be a string.");
-      if (body.apiKey) req.apiKey = body.apiKey;
-    }
-    if (body.clearApiKey !== undefined) {
-      if (typeof body.clearApiKey !== "boolean") throw badRequest("clearApiKey must be a boolean.");
-      req.clearApiKey = body.clearApiKey;
-    }
-    if (body.speed !== undefined) {
-      if (typeof body.speed !== "boolean") throw badRequest("speed must be a boolean.");
-      req.speed = body.speed;
-    }
-    // null = explicit clear (test against the draft, don't fall back to the stored value); empty string is treated as null.
-    if (body.baseUrl !== undefined) {
-      if (body.baseUrl !== null && typeof body.baseUrl !== "string") {
-        throw badRequest("baseUrl must be a string or null.");
-      }
-      req.baseUrl = body.baseUrl ? body.baseUrl : null;
-    }
-    if (body.clientType !== undefined) {
-      if (typeof body.clientType !== "string") throw badRequest("clientType must be a string.");
-      if (body.clientType) req.clientType = body.clientType;
-    }
-    if (body.fastMode !== undefined) {
-      if (typeof body.fastMode !== "boolean") throw badRequest("fastMode must be a boolean.");
-      req.fastMode = body.fastMode;
-    }
+    const req = parseModelTestRequest(await readJson(c));
     const result = await deps.projectConfigService.testModel(projectId, req);
     // A connectivity test is a stronger signal than a protocol probe (it made a real call),
     // so it overwrites the same key. Failure is recorded too: "this channel was down at

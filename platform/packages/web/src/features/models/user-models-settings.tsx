@@ -2,12 +2,11 @@
  * 设置 → 模型（WorkBuddy 式，账号中心客户端形态）。
  *
  * 两个卡片（对照 WorkBuddy 的模型设置页）：
- * 1. 自定义模型 — 模型列表（添加 / 编辑 / 删除）。保存目标不是某个项目，而是「用户全局」：
- *    服务端在写入用户名下项目模型配置时自动发布一份按用户的全局模型配置文件
- *    （<数据根>/.account-models/<用户hash>.json），并同步到该用户拥有的所有项目的
- *    .project_config.toml；新建项目也会自动继承（project-service / project-config-service
- *    的共享模型机制）。这里选取用户第一个「拥有（owner）」的项目作为写入入口，其余项目
- *    由服务端自动同步；会话页与测试任务即可直接选用。
+ * 1. 自定义模型 — 模型列表（添加 / 编辑 / 删除 / 连通性测试）。读写全部走用户级端点
+ *    /api/user-models：配置不挂在任何项目上，登录即可用；服务端在写入时自动发布一份按用户的
+ *    全局模型配置文件（<数据根>/.account-models/<用户hash>.json），并同步到该用户拥有的所有
+ *    项目的 .project_config.toml；新建项目也会自动继承（project-service / project-config-service
+ *    的共享模型机制）。连通性测试同样是用户级（POST /api/user-models/test），零项目账号可用。
  * 2. 辅助任务模型 — 单选下拉，写入用户偏好（ui_prefs.aux_model），不影响主对话模型。
  *
  * 「添加模型」弹窗对照 WorkBuddy：供应商（预设清单 + 自定义，仅 OpenAI 兼容协议）、
@@ -15,7 +14,7 @@
  * 连接信息（baseUrl / API Key / 协议）写入供应商组（[providers.<id>]），模型信息写入
  * 模型条目；一条「模型」在目录里 = 供应商组 + 该组下的一个 model_id。
  *
- * 权限：写入走项目模型 API（项目 owner 本来就有权配置），每个登录用户都可用；管理员登录
+ * 权限：读写走用户级模型 API（登录用户即可），每个登录用户都可用；管理员登录
  * 客户端与普通用户完全一致，models section 对所有用户可见（见 settings-sections.ts）。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -231,12 +230,8 @@ export function UserModelsSettings() {
     setTesting(true);
     setTestResult(null);
     try {
-      const probeProject = (await api.listProjects()).projects.find((item) => item.role === "owner")?.projectId;
-      if (probeProject === undefined) {
-        setTestResult("保存后即可在会话中验证；连接测试需要至少一个项目。");
-        return;
-      }
-      const result = await api.testModel(probeProject, {
+      // 用户级测试端点：凭据从账号级共享模型记录读，与有没有项目无关。
+      const result = await api.userModels.test({
         provider: draftProvider,
         modelId: dialog.modelId.trim(),
         ...(dialog.apiKey ? { apiKey: dialog.apiKey } : {}),
@@ -320,19 +315,14 @@ export function UserModelsSettings() {
     }
   };
 
-  /** 行级「测试连通性」：用该行已保存的凭据（owner 项目里存的那份）发起一次真实探测，
-      结果用 toast 告知；密钥明文不经过前端。 */
+  /** 行级「测试连通性」：用该行已保存的凭据（用户级共享模型记录里存的那份）发起一次真实探测，
+      结果用 toast 告知；密钥明文不经过前端。用户级端点，不依赖任何项目。 */
   const testRow = async (model: ModelInfo) => {
     const rowKey = `${model.provider}\u0000${model.modelId}`;
     if (busy || testingRow !== null) return;
     setTestingRow(rowKey);
     try {
-      const probeProject = (await api.listProjects()).projects.find((item) => item.role === "owner")?.projectId;
-      if (probeProject === undefined) {
-        toastError("连接测试需要至少一个项目；请先创建项目后重试。");
-        return;
-      }
-      const result = await api.testModel(probeProject, { provider: model.provider, modelId: model.modelId });
+      const result = await api.userModels.test({ provider: model.provider, modelId: model.modelId });
       if (result.ok === false) toastError(`连接未通过：${result.message ?? "请检查接口地址与密钥。"}`);
       else toastSuccess(`「${rowLabel(model)}」连接通过。`);
     } catch (error) {

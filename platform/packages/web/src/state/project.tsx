@@ -38,6 +38,11 @@ interface ProjectContextValue {
   projects: ProjectSummary[];
   projectsLoading: boolean;
   currentProject: ProjectSummary | null;
+  /**
+   * 服务端为账号自动创建的内部「测试助手」项目（purpose=internal，不出现在项目管理）。
+   * 零项目账号的助手类操作（聊天、定时任务、独立任务的落库目标）以它兜底。
+   */
+  assistantProject: ProjectSummary | null;
   setCurrentProjectId: (projectId: string) => void;
   reloadProjects: () => Promise<void>;
 
@@ -63,6 +68,7 @@ export function agentDisplayName(a: AgentSummary): string {
 /** Store state: the context value's raw ingredients (currentProject/agents/currentAgent are derived by projectView) plus the mutation functions. */
 interface ProjectStoreState {
   projects: ProjectSummary[];
+  assistantProject: ProjectSummary | null;
   projectsLoading: boolean;
   currentProjectId: string | null;
 
@@ -73,6 +79,8 @@ interface ProjectStoreState {
   currentAgentId: string | null;
 
   setCurrentProjectId: (projectId: string) => void;
+  activateAssistant: () => void;
+  restoreBusinessProject: () => void;
   reloadProjects: () => Promise<void>;
   setCurrentAgentId: (agentId: string) => void;
   reloadAgents: () => Promise<void>;
@@ -92,6 +100,7 @@ function createProjectStore(scope: "user" | "admin" = "user") {
   let agentsAsked = 0;
   return createStore<ProjectStoreState>((set, get) => ({
     projects: [],
+    assistantProject: null,
     projectsLoading: true,
     currentProjectId: null,
 
@@ -105,11 +114,14 @@ function createProjectStore(scope: "user" | "admin" = "user") {
         const res = await api.listProjects();
         const wanted = get().currentProjectId ?? localStorage.getItem(selectionKey);
         const found = res.projects.find((p) => p.projectId === wanted);
-        const next = (found ?? res.projects[0])?.projectId ?? null;
+        const next = get().currentProjectId === res.assistantProject?.projectId
+          ? res.assistantProject.projectId
+          : (found ?? res.projects[0] ?? res.assistantProject)?.projectId ?? null;
         // The current Project gone from the list (deleted, access lost) moves the app to another
         // one: a switch like any other, so it resets what a switch resets, in the same update.
         set({
           projects: res.projects,
+          assistantProject: res.assistantProject ?? null,
           ...(next === get().currentProjectId ? {} : enteredProject(next)),
         });
       } finally {
@@ -131,6 +143,18 @@ function createProjectStore(scope: "user" | "admin" = "user") {
       set(enteredProject(projectId));
       // Sync server-side prefs (best-effort; failure doesn't affect the local experience).
       if (scope === "user") void api.putPrefs({ lastProjectId: projectId }).catch(() => undefined);
+    },
+
+    activateAssistant: () => {
+      const id = get().assistantProject?.projectId;
+      if (id && get().currentProjectId !== id) set(enteredProject(id));
+    },
+
+    restoreBusinessProject: () => {
+      if (get().currentProjectId !== get().assistantProject?.projectId) return;
+      const last = localStorage.getItem(selectionKey);
+      const selected = get().projects.find((p) => p.projectId === last) ?? get().projects[0];
+      set(enteredProject(selected?.projectId ?? null));
     },
 
     reloadAgents: async () => {
@@ -199,18 +223,19 @@ const NO_AGENTS: AgentSummary[] = [];
  * another Project's, whichever write left it there — and the current Agent is one of it.
  */
 function projectView(
-  state: Pick<ProjectStoreState, "projects" | "currentProjectId" | "agents" | "currentAgentId">,
+  state: Pick<ProjectStoreState, "projects" | "assistantProject" | "currentProjectId" | "agents" | "currentAgentId">,
 ): {
   currentProject: ProjectSummary | null;
   agents: AgentSummary[];
   currentAgent: AgentSummary | null;
 } {
-  const currentProject = state.projects.find((p) => p.projectId === state.currentProjectId) ?? null;
+  const currentProject = state.projects.find((p) => p.projectId === state.currentProjectId)
+    ?? (state.assistantProject?.projectId === state.currentProjectId ? state.assistantProject : null);
   const agents = scopedValue(state.agents, state.currentProjectId) ?? NO_AGENTS;
   return { currentProject, agents, currentAgent: agentOf(agents, state.currentAgentId) };
 }
 
-export function ProjectProvider({ children, scope = "user" }: { children: ReactNode; scope?: "user" | "admin" }) {
+export function ProjectProvider({ children, scope = "user", assistantRoute = false, chatRoute = false }: { children: ReactNode; scope?: "user" | "admin"; assistantRoute?: boolean; chatRoute?: boolean }) {
   const [store] = useState(() => createProjectStore(scope));
   const state = useStore(store);
 
@@ -219,6 +244,11 @@ export function ProjectProvider({ children, scope = "user" }: { children: ReactN
   }, [store]);
 
   const { currentProjectId } = state;
+  useEffect(() => {
+    if (scope !== "user" || !state.assistantProject) return;
+    if (assistantRoute) store.getState().activateAssistant();
+    else if (!chatRoute) store.getState().restoreBusinessProject();
+  }, [scope, assistantRoute, chatRoute, state.assistantProject, store]);
   useEffect(() => {
     void store.getState().reloadAgents();
   }, [store, currentProjectId]);
@@ -239,6 +269,7 @@ export function ProjectProvider({ children, scope = "user" }: { children: ReactN
       projects: state.projects,
       projectsLoading: state.projectsLoading,
       currentProject,
+      assistantProject: state.assistantProject,
       setCurrentProjectId: state.setCurrentProjectId,
       reloadProjects: state.reloadProjects,
       agents,

@@ -441,6 +441,20 @@ export const userModels = {
   /** 启用/停用全局模型：只改默认指针，不动模型表与凭据。传 null 清除。 */
   setDefault: (defaultModel: { provider: string; modelId: string } | null) =>
     apiFetch<ModelsResponse>("/api/user-models/default", { method: "PUT", body: { defaultModel } }),
+  /**
+   * 连通性测试（用户级，不依赖任何项目）：凭据从该用户的共享模型记录读，
+   * body 可带未保存的草稿值（apiKey / baseUrl / clientType），语义同项目级 testModel。
+   */
+  test: (body: ModelTestRequest) =>
+    apiFetch<ModelTestResponse>("/api/user-models/test", { method: "POST", body }),
+  /**
+   * 组余额（用户级，不依赖任何项目）：服务端拿共享模型记录里供应商组的存储密钥查询，
+   * 明文密钥不出服务进程。`force` 跳过服务端 60 秒缓存。
+   */
+  balance: (provider: string, force = false) =>
+    apiFetch<ModelBalanceResponse>(
+      `/api/user-models/balance?provider=${encodeURIComponent(provider)}${force ? "&force=1" : ""}`,
+    ),
 };
 
 export const CENTRAL_MODEL_CATALOG_ID = "central-model-catalog";

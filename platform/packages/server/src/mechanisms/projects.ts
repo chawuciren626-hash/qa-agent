@@ -159,6 +159,8 @@ export abstract class ProjectConfigStore {
     req: ModelVisionDetectRequest,
   ): Promise<ModelVisionDetectResponse>;
   abstract testModel(projectId: string, req: ModelTestRequest): Promise<ModelTestResponse>;
+  /** 用户级连通性测试：凭据从该用户的共享模型记录读，不依赖任何项目（设置页用）。 */
+  abstract testUserModel(ownerUserId: string, req: ModelTestRequest): Promise<ModelTestResponse>;
   abstract detectProtocol(
     projectId: string,
     req: ModelProtocolDetectRequest,
@@ -212,6 +214,8 @@ export abstract class ProjectConfigStore {
    * URL (none, or the vendor's own default endpoint). Server-side only.
    */
   abstract getGroupBalanceKey(projectId: string, provider: string): Promise<string | undefined>;
+  /** 用户级余额取钥：与 getGroupBalanceKey 同规则，数据源换成该用户的共享模型记录。 */
+  abstract getUserGroupBalanceKey(ownerUserId: string, provider: string): Promise<string | undefined>;
   abstract setModelApiKeyResolver(
     resolver: (context: ModelRequestContext) => Promise<string | undefined>,
   ): void;

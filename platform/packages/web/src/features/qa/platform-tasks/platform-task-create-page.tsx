@@ -35,10 +35,16 @@ function isTextFile(file: File): boolean {
 
 export function PlatformTaskCreatePage() {
   const navigate = useNavigate();
-  const { projects, currentProject } = useProject();
+  const { projects, currentProject, assistantProject } = useProject();
   const projectId = currentProject?.projectId ?? null;
-  /** 所属项目：非必填，默认当前项目；任务落库必带项目，所以下拉总有值。 */
-  const [targetProjectId, setTargetProjectId] = useState(projectId ?? "");
+  /**
+   * 所属项目：非必填，默认当前项目；无业务项目时回退服务端自动创建的「测试助手」内部
+   * 项目（assistantProject，账号首次读取项目列表时自动建，不出现在项目管理里）——
+   * 零项目账号也能直接建任务，不必先去项目管理手动建项目。
+   */
+  const [targetProjectId, setTargetProjectId] = useState(projectId ?? assistantProject?.projectId ?? "");
+  /** 实际生效的落库目标：用户选择优先，未选时回退内部助手项目。 */
+  const resolvedTarget = targetProjectId || assistantProject?.projectId || "";
 
   useEffect(() => {
     if (!targetProjectId && projectId) setTargetProjectId(projectId);
@@ -84,9 +90,9 @@ export function PlatformTaskCreatePage() {
 
   // 新建时预填**所选项目**的默认环境地址（选填，可改可清空；切项目会重新取）
   useEffect(() => {
-    if (!targetProjectId) return;
+    if (!resolvedTarget) return;
     let cancelled = false;
-    void listEnvironments(targetProjectId)
+    void listEnvironments(resolvedTarget)
       .then((r) => {
         if (cancelled) return;
         const def =
@@ -98,15 +104,17 @@ export function PlatformTaskCreatePage() {
     return () => {
       cancelled = true;
     };
-  }, [targetProjectId]);
+  }, [resolvedTarget]);
 
-  if (!targetProjectId) {
+  // 无业务项目且内部助手项目也未就绪（非 QA 部署/加载中）才阻断——正常情况下零项目
+  // 账号有 assistantProject 兜底，永远到不了这个空态。
+  if (!resolvedTarget) {
     return (
       <main className="qpm-page">
         <div className="qpm-scroll">
           <div className="qpm-empty-card">
-            <p className="qpm-empty-title">还没有项目</p>
-            <p className="qpm-empty-sub">任务必须属于一个项目，先在项目管理里建一个项目。</p>
+            <p className="qpm-empty-title">任务空间尚未就绪</p>
+            <p className="qpm-empty-sub">正在准备你的独立测试空间，请稍后重试；或先在项目管理里建一个项目。</p>
             <button type="button" className="qpm-btn-main" onClick={() => navigate("/qa/projects")}>去项目管理</button>
           </div>
         </div>
@@ -129,7 +137,7 @@ export function PlatformTaskCreatePage() {
     }
     setBusy(true);
     try {
-      const created = await createLocalTask(targetProjectId, {
+      const created = await createLocalTask(resolvedTarget, {
         title: title.trim(),
         description: composedDescription,
         envBaseUrl: envBaseUrl.trim(),
@@ -141,7 +149,7 @@ export function PlatformTaskCreatePage() {
       let attachFailures = 0;
       for (const item of attachments) {
         try {
-          await uploadTaskAttachment(targetProjectId, created.task.id, {
+          await uploadTaskAttachment(resolvedTarget, created.task.id, {
             filename: item.filename,
             mime: item.mime,
             dataBase64: utf8Base64(item.contentText),
@@ -153,7 +161,7 @@ export function PlatformTaskCreatePage() {
       // 分析是同步模型通道：失败/降级不阻断——任务已落库（可开始），结论可稍后重试补。
       let analysisNote = "";
       try {
-        const analysis = await analyzeTask(targetProjectId, created.task.id);
+        const analysis = await analyzeTask(resolvedTarget, created.task.id);
         if (analysis.degraded) {
           analysisNote = `，但 AI 分析未走模型（${analysis.degraded.reason}），已回填演示结论；可稍后点「AI 分析」重试`;
         }
@@ -189,13 +197,18 @@ export function PlatformTaskCreatePage() {
         </header>
         <div className="qpt-create-form">
           <label className="qpt-field">
-            <span>所属项目 <small>选填；默认当前项目，可改选其他项目。选项来自项目管理的项目名称</small></span>
-            <select value={targetProjectId} onChange={(e) => setTargetProjectId(e.target.value)} disabled={busy}>
-              {projects.length === 0 && <option value={targetProjectId}>{targetProjectId || "—"}</option>}
-              {projects.map((p) => (
-                <option key={p.projectId} value={p.projectId}>{projectDisplayName(p)}</option>
-              ))}
-            </select>
+            <span>所属项目 <small>{projects.length === 0 ? "已自动归入你的独立测试空间，无需创建项目" : "选填；默认当前项目，可改选其他项目。选项来自项目管理的项目名称"}</small></span>
+            {projects.length === 0 ? (
+              <select value={resolvedTarget} disabled>
+                <option value={resolvedTarget}>测试助手 · 独立空间</option>
+              </select>
+            ) : (
+              <select value={targetProjectId} onChange={(e) => setTargetProjectId(e.target.value)} disabled={busy}>
+                {projects.map((p) => (
+                  <option key={p.projectId} value={p.projectId}>{projectDisplayName(p)}</option>
+                ))}
+              </select>
+            )}
           </label>
           <label className="qpt-field">
             <span>任务名称 *</span>
