@@ -137,3 +137,18 @@ test('a controller call refused by the delegation guard never becomes an unreada
   // A refusal neither delivers nor fails: it cannot stand in for a successful receipt.
   assert.throws(()=>assertChildCommands([deniedCall,decision,deniedOutput],{...options,requireControlledCommands:false,allowRecovery:false}),/unreadable/);
 });
+// A user interrupt leaves a host placeholder where a receipt belongs. Demanding a receipt
+// there made every later handoff fail with "response unreadable", and no action could clear
+// it - one interrupt and the run could never advance. Only the exact host strings with an
+// aborted status are skipped; a command that prints the same words still needs its receipt.
+test('a call the user interrupted is not an unreadable receipt',()=>{
+  const interrupted=[call('exec_command','cut',{cmd:'node scripts/project-action.mjs execute --request=output/action-requests/resolve.json'}),
+    output('cut','[interrupted: tool aborted by user]','aborted')];
+  assert.doesNotThrow(()=>assertChildCommands(interrupted,options));
+  const processGone=[call('exec_command','gone',{cmd:'node scripts/project-action.mjs execute'}),
+    output('gone','[interrupted: process exited before the tool finished]','aborted')];
+  assert.doesNotThrow(()=>assertChildCommands(processGone,options));
+  assert.throws(()=>assertChildCommands([call('exec_command','print',{cmd:'node scripts/project-action.mjs execute'}),
+    output('print','[interrupted: tool aborted by user]','completed')],options),/unreadable/);
+  assert.throws(()=>assertChildCommands(interrupted,{requireControlledCommands:true}),/unreadable/);
+});

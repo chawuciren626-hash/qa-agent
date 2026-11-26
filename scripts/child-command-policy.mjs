@@ -48,6 +48,21 @@ function neverLaunched(response) {
   return /^Error: E(?:NOENT|NOTDIR):[^\r\n]*\blstat\b[^\r\n]*$/.test(raw);
 }
 
+// Two host markers replace a tool's output when the run stops mid-flight: the user aborted
+// the call, or the process died before the tool finished. Neither is a receipt - the row
+// carries no result at all - so demanding one leaves it permanently unreadable and no later
+// action can clear it: a controller interrupted once could never hand off again. Only these
+// exact host strings with an aborted status qualify, so a command that merely printed the
+// same words still has to produce a receipt of its own.
+const HOST_INTERRUPTS = [
+  '[interrupted: tool aborted by user]',
+  '[interrupted: process exited before the tool finished]',
+];
+function hostInterrupted(response) {
+  if(toolOutcome(response.payload)!=='aborted') return false;
+  return HOST_INTERRUPTS.includes(String(response.payload.output ?? '').trim());
+}
+
 // A ledger key is `${run}:${action}:${stage}` and a request may or may not name the stage.
 // The same action therefore files `…:diagnose_test_cases:test_cases` when the request was
 // stage-scoped and `…:diagnose_test_cases:` when it was not, and an exact delete leaves one
@@ -284,6 +299,7 @@ export function assertChildCommands(rows, { allowRecovery = false, allowUnresolv
     const response = terminalCommandOutput(rows, index, outputs[0], allowRecovery);
     if(allowRecovery && wasRedirectedBeforeExecution(rows,index,response,row.payload.tool_call_id)) continue;
     if(allowRecovery && isControlledCommand(args?.cmd) && neverLaunched(response)) continue;
+    if(allowRecovery && hostInterrupted(response)) continue;
     if (!isControlledCommand(args?.cmd)) {
       // A denied detour never ran; a recorded failure here has no compliant repair path.
       if (requireControlledCommands && isDirectBypass(args?.cmd)) throw new Error('Child bypassed the controlled project entry; file existence cannot prove compliant delivery');
