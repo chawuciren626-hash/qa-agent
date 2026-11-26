@@ -35,7 +35,7 @@ export function guardControllerTool(root,input) {
         return {};
       }
       const match=/^node(?:\.exe)?\s+(?:scripts[\\/])?project-action\.mjs\s+(catalog|summary|execute)(?:\s+(.*))?$/.exec(cmd);
-      if(!match) throw new Error('Controller shell uses project-action.mjs catalog/summary/execute only; do not run maintenance, generators or ad hoc scripts. Use read_file for inspection');
+      if(!match) throw new Error('Controller shell uses project-action.mjs catalog/summary/execute only; the script path must be the RELATIVE form "node scripts/project-action.mjs ..." from the session workspace (no quotes, no absolute path, no workdir). Use read_file for inspection');
       const workspace=dataPath(root);
       if(args.workdir && !(args.workdir==='CWD' && !existsSync(resolve(workspace,'CWD'))) && resolve(workspace,args.workdir)!==workspace) throw new Error('Structured commands must use the current session workspace; omit workdir');
       if(match[1]==='execute') {
