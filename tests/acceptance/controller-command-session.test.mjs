@@ -503,7 +503,9 @@ test('requesting execution authorization before the prepare dispatch is correcte
   mkdirSync(resolve(root,'output/runs',runId),{recursive:true});
   writeFileSync(resolve(root,'output/runs',runId,'manifest.json'),JSON.stringify({run_id:runId,stages:{execution:{status:'planned'}},confirmations:[],orchestration:{plan:{workflow_mode:'lifecycle'},events:[]}}));
   const request=()=>Buffer.from(JSON.stringify({action:'request_confirmation',run_id:runId,stage:'execution'}));
-  await assert.rejects(()=>executeAction(root,f.id,request,{agentRoot:f.agentRoot}),/执行授权确认要求先有执行计划/);
+  const result=await executeAction(root,f.id,request,{agentRoot:f.agentRoot});
+  assert.equal(result.status,'rejected');assert.equal(result.exit_code,2);
+  assert.match(String(result.error),/执行授权确认要求先有执行计划/);
   assert.equal(readControllerSession(root,f.id).status,'ready');
 });
 test('a missing execution plan crash self-recovers only when the execution stage is untouched',async()=>{
