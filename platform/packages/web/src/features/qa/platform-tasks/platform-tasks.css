@@ -8,9 +8,10 @@
 .qpt-term-toggle{margin-left:auto;display:inline-flex;align-items:center;gap:5px;font-size:12px;color:light-dark(#8f959e,#9ca3af);cursor:pointer}
 .qpt-loading{margin-top:18px;color:light-dark(#8f959e,#9ca3af);font-size:12.5px}
 /* table-layout:fixed —— auto 布局会把容器多余宽度平摊到每一列，
-   导致每列都比内容宽一截、文字贴左留出大片空白；固定布局后只有任务名称列
-   吸收剩余空间，其余列严格按设定宽度，列间距才是稳定的。 */
-.qpt-table{width:100%;min-width:1080px;table-layout:fixed;border-collapse:collapse;margin-top:14px;background:light-dark(#fff,#1f2937)}
+   导致每列都比内容宽一截、文字贴左留出大片空白；固定布局下列宽只认设定值，
+   列间距才是稳定的。min-width 是各列仍能放下内容的下限，再窄就横向滚动，
+   而不是把列压成一条。 */
+.qpt-table{width:100%;min-width:1120px;table-layout:fixed;border-collapse:collapse;margin-top:14px;background:light-dark(#fff,#1f2937)}
 .qpt-table th{font-size:11px;font-weight:600;color:light-dark(#8f959e,#9ca3af);text-align:left;padding:8px 10px;border-bottom:1px solid light-dark(#e6e9ef,#374151);letter-spacing:.3px;white-space:nowrap}
 .qpt-table td{padding:11px 10px;border-bottom:1px solid light-dark(#eef0f4,#374151);vertical-align:middle;font-size:12.5px;color:light-dark(#1f2329,#f3f4f6)}
 .qpt-table tbody tr:hover td{background:light-dark(#fafbfc,#111827)}
@@ -139,15 +140,20 @@
 .qpt-toolbar-count{margin-left:auto;font-size:12px;color:light-dark(#8f959e,#9ca3af);white-space:nowrap}
 .qpt-table-wrap{margin-top:12px;border:1px solid light-dark(#e6e9ef,#374151);border-radius:10px;overflow-x:auto;background:light-dark(#fff,#1f2937)}
 .qpt-table-wrap .qpt-table{margin-top:0}
-/* 列宽：除任务名称外全部定宽，名称列吸收剩余空间（min-width 由 .qpt-table 兜底，
-   窗口过窄时横向滚动而不是把名称挤成两三个字）。 */
-.qpt-c-no{width:150px}
-.qpt-c-name{width:auto}
-.qpt-c-project{width:150px}
-.qpt-c-pri{width:78px}
-.qpt-c-ver{width:116px}
-.qpt-c-status{width:104px}
-.qpt-c-ops{width:256px}
+/* 列宽：七列全部定宽，按比例分摊整张表——不留自动吸收列。之前名称列 auto 会
+   吃掉全部剩余宽度，名称截到 10 个字后那一片就空着；现在把宽度匀给真正需要
+   的地方（项目名、版本、状态、操作），名称列只留「10 字 + 已编辑标签」的余量。
+   用百分比而不是 px：窗口变窄时各列等比收窄，不会出现某一列被压成几十像素，
+   也不会出现 px 定宽总和超出容器后整表横向滚动（min-width 兜底才滚）。
+   配合 box-sizing:border-box，百分比里已经含了单元格的左右内边距。 */
+.qpt-table th,.qpt-table td{box-sizing:border-box}
+.qpt-c-no{width:12.1%}
+.qpt-c-name{width:23.7%}
+.qpt-c-project{width:15.8%}
+.qpt-c-pri{width:6.6%}
+.qpt-c-ver{width:10.8%}
+.qpt-c-status{width:9.5%}
+.qpt-c-ops{width:21.5%}
 .qpt-table th{padding:10px 12px}
 .qpt-table td{padding:11px 12px}
 /* 窄列一律不换行，超长省略，避免撑高行或把列挤开 */
@@ -164,14 +170,16 @@
 .qpt-pri-from{font-size:9.5px;font-weight:700;margin-left:4px;opacity:.6;letter-spacing:.3px}
 .qpt-m-error{margin:0;font-size:12.5px;color:light-dark(#b91c1c,#f87171)}
 
-/* 操作列：固定宽度 + 单行不折行 + 右对齐到列边界。
+/* 操作列：定宽 + 单行不折行 + 按钮组从列的左内边距起排（不再顶到右边界）。
    主操作（重新分析/开始测试/任务详情/发起复测）保留带边框按钮，
-   编辑/查看降级为无边框文字按钮——两档层级后按钮不再等宽堆积，
-   每行按钮都从右边界对齐，行与行之间的位置也稳定。
-   紧凑尺寸只作用于表格内，详情页头部那组按钮沿用原尺寸。 */
+   编辑/查看降级为无边框文字按钮——两档层级后按钮不再等宽堆积。
+   左对齐而不是右对齐：按钮紧挨着状态列，行与行起始位置一致；右对齐时
+   按钮组被推到大片空白的右端，看起来像悬在表格外。表头「操作」同侧对齐。
+   紧凑尺寸只作用于表格内，详情页头部那组按钮沿用原尺寸与对齐。 */
 .qpt-ops{display:flex;align-items:center;gap:6px;justify-content:flex-end}
 .qpt-ops-head{text-align:right}
-.qpt-table .qpt-ops{flex-wrap:nowrap;white-space:nowrap}
+.qpt-table .qpt-ops{justify-content:flex-start;flex-wrap:nowrap;white-space:nowrap}
+.qpt-table .qpt-ops-head{text-align:left}
 .qpt-table .qpt-ops .qpt-op{flex:none;padding:3px 9px;font-size:11.5px;line-height:18px}
 .qpt-table .qpt-ops .qpt-op-ghost{padding:3px 6px}
 .qpt-op{padding:4px 10px;border:1px solid light-dark(#e6e9ef,#4b5563);border-radius:7px;background:light-dark(#fff,#1f2937);color:light-dark(#1f2329,#f3f4f6);font-size:12px;font-weight:600;white-space:nowrap;cursor:pointer}
