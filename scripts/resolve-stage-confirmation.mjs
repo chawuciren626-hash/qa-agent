@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { CommandUsageError } from "./command-contracts.mjs";
 import { resolve } from "node:path";
 import { getPlanStage, getRunContext, recomputeRunStatus, writeJson, withRunLock } from "./orchestration-state.mjs";
 import { executionSnapshot } from './execution-authorization.mjs';
@@ -10,7 +11,7 @@ const root = resolve(import.meta.dirname, "..");
 const project = JSON.parse(readFileSync(resolve(root, "config/project.json"), "utf8"));
 const [runId, stage, decision, ...reasonParts] = process.argv.slice(2);
 if (!runId || !stage || !["approved", "revision_requested", "rejected"].includes(decision)) {
-  throw new Error("用法: node scripts/resolve-stage-confirmation.mjs <run_id> <stage> <approved|revision_requested|rejected> [reason]");
+  throw new CommandUsageError("用法: node scripts/resolve-stage-confirmation.mjs <run_id> <stage> <approved|revision_requested|rejected> [reason]");
 }
 withRunLock(root, project, runId, () => {
 const { manifestPath, manifest } = getRunContext(root, project, runId);
@@ -20,18 +21,18 @@ if (stage === 'analysis' && decision === 'revision_requested') {
 }
 const timestamp = new Date().toISOString();
 const confirmation = [...(manifest.confirmations ?? [])].reverse().find((item) => item.stage === stage && item.status === "pending");
-if (!confirmation) throw new Error(`找不到 ${stage} 阶段待处理的确认请求：可能已被解决或尚未创建。用 show-run-status 核对 confirmations 后再决定下一步，不要原样重试。`);
+if (!confirmation) throw new CommandUsageError(`找不到 ${stage} 阶段待处理的确认请求：可能已被解决或尚未创建。用 show-run-status 核对 confirmations 后再决定下一步，不要原样重试。`);
 if (decision === 'approved' && (confirmation.kind === 'result' || stage !== 'execution' || manifest.orchestration?.plan?.workflow_mode==='task')) {
   const receipt = assertCompletedArtifacts(root, runId, manifest, stage);
-  if (!isDeepStrictEqual(receipt, confirmation.artifact_contract)) throw new Error('Artifact receipt changed since confirmation request; request a new confirmation with request_confirmation instead of approving the stale one');
+  if (!isDeepStrictEqual(receipt, confirmation.artifact_contract)) throw new CommandUsageError('Artifact receipt changed since confirmation request; request a new confirmation with request_confirmation instead of approving the stale one');
 }
 if (stage === 'execution' && (confirmation.kind === 'authorization' || !confirmation.kind) && manifest.orchestration?.plan?.workflow_mode!=='task' && decision === 'approved' && confirmation.execution_snapshot?.sha256 !== executionSnapshot(root, runId).sha256) {
-  throw new Error('Execution inputs changed after confirmation request; request revision and approval again.');
+  throw new CommandUsageError('Execution inputs changed after confirmation request; request revision and approval again.');
 }
 if(stage==='execution' && (confirmation.kind === 'authorization' || !confirmation.kind) && manifest.orchestration?.plan?.workflow_mode!=='task' && decision==='approved') {
   let source;
   try { source=JSON.parse(process.env.QA_CONFIRMATION_SOURCE_JSON ?? 'null'); } catch { /* validated below */ }
-  if(source?.kind!=='native_user_message' || typeof source.session_id!=='string' || !source.session_id || !Number.isFinite(Date.parse(source.timestamp)) || !/^[a-f0-9]{64}$/.test(source.sha256 ?? '')) throw new Error('Execution approval requires verified native user message provenance');
+  if(source?.kind!=='native_user_message' || typeof source.session_id!=='string' || !source.session_id || !Number.isFinite(Date.parse(source.timestamp)) || !/^[a-f0-9]{64}$/.test(source.sha256 ?? '')) throw new CommandUsageError('Execution approval requires verified native user message provenance');
   confirmation.approval_source=source;
 }
 confirmation.status = decision;
@@ -41,7 +42,7 @@ manifest.stages ??= {};
 manifest.orchestration ??= { events: [] };
 manifest.orchestration.events ??= [];
 const stagePlan = getPlanStage(manifest, stage);
-if (!stagePlan?.selected) throw new Error(`阶段未在本次运行计划中启用: ${stage}`);
+if (!stagePlan?.selected) throw new CommandUsageError(`阶段未在本次运行计划中启用: ${stage}`);
 if (decision === "approved") {
   const nextStatus = confirmation.kind === 'authorization' || !confirmation.kind && stagePlan.confirmation === 'before' ? "planned" : "completed";
   manifest.stages[stage] = { ...(manifest.stages[stage] ?? {}), status: nextStatus, updated_at: timestamp };

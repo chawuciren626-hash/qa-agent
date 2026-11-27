@@ -12,6 +12,7 @@ import { isIndependent, taskRequiredArtifacts } from './independent-task.mjs';
 import { requestEndStatus } from './session-lifecycle.mjs';
 import { stageWriteRules } from './stage-registry.mjs';
 import { inspectPreparationSafety, preparationDraftFiles } from './preparation-recovery.mjs';
+import { CommandUsageError } from './command-contracts.mjs';
 
 export function draftStageFiles(stage) {
   const sources={test_points:['design/test_points.md'],test_cases:['design/test_cases.md'],defects:['defects/bugs.json'],report:['report/test_report.md']};
@@ -89,7 +90,7 @@ export function reviseDraftStage(root,runId,stage,parentId,reason,agentRoot) {
   const archive=`audit/revisions/${stage}-${randomUUID()}`;
   mkdirSync(resolve(dir,archive),{recursive:true});
   const archiveRelative=relative(realpathSync(dir),realpathSync(resolve(dir,archive)));
-  if (!archiveRelative || isAbsolute(archiveRelative) || archiveRelative==='..' || archiveRelative.startsWith('../') || archiveRelative.startsWith('..\\')) throw new Error('Revision directory redirected');
+  if (!archiveRelative || isAbsolute(archiveRelative) || archiveRelative==='..' || archiveRelative.startsWith('../') || archiveRelative.startsWith('..\\')) throw new CommandUsageError('Revision directory redirected');
   const at=new Date().toISOString();
   // Snapshot before recording the transition; keep the working draft available
   // for incremental edits. Never replace a historical snapshot.
@@ -97,7 +98,7 @@ export function reviseDraftStage(root,runId,stage,parentId,reason,agentRoot) {
     const target=resolve(dir,archive,file.path); mkdirSync(resolve(target,'..'),{recursive:true});
     writeFileSync(target,file.data,{flag:'wx'});
     if(readRunFile(dir,file.path).sha256!==file.sha256 || readRunFile(dir,`${archive}/${file.path}`).sha256!==file.sha256) {
-      throw new Error('Draft changed during revision snapshot; working files preserved');
+      throw new CommandUsageError('Draft changed during revision snapshot; working files preserved');
     }
   }
   events.push({type:'stage_recovered',at,stage,from:current.status,to:'revision_requested',actor:'controller_auto_revision',reason,dispatch_id:dispatch.dispatch_id,parent_session_id:parentId,...(preparation?{preparation_safety:preparation}:{}),verified_children:[childId],archive,files:files.map(f=>({path:f.path,sha256:f.sha256}))});

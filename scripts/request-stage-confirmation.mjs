@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { CommandUsageError } from "./command-contracts.mjs";
 import { resolve } from "node:path";
 import { getPlanStage, getRunContext, recomputeRunStatus, writeJson, withRunLock } from "./orchestration-state.mjs";
 import { executionSnapshot } from './execution-authorization.mjs';
@@ -7,23 +8,23 @@ import { assertCompletedArtifacts } from './artifact-contracts.mjs';
 const root = resolve(import.meta.dirname, "..");
 const project = JSON.parse(readFileSync(resolve(root, "config/project.json"), "utf8"));
 const [runId, stage, ...artifactArgs] = process.argv.slice(2);
-if (!runId || !stage) throw new Error("用法: node scripts/request-stage-confirmation.mjs <run_id> <stage> [artifact...]");
+if (!runId || !stage) throw new CommandUsageError("用法: node scripts/request-stage-confirmation.mjs <run_id> <stage> [artifact...]");
 withRunLock(root, project, runId, () => {
 const { manifestPath, manifest } = getRunContext(root, project, runId);
 const timestamp = new Date().toISOString();
 manifest.confirmations ??= [];
 if (manifest.confirmations.some((item) => item.stage === stage && item.status === "pending")) {
-  throw new Error(`${stage} 阶段已有待处理的确认请求，禁止重复创建。等待用户对现有确认请求作出决定（resolve_confirmation），不要重复请求。`);
+  throw new CommandUsageError(`${stage} 阶段已有待处理的确认请求，禁止重复创建。等待用户对现有确认请求作出决定（resolve_confirmation），不要重复请求。`);
 }
 manifest.stages ??= {};
 manifest.orchestration ??= { events: [] };
 const stagePlan = getPlanStage(manifest, stage);
 const resultReview = stagePlan?.result_confirmation === 'after' && manifest.stages[stage]?.status === 'completed';
-if (!stagePlan?.selected || stagePlan.confirmation === "none" && !resultReview) throw new Error(`${stage} 阶段未配置人工确认，无需确认请求，直接继续后续阶段。`);
+if (!stagePlan?.selected || stagePlan.confirmation === "none" && !resultReview) throw new CommandUsageError(`${stage} 阶段未配置人工确认，无需确认请求，直接继续后续阶段。`);
 const expectedStatus = stagePlan.confirmation === "before" && !resultReview ? "planned" : "completed";
 const revisingBeforeExecution = stagePlan.confirmation === "before" && !resultReview && manifest.stages[stage]?.status === "revision_requested";
 if (manifest.stages[stage]?.status !== expectedStatus && !revisingBeforeExecution) {
-  throw new Error(`${stage} 阶段当前状态为 ${manifest.stages[stage]?.status ?? "未计划"}，不能在 ${stagePlan.confirmation} 时请求确认。awaiting_confirmation 需先解决现有确认；revision_requested 需先派发返修；in_progress 需等待阶段完成。用 show-run-status 核对后再操作。`);
+  throw new CommandUsageError(`${stage} 阶段当前状态为 ${manifest.stages[stage]?.status ?? "未计划"}，不能在 ${stagePlan.confirmation} 时请求确认。awaiting_confirmation 需先解决现有确认；revision_requested 需先派发返修；in_progress 需等待阶段完成。用 show-run-status 核对后再操作。`);
 }
 const confirmation = {
   id: `confirm-${stage}-${Date.now()}`,
@@ -35,7 +36,7 @@ const confirmation = {
 };
 if (expectedStatus === 'completed') {
   confirmation.artifact_contract = assertCompletedArtifacts(root, runId, manifest, stage);
-  if (artifactArgs.some(path => !confirmation.artifact_contract.files.some(file => file.path === path))) throw new Error('Confirmation references an unvalidated artifact');
+  if (artifactArgs.some(path => !confirmation.artifact_contract.files.some(file => file.path === path))) throw new CommandUsageError('Confirmation references an unvalidated artifact');
   if (!artifactArgs.length) confirmation.artifacts = confirmation.artifact_contract.files.map(file => file.path);
 }
 if (stage === 'execution' && expectedStatus === 'planned' && manifest.orchestration?.plan?.workflow_mode!=='task') confirmation.execution_snapshot = executionSnapshot(root, runId);

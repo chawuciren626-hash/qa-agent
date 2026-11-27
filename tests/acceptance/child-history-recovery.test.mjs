@@ -218,6 +218,27 @@ test('a diagnose debt is closed by a successful stage validation, not by other a
     task_key:'run-abc:export_test_cases:execution',action_receipt:'E:/audit/4.json',result:{termination_confirmed:true}});
   assert.throws(()=>assertChildCommands([debtCall,output('debt',debt),validatedCall,output('validated',otherAction)],recoveryOptions),/Still open/);
 });
+// validate_execution_prepare is the prepare-mode form of the execution stage validation
+// (same validate-artifacts.mjs, --mode=prepare); its task key carries an empty stage suffix
+// and must still close execution-stage artifact-verified debts. A different script or a
+// debt in another stage is not closed by it.
+test('a diagnose debt is also closed by a successful validate_execution_prepare',()=>{
+  const debt=JSON.stringify({status:'rejected',exit_code:2,classification:'input_rejected',action:'diagnose_task',
+    task_key:'run-abc:diagnose_task:execution',
+    recovery:{category:'input_correction',key:'run-abc:diagnose_task:execution',failure_number:1,retry_allowed:true,policy:'progress_based',stalled:false}});
+  const debtCall=call('exec_command','debt',{cmd:'node scripts/project-action.mjs execute --request=output/action-requests/d.json'});
+  const prepared=JSON.stringify({status:'completed',exit_code:0,action:'validate_execution_prepare',script:'validate-artifacts.mjs',
+    task_key:'run-abc:validate_execution_prepare:',action_receipt:'E:/audit/5.json',result:{termination_confirmed:true}});
+  const preparedCall=call('exec_command','prepared',{cmd:'node scripts/project-action.mjs execute --request=output/action-requests/f.json'});
+  const recoveryOptions={...options,verifyRecovery:result=>result.status==='completed'||result.recovery!=null};
+  assert.doesNotThrow(()=>assertChildCommands([debtCall,output('debt',debt),preparedCall,output('prepared',prepared)],recoveryOptions));
+  assert.throws(()=>assertChildCommands([debtCall,output('debt',debt)],recoveryOptions),/Still open/);
+  const otherStageDebt=JSON.stringify({...JSON.parse(debt),task_key:'run-abc:diagnose_test_cases:test_cases',
+    recovery:{category:'input_correction',key:'run-abc:diagnose_test_cases:test_cases',failure_number:1,retry_allowed:true,policy:'progress_based',stalled:false}});
+  assert.throws(()=>assertChildCommands([debtCall,output('debt',otherStageDebt),preparedCall,output('prepared',prepared)],recoveryOptions),/Still open/);
+  const wrongScript=JSON.stringify({...JSON.parse(prepared),script:'export-test-cases.mjs'});
+  assert.throws(()=>assertChildCommands([debtCall,output('debt',debt),preparedCall,output('prepared',wrongScript)],recoveryOptions),/Still open/);
+});
 
 test('a stage-less success clears only the child session\'s own stage debt',()=>{
   const debt=JSON.stringify({status:'rejected',exit_code:2,classification:'input_rejected',action:'draft_records',
